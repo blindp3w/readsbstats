@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block title %}Flight detail — readsbstats{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <a href="{{ root_path }}/" class="back-link">← Back to flights</a>
+  <h1 id="flight-title">Loading…</h1>
+</div>
+
+<section class="detail-card map-card">
+  <h2>Flight Track</h2>
+  <div id="flight-map" class="flight-map" role="img" aria-label="Flight track map"></div>
+  <div id="airspace-legend" class="airspace-legend hidden"></div>
+</section>
+
+<div id="photo-section" class="photo-section hidden"></div>
+
+<div class="flight-detail-grid">
+  <section class="detail-card" id="detail-meta">
+    <h2>Flight details</h2>
+    <table class="kv-table" id="meta-table"></table>
+  </section>
+
+  <section class="detail-card">
+    <h2>Position log <span id="pos-count"></span></h2>
+    <div class="table-wrap">
+      <table id="pos-table" aria-label="Position log">
+        <thead>
+          <tr>
+            <th>Time</th>
+            <th>Alt (ft)</th>
+            <th>Speed (kts)</th>
+            <th>Track (°)</th>
+            <th>V/S (fpm)</th>
+            <th>RSSI</th>
+            <th>Source</th>
+          </tr>
+        </thead>
+        <tbody id="pos-body"></tbody>
+      </table>
+    </div>
+    <button id="show-all-btn" class="btn-secondary hidden">Show all positions</button>
+  </section>
+</div>
+
+<section class="detail-card hidden" id="profile-section">
+  <h2>Flight profile</h2>
+  <div id="profile-chart" role="img" aria-label="Altitude and speed profile chart"></div>
+</section>
+
+<section class="detail-card hidden" id="other-flights-section">
+  <h2>Other flights by this aircraft</h2>
+  <div class="table-wrap">
+    <table id="other-table" aria-label="Other flights by this aircraft">
+      <thead>
+        <tr>
+          <th>Time</th>
+          <th>Callsign</th>
+          <th>Source</th>
+          <th>Duration</th>
+          <th>Positions</th>
+        </tr>
+      </thead>
+      <tbody id="other-body"></tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  const FLIGHT_ID = {{ flight_id }};
+</script>
+<script src="{{ root_path }}/static/js/flight_detail.js"></script>
+{% endblock %}

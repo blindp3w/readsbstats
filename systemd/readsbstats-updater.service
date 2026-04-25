@@ -1,0 +1,23 @@
+[Unit]
+Description=readsbstats aircraft/airline database updater
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=readsbstats
+Group=readsbstats
+ExecStart=/opt/readsbstats/venv/bin/python -m readsbstats.db_updater
+WorkingDirectory=/opt/readsbstats
+# Security hardening
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/mnt/ext/readsbstats
+TimeoutStartSec=300
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=readsbstats-updater

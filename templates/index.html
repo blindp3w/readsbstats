@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block title %}Flights — readsbstats{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>Flight History</h1>
+</div>
+
+<form id="search-form" class="search-bar">
+  <button type="button" id="filters-toggle" class="filters-toggle">Filters ▾</button>
+  <div id="search-fields" class="search-fields">
+    <input type="text"  id="f-callsign" name="callsign"     placeholder="Callsign (e.g. LOT123)">
+    <input type="text"  id="f-icao"     name="icao"         placeholder="ICAO hex (e.g. 3c6444)">
+    <input type="text"  id="f-reg"      name="registration" placeholder="Registration (e.g. SP-LRA)">
+    <input type="text"  id="f-type"     name="aircraft_type" placeholder="Type (e.g. B738)">
+    <input type="date"  id="f-date"     name="date"         title="Filter by date (UTC)">
+    <select id="f-source" name="source">
+      <option value="">All sources</option>
+      <option value="adsb">ADS-B</option>
+      <option value="mlat">MLAT</option>
+      <option value="mixed">Mixed</option>
+      <option value="other">Other</option>
+    </select>
+    <select id="f-flags" name="flags">
+      <option value="">All aircraft</option>
+      <option value="military">Military only</option>
+      <option value="interesting">Interesting only</option>
+    </select>
+    <select id="f-squawk" name="squawk">
+      <option value="">Any squawk</option>
+      <option value="7700">7700 Emergency</option>
+      <option value="7600">7600 Radio failure</option>
+      <option value="7500">7500 Hijack</option>
+    </select>
+  </div>
+  <div class="search-actions">
+    <button type="submit">Search</button>
+    <button type="button" id="clear-btn">Clear</button>
+    <button type="button" id="export-btn">Export CSV</button>
+  </div>
+</form>
+
+<div id="result-info" class="result-info"></div>
+
+<div class="table-wrap">
+  <table id="flights-table" aria-label="Flight history">
+    <thead>
+      <tr role="row">
+        <th data-sort="first_seen" aria-sort="descending">Time (local)</th>
+        <th data-sort="icao_hex">ICAO</th>
+        <th data-sort="callsign">Callsign</th>
+        <th data-sort="origin_icao">Route</th>
+        <th data-sort="registration">Reg</th>
+        <th data-sort="aircraft_type">Type</th>
+        <th data-sort="primary_source">Source</th>
+        <th data-sort="duration_sec">Duration</th>
+        <th data-sort="max_alt_baro">Max Alt</th>
+        <th data-sort="max_gs">Max Spd</th>
+        <th data-sort="max_distance_nm">Max Dist</th>
+        <th data-sort="total_positions">Positions</th>
+      </tr>
+    </thead>
+    <tbody id="flights-body">
+      <tr><td colspan="12" class="loading">Loading…</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div id="pagination" class="pagination"></div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ root_path }}/static/js/flights.js"></script>
+{% endblock %}

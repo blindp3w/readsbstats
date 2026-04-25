@@ -1,0 +1,118 @@
+{
+  "type": "FeatureCollection",
+  "_comment": "Approximate Polish airspace zones for readsbstats overlay. Boundaries are simplified representations — not for navigation use. Update with official data from openaip.net (RSBS_AIRSPACE_GEOJSON env var).",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "WARSZAWA CTR",
+        "type": "CTR",
+        "icaoClass": "D",
+        "country": "PL",
+        "upperLimit": { "value": 2500, "unit": "ft", "referenceDatum": "MSL" },
+        "lowerLimit": { "value": 0,    "unit": "ft", "referenceDatum": "GND" }
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[
+          [20.967, 52.315], [21.140, 52.271], [21.211, 52.165],
+          [21.140, 52.059], [20.967, 52.015], [20.794, 52.059],
+          [20.723, 52.165], [20.794, 52.271], [20.967, 52.315]
+        ]]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "WARSZAWA TMA 1",
+        "type": "TMA",
+        "icaoClass": "C",
+        "country": "PL",
+        "upperLimit": { "value": 95,   "unit": "FL",  "referenceDatum": "STD" },
+        "lowerLimit": { "value": 1500, "unit": "ft",  "referenceDatum": "MSL" }
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[
+          [21.000, 52.636], [21.479, 52.514], [21.677, 52.220],
+          [21.479, 51.926], [21.000, 51.804], [20.521, 51.926],
+          [20.323, 52.220], [20.521, 52.514], [21.000, 52.636]
+        ]]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "WARSZAWA TMA 2",
+        "type": "TMA",
+        "icaoClass": "D",
+        "country": "PL",
+        "upperLimit": { "value": 1500, "unit": "ft",  "referenceDatum": "MSL" },
+        "lowerLimit": { "value": 0,    "unit": "ft",  "referenceDatum": "GND" }
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[
+          [21.000, 52.480], [21.275, 52.397], [21.380, 52.220],
+          [21.275, 52.043], [21.000, 51.960], [20.725, 52.043],
+          [20.620, 52.220], [20.725, 52.397], [21.000, 52.480]
+        ]]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "BABICE CTR",
+        "type": "CTR",
+        "icaoClass": "G",
+        "country": "PL",
+        "upperLimit": { "value": 1000, "unit": "ft",  "referenceDatum": "GND" },
+        "lowerLimit": { "value": 0,    "unit": "ft",  "referenceDatum": "GND" }
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[
+          [20.912, 52.517], [20.969, 52.502], [20.993, 52.467],
+          [20.969, 52.432], [20.912, 52.417], [20.855, 52.432],
+          [20.831, 52.467], [20.855, 52.502], [20.912, 52.517]
+        ]]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "EP R-40B",
+        "type": "R",
+        "icaoClass": null,
+        "country": "PL",
+        "upperLimit": { "value": 130, "unit": "FL",  "referenceDatum": "STD" },
+        "lowerLimit": { "value": 0,   "unit": "ft",  "referenceDatum": "GND" }
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[
+          [21.100, 52.280], [21.350, 52.280], [21.350, 52.470],
+          [21.100, 52.470], [21.100, 52.280]
+        ]]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "EP D-129",
+        "type": "D",
+        "icaoClass": null,
+        "country": "PL",
+        "upperLimit": { "value": 100, "unit": "FL",  "referenceDatum": "STD" },
+        "lowerLimit": { "value": 0,   "unit": "ft",  "referenceDatum": "GND" }
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[
+          [20.200, 51.850], [20.700, 51.850], [20.700, 52.150],
+          [20.200, 52.150], [20.200, 51.850]
+        ]]
+      }
+    }
+  ]
+}

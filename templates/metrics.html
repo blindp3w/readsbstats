@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% block title %}Receiver Metrics — readsbstats{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>Receiver Metrics</h1>
+</div>
+
+{% if not has_data %}
+<div class="detail-card">
+  <p>No receiver metrics data yet. Set <code>RSBS_METRICS_ENABLED=1</code> in the collector's environment and restart it to start recording receiver statistics.</p>
+</div>
+{% endif %}
+
+<div class="range-picker" id="metrics-range">
+  <span class="range-label">Range:</span>
+  <button class="range-btn" data-range="1h">1 h</button>
+  <button class="range-btn" data-range="6h">6 h</button>
+  <button class="range-btn active" data-range="24h">24 h</button>
+  <button class="range-btn" data-range="48h">48 h</button>
+  <button class="range-btn" data-range="7d">7 d</button>
+  <button class="range-btn" data-range="30d">30 d</button>
+  <button class="range-btn" data-range="90d">90 d</button>
+  <button class="range-btn" data-range="custom">Custom...</button>
+  <span class="range-custom hidden" id="range-custom">
+    <input type="datetime-local" id="range-from" class="range-date-input" aria-label="Start time">
+    <span class="range-sep">&rarr;</span>
+    <input type="datetime-local" id="range-to" class="range-date-input" aria-label="End time">
+    <button class="range-apply-btn" id="range-apply">Apply</button>
+  </span>
+</div>
+
+<div class="metrics-grid" id="metrics-grid">
+  <section class="metric-section" id="sec-signal">
+    <h2>Signal Quality</h2>
+    <div class="chart-wrap" id="chart-signal"></div>
+  </section>
+
+  <section class="metric-section" id="sec-aircraft">
+    <h2>Aircraft Count</h2>
+    <div class="chart-wrap" id="chart-aircraft"></div>
+  </section>
+
+  <section class="metric-section" id="sec-messages">
+    <h2>Messages (accepted)</h2>
+    <div class="chart-wrap" id="chart-messages"></div>
+  </section>
+
+  <section class="metric-section" id="sec-range">
+    <h2>Max Range</h2>
+    <div class="chart-wrap" id="chart-range"></div>
+  </section>
+
+  <section class="metric-section" id="sec-positions">
+    <h2>Positions</h2>
+    <div class="chart-wrap" id="chart-positions"></div>
+  </section>
+
+  <section class="metric-section" id="sec-cpu">
+    <h2>CPU Usage (ms)</h2>
+    <div class="chart-wrap" id="chart-cpu"></div>
+  </section>
+
+  <section class="metric-section" id="sec-network-traffic">
+    <h2>Network — Feed Out</h2>
+    <div class="chart-wrap" id="chart-network-traffic"></div>
+  </section>
+
+  <section class="metric-section" id="sec-network-in">
+    <h2>Network — Feed In</h2>
+    <div class="chart-wrap" id="chart-network-in"></div>
+  </section>
+
+  <section class="metric-section" id="sec-tracks">
+    <h2>Tracks</h2>
+    <div class="chart-wrap" id="chart-tracks"></div>
+  </section>
+
+  <section class="metric-section" id="sec-decoder">
+    <h2>Decoder (raw preambles)</h2>
+    <div class="chart-wrap" id="chart-decoder"></div>
+  </section>
+
+  <section class="metric-section" id="sec-cpr">
+    <h2>CPR Decoding</h2>
+    <div class="chart-wrap" id="chart-cpr"></div>
+  </section>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<link rel="stylesheet" href="{{ root_path }}/static/vendor/uPlot.min.css">
+<script src="{{ root_path }}/static/vendor/uPlot.min.js"></script>
+<script src="{{ root_path }}/static/js/metrics.js"></script>
+{% endblock %}

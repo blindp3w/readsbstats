@@ -1,0 +1,54 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements-dev.txt
+          pip install -e .
+
+      - name: Run tests
+        run: pytest --tb=short -q
+
+      - name: Run tests with coverage
+        if: matrix.python-version == '3.12'
+        run: pytest --cov=readsbstats --cov-report=term-missing --cov-fail-under=90
+
+      - name: Set up Node.js
+        if: matrix.python-version == '3.12'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Syntax-check JS files
+        if: matrix.python-version == '3.12'
+        run: |
+          for f in static/js/*.js; do
+            node --check "$f" || { echo "Syntax error in $f"; exit 1; }
+          done
+
+      - name: Run JS unit tests
+        if: matrix.python-version == '3.12'
+        run: node --test tests/js/test_*.mjs

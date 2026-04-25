@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}Watchlist — readsbstats{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>Watchlist</h1>
+</div>
+
+<div class="detail-card" style="margin-bottom:1rem">
+  <h3>Add entry</h3>
+  <form id="add-form" class="watchlist-form">
+    <label for="add-type" class="sr-only">Match type</label>
+    <select id="add-type" aria-label="Match type">
+      <option value="icao">ICAO hex</option>
+      <option value="registration">Registration</option>
+      <option value="callsign_prefix">Callsign prefix</option>
+    </select>
+    <label for="add-value" class="sr-only">Value</label>
+    <input id="add-value" type="text" placeholder="e.g. 3c4b17 / SP-LRF / LOT" aria-label="Match value" autocomplete="off" spellcheck="false">
+    <label for="add-label" class="sr-only">Label</label>
+    <input id="add-label" type="text" placeholder="Label (optional)" aria-label="Label">
+    <button type="submit">Add</button>
+    <span id="add-error" class="watchlist-error" role="alert"></span>
+  </form>
+</div>
+
+<div class="detail-card">
+  <h3>Entries</h3>
+  <div class="table-wrap">
+    <table id="watchlist-table" aria-label="Aircraft watchlist">
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Value</th>
+          <th>Label</th>
+          <th>Added</th>
+          <th>Status</th>
+          <th><span class="sr-only">Actions</span></th>
+        </tr>
+      </thead>
+      <tbody id="watchlist-body">
+        <tr><td colspan="6" class="loading">Loading…</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ root_path }}/static/js/watchlist.js"></script>
+{% endblock %}

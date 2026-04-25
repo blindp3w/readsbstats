@@ -1,0 +1,128 @@
+{% extends "base.html" %}
+{% block title %}Settings — readsbstats{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>Settings</h1>
+  <span class="result-info">Read-only — effective runtime values. Set via environment variables before starting the service.</span>
+</div>
+
+<div class="settings-grid">
+
+  <div class="detail-card">
+    <h3>Receiver</h3>
+    <table class="settings-table">
+      <thead><tr><th>Setting</th><th>Value</th><th>Env var</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td>Latitude</td><td>{{ lat }}</td><td><code>RSBS_LAT</code></td><td>Receiver latitude</td></tr>
+        <tr><td>Longitude</td><td>{{ lon }}</td><td><code>RSBS_LON</code></td><td>Receiver longitude</td></tr>
+        <tr><td>Max range</td><td>{{ max_range }} nm</td><td><code>RSBS_MAX_RANGE</code></td><td>Maximum detection range for polar plot</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="detail-card">
+    <h3>Collector</h3>
+    <table class="settings-table">
+      <thead><tr><th>Setting</th><th>Value</th><th>Env var</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td>Poll interval</td><td>{{ poll_interval }} s</td><td><code>RSBS_POLL_INTERVAL</code></td><td>How often aircraft.json is read</td></tr>
+        <tr><td>Flight gap</td><td>{{ flight_gap }} s</td><td><code>RSBS_FLIGHT_GAP</code></td><td>Silence gap that starts a new flight</td></tr>
+        <tr><td>Min positions</td><td>{{ min_positions }}</td><td><code>RSBS_MIN_POSITIONS</code></td><td>Minimum positions to keep a flight</td></tr>
+        <tr><td>Max position age</td><td>{{ max_seen_pos }} s</td><td><code>RSBS_MAX_SEEN_POS</code></td><td>Skip positions older than this</td></tr>
+        <tr><td>Max speed</td><td>{{ max_speed_kts }} kts</td><td><code>RSBS_MAX_SPEED_KTS</code></td><td>Ghost-position filter threshold</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="detail-card">
+    <h3>Database</h3>
+    <table class="settings-table">
+      <thead><tr><th>Setting</th><th>Value</th><th>Env var</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td>DB path</td><td>{{ db_path }}</td><td><code>RSBS_DB_PATH</code></td><td>SQLite database file location</td></tr>
+        <tr><td>Retention</td><td>{% if retention_days == 0 %}forever{% else %}{{ retention_days }} days{% endif %}</td><td><code>RSBS_RETENTION_DAYS</code></td><td>How long to keep flight history (0 = forever)</td></tr>
+        <tr><td>Purge interval</td><td>{{ purge_interval }} s</td><td><code>RSBS_PURGE_INTERVAL</code></td><td>How often old records are purged</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="detail-card">
+    <h3>Enrichment</h3>
+    <table class="settings-table">
+      <thead><tr><th>Setting</th><th>Value</th><th>Env var</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td>Photo cache</td><td>{{ photo_cache_days }} days</td><td><code>RSBS_PHOTO_CACHE_DAYS</code></td><td>Planespotters photo URL cache lifetime</td></tr>
+        <tr><td>Route cache</td><td>{{ route_cache_days }} days</td><td><code>RSBS_ROUTE_CACHE_DAYS</code></td><td>adsbdb.com route lookup cache lifetime</td></tr>
+        <tr><td>Route interval</td><td>{{ route_interval }} s</td><td><code>RSBS_ROUTE_INTERVAL</code></td><td>Seconds between route enrichment batches</td></tr>
+        <tr><td>Route batch size</td><td>{{ route_batch }}</td><td><code>RSBS_ROUTE_BATCH</code></td><td>Callsigns per enrichment batch</td></tr>
+        <tr><td>Route rate limit</td><td>{{ route_rate_limit }} s</td><td><code>RSBS_ROUTE_RATE_LIMIT</code></td><td>Delay between adsbdb.com API calls</td></tr>
+        <tr><td>Airspace GeoJSON</td><td>{{ airspace_geojson }}</td><td><code>RSBS_AIRSPACE_GEOJSON</code></td><td>Path to custom airspace GeoJSON file</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="detail-card">
+    <h3>Web server</h3>
+    <table class="settings-table">
+      <thead><tr><th>Setting</th><th>Value</th><th>Env var</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td>Host</td><td>{{ web_host }}</td><td><code>RSBS_WEB_HOST</code></td><td>Bind address</td></tr>
+        <tr><td>Port</td><td>{{ web_port }}</td><td><code>RSBS_WEB_PORT</code></td><td>Listen port</td></tr>
+        <tr><td>Root path</td><td>{{ root_path }}</td><td><code>RSBS_ROOT_PATH</code></td><td>Reverse-proxy subpath prefix</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="detail-card">
+    <h3>UI</h3>
+    <table class="settings-table">
+      <thead><tr><th>Setting</th><th>Value</th><th>Env var</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td>Default page size</td><td>{{ page_size }}</td><td><code>RSBS_PAGE_SIZE</code></td><td>Rows per page in flight lists</td></tr>
+        <tr><td>Max page size</td><td>{{ max_page_size }}</td><td><code>RSBS_MAX_PAGE_SIZE</code></td><td>Maximum allowed page size</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="detail-card">
+    <h3>Receiver Metrics</h3>
+    <table class="settings-table">
+      <thead><tr><th>Setting</th><th>Value</th><th>Env var</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td>Enabled</td><td>{{ "Yes" if metrics_enabled else "No" }}</td><td><code>RSBS_METRICS_ENABLED</code></td><td>Collect receiver stats time-series</td></tr>
+        <tr><td>Interval</td><td>{{ metrics_interval }} s</td><td><code>RSBS_METRICS_INTERVAL</code></td><td>Seconds between stats.json reads</td></tr>
+        <tr><td>Stats JSON</td><td>{{ stats_json }}</td><td><code>RSBS_STATS_JSON</code></td><td>Path to readsb stats.json</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="detail-card">
+    <h3>External ADS-B enrichment</h3>
+    <table class="settings-table">
+      <thead><tr><th>Setting</th><th>Value</th><th>Env var</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td>Enabled</td><td>{{ "Yes" if adsbx_enabled else "No" }}</td><td><code>RSBS_ADSBX_ENABLED</code></td><td>Enable airplanes.live flag enrichment</td></tr>
+        <tr><td>Poll interval</td><td>{{ adsbx_interval }} s</td><td><code>RSBS_ADSBX_INTERVAL</code></td><td>Seconds between area polls</td></tr>
+        <tr><td>Range</td><td>{{ adsbx_range }} nm</td><td><code>RSBS_ADSBX_RANGE</code></td><td>Radius for area query (max 250)</td></tr>
+        <tr><td>API URL</td><td>{{ adsbx_url }}</td><td><code>RSBS_ADSBX_URL</code></td><td>API base URL (airplanes.live / adsb.one)</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="detail-card">
+    <h3>Telegram</h3>
+    <table class="settings-table">
+      <thead><tr><th>Setting</th><th>Value</th><th>Env var</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td>Bot token</td><td>{{ telegram_token }}</td><td><code>RSBS_TELEGRAM_TOKEN</code></td><td>Telegram bot token (sensitive)</td></tr>
+        <tr><td>Chat ID</td><td>{{ telegram_chat_id }}</td><td><code>RSBS_TELEGRAM_CHAT_ID</code></td><td>Target chat or user ID (sensitive)</td></tr>
+        <tr><td>Summary time</td><td>{{ telegram_summary_time }}</td><td><code>RSBS_SUMMARY_TIME</code></td><td>Daily summary send time (local HH:MM; &quot;&quot; or &quot;off&quot; to disable)</td></tr>
+        <tr><td>Units</td><td>{{ telegram_units }}</td><td><code>RSBS_TELEGRAM_UNITS</code></td><td>Units in Telegram messages (metric / imperial / aeronautical)</td></tr>
+        <tr><td>Base URL</td><td>{{ base_url }}</td><td><code>RSBS_BASE_URL</code></td><td>External base URL used in Telegram links</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+</div>
+{% endblock %}

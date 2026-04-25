@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}readsbstats{% endblock %}</title>
+  <link rel="stylesheet" href="{{ root_path }}/static/vendor/leaflet.css">
+  <link rel="stylesheet" href="{{ root_path }}/static/css/app.css">
+</head>
+<body>
+  <nav aria-label="Main navigation">
+    <a href="{{ root_path }}/" class="brand">✈ readsbstats</a>
+    <span id="live-badge" class="live-badge" title="Currently tracked aircraft" aria-live="polite"></span>
+    <button id="nav-toggle" class="nav-toggle" aria-label="Toggle menu" aria-expanded="false">☰</button>
+    <div id="nav-links" class="nav-links">
+      <a href="{{ root_path }}/">Statistics</a>
+      <a href="{{ root_path }}/history">Flights</a>
+      <a href="{{ root_path }}/live">Live</a>
+      <a href="{{ root_path }}/gallery">Gallery</a>
+      <a href="{{ root_path }}/watchlist">Watchlist</a>
+      <a href="{{ root_path }}/feeders">Feeders</a>
+      <a href="{{ root_path }}/metrics">Metrics</a>
+      <a href="{{ root_path }}/settings">Settings</a>
+      <select id="units-select" title="Measurement units">
+        <option value="aero">Aeronautical</option>
+        <option value="metric">Metric</option>
+        <option value="imperial">Imperial</option>
+      </select>
+    </div>
+  </nav>
+
+  <main>
+    {% block content %}{% endblock %}
+  </main>
+
+  <script src="{{ root_path }}/static/vendor/leaflet.js"></script>
+  <script src="{{ root_path }}/static/js/units.js"></script>
+  <script>
+    const ROOT = "{{ root_path }}";
+
+    initUnitSelector();
+
+    // Hamburger menu toggle
+    document.getElementById("nav-toggle").addEventListener("click", function() {
+      const links = document.getElementById("nav-links");
+      const open = links.classList.toggle("open");
+      this.setAttribute("aria-expanded", open);
+      this.textContent = open ? "✕" : "☰";
+    });
+
+    // Highlight active nav link
+    (function() {
+      const path = location.pathname.replace(ROOT, "") || "/";
+      document.querySelectorAll("nav a:not(.brand)").forEach(a => {
+        const href = a.getAttribute("href").replace(ROOT, "") || "/";
+        if (path === href || (href !== "/" && path.startsWith(href))) a.classList.add("active");
+      });
+    })();
+
+    // Live badge
+    async function updateLiveBadge() {
+      try {
+        const r = await fetch(ROOT + "/api/live");
+        const d = await r.json();
+        const el = document.getElementById("live-badge");
+        el.textContent = d.count + " live";
+        el.classList.toggle("hidden", d.count <= 0);
+      } catch {}
+    }
+    updateLiveBadge();
+    setInterval(updateLiveBadge, 15000);
+
+    // HTML escaping — use for any API/user data going into innerHTML
+    function escHtml(s) {
+      if (s == null) return "";
+      return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+    }
+
+    // Shared helpers (non-unit-dependent)
+    function fmtTs(epoch) {
+      if (!epoch) return "";
+      return new Date(epoch * 1000).toLocaleString(undefined, {
+        year: "numeric", month: "2-digit", day: "2-digit",
+        hour: "2-digit", minute: "2-digit", hour12: false
+      });
+    }
+    function fmtDur(sec) {
+      if (sec == null || sec < 0) return "";
+      const h = Math.floor(sec / 3600);
+      const m = Math.floor((sec % 3600) / 60);
+      return h > 0 ? `${h}h ${m}m` : `${m}m`;
+    }
+    function fmtBytes(bytes) {
+      if (bytes == null) return "—";
+      if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
+      return (bytes / 1024 / 1024).toFixed(1) + " MB";
+    }
+    function sourceBadge(src) {
+      const map = {
+        adsb:  ["badge-adsb",  "ADS-B"],
+        mlat:  ["badge-mlat",  "MLAT"],
+        mixed: ["badge-mixed", "Mixed"],
+        other: ["badge-other", "Other"],
+      };
+      const [cls, label] = map[src] || ["badge-other", escHtml(src) || "—"];
+      return `<span class="badge ${cls}">${label}</span>`;
+    }
+    // Scroll fade hint on overflowing table wraps
+    function checkTableScroll() {
+      document.querySelectorAll(".table-wrap").forEach(el => {
+        const overflows = el.scrollWidth > el.clientWidth + 1;
+        el.classList.toggle("has-scroll", overflows);
+        if (overflows && !el._scrollBound) {
+          el._scrollBound = true;
+          el.addEventListener("scroll", () => {
+            el.classList.toggle("scrolled-end", el.scrollLeft + el.clientWidth >= el.scrollWidth - 2);
+          }, { passive: true });
+        }
+      });
+    }
+    window.addEventListener("resize", checkTableScroll);
+    new MutationObserver(checkTableScroll).observe(document.body, { childList: true, subtree: true });
+  </script>
+  <script src="{{ root_path }}/static/js/table-utils.js"></script>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

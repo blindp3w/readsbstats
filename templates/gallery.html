@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}Gallery — readsbstats{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>Flagged Aircraft Gallery</h1>
+</div>
+
+<div class="gallery-toolbar">
+  <div class="gallery-filters">
+    <button class="range-btn active" data-filter="all">All</button>
+    <button class="range-btn" data-filter="military">Military</button>
+    <button class="range-btn" data-filter="interesting">Interesting</button>
+  </div>
+  <div class="gallery-sort">
+    <label for="gallery-sort-select" class="sr-only">Sort by</label>
+    <select id="gallery-sort-select">
+      <option value="last_seen:desc">Last seen (newest)</option>
+      <option value="last_seen:asc">Last seen (oldest)</option>
+      <option value="first_seen:desc">First seen (newest)</option>
+      <option value="first_seen:asc">First seen (oldest)</option>
+      <option value="flight_count:desc">Most flights</option>
+      <option value="flight_count:asc">Fewest flights</option>
+    </select>
+  </div>
+</div>
+
+<div class="result-info" id="result-info"></div>
+
+<div id="gallery-grid" class="gallery-grid">
+  <div class="loading">Loading…</div>
+</div>
+
+<div id="pagination" class="pagination"></div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ root_path }}/static/js/gallery.js"></script>
+{% endblock %}

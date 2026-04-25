@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+venv/
+.venv/
+*.egg-info/
+
+# Database
+*.db
+*.db-wal
+*.db-shm
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Test / coverage
+.coverage
+.pytest_cache/
+htmlcov/
+
+# Logs
+*.log
+
+# Secrets / local config
+.env
+*.env.local
+
+# Internal / private project material (not for public repo)
+internal_docs/
+
+# Claude Code (AI assistant local context — not for public repo)
+.claude/
+CLAUDE.md

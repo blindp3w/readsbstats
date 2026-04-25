@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+{% block title %}Feeders — readsbstats{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>Feeders</h1>
+  <span class="result-info">Service health — <a href="{{ root_path }}/feeders">Refresh</a></span>
+</div>
+
+{% if not has_feeders %}
+<div class="detail-card">
+  <p>No feeders configured. Set <code>RSBS_FEEDERS</code> environment variable with a JSON list, or use the built-in defaults.</p>
+</div>
+{% else %}
+{% set all_unavailable = feeders | selectattr('systemd', 'equalto', 'unavailable') | list | length == feeders | length %}
+{% if all_unavailable %}
+<div class="detail-card">
+  <p class="text-dim">All feeder services report as unavailable. This is expected when running outside the receiver host (e.g. local development on Mac). On the Pi, services should show their actual status.</p>
+</div>
+{% endif %}
+<div class="detail-card">
+  <div class="table-wrap">
+    <table id="feeders-table" aria-label="Feeder service status">
+      <thead>
+        <tr>
+          <th>Service</th>
+          <th>Status</th>
+          <th>Port</th>
+          <th>Details</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for f in feeders %}
+        <tr>
+          <td>
+            {% if f.overall == "ok" %}
+              <span class="feeder-dot feeder-ok" title="Healthy"></span>
+            {% elif f.overall == "unknown" %}
+              <span class="feeder-dot feeder-unknown" title="Cannot determine"></span>
+            {% else %}
+              <span class="feeder-dot feeder-error" title="Problem detected"></span>
+            {% endif %}
+            <strong>{{ f.name }}</strong>
+            <br><code class="text-dim">{{ f.unit }}</code>
+          </td>
+          <td>
+            {% if f.systemd == "active" %}
+              <span class="badge badge-adsb">active</span>
+            {% elif f.systemd == "unavailable" %}
+              <span class="badge badge-other">unavailable</span>
+            {% elif f.systemd == "inactive" %}
+              <span class="badge badge-mlat">inactive</span>
+            {% else %}
+              <span class="badge badge-mlat">{{ f.systemd }}</span>
+            {% endif %}
+          </td>
+          <td>
+            {% if f.port %}
+              {% if f.port_status == "open" %}
+                <span class="badge badge-adsb">{{ f.port }} open</span>
+              {% else %}
+                <span class="badge badge-mlat">{{ f.port }} {{ f.port_status }}</span>
+              {% endif %}
+            {% else %}
+              <span class="text-dim">&mdash;</span>
+            {% endif %}
+          </td>
+          <td class="feeder-details">
+            {% if f.details %}
+              {% for label, value in f.details %}
+                <span class="feeder-detail-item"><span class="text-dim">{{ label }}:</span> {{ value }}</span>
+              {% endfor %}
+            {% else %}
+              <span class="text-dim">&mdash;</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+{% endblock %}

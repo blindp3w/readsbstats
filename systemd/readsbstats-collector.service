@@ -1,0 +1,39 @@
+[Unit]
+Description=readsbstats ADS-B History Collector
+After=network.target readsb.service
+Wants=readsb.service
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
+[Service]
+Type=notify
+WatchdogSec=60
+User=readsbstats
+Group=readsbstats
+WorkingDirectory=/opt/readsbstats
+ExecStart=/opt/readsbstats/venv/bin/python -m readsbstats.collector
+Restart=on-failure
+RestartSec=10
+
+# Be polite to the Pi — readsb/tar1090 are the primary tenants
+CPUQuota=15%
+MemoryMax=192M
+Nice=10
+IOSchedulingClass=idle
+
+# Security hardening
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/mnt/ext/readsbstats
+ReadOnlyPaths=/run/readsb
+
+# Logging goes to journald
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=readsbstats-collector
+
+[Install]
+WantedBy=multi-user.target

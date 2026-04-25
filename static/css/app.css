@@ -1,0 +1,868 @@
+/* =========================================================
+   readsbstats — application styles
+   ========================================================= */
+
+.hidden { display: none !important; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); border: 0; }
+
+:root {
+  --bg:        #0f1117;
+  --surface:   #1a1d27;
+  --surface2:  #22263a;
+  --border:    #2e3350;
+  --text:      #e2e8f0;
+  --text-dim:  #8891aa;
+  --accent:    #4f8ef7;
+  --green:     #22c55e;
+  --yellow:    #eab308;
+  --orange:    #f97316;
+  --purple:    #a855f7;
+  --red:       #ef4444;
+  --radius:    6px;
+  --shadow:    0 2px 8px rgba(0,0,0,.4);
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html { font-size: 15px; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Segoe UI', system-ui, sans-serif;
+  line-height: 1.5;
+  min-height: 100vh;
+}
+
+/* ----- Nav ------------------------------------------------------------ */
+nav {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+  padding: .6rem 1.5rem;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  z-index: 1000;
+}
+nav a { color: var(--text-dim); text-decoration: none; font-size: .9rem; }
+nav a:hover { color: var(--text); }
+nav a.active { color: var(--text); border-bottom: 2px solid var(--accent); padding-bottom: .15rem; }
+nav .brand { color: var(--accent); font-weight: 600; font-size: 1rem; margin-right: auto; }
+.nav-links { display: contents; }
+.nav-toggle { display: none; }
+
+#units-select {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  padding: .2rem .5rem;
+  border-radius: var(--radius);
+  font-size: .8rem;
+  cursor: pointer;
+}
+#units-select:hover { border-color: var(--accent); color: var(--text); }
+
+.live-badge {
+  background: var(--green);
+  color: #000;
+  font-size: .75rem;
+  font-weight: 600;
+  padding: .15rem .5rem;
+  border-radius: 99px;
+}
+
+/* ----- New aircraft list ------------------------------------------------ */
+.na-row {
+  display: grid;
+  grid-template-columns: 3rem 5rem 5rem 1fr;
+  align-items: center;
+  gap: .4rem;
+  padding: .3rem 0;
+  font-size: .82rem;
+  border-bottom: 1px solid var(--border);
+}
+.na-row:last-of-type { border-bottom: none; }
+.na-time  { color: var(--text-dim); font-size: .75rem; }
+.na-icao  { color: var(--accent); text-decoration: none; }
+.na-icao:hover { text-decoration: underline; }
+.na-reg   { color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.na-type  { color: var(--text-dim); font-size: .78rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.na-more  { margin-top: .4rem; font-size: .75rem; color: var(--text-dim); }
+
+/* ----- Squawk stats ----------------------------------------------------- */
+.squawk-row {
+  display: grid;
+  grid-template-columns: 3.5rem 1fr 3rem;
+  align-items: center;
+  gap: .5rem;
+  padding: .35rem 0;
+  font-size: .85rem;
+  border-bottom: 1px solid var(--border);
+}
+.squawk-row:last-child { border-bottom: none; }
+.squawk-code  { font-family: monospace; font-size: .9rem; color: var(--text-dim); }
+.squawk-label { color: var(--text); }
+.squawk-count { text-align: right; font-size: .9rem; }
+
+/* ----- Frequent aircraft list ------------------------------------------ */
+.fa-row {
+  display: grid;
+  grid-template-columns: 5.5rem 1fr 60px 2.5rem;
+  align-items: center;
+  gap: .45rem;
+  padding: .28rem 0;
+  font-size: .82rem;
+  border-bottom: 1px solid var(--border);
+}
+.fa-row:last-child { border-bottom: none; }
+.fa-reg  { color: var(--accent); text-decoration: none; font-weight: 500; white-space: nowrap; }
+.fa-reg:hover { text-decoration: underline; }
+.fa-type { color: var(--text-dim); font-size: .75rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fa-bar  { height: 10px; }
+.fa-count { color: var(--text-dim); font-size: .78rem; text-align: right; }
+
+/* ----- Activity heatmap ------------------------------------------------- */
+.heatmap-section { grid-column: 1 / -1; }
+.heatmap-grid {
+  display: grid;
+  grid-template-columns: 3rem repeat(24, 1fr);
+  gap: 3px;
+  overflow-x: auto;
+}
+.heatmap-corner { /* spacer */ }
+.heatmap-hour-label {
+  font-size: .6rem;
+  color: var(--text-dim);
+  text-align: center;
+  padding-bottom: 2px;
+  white-space: nowrap;
+}
+.heatmap-day-label {
+  font-size: .72rem;
+  color: var(--text-dim);
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding-right: .35rem;
+  white-space: nowrap;
+}
+.heatmap-cell {
+  border-radius: 2px;
+  aspect-ratio: 1;
+  min-height: 14px;
+  cursor: default;
+  transition: filter .15s;
+  outline: 1px solid rgba(46, 51, 80, .5);
+}
+.heatmap-cell:hover { filter: brightness(1.5); }
+
+/* ----- Polar range chart ------------------------------------------------ */
+.polar-section { grid-column: 1 / -1; }
+.polar-svg { width: 100%; max-width: 680px; display: block; margin: 0 auto; overflow: visible; }
+.polar-polygon { fill: var(--accent); fill-opacity: .15; stroke: var(--accent); stroke-width: 1.5; stroke-linejoin: round; }
+.polar-label { fill: var(--text-dim); font-size: 11px; }
+.polar-ring-label { fill: var(--text-dim); font-size: 9px; }
+
+/* ----- Live page --------------------------------------------------------- */
+.live-count-heading { font-size: .85em; font-weight: 400; color: var(--text-dim); }
+.seen-fresh  { color: var(--green); }
+.seen-recent { color: var(--text-dim); }
+.seen-stale  { color: var(--yellow); }
+.live-map {
+  height: 320px; border-radius: var(--radius); margin-bottom: 1.25rem;
+  border: 1px solid var(--border); z-index: 0;
+}
+@media (max-width: 600px) { .live-map { height: 220px; } }
+
+/* ----- Layout --------------------------------------------------------- */
+main { max-width: 1400px; margin: 0 auto; padding: 1.5rem; }
+
+.page-header { margin-bottom: 1.25rem; }
+.page-header h1 { font-size: 1.4rem; font-weight: 600; }
+.back-link { color: var(--text-dim); font-size: .85rem; text-decoration: none; display: block; margin-bottom: .4rem; }
+.back-link:hover { color: var(--text); }
+
+/* ----- Search bar ----------------------------------------------------- */
+.search-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .5rem;
+  margin-bottom: 1rem;
+}
+.search-fields { display: contents; }
+.search-actions { display: contents; }
+.filters-toggle { display: none; }
+.search-bar input,
+.search-bar select {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: .4rem .7rem;
+  border-radius: var(--radius);
+  font-size: .85rem;
+}
+.search-bar input[type="text"]   { flex: 1 1 80px; min-width: 0; }
+.search-bar input[type="date"]   { flex: 0 0 auto; }
+.search-bar select               { flex: 0 0 auto; }
+.search-bar input:focus,
+.search-bar select:focus { outline: none; border-color: var(--accent); }
+.search-bar button {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  padding: .4rem .9rem;
+  border-radius: var(--radius);
+  cursor: pointer;
+  font-size: .85rem;
+  font-weight: 500;
+}
+.search-bar button[type=button] {
+  background: var(--surface2);
+  color: var(--text-dim);
+}
+.search-bar button:hover { opacity: .85; }
+
+.result-info { font-size: .82rem; color: var(--text-dim); margin-bottom: .6rem; }
+
+/* ----- Tables --------------------------------------------------------- */
+.table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; position: relative; }
+.table-wrap.has-scroll { mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent); -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent); }
+.table-wrap.scrolled-end { mask-image: none; -webkit-mask-image: none; }
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: .85rem;
+}
+th, td {
+  padding: .5rem .75rem;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+th {
+  background: var(--surface2);
+  color: var(--text-dim);
+  font-weight: 500;
+  font-size: .78rem;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+th[data-sort] { cursor: pointer; user-select: none; }
+th[data-sort]:hover { color: var(--text); }
+th[data-sort].sort-asc::after  { content: " ▲"; font-size: .65rem; }
+th[data-sort].sort-desc::after { content: " ▼"; font-size: .65rem; }
+tbody tr:hover { background: var(--surface2); }
+tbody tr { cursor: default; }
+tbody tr.clickable { cursor: pointer; }
+.loading { text-align: center; color: var(--text-dim); padding: 2rem; }
+
+/* ----- Badges --------------------------------------------------------- */
+.badge {
+  display: inline-block;
+  font-size: .72rem;
+  font-weight: 600;
+  padding: .1rem .45rem;
+  border-radius: 4px;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+.badge-adsb  { background: #1a3a1a; color: var(--green);  }
+.badge-mlat  { background: #3a2e0a; color: var(--yellow); }
+.badge-mixed { background: #1a2a3a; color: var(--accent); }
+.badge-other { background: var(--surface2); color: var(--text-dim); }
+.badge-mil   { background: #2d3e12; color: #b8d96a; }
+.badge-int   { background: #2d1a4a; color: #c4b5fd; }
+
+/* ----- Feeder status dots --------------------------------------------- */
+.feeder-dot     { display: inline-block; width: .6rem; height: .6rem; border-radius: 50%; margin-right: .4rem; vertical-align: middle; }
+.feeder-ok      { background: var(--green); }
+.feeder-error   { background: var(--red); }
+.feeder-unknown { background: var(--text-dim); }
+.feeder-details { line-height: 1.7; }
+.feeder-detail-item { display: inline-block; margin-right: 1.2rem; white-space: nowrap; }
+
+/* ----- Pagination ----------------------------------------------------- */
+.pagination {
+  display: flex;
+  gap: .4rem;
+  justify-content: center;
+  margin-top: 1rem;
+  flex-wrap: wrap;
+}
+.pagination button {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: .35rem .7rem;
+  border-radius: var(--radius);
+  cursor: pointer;
+  font-size: .82rem;
+}
+.pagination button.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+.pagination button:disabled { opacity: .4; cursor: default; }
+.pagination button:not(.active):not(:disabled):hover { border-color: var(--accent); }
+
+/* ----- Aircraft photo ------------------------------------------------- */
+.photo-section {
+  margin-bottom: 1.25rem;
+  display: flex;
+  align-items: flex-start;
+  gap: .75rem;
+}
+.aircraft-photo {
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  max-height: 140px;
+  width: auto;
+}
+.photo-credit {
+  font-size: .72rem;
+  color: var(--text-dim);
+  margin-top: .3rem;
+}
+
+/* ----- Furthest card -------------------------------------------------- */
+.furthest-detail { margin-top: .4rem; font-size: .82rem; }
+.furthest-detail a { color: var(--accent); text-decoration: none; }
+.furthest-detail a:hover { text-decoration: underline; }
+
+/* ----- Airspace legend ------------------------------------------------ */
+.airspace-legend { font-size: .72rem; color: var(--text-dim); padding: .35rem .1rem .1rem; }
+
+/* ----- Personal records ----------------------------------------------- */
+.records-section { grid-column: 1 / -1; }
+.records-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 1rem;
+}
+.record-card {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: .85rem 1rem;
+}
+.record-value { font-size: 1.5rem; font-weight: 700; color: var(--accent); }
+.record-label { font-size: .78rem; color: var(--text-dim); margin-top: .15rem; }
+.record-detail { margin-top: .5rem; font-size: .82rem; }
+.record-detail a { color: var(--accent); text-decoration: none; }
+.record-detail a:hover { text-decoration: underline; }
+.record-date { color: var(--text-dim); font-size: .75rem; display: block; margin-top: .15rem; }
+
+/* ----- Flight map ----------------------------------------------------- */
+.flight-map {
+  width: 100%;
+  height: 480px;
+  background: var(--surface2);
+}
+
+.map-card { margin-bottom: 1.25rem; }
+
+/* Inside a card the map stretches flush to the card's left/right/bottom edges */
+.map-card .flight-map {
+  margin-left: -1rem;
+  margin-right: -1rem;
+  margin-bottom: .6rem;
+  width: calc(100% + 2rem);
+  border-radius: 0;
+}
+
+/* ----- Flight detail grid --------------------------------------------- */
+.flight-detail-grid {
+  display: grid;
+  grid-template-columns: minmax(340px, auto) 1fr;
+  gap: 1.25rem;
+  margin-bottom: 1.25rem;
+}
+@media (max-width: 900px) {
+  .flight-detail-grid { grid-template-columns: 1fr; }
+  .bar-row { grid-template-columns: minmax(80px, 30%) 1fr auto; }
+  .fa-row { grid-template-columns: 4.5rem 1fr 50px 2rem; }
+}
+@media (max-width: 700px) {
+  .stats-grid { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 600px) {
+  html { font-size: 14.5px; }
+  nav { gap: .4rem; padding: .5rem .75rem; flex-wrap: wrap; }
+  nav .brand { margin-right: auto; }
+  .nav-toggle {
+    display: inline-flex; align-items: center; justify-content: center;
+    background: none; border: 1px solid var(--border); color: var(--text);
+    width: 2.5rem; height: 2.5rem; border-radius: var(--radius);
+    font-size: 1.2rem; cursor: pointer;
+  }
+  .nav-links {
+    display: none; flex-direction: column; gap: .25rem;
+    width: 100%; padding-top: .4rem;
+    border-top: 1px solid var(--border); margin-top: .3rem;
+  }
+  .nav-links.open { display: flex; }
+  .nav-links a { padding: .6rem .5rem; font-size: .95rem; border-radius: var(--radius); }
+  .nav-links a:hover, .nav-links a.active { background: var(--surface2); }
+  .nav-links a.active { border-bottom: none; padding-bottom: .6rem; color: var(--accent); }
+  #units-select { padding: .5rem .5rem; font-size: .9rem; width: 100%; margin-top: .15rem; }
+  main { padding: .75rem; }
+  .search-bar { gap: .4rem; }
+  .filters-toggle {
+    display: block; width: 100%;
+    background: var(--surface2); border: 1px solid var(--border); color: var(--text-dim);
+    padding: .55rem .7rem; border-radius: var(--radius); cursor: pointer;
+    font-size: .9rem; text-align: left;
+  }
+  .search-fields {
+    display: none; flex-wrap: wrap; gap: .4rem; width: 100%;
+  }
+  .search-fields.open { display: flex; }
+  .search-fields input[type="text"] { flex: 1 1 100%; }
+  .search-fields input, .search-fields select { flex: 1 1 calc(50% - .2rem); }
+  .search-bar input, .search-bar select { padding: .55rem .7rem; font-size: .9rem; }
+  .search-bar button { padding: .55rem .9rem; }
+  .search-actions { display: flex; gap: .4rem; width: 100%; }
+  .search-actions button { flex: 1; }
+  th, td { padding: .6rem .5rem; font-size: .85rem; }
+  .summary-cards { gap: .5rem; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); }
+  .card { padding: .6rem .75rem; }
+  .card-value { font-size: 1.3rem; }
+  .range-picker { gap: .35rem; padding: .5rem .6rem; }
+  .range-btn { padding: .55rem .65rem; font-size: .85rem; }
+  .range-custom { flex-wrap: wrap; width: 100%; }
+  .range-date-input { padding: .5rem .5rem; font-size: .85rem; flex: 1; }
+  .range-apply-btn { padding: .5rem .7rem; font-size: .85rem; }
+  .pagination { gap: .6rem; }
+  .pagination button { padding: .55rem .85rem; font-size: .85rem; min-width: 2.5rem; }
+  .btn-secondary { padding: .5rem .8rem; }
+  .btn-watch { padding: .4rem .8rem; }
+  .bar-row { grid-template-columns: minmax(60px, 30%) 1fr auto; font-size: .82rem; }
+  .na-row { grid-template-columns: 3rem 4rem 4rem 1fr; gap: .25rem; font-size: .82rem; }
+  .fa-row { grid-template-columns: 4rem 1fr 40px 2rem; font-size: .82rem; }
+  .squawk-row { font-size: .82rem; }
+  .flight-map { height: 320px; }
+  .polar-svg { max-width: 100%; }
+  .hourly-chart { height: 160px; }
+  .records-grid { grid-template-columns: repeat(2, 1fr); gap: .6rem; }
+  .record-card { padding: .6rem .75rem; }
+  .record-value { font-size: 1.2rem; }
+  .page-header h1 { font-size: 1.15rem; }
+  .stat-section { padding: .75rem; }
+  .stat-section h2 { font-size: .88rem; padding: .3rem 0; }
+}
+
+@media (max-width: 430px) {
+  .summary-cards { grid-template-columns: repeat(2, 1fr); }
+  .records-grid  { grid-template-columns: repeat(2, 1fr); }
+  .card-value { font-size: 1.15rem; }
+  .card-label { font-size: .7rem; letter-spacing: .02em; }
+  .range-picker { flex-wrap: wrap; }
+  .range-btn { flex: 1 1 auto; text-align: center; }
+  .page-header h1 { font-size: 1.05rem; }
+  .heatmap-grid { font-size: .65rem; gap: 2px; grid-template-columns: 2rem repeat(24, 1fr); }
+  .heatmap-day-label { font-size: .6rem; padding-right: .2rem; }
+  .heatmap-cell { min-height: 10px; }
+}
+
+.detail-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1rem;
+}
+.detail-card h2 { font-size: .95rem; font-weight: 600; margin-bottom: .75rem; }
+.detail-card h3 { font-size: .95rem; font-weight: 600; margin-bottom: .75rem; }
+
+/* ----- Settings page -------------------------------------------------- */
+.settings-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 1rem;
+}
+.settings-table { width: 100%; font-size: .83rem; border-collapse: collapse; }
+.settings-table th { text-align: left; color: var(--text-dim); font-weight: 500; padding: .3rem .5rem .3rem 0; border-bottom: 1px solid var(--border); }
+.settings-table td { padding: .3rem .5rem .3rem 0; vertical-align: top; }
+.settings-table td:nth-child(2) { font-weight: 500; white-space: nowrap; }
+.settings-table td:nth-child(3) { color: var(--text-dim); white-space: nowrap; }
+.settings-table td:nth-child(4) { color: var(--text-dim); }
+.settings-table tr:hover td { background: var(--surface-alt, rgba(255,255,255,.03)); }
+
+/* ----- Watchlist page ------------------------------------------------- */
+.watchlist-form { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; }
+.watchlist-form select,
+.watchlist-form input { padding: .35rem .6rem; background: var(--surface2); border: 1px solid var(--border); color: var(--text); border-radius: var(--radius); font-size: .85rem; }
+.watchlist-form input[type=text] { min-width: 10rem; }
+.watchlist-form button { padding: .35rem .9rem; background: var(--accent); border: none; color: #fff; border-radius: var(--radius); cursor: pointer; font-size: .85rem; }
+.watchlist-form button:hover { opacity: .85; }
+.watchlist-error { color: var(--red, #e05); font-size: .82rem; }
+.btn-delete { background: none; border: 1px solid var(--border); color: var(--text-dim); border-radius: var(--radius); padding: .2rem .5rem; cursor: pointer; font-size: .8rem; }
+.btn-delete:hover { border-color: var(--red, #e05); color: var(--red, #e05); }
+.btn-watch { padding: .25rem .7rem; background: none; border: 1px solid var(--accent); color: var(--accent); border-radius: var(--radius); cursor: pointer; font-size: .8rem; margin-left: .75rem; }
+.btn-watch:hover:not(:disabled) { background: var(--accent); color: #fff; }
+.btn-watch:disabled { opacity: .5; cursor: default; }
+
+.kv-table { width: 100%; font-size: .85rem; }
+.kv-table td:first-child { color: var(--text-dim); white-space: nowrap; padding: .4rem .75rem .4rem 0; }
+.kv-table td:last-child  { font-weight: 500; word-break: break-word; }
+
+/* ----- Position table inside detail ----------------------------------- */
+#pos-table { font-size: .8rem; }
+.btn-secondary {
+  margin-top: .6rem;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: .3rem .7rem;
+  border-radius: var(--radius);
+  cursor: pointer;
+  font-size: .8rem;
+}
+.btn-secondary:hover { border-color: var(--accent); }
+
+#pos-count { color: var(--text-dim); font-size: .8rem; font-weight: 400; }
+
+/* ----- Date-range picker ---------------------------------------------- */
+.range-picker {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: .4rem;
+  margin-bottom: 1rem;
+  padding: .45rem .75rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.range-label { font-size: .8rem; color: var(--text-dim); }
+.range-btn {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  padding: .22rem .6rem;
+  border-radius: var(--radius);
+  cursor: pointer;
+  font-size: .8rem;
+  transition: border-color .15s, color .15s;
+}
+.range-btn:hover { border-color: var(--accent); color: var(--text); }
+.range-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+.range-custom {
+  display: flex;
+  align-items: center;
+  gap: .35rem;
+}
+.range-date-input {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: .2rem .45rem;
+  border-radius: var(--radius);
+  font-size: .8rem;
+}
+.range-date-input:focus { outline: none; border-color: var(--accent); }
+.range-sep { color: var(--text-dim); font-size: .8rem; }
+.range-apply-btn {
+  background: var(--accent);
+  border: none;
+  color: #fff;
+  padding: .22rem .6rem;
+  border-radius: var(--radius);
+  cursor: pointer;
+  font-size: .8rem;
+}
+.range-apply-btn:hover { opacity: .85; }
+.range-active-label {
+  margin-left: auto;
+  font-size: .78rem;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ----- Stats ---------------------------------------------------------- */
+.summary-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: .75rem;
+  margin-bottom: 1.5rem;
+}
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: .9rem 1.1rem;
+}
+.card-value { font-size: 1.6rem; font-weight: 700; color: var(--accent); letter-spacing: -.02em; }
+.card-value-sub { font-size: 1.1rem; font-weight: 600; color: var(--accent); margin-top: .5rem; }
+.card-label { font-size: .72rem; color: var(--text-dim); margin-top: .15rem; text-transform: uppercase; letter-spacing: .04em; }
+.card-delta { font-size: .72rem; margin-top: .2rem; min-height: .9rem; }
+
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 1.25rem;
+}
+.stat-section {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1rem 1.1rem;
+}
+.stat-section h2 {
+  font-size: .95rem; font-weight: 600; margin-bottom: .85rem;
+  cursor: pointer; user-select: none;
+  display: flex; align-items: center; gap: .4rem;
+}
+.stat-section h2::before {
+  content: "▾"; display: inline-block;
+  font-size: .7rem; transition: transform .2s ease;
+  color: var(--text-dim); flex-shrink: 0;
+}
+.stat-section.collapsed h2 { margin-bottom: 0; }
+.stat-section.collapsed h2::before { transform: rotate(-90deg); }
+.stat-section .section-body {
+  overflow: hidden; transition: grid-template-rows .25s ease;
+  display: grid; grid-template-rows: 1fr;
+}
+.stat-section.collapsed .section-body { grid-template-rows: 0fr; }
+.stat-section .section-body > div { overflow: hidden; }
+.subhead { color: var(--text-dim); font-size: .78rem; font-weight: 400; }
+
+/* ----- Horizontal bar charts ------------------------------------------ */
+.bar-chart { display: flex; flex-direction: column; gap: .45rem; }
+.bar-row {
+  display: grid;
+  grid-template-columns: minmax(100px, 35%) 1fr auto;
+  align-items: center;
+  gap: .5rem;
+  font-size: .82rem;
+}
+.bar-label { color: var(--text-dim); text-align: right; overflow: hidden; text-overflow: ellipsis; }
+.bar-name  { color: var(--text-dim); font-size: .72rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bar-label a { color: var(--accent); text-decoration: none; }
+.bar-label a:hover { text-decoration: underline; }
+.bar-track { background: var(--surface2); border-radius: 3px; height: 14px; overflow: hidden; }
+.bar-fill  { height: 100%; border-radius: 3px; background: var(--accent); transition: width .4s; }
+.bar-value { color: var(--text-dim); font-size: .78rem; }
+
+/* Source breakdown */
+.source-chart { display: flex; flex-direction: column; gap: .5rem; }
+.source-row { display: grid; grid-template-columns: 60px 1fr 50px; align-items: center; gap: .5rem; font-size: .85rem; }
+.src-adsb  { background: var(--green);  }
+.src-mlat  { background: var(--yellow); }
+.src-other { background: var(--text-dim); }
+
+/* ----- Hourly chart --------------------------------------------------- */
+.hourly-chart {
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  height: 240px;
+  padding-top: .5rem;
+}
+.hourly-bar {
+  flex: 1;
+  background: var(--accent);
+  opacity: .75;
+  border-radius: 2px 2px 0 0;
+  min-height: 2px;
+  position: relative;
+  cursor: default;
+}
+.hourly-bar:hover { opacity: 1; }
+.hourly-bar::after {
+  content: attr(data-label);
+  position: absolute;
+  bottom: -1.2rem;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: .62rem;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+.hourly-wrap { overflow-x: auto; padding-bottom: 1.4rem; }
+
+/* ----- Daily chart ---------------------------------------------------- */
+.daily-chart {
+  display: flex;
+  flex-direction: column;
+  gap: .35rem;
+  font-size: .8rem;
+}
+.daily-row {
+  display: grid;
+  grid-template-columns: 90px 1fr 45px;
+  align-items: center;
+  gap: .5rem;
+}
+.daily-label { color: var(--text-dim); text-align: right; }
+
+/* ----- Flight profile chart ------------------------------------------ */
+.profile-wrap { display: flex; gap: 6px; height: 120px; }
+.profile-yaxis-left, .profile-yaxis-right {
+  display: flex; flex-direction: column; justify-content: space-between;
+  font-size: .68rem; color: var(--text-dim); min-width: 46px; line-height: 1;
+}
+.profile-yaxis-left  { text-align: right; }
+.profile-yaxis-right { text-align: left;  }
+.profile-area { flex: 1; }
+.profile-area svg { width: 100%; height: 100%; display: block; }
+.profile-legend-row { margin-top: .4rem; font-size: .8rem; color: var(--text-dim); display: flex; align-items: center; gap: .75rem; }
+.profile-legend-item { display: flex; align-items: center; gap: .3rem; }
+.profile-dot { display: inline-block; width: 12px; height: 3px; border-radius: 2px; vertical-align: middle; }
+.profile-dot-alt    { background: var(--accent); }
+.profile-dot-spd    { background: var(--green); }
+.profile-dot-rssi   { background: var(--orange); }
+.profile-wrap-rssi  { margin-top: .6rem; }
+
+/* ----- Gallery (flagged aircraft) ------------------------------------- */
+.gallery-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: .75rem;
+  margin-bottom: 1rem;
+  flex-wrap: wrap;
+}
+.gallery-filters { display: flex; gap: .35rem; }
+.gallery-sort select {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: .35rem .6rem;
+  border-radius: var(--radius);
+  font-size: .82rem;
+  cursor: pointer;
+}
+.gallery-sort select:focus { outline: none; border-color: var(--accent); }
+
+.gallery-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 1rem;
+}
+
+.gallery-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  text-decoration: none;
+  color: var(--text);
+  transition: border-color .15s, transform .15s;
+  display: flex;
+  flex-direction: column;
+}
+.gallery-card:hover {
+  border-color: var(--accent);
+  transform: translateY(-2px);
+}
+
+.gallery-photo {
+  width: 100%;
+  height: 160px;
+  background: var(--surface2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+.gallery-photo img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.gallery-no-photo {
+  color: var(--text-dim);
+  font-size: .82rem;
+}
+
+.gallery-info {
+  padding: .75rem .85rem;
+  display: flex;
+  flex-direction: column;
+  gap: .25rem;
+  flex: 1;
+}
+.gallery-reg {
+  font-weight: 600;
+  font-size: .95rem;
+  color: var(--accent);
+}
+.gallery-type {
+  font-size: .78rem;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.gallery-country {
+  font-size: .78rem;
+  color: var(--text-dim);
+}
+.gallery-meta {
+  display: flex;
+  justify-content: space-between;
+  font-size: .72rem;
+  color: var(--text-dim);
+  margin-top: .25rem;
+  padding-top: .4rem;
+  border-top: 1px solid var(--border);
+}
+
+@media (max-width: 600px) {
+  .gallery-grid { grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: .6rem; }
+  .gallery-photo { height: 130px; }
+  .gallery-info { padding: .6rem .7rem; }
+  .gallery-toolbar { gap: .4rem; }
+}
+@media (max-width: 430px) {
+  .gallery-grid { grid-template-columns: 1fr 1fr; gap: .5rem; }
+  .gallery-photo { height: 110px; }
+  .gallery-reg { font-size: .85rem; }
+}
+
+/* ----- Reusable utility classes --------------------------------------- */
+.text-dim         { color: var(--text-dim); }
+.text-sm          { font-size: .78rem; }
+.text-xs          { font-size: .75rem; }
+.text-red         { color: var(--red); }
+.text-green       { color: var(--green); }
+.secondary-count  { color: var(--text-dim); font-size: .75rem; }
+.bar-fill-purple  { background: var(--purple); }
+.bar-value-sm     { font-size: .78rem; }
+.error-msg        { color: var(--red); margin-top: 1rem; }
+.no-data-msg      { color: var(--text-dim); font-size: .82rem; }
+.source-label     { color: var(--text-dim); text-align: right; }
+.source-track     { height: 18px; }
+.squawk-active    { font-weight: 600; }
+.squawk-link      { text-decoration: none; }
+.rssi-help        { cursor: help; border-bottom: 1px dotted var(--text-dim); }
+.furthest-ts      { color: var(--text-dim); font-size: .78rem; display: block; }
+.delta-neutral    { color: var(--text-dim); }
+
+/* ----- Receiver metrics page --------------------------------------------- */
+.metrics-grid { display: grid; gap: 1.25rem; margin-top: 1rem; }
+.metric-section {
+  background: var(--surface); border-radius: var(--radius);
+  padding: 1rem 1.25rem; border: 1px solid var(--border);
+}
+.metric-section h2 {
+  font-size: .95rem; font-weight: 600; margin-bottom: .75rem; color: var(--text);
+}
+.chart-wrap { width: 100%; min-height: 220px; }
+.chart-empty { color: var(--text-dim); font-size: .85rem; padding: 2rem 0; text-align: center; }
+
+/* uPlot dark-theme overrides */
+.u-wrap { background: transparent; }
+.u-legend { font-size: .78rem; color: var(--text-dim); padding: .25rem 0 0; }
+.u-legend th { font-weight: 600; color: var(--text); }
+.u-series > * { padding: 0 .5rem; }
+.u-cursor-pt { border-color: var(--accent) !important; }
+.u-select { background: rgba(79,142,247,0.12); }
+
+@media (max-width: 600px) {
+  .metric-section { padding: .75rem; }
+  .metric-section h2 { font-size: .88rem; }
+  .chart-wrap { min-height: 180px; }
+}

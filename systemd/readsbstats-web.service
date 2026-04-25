@@ -1,0 +1,38 @@
+[Unit]
+Description=readsbstats ADS-B History Web Server
+After=network.target readsbstats-collector.service
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=readsbstats
+Group=readsbstats
+WorkingDirectory=/opt/readsbstats
+ExecStart=/opt/readsbstats/venv/bin/uvicorn readsbstats.web:app \
+    --host 127.0.0.1 \
+    --port 8080 \
+    --workers 1 \
+    --root-path /stats \
+    --log-level warning
+Restart=on-failure
+RestartSec=5
+
+CPUQuota=20%
+MemoryMax=384M
+Nice=10
+
+# Security hardening
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/mnt/ext/readsbstats
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=readsbstats-web
+
+[Install]
+WantedBy=multi-user.target

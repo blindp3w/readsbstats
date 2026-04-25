@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block title %}Aircraft {{ icao_hex }} — readsbstats{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <a href="{{ root_path }}/history" class="back-link" id="back-link">← Back</a>
+  <h1 id="aircraft-title">{{ icao_hex }}</h1>
+  <button id="watch-btn" class="btn-watch hidden" title="Add to watchlist">Watch</button>
+</div>
+
+<div id="summary-cards" class="summary-cards">
+  <div class="card"><div class="card-value" id="a-flights">—</div><div class="card-label">Total Flights</div></div>
+  <div class="card"><div class="card-value" id="a-time">—</div><div class="card-label">Total Flight Time</div></div>
+  <div class="card"><div class="card-value" id="a-first">—</div><div class="card-label">First Seen</div></div>
+  <div class="card"><div class="card-value" id="a-last">—</div><div class="card-label">Last Seen</div></div>
+  <div class="card"><div class="card-value" id="a-country">—</div><div class="card-label">Country</div></div>
+</div>
+
+<div id="photo-section" class="photo-section hidden"></div>
+
+<div class="table-wrap">
+  <table id="flights-table" aria-label="Flights for this aircraft">
+    <thead>
+      <tr role="row">
+        <th data-sort="first_seen" aria-sort="descending">Time (local)</th>
+        <th data-sort="callsign">Callsign</th>
+        <th data-sort="primary_source">Source</th>
+        <th data-sort="duration_sec">Duration</th>
+        <th data-sort="max_alt_baro">Max Alt</th>
+        <th data-sort="max_gs">Max Spd</th>
+        <th data-sort="max_distance_nm">Max Dist</th>
+        <th data-sort="total_positions">Positions</th>
+      </tr>
+    </thead>
+    <tbody id="flights-body">
+      <tr><td colspan="8" class="loading">Loading…</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div id="pagination" class="pagination"></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  const ICAO_HEX = {{ icao_hex|tojson }};
+</script>
+<script src="{{ root_path }}/static/js/aircraft.js"></script>
+{% endblock %}

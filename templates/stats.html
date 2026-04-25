@@ -1,0 +1,152 @@
+{% extends "base.html" %}
+{% block title %}Statistics — readsbstats{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>Statistics</h1>
+</div>
+
+<div class="range-picker">
+  <span class="range-label">Period:</span>
+  <button class="range-btn active" data-range="all">All time</button>
+  <button class="range-btn" data-range="7d">Last 7 days</button>
+  <button class="range-btn" data-range="30d">Last 30 days</button>
+  <button class="range-btn" data-range="month">This month</button>
+  <button class="range-btn" data-range="prev_month">Last month</button>
+  <button class="range-btn" data-range="custom">Custom…</button>
+  <span class="range-custom hidden" id="range-custom">
+    <input type="date" id="range-from" class="range-date-input" aria-label="Start date">
+    <span class="range-sep">→</span>
+    <input type="date" id="range-to" class="range-date-input" aria-label="End date">
+    <button class="range-apply-btn" id="range-apply">Apply</button>
+  </span>
+  <span class="range-active-label" id="range-active-label"></span>
+</div>
+
+<div id="summary-cards" class="summary-cards">
+  <div class="card"><div class="card-value" id="s-flights">—</div><div class="card-label">Total Flights</div></div>
+  <div class="card"><div class="card-value" id="s-aircraft">—</div><div class="card-label">Unique Aircraft</div></div>
+  <div class="card"><div class="card-value" id="s-airlines">—</div><div class="card-label">Unique Airlines</div></div>
+  <div class="card"><div class="card-value" id="s-24h">—</div><div class="card-label">Last 24 h</div><div class="card-delta" id="d-24h"></div></div>
+  <div class="card"><div class="card-value" id="s-7d">—</div><div class="card-label">Last 7 days</div><div class="card-delta" id="d-7d"></div></div>
+  <div class="card"><div class="card-value" id="s-db">—</div><div class="card-label">DB Size</div></div>
+  <div class="card">
+    <div class="card-value" id="s-mil">—</div><div class="card-label" title="Armed forces aircraft of any country">Military flights</div>
+    <div class="card-value card-value-sub" id="s-int">—</div><div class="card-label" title="Noteworthy civilian aircraft: government, VIP, special mission, air ambulance">Interesting</div>
+  </div>
+  <div class="card hidden" id="furthest-card"></div>
+</div>
+
+<div class="stats-grid">
+
+  <section class="stat-section" data-section="hourly">
+    <h2>Hourly Activity <span class="subhead">(UTC, all time)</span></h2>
+    <div class="section-body"><div>
+      <div id="hourly-chart" class="hourly-chart" role="img" aria-label="Hourly flight activity bar chart"></div>
+    </div></div>
+  </section>
+
+  <section class="stat-section" data-section="new-aircraft">
+    <h2>New Aircraft <span class="subhead" id="new-aircraft-subhead"></span></h2>
+    <div class="section-body"><div>
+      <div id="new-aircraft-list"></div>
+    </div></div>
+  </section>
+
+  <section class="stat-section heatmap-section" data-section="heatmap">
+    <h2>Activity Heatmap <span class="subhead">(flights by day × hour, UTC)</span></h2>
+    <div class="section-body"><div>
+      <div id="heatmap-chart" role="img" aria-label="Activity heatmap showing flights by day of week and hour"></div>
+    </div></div>
+  </section>
+
+  <section class="stat-section" data-section="daily">
+    <h2>Daily Unique Aircraft <span class="subhead" id="daily-subhead">(last 30 days)</span></h2>
+    <div class="section-body"><div>
+      <div id="daily-chart" class="daily-chart"></div>
+    </div></div>
+  </section>
+
+  <section class="stat-section" data-section="source">
+    <h2>Data Source Breakdown</h2>
+    <div class="section-body"><div>
+      <div id="source-chart" class="source-chart"></div>
+    </div></div>
+  </section>
+
+  <section class="stat-section" data-section="altitude">
+    <h2>Altitude Distribution <span class="subhead">(peak altitude per flight)</span></h2>
+    <div class="section-body"><div>
+      <div id="alt-chart" class="bar-chart"></div>
+    </div></div>
+  </section>
+
+  <section class="stat-section" data-section="squawks">
+    <h2>Emergency Squawks <span class="subhead">(all time)</span></h2>
+    <div class="section-body"><div>
+      <div id="squawk-chart"></div>
+    </div></div>
+  </section>
+
+  <section class="stat-section" data-section="airlines">
+    <h2>Top Airlines <span class="subhead">(by flights)</span></h2>
+    <div class="section-body"><div>
+      <div id="airlines-chart" class="bar-chart"></div>
+    </div></div>
+  </section>
+
+  <section class="stat-section" data-section="types">
+    <h2>Top Aircraft Types <span class="subhead">(by flights)</span></h2>
+    <div class="section-body"><div>
+      <div id="types-chart" class="bar-chart"></div>
+    </div></div>
+  </section>
+
+  <section class="stat-section" data-section="routes">
+    <h2>Top Routes <span class="subhead">(by flights)</span></h2>
+    <div class="section-body"><div>
+      <div id="routes-chart" class="bar-chart"></div>
+    </div></div>
+  </section>
+
+  <section class="stat-section" data-section="airports">
+    <h2>Top Airports <span class="subhead">(by appearances)</span></h2>
+    <div class="section-body"><div>
+      <div id="airports-chart" class="bar-chart"></div>
+    </div></div>
+  </section>
+
+  <section class="stat-section" data-section="countries">
+    <h2>Top Countries <span class="subhead">(by registration)</span></h2>
+    <div class="section-body"><div>
+      <div id="countries-chart" class="bar-chart"></div>
+    </div></div>
+  </section>
+
+  <section class="stat-section" data-section="frequent">
+    <h2>Frequent Aircraft <span class="subhead">(most visits)</span></h2>
+    <div class="section-body"><div>
+      <div id="frequent-aircraft-list"></div>
+    </div></div>
+  </section>
+
+  <section class="stat-section polar-section" data-section="polar">
+    <h2>Range Plot <span class="subhead">(max detection distance per direction)</span></h2>
+    <div class="section-body"><div>
+      <div id="polar-chart" role="img" aria-label="Polar range plot showing maximum detection distance per compass direction"></div>
+    </div></div>
+  </section>
+
+  <section class="stat-section records-section" data-section="records">
+    <h2>Personal Records <span class="subhead">(all-time)</span></h2>
+    <div class="section-body"><div>
+      <div id="records-grid" class="records-grid"></div>
+    </div></div>
+  </section>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ root_path }}/static/js/stats.js"></script>
+{% endblock %}
