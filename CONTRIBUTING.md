@@ -69,4 +69,17 @@ Keep PRs focused — one feature or fix per PR.
 
 ## Project structure
 
-See [CLAUDE.md](CLAUDE.md) for architecture details, schema, URL routing, and known gotchas.
+```
+src/readsbstats/   # Python package — collector, web server, enrichment, notifier
+scripts/           # CLI one-shot tools + deployment shell scripts
+tests/             # pytest test suite (Python) + node --test JS suite
+templates/         # Jinja2 HTML templates
+static/            # CSS, JS, vendor assets (Leaflet, uPlot), airspace GeoJSON
+systemd/           # .service / .timer unit files
+docs/              # User-facing docs
+```
+
+The collector (`collector.py`) runs as a systemd service polling `/run/readsb/aircraft.json`
+every 5 s and writing to SQLite. The web server (`web.py`) is a FastAPI + Uvicorn app bound
+to `127.0.0.1:8080`, fronted by nginx at `/stats/`. Database schema and migrations live in
+`database.py`; all tunables go through `RSBS_*` env vars in `config.py`.

@@ -1,5 +1,8 @@
 # readsbstats
 
+[![Tests](https://github.com/blindp3w/readsbstats/actions/workflows/test.yml/badge.svg)](https://github.com/blindp3w/readsbstats/actions/workflows/test.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 Extended flight history and track logging for [readsb](https://github.com/wiedehopf/readsb) ADS-B receivers, with a web UI for browsing historical flights and statistics.
 
 Designed to run alongside readsb, tar1090, and feed clients on a **Raspberry Pi 4** without overwhelming it.
