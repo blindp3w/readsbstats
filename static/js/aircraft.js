@@ -156,7 +156,10 @@ async function initWatchButton(registration) {
     try {
       const resp = await fetch(ROOT + "/api/watchlist", {
         method:  "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type":     "application/json",
+          "X-Requested-With": "XMLHttpRequest",
+        },
         body:    JSON.stringify({
           match_type: "icao",
           value:      ICAO_HEX.toLowerCase(),

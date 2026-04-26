@@ -39,7 +39,10 @@ async function loadWatchlist() {
 
 async function deleteEntry(id) {
   try {
-    const resp = await fetch(ROOT + "/api/watchlist/" + id, { method: "DELETE" });
+    const resp = await fetch(ROOT + "/api/watchlist/" + id, {
+      method:  "DELETE",
+      headers: { "X-Requested-With": "XMLHttpRequest" },
+    });
     if (!resp.ok) throw new Error("HTTP " + resp.status);
     loadWatchlist();
   } catch (err) {
@@ -65,7 +68,10 @@ document.getElementById("add-form").addEventListener("submit", async evt => {
   try {
     const resp = await fetch(ROOT + "/api/watchlist", {
       method:  "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type":     "application/json",
+        "X-Requested-With": "XMLHttpRequest",
+      },
       body:    JSON.stringify({ match_type: matchType, value, label }),
     });
     if (resp.status === 409) { errEl.textContent = "Already in watchlist."; return; }

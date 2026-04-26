@@ -33,10 +33,11 @@ function renderCard(ac) {
 
   const photoId = "photo-" + ac.icao_hex;
 
+  const safeThumb = safeHttpUrl(ac.thumbnail_url);
   card.innerHTML = `
     <div class="gallery-photo" id="${photoId}">
-      ${ac.thumbnail_url
-        ? `<img src="${escHtml(ac.thumbnail_url)}" alt="${reg}" loading="lazy">`
+      ${safeThumb
+        ? `<img src="${escHtml(safeThumb)}" alt="${reg}" loading="lazy">`
         : '<div class="gallery-no-photo">No photo</div>'}
     </div>
     <div class="gallery-info">
@@ -51,7 +52,7 @@ function renderCard(ac) {
   `;
 
   // Lazy-load photo if not already cached in API response
-  if (!ac.thumbnail_url) {
+  if (!safeThumb) {
     loadAircraftPhoto(ac.icao_hex, photoId);
   }
 
@@ -63,10 +64,11 @@ async function loadAircraftPhoto(icaoHex, containerId) {
     const resp = await fetch(ROOT + "/api/aircraft/" + encodeURIComponent(icaoHex) + "/photo");
     if (!resp.ok) return;
     const photo = await resp.json();
-    if (!photo || !photo.thumbnail_url) return;
+    const thumb = safeHttpUrl(photo && photo.thumbnail_url);
+    if (!thumb) return;
     const container = document.getElementById(containerId);
     if (!container) return;
-    container.innerHTML = `<img src="${escHtml(photo.thumbnail_url)}" alt="Aircraft" loading="lazy">`;
+    container.innerHTML = `<img src="${escHtml(thumb)}" alt="Aircraft" loading="lazy">`;
   } catch (err) { console.error("loadAircraftPhoto:", err); }
 }
 

@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -259,8 +259,8 @@ async def page_settings(request: Request) -> HTMLResponse:
         "min_positions":    config.MIN_POSITIONS_KEEP,
         "max_seen_pos":     config.MAX_SEEN_POS_SEC,
         "max_speed_kts":    config.MAX_SPEED_KTS,
-        # Database
-        "db_path":          config.DB_PATH,
+        # Database — show only the basename to avoid leaking the parent dir
+        "db_path":          os.path.basename(config.DB_PATH) or "(default)",
         "retention_days":   config.RETENTION_DAYS,
         "purge_interval":   config.PURGE_INTERVAL_SEC,
         # Enrichment
@@ -339,6 +339,14 @@ async def page_metrics(request: Request) -> HTMLResponse:
 _VALID_MATCH_TYPES = {"icao", "registration", "callsign_prefix"}
 
 
+def _csrf_check(x_requested_with: str | None = Header(None)) -> None:
+    # Browsers cannot set custom headers cross-origin without a CORS preflight,
+    # which this app rejects (no CORS allowlist). Requiring X-Requested-With on
+    # state-changing endpoints blocks simple-form CSRF without needing tokens.
+    if not x_requested_with:
+        raise HTTPException(403, "X-Requested-With header is required")
+
+
 class _WatchlistEntry(BaseModel):
     match_type: str
     value: str
@@ -360,14 +368,22 @@ async def api_watchlist_list() -> dict:
     return {"entries": [dict(r) for r in rows]}
 
 
-@app.post("/api/watchlist", status_code=201)
+_WATCHLIST_VALUE_MAX = 64    # ICAO=6, reg ≤10, callsign ≤8 — 64 is generous
+_WATCHLIST_LABEL_MAX = 255
+
+
+@app.post("/api/watchlist", status_code=201, dependencies=[Depends(_csrf_check)])
 async def api_watchlist_add(body: _WatchlistEntry) -> dict:
     if body.match_type not in _VALID_MATCH_TYPES:
         raise HTTPException(422, "match_type must be icao, registration, or callsign_prefix")
     value = body.value.strip().lower()
     if not value:
         raise HTTPException(422, "value is required")
+    if len(value) > _WATCHLIST_VALUE_MAX:
+        raise HTTPException(422, f"value exceeds {_WATCHLIST_VALUE_MAX} characters")
     label = body.label.strip() if body.label else None
+    if label and len(label) > _WATCHLIST_LABEL_MAX:
+        raise HTTPException(422, f"label exceeds {_WATCHLIST_LABEL_MAX} characters")
     try:
         with db():
             cur = db().execute(
@@ -380,7 +396,8 @@ async def api_watchlist_add(body: _WatchlistEntry) -> dict:
     return {"id": cur.lastrowid, "match_type": body.match_type, "value": value, "label": label}
 
 
-@app.delete("/api/watchlist/{entry_id}", status_code=204)
+@app.delete("/api/watchlist/{entry_id}", status_code=204,
+            dependencies=[Depends(_csrf_check)])
 async def api_watchlist_delete(entry_id: int) -> Response:
     row = db().execute("SELECT id FROM watchlist WHERE id = ?", (entry_id,)).fetchone()
     if not row:

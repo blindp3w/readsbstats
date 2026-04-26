@@ -70,6 +70,16 @@ function renderPagination(containerId, total, pageSize, offset, onPage) {
 }
 
 /**
+ * Allowlist URL schemes for href/src — returns the original URL if it begins
+ * with http:// or https://, else "". Photo URLs come from third-party APIs,
+ * so a compromised provider must not be able to inject javascript:/data: URIs.
+ */
+function safeHttpUrl(url) {
+  if (typeof url !== "string") return "";
+  return /^https?:\/\//i.test(url.trim()) ? url : "";
+}
+
+/**
  * Fetch and render an aircraft photo into a section element.
  * @param {number} flightId   — flight ID to fetch photo for
  * @param {string} sectionId  — element ID for the photo container (default "photo-section")
@@ -80,13 +90,14 @@ async function loadPhoto(flightId, sectionId) {
     const resp = await fetch(ROOT + "/api/flights/" + flightId + "/photo");
     if (!resp.ok || resp.status === 204) return;
     const photo = await resp.json();
-    if (!photo || !photo.thumbnail_url) return;
+    const thumb = safeHttpUrl(photo && photo.thumbnail_url);
+    if (!thumb) return;
+    const link = safeHttpUrl(photo.link_url) || safeHttpUrl(photo.large_url);
     const section = document.getElementById(sectionId || "photo-section");
     section.classList.remove("hidden");
+    const img = `<img src="${escHtml(thumb)}" alt="Aircraft photo" class="aircraft-photo">`;
     section.innerHTML = `
-      <a href="${escHtml(photo.link_url || photo.large_url)}" target="_blank" rel="noopener">
-        <img src="${escHtml(photo.thumbnail_url)}" alt="Aircraft photo" class="aircraft-photo">
-      </a>
+      ${link ? `<a href="${escHtml(link)}" target="_blank" rel="noopener">${img}</a>` : img}
       ${photo.photographer ? `<div class="photo-credit">&copy; ${escHtml(photo.photographer)} via Planespotters.net</div>` : ""}
     `;
   } catch (err) { console.error("loadPhoto:", err); }

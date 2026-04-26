@@ -36,7 +36,22 @@ def db_conn():
 
 @pytest.fixture()
 def client(db_conn, monkeypatch):
-    """TestClient with web._db patched to the in-memory connection."""
+    """TestClient with web._db patched to the in-memory connection.
+    Default X-Requested-With header makes existing mutating tests pass the
+    CSRF check; tests for missing-header rejection construct their own client.
+    """
+    from readsbstats import route_enricher
+    monkeypatch.setattr(web, "_db", db_conn)
+    monkeypatch.setattr(route_enricher, "start_background_enricher", lambda: None)
+    web._cache.clear()
+    with TestClient(web.app, raise_server_exceptions=True,
+                    headers={"X-Requested-With": "tests"}) as c:
+        yield c
+
+
+@pytest.fixture()
+def raw_client(db_conn, monkeypatch):
+    """TestClient WITHOUT default X-Requested-With — for CSRF rejection tests."""
     from readsbstats import route_enricher
     monkeypatch.setattr(web, "_db", db_conn)
     monkeypatch.setattr(route_enricher, "start_background_enricher", lambda: None)
@@ -574,6 +589,17 @@ class TestPageRoutes:
         from readsbstats import config
         if config.TELEGRAM_TOKEN:
             assert config.TELEGRAM_TOKEN not in r.text
+
+    def test_settings_page_does_not_leak_db_directory(self, client):
+        # The full DB path leaks filesystem layout (e.g. /mnt/ext/...).
+        # The settings page should display only the basename, not the parent dir.
+        from readsbstats import config
+        import os
+        r = client.get("/settings")
+        parent = os.path.dirname(os.path.abspath(config.DB_PATH))
+        # An empty parent means DB_PATH was a bare filename — nothing to leak.
+        if parent and parent != "/":
+            assert parent not in r.text, f"settings page leaks DB parent dir {parent}"
 
     def test_watchlist_page_returns_html(self, client):
         r = client.get("/watchlist")
@@ -1911,6 +1937,48 @@ class TestApiWatchlist:
                         json={"match_type": "callsign_prefix", "value": "LOT"})
         assert r.status_code == 201
         assert r.json()["value"] == "lot"
+
+    # CSRF: state-changing endpoints require X-Requested-With (browsers cannot
+    # set custom headers cross-origin without a CORS preflight that this app
+    # rejects, so a missing header signals a forged-form / cross-site attempt).
+
+    def test_post_without_xhr_header_returns_403(self, raw_client):
+        r = raw_client.post(
+            "/api/watchlist",
+            json={"match_type": "icao", "value": "aabbcc"},
+        )
+        assert r.status_code == 403
+
+    def test_delete_without_xhr_header_returns_403(self, client, raw_client):
+        # Seed an entry via the standard (header-bearing) client.
+        r = client.post("/api/watchlist", json={"match_type": "icao", "value": "aabbcc"})
+        entry_id = r.json()["id"]
+        # Attempt deletion without the header — must be rejected.
+        r2 = raw_client.delete(f"/api/watchlist/{entry_id}")
+        assert r2.status_code == 403
+
+    def test_get_does_not_require_xhr_header(self, raw_client):
+        # Read-only endpoints have no CSRF risk and must work without the header.
+        r = raw_client.get("/api/watchlist")
+        assert r.status_code == 200
+
+    def test_add_label_too_long_returns_422(self, client):
+        long_label = "x" * 300
+        r = client.post("/api/watchlist",
+                        json={"match_type": "icao", "value": "aabbcc",
+                              "label": long_label})
+        assert r.status_code == 422
+
+    def test_add_label_at_max_length_accepted(self, client):
+        r = client.post("/api/watchlist",
+                        json={"match_type": "icao", "value": "aabbcc",
+                              "label": "x" * 255})
+        assert r.status_code == 201
+
+    def test_add_value_too_long_returns_422(self, client):
+        r = client.post("/api/watchlist",
+                        json={"match_type": "registration", "value": "x" * 100})
+        assert r.status_code == 422
 
 
 # ---------------------------------------------------------------------------
