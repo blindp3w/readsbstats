@@ -392,6 +392,75 @@ window.addEventListener("resize", function() {
 });
 
 // ---------------------------------------------------------------------------
+// Health banner
+// ---------------------------------------------------------------------------
+
+const HEALTH_LABEL = { ok: "All checks passing", info: "Awaiting data", warn: "Degraded", critical: "Issue detected" };
+const CHECK_LABELS = {
+  heartbeat:           "Heartbeat",
+  aircraft_visibility: "Aircraft visibility",
+  noise_floor:         "Noise floor",
+  cpu_saturation:      "CPU saturation",
+  message_rate:        "Message rate",
+  signal_drop:         "Signal level",
+  aircraft_drop:       "Aircraft count",
+  gain_saturation:     "Gain saturation",
+  range_degradation:   "Range trend",
+};
+
+async function loadHealth() {
+  const banner = document.getElementById("health-banner");
+  if (!banner) return;
+  try {
+    const r = await fetch(ROOT + "/api/metrics/health");
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const report = await r.json();
+    renderHealth(report);
+  } catch (e) {
+    banner.classList.add("hidden");
+  }
+}
+
+function renderHealth(report) {
+  const banner = document.getElementById("health-banner");
+  const headline = document.getElementById("health-headline");
+  const detail = document.getElementById("health-detail");
+  if (!banner || !headline || !detail) return;
+
+  const overall = report.overall || "ok";
+  banner.dataset.severity = overall;
+  banner.classList.remove("hidden");
+
+  const failing = (report.checks || []).filter(c => c.severity === "warn" || c.severity === "critical");
+  const checkLabel = (name) => CHECK_LABELS[name] || name.replace(/_/g, " ");
+  const summary = failing.length === 0
+    ? HEALTH_LABEL[overall] || overall
+    : `${HEALTH_LABEL[overall] || overall} — ${failing.map(c => checkLabel(c.name)).join(", ")}`;
+  headline.textContent = summary;
+
+  detail.innerHTML = "";
+  for (const c of report.checks || []) {
+    const li = document.createElement("li");
+    li.className = "health-check sev-" + escHtml(c.severity);
+    li.innerHTML = `<span class="health-check-name">${escHtml(checkLabel(c.name))}</span>`
+      + `<span class="health-check-msg">${escHtml(c.message)}</span>`;
+    detail.appendChild(li);
+  }
+}
+
+function initHealthBanner() {
+  const toggle = document.getElementById("health-toggle");
+  const detail = document.getElementById("health-detail");
+  if (!toggle || !detail) return;
+  toggle.addEventListener("click", function() {
+    const open = detail.classList.toggle("hidden");
+    toggle.setAttribute("aria-expanded", String(!open));
+  });
+  loadHealth();
+  setInterval(loadHealth, 60000);
+}
+
+// ---------------------------------------------------------------------------
 // Init
 // ---------------------------------------------------------------------------
 
@@ -400,6 +469,7 @@ document.addEventListener("DOMContentLoaded", function() {
   state.from = r.from;
   state.to = r.to;
   initRangePicker();
+  initHealthBanner();
   loadAll();
 });
 

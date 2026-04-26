@@ -866,3 +866,70 @@ tbody tr.clickable { cursor: pointer; }
   .metric-section h2 { font-size: .88rem; }
   .chart-wrap { min-height: 180px; }
 }
+
+/* =========================================================
+   Health banner (metrics page)
+   ========================================================= */
+.health-banner {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin-bottom: 1rem;
+  overflow: hidden;
+}
+.health-banner[data-severity="ok"]       { border-left: 4px solid var(--green); }
+.health-banner[data-severity="info"]     { border-left: 4px solid var(--text-dim); }
+.health-banner[data-severity="warn"]     { border-left: 4px solid var(--yellow); }
+.health-banner[data-severity="critical"] { border-left: 4px solid var(--red); }
+
+.health-summary {
+  display: flex;
+  align-items: center;
+  gap: .75rem;
+  width: 100%;
+  padding: .65rem 1rem;
+  background: none;
+  border: none;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.health-summary:hover { background: var(--surface2); }
+
+.health-dot {
+  width: .65rem;
+  height: .65rem;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  background: var(--text-dim);
+}
+.health-banner[data-severity="ok"]       .health-dot { background: var(--green); }
+.health-banner[data-severity="warn"]     .health-dot { background: var(--yellow); }
+.health-banner[data-severity="critical"] .health-dot { background: var(--red);
+  box-shadow: 0 0 6px var(--red); }
+
+.health-headline { flex: 1; font-size: .92rem; }
+.health-caret { color: var(--text-dim); font-size: .8rem; }
+.health-summary[aria-expanded="true"] .health-caret { transform: rotate(180deg); }
+
+.health-detail {
+  list-style: none;
+  padding: .25rem 1rem .75rem 2.4rem;
+  border-top: 1px solid var(--border);
+}
+.health-check {
+  display: flex;
+  gap: .5rem;
+  padding: .35rem 0;
+  font-size: .85rem;
+}
+.health-check-name {
+  flex: 0 0 9rem;
+  color: var(--text-dim);
+}
+.health-check-msg { color: var(--text); }
+.health-check.sev-ok       .health-check-name { color: var(--green); }
+.health-check.sev-warn     .health-check-name { color: var(--yellow); }
+.health-check.sev-critical .health-check-name { color: var(--red); }
+.health-check.sev-info     .health-check-name { color: var(--text-dim); }

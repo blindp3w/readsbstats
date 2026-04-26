@@ -6,6 +6,15 @@
   <h1>Receiver Metrics</h1>
 </div>
 
+<div class="health-banner hidden" id="health-banner" data-severity="">
+  <button class="health-summary" id="health-toggle" type="button" aria-expanded="false" aria-controls="health-detail">
+    <span class="health-dot" aria-hidden="true"></span>
+    <span class="health-headline" id="health-headline">Checking…</span>
+    <span class="health-caret" aria-hidden="true">▾</span>
+  </button>
+  <ul class="health-detail hidden" id="health-detail"></ul>
+</div>
+
 {% if not has_data %}
 <div class="detail-card">
   <p>No receiver metrics data yet. Set <code>RSBS_METRICS_ENABLED=1</code> in the collector's environment and restart it to start recording receiver statistics.</p>

@@ -472,6 +472,30 @@ class TestApiHealth:
 
 
 # ---------------------------------------------------------------------------
+# API: /api/metrics/health
+# ---------------------------------------------------------------------------
+
+class TestApiMetricsHealth:
+    def test_empty_db_returns_warn(self, client):
+        r = client.get("/api/metrics/health")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["overall"] == "warn"
+        names = [c["name"] for c in body["checks"]]
+        assert "heartbeat" in names
+        assert "aircraft_visibility" in names
+        assert "noise_floor" in names
+        assert "cpu_saturation" in names
+
+    def test_returns_check_payload_shape(self, client):
+        r = client.get("/api/metrics/health")
+        body = r.json()
+        for c in body["checks"]:
+            assert set(c.keys()) >= {"name", "severity", "message"}
+            assert c["severity"] in ("ok", "info", "warn", "critical")
+
+
+# ---------------------------------------------------------------------------
 # Helper: _fmt_ts
 # ---------------------------------------------------------------------------
 

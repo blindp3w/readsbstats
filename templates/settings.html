@@ -98,6 +98,31 @@
   </div>
 
   <div class="detail-card">
+    <h3>Receiver Health</h3>
+    <table class="settings-table">
+      <thead><tr><th>Setting</th><th>Value</th><th>Env var</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td>Heartbeat warn</td><td>{{ health_heartbeat_warn_s }} s</td><td><code>RSBS_HEALTH_HEARTBEAT_WARN_S</code></td><td>Stale-metrics warn threshold</td></tr>
+        <tr><td>Heartbeat critical</td><td>{{ health_heartbeat_crit_s }} s</td><td><code>RSBS_HEALTH_HEARTBEAT_CRIT_S</code></td><td>Stale-metrics critical threshold</td></tr>
+        <tr><td>Aircraft gap</td><td>{{ health_aircraft_gap_s }} s</td><td><code>RSBS_HEALTH_AIRCRAFT_GAP_S</code></td><td>Window for "0 aircraft" check</td></tr>
+        <tr><td>Noise warn</td><td>{{ health_noise_warn_db }} dBFS</td><td><code>RSBS_HEALTH_NOISE_WARN_DB</code></td><td>Noise floor warn threshold</td></tr>
+        <tr><td>Noise critical</td><td>{{ health_noise_crit_db }} dBFS</td><td><code>RSBS_HEALTH_NOISE_CRIT_DB</code></td><td>Noise floor critical threshold</td></tr>
+        <tr><td>CPU warn</td><td>{{ health_cpu_warn_pct }} %</td><td><code>RSBS_HEALTH_CPU_WARN_PCT</code></td><td>Demod CPU warn threshold</td></tr>
+        <tr><td>CPU critical</td><td>{{ health_cpu_crit_pct }} %</td><td><code>RSBS_HEALTH_CPU_CRIT_PCT</code></td><td>Demod CPU critical threshold</td></tr>
+        <tr><td>Baseline weeks</td><td>{{ health_baseline_weeks }}</td><td><code>RSBS_HEALTH_BASELINE_WEEKS</code></td><td>Lookback for hour-of-week baseline</td></tr>
+        <tr><td>Baseline min samples</td><td>{{ health_baseline_min_samples }}</td><td><code>RSBS_HEALTH_BASELINE_MIN_SAMPLES</code></td><td>Min samples before baseline checks fire</td></tr>
+        <tr><td>Message rate drop</td><td>{{ health_msg_drop_pct }} %</td><td><code>RSBS_HEALTH_MSG_DROP_PCT</code></td><td>Warn below this % of message-rate baseline</td></tr>
+        <tr><td>Aircraft drop</td><td>{{ health_aircraft_drop_pct }} %</td><td><code>RSBS_HEALTH_AIRCRAFT_DROP_PCT</code></td><td>Warn below this % of aircraft-count baseline</td></tr>
+        <tr><td>Signal drop</td><td>{{ health_signal_drop_db }} dB</td><td><code>RSBS_HEALTH_SIGNAL_DROP_DB</code></td><td>Warn if signal drops this many dB below baseline</td></tr>
+        <tr><td>Gain saturation</td><td>{{ health_gain_strong_pct }} %</td><td><code>RSBS_HEALTH_GAIN_STRONG_PCT</code></td><td>Warn above this strong-signals/messages ratio</td></tr>
+        <tr><td>Range short window</td><td>{{ health_range_short_days }} d</td><td><code>RSBS_HEALTH_RANGE_SHORT_DAYS</code></td><td>Recent window for range trend</td></tr>
+        <tr><td>Range long window</td><td>{{ health_range_long_days }} d</td><td><code>RSBS_HEALTH_RANGE_LONG_DAYS</code></td><td>Comparison window for range trend</td></tr>
+        <tr><td>Range ratio</td><td>{{ health_range_ratio }}</td><td><code>RSBS_HEALTH_RANGE_RATIO</code></td><td>Note degradation if short max &lt; long max × this</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="detail-card">
     <h3>External ADS-B enrichment</h3>
     <table class="settings-table">
       <thead><tr><th>Setting</th><th>Value</th><th>Env var</th><th>Description</th></tr></thead>

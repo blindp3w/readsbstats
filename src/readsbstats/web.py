@@ -26,7 +26,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
-from . import config, database, enrichment, geo, icao_ranges, route_enricher
+from . import config, database, enrichment, geo, health, icao_ranges, route_enricher
 
 logging.basicConfig(
     level=logging.INFO,
@@ -84,6 +84,7 @@ _CACHE_TTLS: dict[str, int] = {
     "stats":   120,   # seconds — aggregate data, no need to recompute often
     "polar":   300,   # seconds — max range rarely shifts
     "records": 300,   # seconds — all-time bests, very stable
+    "health":   60,   # seconds — matches metrics_collector poll cycle
 }
 _DEFAULT_TTL  = 30    # seconds
 _AIRSPACE_TTL = 3600  # seconds — airspace data rarely changes
@@ -278,6 +279,23 @@ async def page_settings(request: Request) -> HTMLResponse:
         "metrics_enabled":     config.METRICS_ENABLED,
         "metrics_interval":    config.METRICS_INTERVAL,
         "stats_json":          config.STATS_JSON,
+        # Receiver health
+        "health_heartbeat_warn_s": config.HEALTH_HEARTBEAT_WARN_S,
+        "health_heartbeat_crit_s": config.HEALTH_HEARTBEAT_CRIT_S,
+        "health_aircraft_gap_s":   config.HEALTH_AIRCRAFT_GAP_S,
+        "health_noise_warn_db":    config.HEALTH_NOISE_WARN_DB,
+        "health_noise_crit_db":    config.HEALTH_NOISE_CRIT_DB,
+        "health_cpu_warn_pct":     config.HEALTH_CPU_WARN_PCT,
+        "health_cpu_crit_pct":     config.HEALTH_CPU_CRIT_PCT,
+        "health_baseline_weeks":   config.HEALTH_BASELINE_WEEKS,
+        "health_baseline_min_samples": config.HEALTH_BASELINE_MIN_SAMPLES,
+        "health_msg_drop_pct":     config.HEALTH_MSG_DROP_PCT,
+        "health_aircraft_drop_pct": config.HEALTH_AIRCRAFT_DROP_PCT,
+        "health_signal_drop_db":   config.HEALTH_SIGNAL_DROP_DB,
+        "health_gain_strong_pct":  config.HEALTH_GAIN_STRONG_PCT,
+        "health_range_short_days": config.HEALTH_RANGE_SHORT_DAYS,
+        "health_range_long_days":  config.HEALTH_RANGE_LONG_DAYS,
+        "health_range_ratio":      config.HEALTH_RANGE_RATIO,
         # Web server
         "web_host":         config.WEB_HOST,
         "web_port":         config.WEB_PORT,
@@ -1590,7 +1608,7 @@ async def api_metrics(
 
 
 # ---------------------------------------------------------------------------
-# API — health
+# API — service liveness (used by uptime probes)
 # ---------------------------------------------------------------------------
 
 @app.get("/api/health")
@@ -1601,6 +1619,20 @@ async def api_health() -> dict:
     except Exception:
         db_ok = False
     return {"status": "ok" if db_ok else "degraded", "db_path": config.DB_PATH}
+
+
+# ---------------------------------------------------------------------------
+# API — receiver health (rule-based checks over receiver_stats)
+# ---------------------------------------------------------------------------
+
+@app.get("/api/metrics/health")
+async def api_metrics_health() -> dict:
+    cached = _get_cache("health")
+    if cached is not None:
+        return cached
+    report = health.compute_health(db()).to_dict()
+    _set_cache("health", report)
+    return report
 
 
 # ---------------------------------------------------------------------------

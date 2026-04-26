@@ -108,6 +108,28 @@ METRICS_INTERVAL = _int("RSBS_METRICS_INTERVAL", "60")
 STATS_JSON       = os.getenv("RSBS_STATS_JSON", "/run/readsb/stats.json")
 
 # ---------------------------------------------------------------------------
+# Receiver health dashboard (rule-based checks over receiver_stats)
+# ---------------------------------------------------------------------------
+HEALTH_HEARTBEAT_CRIT_S = _int("RSBS_HEALTH_HEARTBEAT_CRIT_S", "300")  # no metrics row in 5 min
+HEALTH_HEARTBEAT_WARN_S = _int("RSBS_HEALTH_HEARTBEAT_WARN_S", "120")  # last row 2+ min old
+HEALTH_AIRCRAFT_GAP_S   = _int("RSBS_HEALTH_AIRCRAFT_GAP_S",   "600")  # 0 aircraft for 10 min => critical
+HEALTH_NOISE_CRIT_DB    = _float("RSBS_HEALTH_NOISE_CRIT_DB",  "-25")  # dBFS, higher is worse
+HEALTH_NOISE_WARN_DB    = _float("RSBS_HEALTH_NOISE_WARN_DB",  "-28")
+HEALTH_CPU_CRIT_PCT     = _float("RSBS_HEALTH_CPU_CRIT_PCT",   "90")   # demod % of one core
+HEALTH_CPU_WARN_PCT     = _float("RSBS_HEALTH_CPU_WARN_PCT",   "80")
+# Phase 2 — baseline-aware checks (same hour-of-week, prior weeks)
+HEALTH_BASELINE_WEEKS       = _int("RSBS_HEALTH_BASELINE_WEEKS",       "4")
+HEALTH_BASELINE_MIN_SAMPLES = _int("RSBS_HEALTH_BASELINE_MIN_SAMPLES", "3")
+HEALTH_MSG_DROP_PCT         = _float("RSBS_HEALTH_MSG_DROP_PCT",      "50")  # warn below this % of baseline
+HEALTH_AIRCRAFT_DROP_PCT    = _float("RSBS_HEALTH_AIRCRAFT_DROP_PCT", "25")
+HEALTH_SIGNAL_DROP_DB       = _float("RSBS_HEALTH_SIGNAL_DROP_DB",    "3")   # warn if signal drops this many dB below baseline
+# Phase 3 — gain hints
+HEALTH_GAIN_STRONG_PCT  = _float("RSBS_HEALTH_GAIN_STRONG_PCT",  "5")   # warn above this % strong-signals/messages
+HEALTH_RANGE_SHORT_DAYS = _int("RSBS_HEALTH_RANGE_SHORT_DAYS",   "7")
+HEALTH_RANGE_LONG_DAYS  = _int("RSBS_HEALTH_RANGE_LONG_DAYS",   "30")
+HEALTH_RANGE_RATIO      = _float("RSBS_HEALTH_RANGE_RATIO",     "0.85") # info if 7d max < 30d max × this
+
+# ---------------------------------------------------------------------------
 # Web server
 # ---------------------------------------------------------------------------
 WEB_HOST           = os.getenv("RSBS_WEB_HOST",  "0.0.0.0")
@@ -183,6 +205,20 @@ PURGE_INTERVAL_SEC   = _clamp_int("RSBS_PURGE_INTERVAL", PURGE_INTERVAL_SEC,   1
 ROUTE_ENRICH_INTERVAL = _clamp_int("RSBS_ROUTE_INTERVAL", ROUTE_ENRICH_INTERVAL, 1, 60)
 ADSBX_POLL_INTERVAL  = _clamp_int("RSBS_ADSBX_INTERVAL", ADSBX_POLL_INTERVAL,  1, 60)
 METRICS_INTERVAL     = _clamp_int("RSBS_METRICS_INTERVAL", METRICS_INTERVAL, 10, 60)
+HEALTH_HEARTBEAT_CRIT_S = _clamp_int("RSBS_HEALTH_HEARTBEAT_CRIT_S", HEALTH_HEARTBEAT_CRIT_S, 30, 300)
+HEALTH_HEARTBEAT_WARN_S = _clamp_int("RSBS_HEALTH_HEARTBEAT_WARN_S", HEALTH_HEARTBEAT_WARN_S, 30, 120)
+HEALTH_AIRCRAFT_GAP_S   = _clamp_int("RSBS_HEALTH_AIRCRAFT_GAP_S",   HEALTH_AIRCRAFT_GAP_S,   60, 600)
+HEALTH_CPU_CRIT_PCT     = _clamp_float("RSBS_HEALTH_CPU_CRIT_PCT",   HEALTH_CPU_CRIT_PCT,    1.0, 90.0)
+HEALTH_CPU_WARN_PCT     = _clamp_float("RSBS_HEALTH_CPU_WARN_PCT",   HEALTH_CPU_WARN_PCT,    1.0, 80.0)
+HEALTH_BASELINE_WEEKS       = _clamp_int("RSBS_HEALTH_BASELINE_WEEKS",       HEALTH_BASELINE_WEEKS,       1, 4)
+HEALTH_BASELINE_MIN_SAMPLES = _clamp_int("RSBS_HEALTH_BASELINE_MIN_SAMPLES", HEALTH_BASELINE_MIN_SAMPLES, 1, 3)
+HEALTH_MSG_DROP_PCT         = _clamp_float("RSBS_HEALTH_MSG_DROP_PCT",      HEALTH_MSG_DROP_PCT,      1.0, 50.0)
+HEALTH_AIRCRAFT_DROP_PCT    = _clamp_float("RSBS_HEALTH_AIRCRAFT_DROP_PCT", HEALTH_AIRCRAFT_DROP_PCT, 1.0, 25.0)
+HEALTH_SIGNAL_DROP_DB       = _clamp_float("RSBS_HEALTH_SIGNAL_DROP_DB",    HEALTH_SIGNAL_DROP_DB,    0.1, 3.0)
+HEALTH_GAIN_STRONG_PCT      = _clamp_float("RSBS_HEALTH_GAIN_STRONG_PCT",   HEALTH_GAIN_STRONG_PCT,   0.1, 5.0)
+HEALTH_RANGE_SHORT_DAYS     = _clamp_int("RSBS_HEALTH_RANGE_SHORT_DAYS",    HEALTH_RANGE_SHORT_DAYS,  1, 7)
+HEALTH_RANGE_LONG_DAYS      = _clamp_int("RSBS_HEALTH_RANGE_LONG_DAYS",     HEALTH_RANGE_LONG_DAYS,   1, 30)
+HEALTH_RANGE_RATIO          = _clamp_float("RSBS_HEALTH_RANGE_RATIO",       HEALTH_RANGE_RATIO,       0.1, 0.85)
 
 # Thresholds — zero would reject all positions or delete valid flights
 MIN_POSITIONS_KEEP   = _clamp_int("RSBS_MIN_POSITIONS",  MIN_POSITIONS_KEEP,   1, 2)
