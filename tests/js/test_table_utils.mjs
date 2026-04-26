@@ -117,6 +117,13 @@ test("safeHttpUrl: accepts mixed-case schemes", () => {
   assert.equal(safeHttpUrl("HTTPS://example.com/"), "HTTPS://example.com/");
 });
 
+test("safeHttpUrl: returns trimmed URL when leading whitespace is present", () => {
+  // Browsers tolerate leading whitespace in href/src but it's inconsistent —
+  // return a clean trimmed URL so callers don't propagate the surprise.
+  const { safeHttpUrl } = loadTableUtils();
+  assert.equal(safeHttpUrl("  http://example.com/x  "), "http://example.com/x");
+});
+
 test("safeHttpUrl: rejects javascript: URI", () => {
   const { safeHttpUrl } = loadTableUtils();
   assert.equal(safeHttpUrl("javascript:alert(1)"), "");

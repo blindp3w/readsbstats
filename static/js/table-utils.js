@@ -76,7 +76,8 @@ function renderPagination(containerId, total, pageSize, offset, onPage) {
  */
 function safeHttpUrl(url) {
   if (typeof url !== "string") return "";
-  return /^https?:\/\//i.test(url.trim()) ? url : "";
+  const trimmed = url.trim();
+  return /^https?:\/\//i.test(trimmed) ? trimmed : "";
 }
 
 /**

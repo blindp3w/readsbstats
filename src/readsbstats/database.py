@@ -7,6 +7,11 @@ from . import config
 
 SCHEMA_VERSION = 5
 
+# Watchlist input caps — enforced by the HTTP API and the Telegram bot
+# command path. Kept here (rather than in each consumer) so they cannot drift.
+WATCHLIST_VALUE_MAX = 64    # ICAO=6, reg ≤10, callsign ≤8 — 64 is generous
+WATCHLIST_LABEL_MAX = 255
+
 DDL = """
 PRAGMA journal_mode = WAL;
 PRAGMA synchronous  = NORMAL;

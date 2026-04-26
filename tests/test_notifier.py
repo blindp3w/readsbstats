@@ -1003,6 +1003,13 @@ class TestWatchlistBotCommands:
         assert "Usage" in sent[0]
         assert db_conn.execute("SELECT COUNT(*) FROM watchlist").fetchone()[0] == 0
 
+    def test_watch_add_value_too_long_rejected(self, db_conn, monkeypatch):
+        sent = []
+        monkeypatch.setattr(notifier, "_send", lambda txt: sent.append(txt))
+        notifier._watch_add(db_conn, "x" * 100)
+        assert "too long" in sent[0].lower()
+        assert db_conn.execute("SELECT COUNT(*) FROM watchlist").fetchone()[0] == 0
+
     def test_watch_remove_existing(self, db_conn, monkeypatch):
         sent = []
         monkeypatch.setattr(notifier, "_send", lambda txt: sent.append(txt))

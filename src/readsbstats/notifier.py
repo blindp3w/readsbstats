@@ -459,9 +459,13 @@ def _send_watchlist_list(conn: sqlite3.Connection) -> None:
 
 def _watch_add(conn: sqlite3.Connection, value_raw: str) -> None:
     import re
+    from . import database
     value = value_raw.strip().lower()
     if not value:
         _send("Usage: /watch &lt;icao_hex|registration&gt;")
+        return
+    if len(value) > database.WATCHLIST_VALUE_MAX:
+        _send(f"Value too long (max {database.WATCHLIST_VALUE_MAX} characters)")
         return
     match_type = "icao" if re.fullmatch(r"[0-9a-f]{6}", value) else "registration"
     existing = conn.execute(

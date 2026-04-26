@@ -24,7 +24,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from . import config, database, enrichment, geo, health, icao_ranges, route_enricher
 
@@ -348,9 +348,9 @@ def _csrf_check(x_requested_with: str | None = Header(None)) -> None:
 
 
 class _WatchlistEntry(BaseModel):
-    match_type: str
-    value: str
-    label: str | None = None
+    match_type: str = Field(max_length=32)
+    value: str = Field(max_length=database.WATCHLIST_VALUE_MAX)
+    label: str | None = Field(default=None, max_length=database.WATCHLIST_LABEL_MAX)
 
 
 @app.get("/api/watchlist")
@@ -368,10 +368,6 @@ async def api_watchlist_list() -> dict:
     return {"entries": [dict(r) for r in rows]}
 
 
-_WATCHLIST_VALUE_MAX = 64    # ICAO=6, reg ≤10, callsign ≤8 — 64 is generous
-_WATCHLIST_LABEL_MAX = 255
-
-
 @app.post("/api/watchlist", status_code=201, dependencies=[Depends(_csrf_check)])
 async def api_watchlist_add(body: _WatchlistEntry) -> dict:
     if body.match_type not in _VALID_MATCH_TYPES:
@@ -379,11 +375,7 @@ async def api_watchlist_add(body: _WatchlistEntry) -> dict:
     value = body.value.strip().lower()
     if not value:
         raise HTTPException(422, "value is required")
-    if len(value) > _WATCHLIST_VALUE_MAX:
-        raise HTTPException(422, f"value exceeds {_WATCHLIST_VALUE_MAX} characters")
     label = body.label.strip() if body.label else None
-    if label and len(label) > _WATCHLIST_LABEL_MAX:
-        raise HTTPException(422, f"label exceeds {_WATCHLIST_LABEL_MAX} characters")
     try:
         with db():
             cur = db().execute(
