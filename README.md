@@ -15,8 +15,8 @@ Designed to run alongside readsb, tar1090, and feed clients on a **Raspberry Pi 
 |---|---|
 | ![Statistics page](docs/screenshots/statistics_1.png) | ![Flight history](docs/screenshots/flights_1.png) |
 | Statistics — date-range filter, hourly activity, top airlines/types/routes/airports | Flight history — filters by callsign, registration, type, date, source, flag |
-| ![Aircraft gallery](docs/screenshots/gallery_1.png) | ![Receiver metrics](docs/screenshots/metrics_1.png) |
-| Gallery — flagged military and interesting aircraft detected by the receiver | Metrics — signal/noise, message rates, range, CPU over time (uPlot) |
+| ![Aircraft gallery](docs/screenshots/gallery_1.png) | ![Receiver metrics with health banner](docs/screenshots/metrics_2.png) |
+| Gallery — flagged military and interesting aircraft detected by the receiver | Metrics + health — banner with 9 rule-based and baseline-aware checks (heartbeat, noise floor, gain saturation, signal/aircraft drop vs. hour-of-week baseline) above the time-series charts |
 
 ## Features
 
@@ -50,6 +50,7 @@ Designed to run alongside readsb, tar1090, and feed clients on a **Raspberry Pi 
   - Watchlist page (`/watchlist`): add/remove watched aircraft (ICAO hex, registration, callsign prefix), with "In range" badge for aircraft currently being tracked
   - Settings page (`/settings`): read-only display of all effective runtime configuration values, grouped by category, showing the env var name for each setting; sensitive values (Telegram token, chat ID) are masked
   - Receiver metrics dashboard (`/metrics`): 11 uPlot time-series charts (signal/noise, aircraft counts, messages, range, positions, CPU, feed traffic, tracks, decoder, CPR) with 1h/6h/24h/48h/7d/30d/90d range presets and custom range picker; cursor legend uses 24-hour clock; opt-in via `RSBS_METRICS_ENABLED=1`
+  - **Receiver health interpretation** on the same page: a status banner showing 9 checks across three layers — **hard rules** (heartbeat, aircraft visibility, noise floor, demod CPU saturation), **baseline-aware** (message rate, signal level, aircraft count compared against the same-hour-of-week average over the past 4 weeks), and **gain hints** (strong-signal saturation %, 7-day vs 30-day max range trend). Green/yellow/red dot with click-to-expand per-check detail. Exposed via `GET /api/metrics/health` (60 s cache). All thresholds tunable via `RSBS_HEALTH_*` env vars and visible on the `/settings` page.
 
 ## Requirements
 
@@ -178,7 +179,7 @@ The simulator writes 8 aircraft orbiting Warsaw every 5 seconds in readsb's airc
 ### Running tests
 
 ```bash
-.venv/bin/pytest                                              # 777 Python tests
+.venv/bin/pytest                                              # 828 Python tests
 node --test tests/js/test_*.mjs                               # 35 JS tests (Node 22+)
 for f in static/js/*.js; do node --check "$f"; done           # JS syntax check
 ```
@@ -207,6 +208,7 @@ To see coverage:
 | `tests/test_database.py` | Schema migrations, index creation, backfills |
 | `tests/test_metrics_collector.py` | `/run/readsb/stats.json` parsing, downsampling tiers, allowlist |
 | `tests/test_import_rrd.py` | RRD fetch parsing, DERIVE conversion, multi-tier merge |
+| `tests/test_health.py` | Receiver health: hard rules, hour-of-week baselines, gain hints, severity aggregation |
 | `tests/js/test_units.mjs` | JS formatters: `fmtAlt`/`fmtSpd`/`fmtDist`/`fmtClimb`, labels, `getUnits`/`setUnits` |
 | `tests/js/test_table_utils.mjs` | JS `flagBadge` bitmask interpretation (military precedence, all flag combinations) |
 
@@ -304,6 +306,7 @@ Environment="RSBS_FLIGHT_GAP=1200"
 | `RSBS_SUMMARY_TIME` | `21:00` | Local time (HH:MM) to send the daily summary; `""` or `"off"` to disable |
 | `RSBS_TELEGRAM_UNITS` | `metric` | Units in notification messages: `metric`, `imperial`, or `aeronautical` |
 | `RSBS_BASE_URL` | `http://homepi.local/stats` | Base URL used for profile links in Telegram messages |
+| `RSBS_HEALTH_*` | _(see /settings)_ | Health-dashboard thresholds — heartbeat warn/critical, noise floor, CPU, baseline lookback, drop percentages, gain saturation, range-trend ratio. All effective values are listed on the `/settings` page; defaults are tuned for a stock readsb + Pi 4 setup |
 
 ### Logging
 
@@ -494,6 +497,8 @@ readsbstats/
 │   ├── notifier.py             # Telegram notification helper (mil/interesting/squawk/daily)
 │   ├── route_enricher.py       # Background thread: callsign → route via adsbdb.com
 │   ├── db_updater.py           # Downloads tar1090-db CSV and OpenFlights airlines.dat
+│   ├── metrics_collector.py    # Optional: polls /run/readsb/stats.json into receiver_stats
+│   ├── health.py               # Rule-based + baseline-aware receiver health checks
 │   ├── web.py                  # FastAPI app, API endpoints, page routes
 │   └── sim.py                  # Local dev: generates a fake aircraft.json
 ├── scripts/
@@ -503,7 +508,7 @@ readsbstats/
 │   ├── purge_ghosts.py         # One-shot cleanup: removes ghost positions
 │   ├── purge_bad_gs.py         # One-shot cleanup: nulls implausible gs values
 │   └── purge_mlat_gs_spikes.py # One-shot cleanup: nulls MLAT gs acceleration spikes
-├── tests/                      # pytest suite (16 files, 777 tests) + JS tests (tests/js/, 35 tests)
+├── tests/                      # pytest suite (17 files, 828 tests) + JS tests (tests/js/, 35 tests)
 ├── templates/
 │   ├── base.html               # Shared layout, nav bar with unit selector
 │   ├── index.html              # Flight list
@@ -577,7 +582,8 @@ The web server exposes a JSON API alongside the HTML pages:
 | GET | `/api/dates` | Per-day flight counts |
 | GET | `/api/airlines/{prefix}/flights` | All flights by airline prefix (e.g. `LOT`) |
 | GET | `/api/types/{type}/flights` | All flights by aircraft type (e.g. `B738`) |
-| GET | `/api/health` | Service health check |
+| GET | `/api/health` | Service liveness probe (DB ping) |
+| GET | `/api/metrics/health` | Receiver health report — 9 rule-based and baseline-aware checks over `receiver_stats`, with per-check severity and overall status (60 s cache) |
 | GET | `/api/watchlist` | List all watchlist entries (with airborne flag) |
 | POST | `/api/watchlist` | Add a watchlist entry (`match_type`, `value`, optional `label`) |
 | DELETE | `/api/watchlist/{id}` | Remove a watchlist entry |
