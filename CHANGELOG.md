@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.1.1 — 2026-04-26
+
+### Security
+
+- Block `javascript:` / `data:` URIs in third-party photo links via a
+  `safeHttpUrl()` allowlist
+- Require `X-Requested-With` header on watchlist `POST` / `DELETE` (CSRF
+  defence — browsers cannot set custom headers cross-origin without a CORS
+  preflight that this app rejects)
+- Cap watchlist `value` (64 chars) and `label` (255 chars) lengths at the
+  Pydantic-model layer; the same caps are enforced in the Telegram `/watch`
+  bot command path
+- Show only the database filename, not the full path, on `/settings`
+- `safeHttpUrl()` now returns the trimmed URL for consistency
+
+## 1.1.0 — 2026-04-24
+
+- Receiver health dashboard with metrics time-series (43 columns) and 9
+  health checks (heartbeat, aircraft visibility, message rate, signal drop,
+  CPU saturation, gain hints, range degradation)
+
 ## 1.0.0 — 2026-04-17
 
 Initial public release.
