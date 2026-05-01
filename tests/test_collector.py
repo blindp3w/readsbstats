@@ -59,8 +59,9 @@ class TestSdNotify:
     def test_sends_to_socket(self, monkeypatch):
         from readsbstats import collector
         import socket as _socket
-        import tempfile
-        sock_path = tempfile.mktemp(suffix=".sock", dir="/tmp")
+        import tempfile, shutil
+        tmpdir = tempfile.mkdtemp(dir="/tmp")
+        sock_path = os.path.join(tmpdir, "n.sock")
         server = _socket.socket(_socket.AF_UNIX, _socket.SOCK_DGRAM)
         try:
             server.bind(sock_path)
@@ -70,7 +71,7 @@ class TestSdNotify:
             assert data == b"WATCHDOG=1"
         finally:
             server.close()
-            os.unlink(sock_path)
+            shutil.rmtree(tmpdir, ignore_errors=True)
 
     def test_abstract_socket(self, monkeypatch):
         """@ prefix should be converted to null byte for abstract sockets."""
