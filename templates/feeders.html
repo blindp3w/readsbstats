@@ -68,7 +68,13 @@
           <td class="feeder-details">
             {% if f.details %}
               {% for label, value in f.details %}
-                <span class="feeder-detail-item"><span class="text-dim">{{ label }}:</span> {{ value }}</span>
+                <span class="feeder-detail-item"><span class="text-dim">{{ label }}:</span>
+                {% if label == "Max range" %}
+                  <span class="feeder-dist" data-dist-nm="{{ value }}">{{ value }} nm</span>
+                {% else %}
+                  {{ value }}
+                {% endif %}
+                </span>
               {% endfor %}
             {% else %}
               <span class="text-dim">&mdash;</span>
@@ -82,3 +88,5 @@
 </div>
 {% endif %}
 {% endblock %}
+
+{% block scripts %}<script src="{{ root_path }}/static/js/feeders.js"></script>{% endblock %}

@@ -282,7 +282,7 @@ tbody tr.clickable { cursor: pointer; }
 .feeder-error   { background: var(--red); }
 .feeder-unknown { background: var(--text-dim); }
 .feeder-details { line-height: 1.7; }
-.feeder-detail-item { display: inline-block; margin-right: 1.2rem; white-space: nowrap; }
+.feeder-detail-item { display: block; overflow-wrap: break-word; }
 
 /* ----- Pagination ----------------------------------------------------- */
 .pagination {

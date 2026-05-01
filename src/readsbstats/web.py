@@ -1713,7 +1713,7 @@ def _feeder_details_readsb(status_path: str) -> list[tuple[str, str]]:
             details.append(("Noise", f"{local['noise']:.1f} dBFS"))
         max_dist = last.get("max_distance")
         if max_dist:
-            details.append(("Max range", f"{max_dist:.0f} nm"))
+            details.append(("Max range", f"{max_dist / 1852:.1f}"))
     return details
 
 

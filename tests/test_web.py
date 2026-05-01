@@ -743,6 +743,20 @@ class TestFeederDetailParsers:
         assert "Max range" in labels
         assert any(v == "2" for _, v in details if _ == "Aircraft tracked")
 
+    def test_readsb_details_max_distance_converted_to_nm(self, tmp_path):
+        # max_distance in stats.json is meters; server returns raw nm string for JS unit formatting
+        (tmp_path / "aircraft.json").write_text('{"aircraft": []}')
+        (tmp_path / "stats.json").write_text(json.dumps({
+            "last1min": {
+                "start": 1000, "end": 1060, "messages": 1,
+                "local": {},
+                "max_distance": 185200,  # exactly 100 nm
+            }
+        }))
+        details = web._feeder_details_readsb(str(tmp_path))
+        max_range = next((v for k, v in details if k == "Max range"), None)
+        assert max_range == "100.0", f"expected '100.0', got {max_range!r}"
+
     def test_readsb_details_missing_files(self, tmp_path):
         details = web._feeder_details_readsb(str(tmp_path))
         assert details == []
