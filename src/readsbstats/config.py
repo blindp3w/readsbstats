@@ -65,7 +65,9 @@ MAX_SPEED_KTS      = _int("RSBS_MAX_SPEED_KTS",  "2000")   # ghost-position filt
 MAX_GS_CIVIL_KTS    = _int("RSBS_MAX_GS_CIVIL",      "750")  # null gs above this for civil aircraft
 MAX_GS_MILITARY_KTS = _int("RSBS_MAX_GS_MILITARY",  "1800") # null gs above this for military/unknown
 MAX_GS_DEVIATION_KTS = _int("RSBS_MAX_GS_DEVIATION", "100")  # null gs when it disagrees with position-derived speed by more than this
-MAX_GS_ACCEL_KTS_S   = _float("RSBS_MAX_GS_ACCEL",     "8.0")  # null MLAT gs when acceleration exceeds this (kts/s)
+MAX_GS_ACCEL_KTS_S       = _float("RSBS_MAX_GS_ACCEL",          "8.0")   # null MLAT gs when acceleration exceeds this (kts/s)
+MLAT_OUTLIER_FACTOR      = _float("RSBS_MLAT_OUTLIER_FACTOR",   "5.0")   # null MLAT gs > this × p75 of flight's gs values
+MLAT_OUTLIER_MIN_READINGS = _int("RSBS_MLAT_OUTLIER_MIN",       "10")    # minimum MLAT gs readings required to apply outlier filter
 
 # ---------------------------------------------------------------------------
 # Database
@@ -228,7 +230,9 @@ MAX_SPEED_KTS        = _clamp_int("RSBS_MAX_SPEED_KTS",  MAX_SPEED_KTS,        1
 MAX_GS_CIVIL_KTS     = _clamp_int("RSBS_MAX_GS_CIVIL",   MAX_GS_CIVIL_KTS,    1, 750)
 MAX_GS_MILITARY_KTS  = _clamp_int("RSBS_MAX_GS_MILITARY", MAX_GS_MILITARY_KTS, 1, 1800)
 MAX_GS_DEVIATION_KTS = _clamp_int("RSBS_MAX_GS_DEVIATION", MAX_GS_DEVIATION_KTS, 1, 100)
-MAX_GS_ACCEL_KTS_S   = _clamp_float("RSBS_MAX_GS_ACCEL", MAX_GS_ACCEL_KTS_S,  0.1, 8.0)
+MAX_GS_ACCEL_KTS_S        = _clamp_float("RSBS_MAX_GS_ACCEL",          MAX_GS_ACCEL_KTS_S,        0.1, 8.0)
+MLAT_OUTLIER_FACTOR       = _clamp_float("RSBS_MLAT_OUTLIER_FACTOR",   MLAT_OUTLIER_FACTOR,       2.0, 20.0)
+MLAT_OUTLIER_MIN_READINGS = _clamp_int(  "RSBS_MLAT_OUTLIER_MIN",      MLAT_OUTLIER_MIN_READINGS, 3,   50)
 ADSBX_RANGE_NM       = _clamp_int("RSBS_ADSBX_RANGE",   ADSBX_RANGE_NM,      1, 250)
 ROUTE_BATCH_SIZE     = _clamp_int("RSBS_ROUTE_BATCH",   ROUTE_BATCH_SIZE,     1, 20)
 

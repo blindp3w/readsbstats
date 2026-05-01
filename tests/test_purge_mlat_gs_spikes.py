@@ -9,6 +9,7 @@ from purge_mlat_gs_spikes import (
     apply_purge,
     scan_mlat_spikes,
     scan_orphan_max_gs,
+    scan_statistical_outliers,
     _new_max_gs,
 )
 
@@ -213,3 +214,73 @@ class TestApplyPurge:
 
         max_gs = self.conn.execute("SELECT max_gs FROM flights WHERE id = ?", (fid,)).fetchone()[0]
         assert max_gs == pytest.approx(410.7)
+
+
+# ---------------------------------------------------------------------------
+# scan_statistical_outliers
+# ---------------------------------------------------------------------------
+
+class TestScanStatisticalOutliers:
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        self.conn = make_db()
+        yield
+        self.conn.close()
+
+    def test_isolated_leading_spike_flagged(self):
+        """First isolated GS 10× the flight median must be flagged (the SP-RAM case)."""
+        fid = insert_flight(self.conn, max_gs=724.0)
+        spike_pid = insert_pos(self.conn, fid, 1000, 724.0)
+        for t in range(2000, 2110, 10):  # 11 normal positions
+            insert_pos(self.conn, fid, t, 70.0)
+        bad = scan_statistical_outliers(self.conn, outlier_factor=5.0, min_readings=10)
+        assert fid in bad
+        assert spike_pid in bad[fid]
+
+    def test_normal_flight_not_flagged(self):
+        """Flight with uniform GS must not produce any outliers."""
+        fid = insert_flight(self.conn, max_gs=80.0)
+        for i, t in enumerate(range(1000, 1110, 10)):
+            insert_pos(self.conn, fid, t, 70.0 + (i % 15))  # 70–84 kts
+        bad = scan_statistical_outliers(self.conn, outlier_factor=5.0, min_readings=10)
+        assert fid not in bad
+
+    def test_too_few_readings_skipped(self):
+        """Flight with fewer than min_readings MLAT GS values must not be scanned."""
+        fid = insert_flight(self.conn, max_gs=724.0)
+        spike_pid = insert_pos(self.conn, fid, 1000, 724.0)
+        for t in range(2000, 2080, 10):  # 8 normal readings — total 9 < min 10
+            insert_pos(self.conn, fid, t, 70.0)
+        bad = scan_statistical_outliers(self.conn, outlier_factor=5.0, min_readings=10)
+        assert fid not in bad
+
+    def test_adsb_positions_excluded(self):
+        """ADS-B positions must not count toward or be flagged by the outlier scan."""
+        fid = insert_flight(self.conn, max_gs=724.0)
+        insert_pos(self.conn, fid, 1000, 724.0, source_type="adsb_icao")  # adsb spike
+        for t in range(2000, 2110, 10):
+            insert_pos(self.conn, fid, t, 70.0, source_type="adsb_icao")
+        bad = scan_statistical_outliers(self.conn, outlier_factor=5.0, min_readings=10)
+        assert fid not in bad
+
+    def test_multiple_outliers_all_flagged(self):
+        """Multiple MLAT GS outliers in the same flight must all be flagged."""
+        fid = insert_flight(self.conn, max_gs=800.0)
+        pid1 = insert_pos(self.conn, fid, 1000, 800.0)
+        pid2 = insert_pos(self.conn, fid, 1100, 750.0)
+        for t in range(2000, 2110, 10):  # 11 normals
+            insert_pos(self.conn, fid, t, 70.0)
+        bad = scan_statistical_outliers(self.conn, outlier_factor=5.0, min_readings=10)
+        assert fid in bad
+        assert pid1 in bad[fid]
+        assert pid2 in bad[fid]
+
+    def test_normal_not_flagged_alongside_spike(self):
+        """Normal GS values must survive even when a spike is flagged."""
+        fid = insert_flight(self.conn, max_gs=724.0)
+        insert_pos(self.conn, fid, 1000, 724.0)  # spike
+        normal_pid = insert_pos(self.conn, fid, 2000, 70.0)
+        for t in range(2010, 2110, 10):  # 10 more normals
+            insert_pos(self.conn, fid, t, 70.0)
+        bad = scan_statistical_outliers(self.conn, outlier_factor=5.0, min_readings=10)
+        assert normal_pid not in bad.get(fid, [])

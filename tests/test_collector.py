@@ -399,6 +399,63 @@ class TestOpenCloseFlight:
         row = self.conn.execute("SELECT * FROM flights WHERE id = ?", (fid,)).fetchone()
         assert row is None
 
+    def test_close_flight_nulls_mlat_gs_outlier(self):
+        """MLAT GS spike >>5×p75 must be nulled and max_gs recomputed at close."""
+        from readsbstats.collector import _open_flight, _close_flight
+        fid = _open_flight(
+            self.conn, "aabbcc", 1000, None, None, None,
+            None, None, 52.0, 21.0, None, None, None, None, None,
+        )
+        # Insert 1 spike + 11 normal MLAT positions (≥ MLAT_OUTLIER_MIN_READINGS)
+        spike_pid = self.conn.execute(
+            "INSERT INTO positions (flight_id, ts, lat, lon, gs, source_type) "
+            "VALUES (?, 1001, 52.0, 21.0, 724.0, 'mlat')", (fid,)
+        ).lastrowid
+        for i in range(11):
+            self.conn.execute(
+                "INSERT INTO positions (flight_id, ts, lat, lon, gs, source_type) "
+                "VALUES (?, ?, 52.0, 21.0, 70.0, 'mlat')", (fid, 2000 + i * 10)
+            )
+        self.conn.execute(
+            "UPDATE flights SET total_positions=12, mlat_positions=12, max_gs=724.0 WHERE id=?",
+            (fid,),
+        )
+        self.conn.commit()
+        with self.conn:
+            _close_flight(self.conn, "aabbcc")
+        spike_gs = self.conn.execute(
+            "SELECT gs FROM positions WHERE id = ?", (spike_pid,)
+        ).fetchone()[0]
+        assert spike_gs is None, "outlier GS must be nulled"
+        max_gs = self.conn.execute(
+            "SELECT max_gs FROM flights WHERE id = ?", (fid,)
+        ).fetchone()[0]
+        assert max_gs == pytest.approx(70.0), "max_gs must be recomputed after nulling"
+
+    def test_close_flight_leaves_normal_mlat_gs_intact(self):
+        """MLAT flight with uniform GS must not have any values nulled at close."""
+        from readsbstats.collector import _open_flight, _close_flight
+        fid = _open_flight(
+            self.conn, "aabbcc", 1000, None, None, None,
+            None, None, 52.0, 21.0, None, None, None, None, None,
+        )
+        for i in range(12):
+            self.conn.execute(
+                "INSERT INTO positions (flight_id, ts, lat, lon, gs, source_type) "
+                "VALUES (?, ?, 52.0, 21.0, ?, 'mlat')", (fid, 1000 + i * 5, 70.0 + i)
+            )
+        self.conn.execute(
+            "UPDATE flights SET total_positions=12, mlat_positions=12, max_gs=81.0 WHERE id=?",
+            (fid,),
+        )
+        self.conn.commit()
+        with self.conn:
+            _close_flight(self.conn, "aabbcc")
+        nulled = self.conn.execute(
+            "SELECT COUNT(*) FROM positions WHERE flight_id = ? AND gs IS NULL", (fid,)
+        ).fetchone()[0]
+        assert nulled == 0, "no GS values should be nulled in a normal flight"
+
 
 # ---------------------------------------------------------------------------
 # _poll integration — via temp aircraft.json

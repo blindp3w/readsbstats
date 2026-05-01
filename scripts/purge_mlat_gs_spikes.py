@@ -23,6 +23,7 @@ Options:
 
 import argparse
 import sqlite3
+import statistics
 import sys
 
 from readsbstats import config
@@ -87,6 +88,53 @@ def scan_mlat_spikes(
     return bad
 
 
+def scan_statistical_outliers(
+    conn: sqlite3.Connection,
+    outlier_factor: float,
+    min_readings: int,
+) -> dict[int, list[int]]:
+    """
+    Scan MLAT flights for GS values that are statistical outliers vs. the
+    flight's own distribution.  A position is an outlier when its GS exceeds
+    outlier_factor × p75 of all MLAT GS values in that flight.  Flights with
+    fewer than min_readings MLAT GS values are skipped (too few points for a
+    stable p75).
+
+    This catches isolated leading/trailing spikes that the acceleration filter
+    misses because they have no adjacent reference point.
+
+    Returns {flight_id: [position_ids with outlier gs]}.
+    """
+    flight_ids = [
+        r[0] for r in conn.execute(
+            "SELECT DISTINCT flight_id FROM positions "
+            "WHERE gs IS NOT NULL AND source_type = 'mlat' ORDER BY flight_id"
+        ).fetchall()
+    ]
+
+    bad: dict[int, list[int]] = {}
+
+    for fid in flight_ids:
+        rows = conn.execute(
+            "SELECT id, gs FROM positions "
+            "WHERE flight_id = ? AND gs IS NOT NULL AND source_type = 'mlat'",
+            (fid,),
+        ).fetchall()
+
+        if len(rows) < min_readings:
+            continue
+
+        gs_sorted = sorted(r[1] for r in rows)   # r[0]=id, r[1]=gs
+        p75 = statistics.quantiles(gs_sorted, n=4)[2]
+        threshold = p75 * outlier_factor
+
+        bad_ids = [r[0] for r in rows if r[1] > threshold]  # collect ids of outliers
+        if bad_ids:
+            bad[fid] = bad_ids
+
+    return bad
+
+
 def scan_orphan_max_gs(conn: sqlite3.Connection) -> dict[int, float | None]:
     """
     Find flights where max_gs exceeds all stored position gs values.
@@ -145,9 +193,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Null MLAT gs spikes and fix max_gs in flights"
     )
-    parser.add_argument("--db",           default=config.DB_PATH)
-    parser.add_argument("--accel-limit",  default=config.MAX_GS_ACCEL_KTS_S, type=float)
-    parser.add_argument("--apply",        action="store_true",
+    parser.add_argument("--db",             default=config.DB_PATH)
+    parser.add_argument("--accel-limit",    default=config.MAX_GS_ACCEL_KTS_S,       type=float)
+    parser.add_argument("--outlier-factor", default=config.MLAT_OUTLIER_FACTOR,       type=float,
+                        help="Null MLAT GS > this × p75 of the flight's GS values (default: %(default)s)")
+    parser.add_argument("--min-gs-count",   default=config.MLAT_OUTLIER_MIN_READINGS, type=int,
+                        help="Min MLAT GS readings required for outlier scan (default: %(default)s)")
+    parser.add_argument("--apply",          action="store_true",
                         help="Commit changes (default: dry-run)")
     args = parser.parse_args()
 
@@ -156,11 +208,22 @@ def main() -> None:
 
     print(
         f"Scanning {args.db}\n"
-        f"  accel limit : {args.accel_limit} kts/s (MLAT only)\n"
-        f"  mode        : {'APPLY' if args.apply else 'dry-run'}\n"
+        f"  accel limit    : {args.accel_limit} kts/s (MLAT only)\n"
+        f"  outlier factor : {args.outlier_factor}× p75  (min {args.min_gs_count} readings)\n"
+        f"  mode           : {'APPLY' if args.apply else 'dry-run'}\n"
     )
 
-    bad = scan_mlat_spikes(conn, args.accel_limit)
+    accel_bad = scan_mlat_spikes(conn, args.accel_limit)
+    stat_bad  = scan_statistical_outliers(conn, args.outlier_factor, args.min_gs_count)
+
+    # Merge: union of position ids per flight
+    bad: dict[int, list[int]] = {}
+    for fid, ids in accel_bad.items():
+        bad.setdefault(fid, []).extend(ids)
+    for fid, ids in stat_bad.items():
+        existing = set(bad.get(fid, []))
+        bad.setdefault(fid, []).extend(i for i in ids if i not in existing)
+
     orphans = scan_orphan_max_gs(conn)
     total_pos = sum(len(v) for v in bad.values())
 
@@ -179,11 +242,16 @@ def main() -> None:
             if not flight:
                 continue
             label = " ".join(filter(None, [flight["callsign"], flight["registration"]])) or flight["icao_hex"]
+            sources = []
+            if fid in accel_bad:
+                sources.append("accel")
+            if fid in stat_bad:
+                sources.append("outlier")
             old_max = flight["max_gs"]
             new_max = _new_max_gs(conn, fid, bad_ids)
             old_str = f"{old_max:.1f}" if old_max is not None else "NULL"
             new_str = f"{new_max:.1f}" if new_max is not None else "NULL"
-            print(f"  [{fid:>5}] {label:25s}  {len(bad_ids):>3} spikes  max_gs {old_str} → {new_str} kts")
+            print(f"  [{fid:>5}] {label:25s}  {len(bad_ids):>3} spikes [{','.join(sources)}]  max_gs {old_str} → {new_str} kts")
 
     if orphans:
         print(f"\n{len(orphans)} flight(s) with orphan max_gs:\n")

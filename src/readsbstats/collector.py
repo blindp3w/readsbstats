@@ -16,6 +16,7 @@ import os
 import signal
 import socket
 import sqlite3
+import statistics
 import sys
 import time
 
@@ -235,6 +236,38 @@ def _close_flight(conn: sqlite3.Connection, icao: str) -> None:
         if not (flags & (config.FLAG_MILITARY | config.FLAG_INTERESTING)):
             conn.execute("DELETE FROM flights WHERE id = ?", (flight_id,))
             return
+
+    # Statistical outlier filter: null MLAT GS values that are extreme outliers
+    # vs. the flight's own distribution.  Catches isolated leading spikes that
+    # the per-sample acceleration filter misses (no predecessor, or huge time gap).
+    mlat_gs = conn.execute(
+        "SELECT id, gs FROM positions "
+        "WHERE flight_id = ? AND gs IS NOT NULL AND source_type = 'mlat'",
+        (flight_id,),
+    ).fetchall()
+    if len(mlat_gs) >= config.MLAT_OUTLIER_MIN_READINGS:
+        gs_sorted = sorted(r[1] for r in mlat_gs)
+        p75 = statistics.quantiles(gs_sorted, n=4)[2]
+        threshold = p75 * config.MLAT_OUTLIER_FACTOR
+        outlier_ids = [r[0] for r in mlat_gs if r[1] > threshold]
+        if outlier_ids:
+            placeholders = ",".join("?" * len(outlier_ids))
+            conn.execute(
+                f"UPDATE positions SET gs = NULL WHERE id IN ({placeholders})",
+                outlier_ids,
+            )
+            new_max = conn.execute(
+                "SELECT MAX(gs) FROM positions WHERE flight_id = ? AND gs IS NOT NULL",
+                (flight_id,),
+            ).fetchone()[0]
+            conn.execute(
+                "UPDATE flights SET max_gs = ? WHERE id = ?", (new_max, flight_id)
+            )
+            log.debug(
+                "MLAT GS outlier: nulled %d position(s) for flight %d "
+                "(p75=%.1f kts, threshold=%.1f kts)",
+                len(outlier_ids), flight_id, p75, threshold,
+            )
 
     primary = _primary_source(row["adsb_positions"], row["mlat_positions"], total)
     conn.execute(
