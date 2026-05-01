@@ -179,8 +179,8 @@ The simulator writes 8 aircraft orbiting Warsaw every 5 seconds in readsb's airc
 ### Running tests
 
 ```bash
-.venv/bin/pytest                                              # 828 Python tests
-node --test tests/js/test_*.mjs                               # 35 JS tests (Node 22+)
+.venv/bin/pytest                                              # 837 Python tests
+node --test tests/js/test_*.mjs                               # 46 JS tests (Node 22+)
 for f in static/js/*.js; do node --check "$f"; done           # JS syntax check
 ```
 
@@ -508,7 +508,7 @@ readsbstats/
 │   ├── purge_ghosts.py         # One-shot cleanup: removes ghost positions
 │   ├── purge_bad_gs.py         # One-shot cleanup: nulls implausible gs values
 │   └── purge_mlat_gs_spikes.py # One-shot cleanup: nulls MLAT gs acceleration spikes
-├── tests/                      # pytest suite (17 files, 828 tests) + JS tests (tests/js/, 35 tests)
+├── tests/                      # pytest suite (17 files, 837 tests) + JS tests (tests/js/, 46 tests)
 ├── templates/
 │   ├── base.html               # Shared layout, nav bar with unit selector
 │   ├── index.html              # Flight list
