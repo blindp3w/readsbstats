@@ -32,7 +32,7 @@ function airspacePopup(feature) {
   const fmtLim = lim => lim ? `${lim.value} ${lim.unit}` : "—";
   const upper = fmtLim(props.upperLimit);
   const lower = props.lowerLimit ? fmtLim(props.lowerLimit) : "GND";
-  return `<b>${name}</b><br>${type}${cls}<br>${lower} – ${upper}`;
+  return `<b>${escHtml(name)}</b><br>${escHtml(type)}${escHtml(cls)}<br>${escHtml(lower)} – ${escHtml(upper)}`;
 }
 
 const _AIRSPACE_LEGEND = [

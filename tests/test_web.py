@@ -485,6 +485,18 @@ class TestApiHealth:
         assert r.status_code == 200
         assert r.json()["status"] == "degraded"
 
+    def test_does_not_leak_db_path(self, client):
+        # /api/health is a public uptime probe — must not reveal filesystem
+        # layout. The status field is the only field consumers need.
+        r = client.get("/api/health")
+        body = r.json()
+        assert "db_path" not in body
+        from readsbstats import config
+        import os
+        parent = os.path.dirname(os.path.abspath(config.DB_PATH))
+        if parent and parent != "/":
+            assert parent not in r.text
+
 
 # ---------------------------------------------------------------------------
 # API: /api/metrics/health
@@ -829,6 +841,8 @@ class TestFeederDetailParsers:
         import asyncio
         status_path = str(tmp_path)
         (tmp_path / "aircraft.json").write_text('{"aircraft": []}')
+        # Bypass the /run/ allowlist so the dispatcher reaches the real fetcher.
+        monkeypatch.setattr(web, "_is_safe_status_path", lambda _p: True)
         feeder = {"name": "readsb", "unit": "readsb.service", "status_type": "readsb", "status_path": status_path}
         result = asyncio.get_event_loop().run_until_complete(web._fetch_feeder_details(feeder))
         assert isinstance(result, list)
@@ -936,7 +950,9 @@ class TestFeederDetailParsers:
             return [("Version", "1.0")]
 
         monkeypatch.setattr(web, "_feeder_details_fr24", fake_fr24)
-        feeder = {"name": "fr24", "unit": "fr24.service", "status_type": "fr24", "status_url": "http://x"}
+        # Loopback URL passes the SSRF allowlist.
+        feeder = {"name": "fr24", "unit": "fr24.service", "status_type": "fr24",
+                  "status_url": "http://127.0.0.1:8754/monitor.json"}
         result = asyncio.get_event_loop().run_until_complete(web._fetch_feeder_details(feeder))
         assert result == [("Version", "1.0")]
 
@@ -944,6 +960,8 @@ class TestFeederDetailParsers:
         import asyncio
         path = str(tmp_path / "status.json")
         (tmp_path / "status.json").write_text('{"piaware_version": "9"}')
+        # Bypass the /run/ allowlist so the dispatcher reaches the real fetcher.
+        monkeypatch.setattr(web, "_is_safe_status_path", lambda _p: True)
         feeder = {"name": "piaware", "unit": "piaware.service", "status_type": "piaware", "status_path": path}
         result = asyncio.get_event_loop().run_until_complete(web._fetch_feeder_details(feeder))
         assert any(k == "Version" for k, _ in result)
@@ -970,6 +988,78 @@ class TestFeederDetailParsers:
         result = asyncio.get_event_loop().run_until_complete(web._check_all_feeders())
         assert len(result) == 2
         assert result[0]["name"] == "a"
+
+    # ---------- status_path / status_url allowlist (defence-in-depth) ----------
+
+    def test_is_safe_status_path_accepts_run_subdir(self):
+        assert web._is_safe_status_path("/run/readsb")
+        assert web._is_safe_status_path("/run/piaware/status.json")
+        assert web._is_safe_status_path("/run")
+
+    def test_is_safe_status_path_rejects_traversal(self):
+        assert not web._is_safe_status_path("/run/../etc/hostname")
+        assert not web._is_safe_status_path("/etc/passwd")
+        assert not web._is_safe_status_path("/")
+        assert not web._is_safe_status_path("/runaway/x")  # prefix-only match must require /
+
+    def test_is_safe_status_path_rejects_empty_and_bad_types(self):
+        assert not web._is_safe_status_path("")
+        assert not web._is_safe_status_path(None)  # type: ignore[arg-type]
+
+    def test_is_safe_status_url_accepts_loopback_http(self):
+        assert web._is_safe_status_url("http://127.0.0.1:8754/monitor.json")
+        assert web._is_safe_status_url("http://localhost:8754/")
+        assert web._is_safe_status_url("http://[::1]:8754/")
+
+    def test_is_safe_status_url_rejects_external_hosts(self):
+        assert not web._is_safe_status_url("http://169.254.169.254/latest/meta-data/")
+        assert not web._is_safe_status_url("http://example.com/")
+        assert not web._is_safe_status_url("http://10.0.0.1/")
+
+    def test_is_safe_status_url_rejects_non_http_schemes(self):
+        # https on loopback is fine in principle but we keep the allowlist
+        # tight: feeders all expose plain http on loopback by design.
+        assert not web._is_safe_status_url("https://127.0.0.1/")
+        assert not web._is_safe_status_url("file:///etc/passwd")
+        assert not web._is_safe_status_url("ftp://127.0.0.1/")
+
+    def test_is_safe_status_url_rejects_empty_and_bad(self):
+        assert not web._is_safe_status_url("")
+        assert not web._is_safe_status_url(None)  # type: ignore[arg-type]
+        assert not web._is_safe_status_url("not a url")
+
+    def test_fetch_feeder_details_rejects_unsafe_status_path(self, monkeypatch):
+        import asyncio
+        # Without the allowlist, this would call _read_json_file("/etc/hostname")
+        # and could leak file existence / contents through error handling.
+        feeder = {"name": "x", "unit": "x.service", "status_type": "readsb",
+                  "status_path": "/etc"}
+        called = {"hit": False}
+
+        def boom(_p):
+            called["hit"] = True
+            return [("should not be called", "x")]
+
+        monkeypatch.setattr(web, "_feeder_details_readsb", boom)
+        result = asyncio.get_event_loop().run_until_complete(web._fetch_feeder_details(feeder))
+        assert result == []
+        assert called["hit"] is False
+
+    def test_fetch_feeder_details_rejects_unsafe_status_url(self, monkeypatch):
+        import asyncio
+        # Without the allowlist, this could SSRF cloud metadata.
+        feeder = {"name": "x", "unit": "x.service", "status_type": "fr24",
+                  "status_url": "http://169.254.169.254/latest/meta-data/"}
+        called = {"hit": False}
+
+        async def boom(_url):
+            called["hit"] = True
+            return [("should not be called", "x")]
+
+        monkeypatch.setattr(web, "_feeder_details_fr24", boom)
+        result = asyncio.get_event_loop().run_until_complete(web._fetch_feeder_details(feeder))
+        assert result == []
+        assert called["hit"] is False
 
 
 # ---------------------------------------------------------------------------

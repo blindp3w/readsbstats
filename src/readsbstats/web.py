@@ -18,6 +18,7 @@ import time
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlparse
 
 import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
@@ -1627,7 +1628,7 @@ async def api_health() -> dict:
         db_ok = True
     except Exception:
         db_ok = False
-    return {"status": "ok" if db_ok else "degraded", "db_path": config.DB_PATH}
+    return {"status": "ok" if db_ok else "degraded"}
 
 
 # ---------------------------------------------------------------------------
@@ -1799,15 +1800,59 @@ async def _feeder_details_mlat(unit: str) -> list[tuple[str, str]]:
     return details
 
 
+_FEEDER_STATUS_PATH_ROOT = "/run"
+_FEEDER_STATUS_URL_HOSTS = ("127.0.0.1", "localhost", "::1")
+
+
+def _is_safe_status_path(path: str) -> bool:
+    """A feeder status_path comes from RSBS_FEEDERS (env-controlled). Only allow
+    paths that resolve under /run/ — defence-in-depth against path traversal
+    if the env is ever attacker-controlled."""
+    if not isinstance(path, str) or not path:
+        return False
+    try:
+        resolved = os.path.realpath(path)
+    except (OSError, ValueError):
+        return False
+    return resolved == _FEEDER_STATUS_PATH_ROOT or resolved.startswith(
+        _FEEDER_STATUS_PATH_ROOT + "/"
+    )
+
+
+def _is_safe_status_url(url: str) -> bool:
+    """A feeder status_url comes from RSBS_FEEDERS (env-controlled). Only allow
+    plain http on a loopback host — defence-in-depth against SSRF if the env
+    is ever attacker-controlled."""
+    if not isinstance(url, str) or not url:
+        return False
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return False
+    return parsed.scheme == "http" and parsed.hostname in _FEEDER_STATUS_URL_HOSTS
+
+
 async def _fetch_feeder_details(feeder: dict) -> list[tuple[str, str]]:
     """Dispatch to the appropriate detail fetcher based on status_type."""
     st = feeder.get("status_type")
     try:
         if st == "readsb" and feeder.get("status_path"):
+            if not _is_safe_status_path(feeder["status_path"]):
+                log.warning("feeder %r: rejecting status_path %r (must be under /run/)",
+                            feeder.get("name"), feeder["status_path"])
+                return []
             return _feeder_details_readsb(feeder["status_path"])
         if st == "fr24" and feeder.get("status_url"):
+            if not _is_safe_status_url(feeder["status_url"]):
+                log.warning("feeder %r: rejecting status_url %r (must be http on loopback)",
+                            feeder.get("name"), feeder["status_url"])
+                return []
             return await _feeder_details_fr24(feeder["status_url"])
         if st == "piaware" and feeder.get("status_path"):
+            if not _is_safe_status_path(feeder["status_path"]):
+                log.warning("feeder %r: rejecting status_path %r (must be under /run/)",
+                            feeder.get("name"), feeder["status_path"])
+                return []
             return _feeder_details_piaware(feeder["status_path"])
         if st == "mlat":
             return await _feeder_details_mlat(feeder["unit"])
