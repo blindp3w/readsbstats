@@ -277,6 +277,14 @@ def _migrate(conn: sqlite3.Connection) -> None:
         "ON positions(flight_id, id DESC)"
     )
 
+    # Composite index for /api/map/snapshot: time-range GROUP BY flight_id
+    pos_cols = {row[1] for row in conn.execute("PRAGMA table_info(positions)")}
+    if "ts" in pos_cols:
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_positions_ts_flight "
+            "ON positions(ts, flight_id)"
+        )
+
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_flights_registration ON flights(registration)"
     )

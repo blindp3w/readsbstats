@@ -15,8 +15,10 @@ Designed to run alongside readsb, tar1090, and feed clients on a **Raspberry Pi 
 |---|---|
 | ![Statistics page](docs/screenshots/statistics_1.png) | ![Flight history](docs/screenshots/flights_1.png) |
 | Statistics — date-range filter, hourly activity, top airlines/types/routes/airports | Flight history — filters by callsign, registration, type, date, source, flag |
-| ![Aircraft gallery](docs/screenshots/gallery_1.png) | ![Receiver metrics with health banner](docs/screenshots/metrics_2.png) |
-| Gallery — flagged military and interesting aircraft detected by the receiver | Metrics + health — banner with 9 rule-based and baseline-aware checks (heartbeat, noise floor, gain saturation, signal/aircraft drop vs. hour-of-week baseline) above the time-series charts |
+| ![Live map with aircraft sidebar](docs/screenshots/live_1.png) | ![Receiver metrics with health banner](docs/screenshots/metrics_2.png) |
+| Live map — full-screen Leaflet map with aircraft type icons, historical rewind slider, and collapsible aircraft list sidebar | Metrics + health — banner with 9 rule-based and baseline-aware checks (heartbeat, noise floor, gain saturation, signal/aircraft drop vs. hour-of-week baseline) above the time-series charts |
+| ![Aircraft gallery](docs/screenshots/gallery_1.png) | |
+| Gallery — flagged military and interesting aircraft detected by the receiver | |
 
 ## Features
 
@@ -43,7 +45,7 @@ Designed to run alongside readsb, tar1090, and feed clients on a **Raspberry Pi 
   - Per-flight altitude + speed profile chart with RSSI signal strength chart
   - Per-flight aircraft photo thumbnail
   - Aircraft detail page (`/aircraft/{icao}`): full flight history for a single tail number, with aggregate stats, country of origin, and photo
-  - Live flight board (`/live`): currently tracked aircraft with auto-refresh, including route column and Leaflet mini-map showing aircraft positions
+  - **Live map** (`/map`): full-screen Leaflet map replacing the old live board — aircraft rendered as type-specific SVG icons (airliner, light prop, helicopter, glider) rotated by heading; collapsible right-side sidebar showing all visible aircraft (ICAO, callsign, route, registration, type, altitude, speed, source, time since last position) with click-through to flight detail; live mode auto-refreshes every 10 s; **historical rewind** lets you scrub back up to `RSBS_MAP_HISTORY_HOURS` (default 24 h) and replay at 1×/2×/5×/10× speed; aircraft count badge in the nav bar stays in sync with the map; `/live` redirects to `/map`
   - Flight list CSV export (respects active filters and sort)
   - Polar range plot on the statistics page: max detection distance per compass direction, units-aware
   - Flagged aircraft gallery (`/gallery`): card grid of all detected military and interesting aircraft, with photo, registration, type, country of origin, flight count; filterable by flag type (all/military/interesting), sortable by last seen, first seen, or flight count
@@ -179,8 +181,8 @@ The simulator writes 8 aircraft orbiting Warsaw every 5 seconds in readsb's airc
 ### Running tests
 
 ```bash
-.venv/bin/pytest                                              # 845 Python tests
-node --test tests/js/test_*.mjs                               # 46 JS tests (Node 22+)
+.venv/bin/pytest                                              # 877 Python tests
+node --test tests/js/test_*.mjs                               # 54 JS tests (Node 22+)
 for f in static/js/*.js; do node --check "$f"; done           # JS syntax check
 ```
 
@@ -209,8 +211,10 @@ To see coverage:
 | `tests/test_metrics_collector.py` | `/run/readsb/stats.json` parsing, downsampling tiers, allowlist |
 | `tests/test_import_rrd.py` | RRD fetch parsing, DERIVE conversion, multi-tier merge |
 | `tests/test_health.py` | Receiver health: hard rules, hour-of-week baselines, gain hints, severity aggregation |
+| `tests/test_map.py` | `/map` page route, `/api/map/snapshot` live and historical snapshots, trail, sidebar fields, `/live` redirect |
 | `tests/js/test_units.mjs` | JS formatters: `fmtAlt`/`fmtSpd`/`fmtDist`/`fmtClimb`, labels, `getUnits`/`setUnits` |
 | `tests/js/test_table_utils.mjs` | JS `flagBadge` bitmask interpretation (military precedence, all flag combinations) |
+| `tests/js/test_flight_detail.mjs` | `airspacePopup` HTML escaping — XSS rejection across all interpolated fields |
 
 Python tests use an in-memory SQLite database — no Pi required. JS tests use Node 22's built-in `node --test` runner with `vm`-sandboxed loading; no npm/package.json/node_modules.
 
@@ -306,6 +310,7 @@ Environment="RSBS_FLIGHT_GAP=1200"
 | `RSBS_SUMMARY_TIME` | `21:00` | Local time (HH:MM) to send the daily summary; `""` or `"off"` to disable |
 | `RSBS_TELEGRAM_UNITS` | `metric` | Units in notification messages: `metric`, `imperial`, or `aeronautical` |
 | `RSBS_BASE_URL` | `http://homepi.local/stats` | Base URL used for profile links in Telegram messages |
+| `RSBS_MAP_HISTORY_HOURS` | `24` | How many hours back the live map's rewind slider can reach (1–168) |
 | `RSBS_HEALTH_*` | _(see /settings)_ | Health-dashboard thresholds — heartbeat warn/critical, noise floor, CPU, baseline lookback, drop percentages, gain saturation, range-trend ratio. All effective values are listed on the `/settings` page; defaults are tuned for a stock readsb + Pi 4 setup |
 
 ### Logging
@@ -508,12 +513,13 @@ readsbstats/
 │   ├── purge_ghosts.py         # One-shot cleanup: removes ghost positions
 │   ├── purge_bad_gs.py         # One-shot cleanup: nulls implausible gs values
 │   └── purge_mlat_gs_spikes.py # One-shot cleanup: nulls MLAT gs acceleration spikes
-├── tests/                      # pytest suite (17 files, 845 tests) + JS tests (tests/js/, 46 tests)
+├── tests/                      # pytest suite (18 files, 877 tests) + JS tests (tests/js/, 54 tests)
 ├── templates/
 │   ├── base.html               # Shared layout, nav bar with unit selector
 │   ├── index.html              # Flight list
 │   ├── flight.html             # Flight detail
-│   ├── live.html               # Live flight board
+│   ├── live.html               # Kept for redirect only (→ /map)
+│   ├── map.html                # Full-screen live map with rewind and aircraft sidebar
 │   ├── aircraft.html           # Per-aircraft history
 │   ├── stats.html              # Statistics
 │   ├── gallery.html            # Flagged aircraft card gallery
@@ -525,7 +531,8 @@ readsbstats/
 │       ├── units.js            # Unit conversion helpers (aero/metric/imperial)
 │       ├── flights.js          # Flight list page
 │       ├── flight_detail.js    # Per-flight map, photo, and detail page
-│       ├── live.js             # Live flight board (auto-refresh)
+│       ├── live.js             # Kept for completeness (page redirects to /map)
+│       ├── map.js              # Full-screen live map: aircraft icons, rewind, sidebar
 │       ├── stats.js            # Statistics charts
 │       ├── aircraft.js         # Per-aircraft history + Watch button
 │       ├── gallery.js          # Flagged aircraft card gallery
@@ -578,7 +585,8 @@ The web server exposes a JSON API alongside the HTML pages:
 | GET | `/api/stats/records` | All-time personal records: furthest, fastest, highest, longest |
 | GET | `/api/airspace` | Airspace GeoJSON (configured path or bundled poland.geojson; cached 1 h) |
 | GET | `/api/stats/polar` | Max detection range per azimuth bucket (default 10°, 36 buckets) |
-| GET | `/api/live` | Currently tracked aircraft |
+| GET | `/api/live` | Currently tracked aircraft (used by nav badge; `/live` page redirects to `/map`) |
+| GET | `/api/map/snapshot` | Aircraft snapshot at a given timestamp (`at`, `trail` params) — powers the live map and rewind |
 | GET | `/api/dates` | Per-day flight counts |
 | GET | `/api/airlines/{prefix}/flights` | All flights by airline prefix (e.g. `LOT`) |
 | GET | `/api/types/{type}/flights` | All flights by aircraft type (e.g. `B738`) |

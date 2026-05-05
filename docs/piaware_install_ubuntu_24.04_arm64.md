@@ -51,13 +51,7 @@ useradd -r -M -s /usr/sbin/nologin piaware
 
 ---
 
-## 5. Configure sudo
-
-echo "piaware ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/piaware
-
----
-
-## 6. Directories
+## 5. Directories
 
 mkdir -p /var/cache/piaware
 chown -R piaware:piaware /var/cache/piaware

@@ -132,6 +132,11 @@ HEALTH_RANGE_LONG_DAYS  = _int("RSBS_HEALTH_RANGE_LONG_DAYS",   "30")
 HEALTH_RANGE_RATIO      = _float("RSBS_HEALTH_RANGE_RATIO",     "0.85") # info if 7d max < 30d max × this
 
 # ---------------------------------------------------------------------------
+# Map / historical replay
+# ---------------------------------------------------------------------------
+MAP_HISTORY_HOURS  = _int("RSBS_MAP_HISTORY_HOURS", "24")    # slider reach (hours)
+
+# ---------------------------------------------------------------------------
 # Web server
 # ---------------------------------------------------------------------------
 WEB_HOST           = os.getenv("RSBS_WEB_HOST",  "0.0.0.0")
@@ -235,6 +240,9 @@ MLAT_OUTLIER_FACTOR       = _clamp_float("RSBS_MLAT_OUTLIER_FACTOR",   MLAT_OUTL
 MLAT_OUTLIER_MIN_READINGS = _clamp_int(  "RSBS_MLAT_OUTLIER_MIN",      MLAT_OUTLIER_MIN_READINGS, 3,   50)
 ADSBX_RANGE_NM       = _clamp_int("RSBS_ADSBX_RANGE",   ADSBX_RANGE_NM,      1, 250)
 ROUTE_BATCH_SIZE     = _clamp_int("RSBS_ROUTE_BATCH",   ROUTE_BATCH_SIZE,     1, 20)
+
+# Map history — zero would make the slider useless
+MAP_HISTORY_HOURS    = _clamp_int("RSBS_MAP_HISTORY_HOURS", MAP_HISTORY_HOURS, 1, 24)
 
 # Pagination — zero causes FastAPI validation conflicts (ge=1, le=0)
 MAX_PAGE_SIZE        = _clamp_int("RSBS_MAX_PAGE_SIZE",  MAX_PAGE_SIZE,        1, 500)

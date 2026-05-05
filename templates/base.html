@@ -7,7 +7,7 @@
   <link rel="stylesheet" href="{{ root_path }}/static/vendor/leaflet.css">
   <link rel="stylesheet" href="{{ root_path }}/static/css/app.css">
 </head>
-<body>
+<body class="{% block body_class %}{% endblock %}">
   <nav aria-label="Main navigation">
     <a href="{{ root_path }}/" class="brand">✈ readsbstats</a>
     <span id="live-badge" class="live-badge" title="Currently tracked aircraft" aria-live="polite"></span>
@@ -15,7 +15,7 @@
     <div id="nav-links" class="nav-links">
       <a href="{{ root_path }}/">Statistics</a>
       <a href="{{ root_path }}/history">Flights</a>
-      <a href="{{ root_path }}/live">Live</a>
+      <a href="{{ root_path }}/map">Live</a>
       <a href="{{ root_path }}/gallery">Gallery</a>
       <a href="{{ root_path }}/watchlist">Watchlist</a>
       <a href="{{ root_path }}/feeders">Feeders</a>

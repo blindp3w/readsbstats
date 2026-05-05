@@ -586,10 +586,10 @@ class TestPageRoutes:
         assert r.status_code == 200
         assert "text/html" in r.headers["content-type"]
 
-    def test_live_page_returns_html(self, client):
-        r = client.get("/live")
-        assert r.status_code == 200
-        assert "text/html" in r.headers["content-type"]
+    def test_live_page_redirects_to_map(self, client):
+        r = client.get("/live", follow_redirects=False)
+        assert r.status_code == 301
+        assert r.headers["location"].endswith("/map")
 
     def test_settings_page_returns_html(self, client):
         r = client.get("/settings")

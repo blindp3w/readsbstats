@@ -176,6 +176,100 @@ nav .brand { color: var(--accent); font-weight: 600; font-size: 1rem; margin-rig
 }
 @media (max-width: 600px) { .live-map { height: 220px; } }
 
+/* ----- Full-screen map page ------------------------------------------- */
+body.map-page { overflow: hidden; display: flex; flex-direction: column; height: 100vh; }
+body.map-page main { flex: 1; position: relative; max-width: none; margin: 0; padding: 0; min-height: 0; }
+#map-full { position: absolute; top: 0; left: 0; right: 0; bottom: 0; z-index: 0; }
+.map-controls-overlay {
+  position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%);
+  z-index: 1000; background: rgba(26,29,39,.93); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: .55rem .85rem; min-width: 540px;
+  max-width: calc(100vw - 24px); backdrop-filter: blur(4px); box-shadow: var(--shadow);
+}
+.map-ctrl-row { display: flex; align-items: center; gap: .45rem; }
+.map-ctrl-row + .map-ctrl-row { margin-top: .35rem; }
+.map-mode-btn {
+  background: var(--surface2); border: 1px solid var(--border); color: var(--text-dim);
+  padding: .22rem .6rem; border-radius: var(--radius); cursor: pointer; font-size: .82rem;
+}
+.map-mode-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+.map-mode-btn:hover:not(.active) { border-color: var(--accent); color: var(--text); }
+.map-time-disp {
+  flex: 1; text-align: center; font-size: .87rem; font-weight: 500;
+  color: var(--text); font-variant-numeric: tabular-nums;
+}
+#map-slider { flex: 1; accent-color: var(--accent); cursor: pointer; min-width: 0; }
+#map-slider:disabled { opacity: .35; cursor: not-allowed; }
+.map-ctrl-btn {
+  background: var(--surface2); border: 1px solid var(--border); color: var(--text);
+  padding: .22rem .5rem; border-radius: var(--radius); cursor: pointer; font-size: .82rem;
+  white-space: nowrap;
+}
+.map-ctrl-btn:hover { border-color: var(--accent); color: var(--accent); }
+.map-speed-btn { background: var(--surface2); border: 1px solid var(--border); color: var(--text-dim);
+  padding: .18rem .42rem; border-radius: var(--radius); cursor: pointer; font-size: .78rem; }
+.map-speed-btn.active { border-color: var(--accent); color: var(--accent); }
+.map-speed-btn:hover { border-color: var(--accent); color: var(--accent); }
+.map-speed-label { font-size: .78rem; color: var(--text-dim); }
+.map-ac-count { font-size: .78rem; color: var(--text-dim); margin-left: auto; }
+.ac-icon-wrap { pointer-events: none; }
+@media (max-width: 600px) {
+  .map-controls-overlay { min-width: 0; width: calc(100% - 16px); bottom: 8px; }
+}
+
+/* ----- Map sidebar ------------------------------------------------------- */
+/*
+ * Layout trick: the sidebar container has NO fixed width — it auto-sizes to
+ * button + inner panel.  translateX(360px) shifts only the 360px inner panel
+ * off-screen while the toggle button (on the left of the flex row) stays
+ * pinned at the right viewport edge.
+ */
+.map-sidebar {
+  position: absolute; top: 0; right: 0; bottom: 0;
+  z-index: 1001;
+  display: flex; flex-direction: row; align-items: center;
+  transform: translateX(360px); transition: transform .22s ease;
+  pointer-events: none;
+}
+.map-sidebar.open { transform: translateX(0); }
+.map-sidebar-toggle {
+  pointer-events: all; flex-shrink: 0; align-self: center;
+  background: rgba(26,29,39,.93); border: 1px solid var(--border);
+  border-right: none; border-radius: var(--radius) 0 0 var(--radius);
+  color: var(--text); padding: .6rem .42rem; cursor: pointer;
+  font-size: .85rem; line-height: 1; backdrop-filter: blur(4px);
+  box-shadow: var(--shadow);
+}
+.map-sidebar-toggle:hover { color: var(--accent); }
+.map-sidebar-inner {
+  pointer-events: all; width: 360px; flex-shrink: 0;
+  background: rgba(26,29,39,.95); backdrop-filter: blur(4px);
+  border-left: 1px solid var(--border); box-shadow: var(--shadow);
+  display: flex; flex-direction: column; overflow: hidden;
+  height: 100%;
+}
+.map-sidebar-header {
+  padding: .45rem .65rem; border-bottom: 1px solid var(--border); flex-shrink: 0;
+}
+.map-sidebar-scroll { overflow-y: auto; flex: 1; }
+.map-sidebar-scroll table { width: 100%; border-collapse: collapse; font-size: .75rem; }
+.map-sidebar-scroll th {
+  position: sticky; top: 0; background: var(--surface2);
+  padding: .3rem .45rem; text-align: left; font-weight: 600;
+  color: var(--text-dim); border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.map-sidebar-scroll td {
+  padding: .28rem .45rem; border-bottom: 1px solid rgba(255,255,255,.05);
+  max-width: 72px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.map-sidebar-scroll tr.clickable { cursor: pointer; }
+.map-sidebar-scroll tr.clickable:hover { background: var(--surface2); }
+@media (max-width: 600px) {
+  .map-sidebar { transform: translateX(100vw); }
+  .map-sidebar-inner { width: calc(100vw - 28px); }
+}
+
 /* ----- Layout --------------------------------------------------------- */
 main { max-width: 1400px; margin: 0 auto; padding: 1.5rem; }
 

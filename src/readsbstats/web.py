@@ -242,7 +242,18 @@ async def page_aircraft(request: Request, icao_hex: str) -> HTMLResponse:
 
 @app.get("/live", response_class=HTMLResponse)
 async def page_live(request: Request) -> HTMLResponse:
-    return templates.TemplateResponse(request, "live.html")
+    from fastapi.responses import RedirectResponse
+    root = request.scope.get("root_path", "").rstrip("/")
+    return RedirectResponse(url=root + "/map", status_code=301)
+
+
+@app.get("/map", response_class=HTMLResponse)
+async def page_map(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse(request, "map.html", {
+        "history_hours": config.MAP_HISTORY_HOURS,
+        "receiver_lat":  config.RECEIVER_LAT,
+        "receiver_lon":  config.RECEIVER_LON,
+    })
 
 
 @app.get("/settings", response_class=HTMLResponse)
@@ -1462,6 +1473,109 @@ async def api_live() -> dict:
         "receiver_lat": config.RECEIVER_LAT,
         "receiver_lon": config.RECEIVER_LON,
         "aircraft": aircraft,
+    }
+
+
+# ---------------------------------------------------------------------------
+# API — historical map snapshot
+# ---------------------------------------------------------------------------
+
+_MAP_WINDOW_SEC = 600  # flight must have a position within this window of `at`
+
+
+@app.get("/api/map/snapshot")
+async def api_map_snapshot(
+    at: int | None = Query(None, description="Unix timestamp (default: now → live mode)"),
+    trail: int = Query(10, ge=0, description="Trail positions per aircraft (capped at 50)"),
+) -> dict:
+    now = int(time.time())
+
+    if at is None:
+        at = now
+        is_live = True
+    else:
+        if at > now + 60:
+            raise HTTPException(400, "at timestamp cannot be in the future")
+        oldest = now - config.MAP_HISTORY_HOURS * 3600
+        if at < oldest:
+            raise HTTPException(
+                400,
+                f"at timestamp exceeds history limit ({config.MAP_HISTORY_HOURS}h)",
+            )
+        is_live = abs(at - now) <= 30
+
+    trail_count = min(trail, 50)
+    conn = db()
+
+    rows = conn.execute(
+        """
+        WITH af AS (
+            SELECT flight_id, MAX(id) AS lid
+            FROM positions
+            WHERE ts BETWEEN ? AND ?
+              AND lat IS NOT NULL AND lon IS NOT NULL
+            GROUP BY flight_id
+        )
+        SELECT p.flight_id, p.ts, p.lat, p.lon, p.alt_baro, p.gs, p.track,
+               p.source_type,
+               f.icao_hex, f.callsign, f.registration, f.aircraft_type,
+               f.category, f.primary_source,
+               (COALESCE(adb.flags, 0) | COALESCE(axo.flags, 0)) AS flags,
+               cr.origin_icao, cr.dest_icao
+        FROM af
+        JOIN positions p ON p.id = af.lid
+        JOIN flights f ON f.id = p.flight_id
+        LEFT JOIN aircraft_db     adb ON adb.icao_hex = f.icao_hex
+        LEFT JOIN adsbx_overrides axo ON axo.icao_hex = f.icao_hex
+        LEFT JOIN callsign_routes cr  ON cr.callsign  = f.callsign
+        """,
+        (at - _MAP_WINDOW_SEC, at),
+    ).fetchall()
+
+    aircraft = []
+    for r in rows:
+        d = dict(r)
+        d["seconds_ago"] = at - r["ts"]
+        aircraft.append(d)
+
+    if trail_count > 0 and aircraft:
+        flight_ids = [r["flight_id"] for r in aircraft]
+        placeholders = ",".join("?" * len(flight_ids))
+        trail_rows = conn.execute(
+            f"""
+            WITH ranked AS (
+                SELECT flight_id, ts, lat, lon,
+                       ROW_NUMBER() OVER (PARTITION BY flight_id ORDER BY ts DESC) AS rn
+                FROM positions
+                WHERE flight_id IN ({placeholders})
+                  AND ts <= ?
+                  AND lat IS NOT NULL AND lon IS NOT NULL
+            )
+            SELECT flight_id, ts, lat, lon FROM ranked WHERE rn <= ?
+            ORDER BY flight_id, ts
+            """,
+            [*flight_ids, at, trail_count],
+        ).fetchall()
+
+        trail_by_flight: dict[int, list] = {}
+        for tr in trail_rows:
+            fid = tr["flight_id"]
+            if fid not in trail_by_flight:
+                trail_by_flight[fid] = []
+            trail_by_flight[fid].append([tr["lat"], tr["lon"], tr["ts"]])
+
+        for ac in aircraft:
+            ac["trail"] = trail_by_flight.get(ac["flight_id"], [])
+    else:
+        for ac in aircraft:
+            ac["trail"] = []
+
+    return {
+        "at":           at,
+        "is_live":      is_live,
+        "receiver_lat": config.RECEIVER_LAT,
+        "receiver_lon": config.RECEIVER_LON,
+        "aircraft":     aircraft,
     }
 
 
