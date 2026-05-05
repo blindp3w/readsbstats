@@ -177,7 +177,7 @@ nav .brand { color: var(--accent); font-weight: 600; font-size: 1rem; margin-rig
 @media (max-width: 600px) { .live-map { height: 220px; } }
 
 /* ----- Full-screen map page ------------------------------------------- */
-body.map-page { overflow: hidden; display: flex; flex-direction: column; height: 100vh; }
+body.map-page { overflow: hidden; display: flex; flex-direction: column; height: 100vh; height: 100dvh; }
 body.map-page main { flex: 1; position: relative; max-width: none; margin: 0; padding: 0; min-height: 0; }
 #map-full { position: absolute; top: 0; left: 0; right: 0; bottom: 0; z-index: 0; }
 .map-controls-overlay {
@@ -215,14 +215,16 @@ body.map-page main { flex: 1; position: relative; max-width: none; margin: 0; pa
 .ac-icon-wrap { pointer-events: none; }
 @media (max-width: 600px) {
   .map-controls-overlay { min-width: 0; width: calc(100% - 16px); bottom: 8px; }
+  .map-ctrl-row { flex-wrap: wrap; gap: .3rem; }
+  .map-speed-label { display: none; }
 }
 
 /* ----- Map sidebar ------------------------------------------------------- */
 /*
  * Layout trick: the sidebar container has NO fixed width — it auto-sizes to
- * button + inner panel.  translateX(360px) shifts only the 360px inner panel
- * off-screen while the toggle button (on the left of the flex row) stays
- * pinned at the right viewport edge.
+ * button + inner panel.  translateX(N) shifts by exactly the inner panel width
+ * so the toggle button (left child in the flex row) stays pinned at the right
+ * viewport edge.  Mobile and tablet breakpoints override both values together.
  */
 .map-sidebar {
   position: absolute; top: 0; right: 0; bottom: 0;
@@ -266,8 +268,14 @@ body.map-page main { flex: 1; position: relative; max-width: none; margin: 0; pa
 .map-sidebar-scroll tr.clickable { cursor: pointer; }
 .map-sidebar-scroll tr.clickable:hover { background: var(--surface2); }
 @media (max-width: 600px) {
-  .map-sidebar { transform: translateX(100vw); }
+  .map-sidebar { transform: translateX(calc(100vw - 28px)); }
   .map-sidebar-inner { width: calc(100vw - 28px); }
+}
+@media (min-width: 601px) and (max-width: 900px) {
+  .map-sidebar { transform: translateX(280px); }
+  .map-sidebar-inner { width: 280px; }
+  .map-sidebar-scroll th:nth-child(n+7),
+  .map-sidebar-scroll td:nth-child(n+7) { display: none; }
 }
 
 /* ----- Layout --------------------------------------------------------- */
