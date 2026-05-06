@@ -18,7 +18,7 @@ ExecStart=/opt/readsbstats/venv/bin/uvicorn readsbstats.web:app \
 Restart=on-failure
 RestartSec=5
 
-CPUQuota=20%
+CPUQuota=50%
 MemoryMax=384M
 Nice=10
 

@@ -22,6 +22,10 @@ let playTimer   = null;
 let debounceTimer = null;
 let lastSnapshot  = null;
 
+let heatLayer  = null;   // Leaflet.heat layer instance
+let heatActive = false;
+let heatWindow = "24h";
+
 // DOM refs (set in init)
 let sliderEl, timeDispEl, playBtn, modeLiveBtn, modeRewindBtn, jumpNowBtn, acCountEl;
 let sidebarEl, sidebarToggleEl, sidebarBodyEl, sidebarCountEl;
@@ -350,6 +354,61 @@ function startLivePolling() {
 
 // ---------- Init ----------
 
+// ---------- Position density heatmap ----------
+
+async function loadHeatmap(win) {
+  const statusEl = document.getElementById("map-heat-status");
+  if (statusEl) { statusEl.textContent = "Loading…"; statusEl.classList.remove("hidden"); }
+  const ctrl = new AbortController();
+  const timeout = setTimeout(() => ctrl.abort(), 55000); // 55s < nginx 60s
+  try {
+    const resp = await fetch(ROOT + "/api/map/heatmap?window=" + encodeURIComponent(win),
+                             { signal: ctrl.signal });
+    if (!resp.ok) throw new Error("HTTP " + resp.status);
+    const data = await resp.json();
+    // Guard: user may have toggled the heatmap off while this fetch was in-flight.
+    if (!heatActive) return;
+    if (heatLayer) { mapInstance.removeLayer(heatLayer); heatLayer = null; }
+    if (data.points.length > 0) {
+      heatLayer = L.heatLayer(data.points, {
+        radius:     20,
+        blur:       18,
+        maxZoom:    13,
+        max:        1.0,
+        minOpacity: 0.35,
+        gradient:   { 0.2: "#ffd700", 0.5: "#ff7700", 0.8: "#e62200", 1.0: "#9b0000" },
+      }).addTo(mapInstance);
+    }
+    if (statusEl) statusEl.classList.add("hidden");
+  } catch (err) {
+    console.error("Heatmap load failed:", err);
+    if (statusEl) {
+      statusEl.textContent = err.name === "AbortError" ? "Timed out — try a shorter window" : "Failed to load";
+      statusEl.classList.remove("hidden");
+    }
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function toggleHeatmap() {
+  const btn    = document.getElementById("map-heat-btn");
+  const winSel = document.getElementById("map-heat-windows");
+  if (heatActive) {
+    if (heatLayer) { mapInstance.removeLayer(heatLayer); heatLayer = null; }
+    heatActive = false;
+    if (btn)    btn.classList.remove("active");
+    if (winSel) winSel.classList.add("hidden");
+    const statusEl = document.getElementById("map-heat-status");
+    if (statusEl) statusEl.classList.add("hidden");
+  } else {
+    heatActive = true;
+    if (btn)    btn.classList.add("active");
+    if (winSel) winSel.classList.remove("hidden");
+    await loadHeatmap(heatWindow);
+  }
+}
+
 document.addEventListener("DOMContentLoaded", () => {
   initMap();
 
@@ -412,6 +471,18 @@ document.addEventListener("DOMContentLoaded", () => {
       updateTimeDisp();
       stopPlayback();
       refresh();
+    });
+  });
+
+  // Heatmap toggle + window selector
+  const heatBtn = document.getElementById("map-heat-btn");
+  if (heatBtn) heatBtn.addEventListener("click", toggleHeatmap);
+  document.querySelectorAll(".map-heat-win").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      document.querySelectorAll(".map-heat-win").forEach(b => b.classList.remove("active"));
+      btn.classList.add("active");
+      heatWindow = btn.dataset.win;
+      if (heatActive) await loadHeatmap(heatWindow);
     });
   });
 

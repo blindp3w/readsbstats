@@ -63,6 +63,18 @@
     <button id="map-jump-now" class="map-ctrl-btn" title="Return to live" style="margin-left:.3rem">→ Now</button>
   </div>
 
+  <!-- Row 4: heatmap toggle -->
+  <div class="map-heat-row">
+    <button id="map-heat-btn" class="map-mode-btn" title="Toggle position density heatmap">Heatmap</button>
+    <span id="map-heat-windows" class="hidden">
+      <button class="map-heat-win active" data-win="24h">24h</button>
+      <button class="map-heat-win" data-win="7d">7d</button>
+      <button class="map-heat-win" data-win="30d">30d</button>
+      <button class="map-heat-win" data-win="all">All</button>
+    </span>
+    <span id="map-heat-status" class="hidden map-heat-status-text">Loading…</span>
+  </div>
+
 </div>
 {% endblock %}
 
@@ -72,5 +84,6 @@
   const RECEIVER_LAT      = {{ receiver_lat  | tojson }};
   const RECEIVER_LON      = {{ receiver_lon  | tojson }};
 </script>
+<script src="{{ root_path }}/static/vendor/leaflet.heat.min.js"></script>
 <script src="{{ root_path }}/static/js/map.js"></script>
 {% endblock %}

@@ -284,6 +284,12 @@ def _migrate(conn: sqlite3.Connection) -> None:
             "CREATE INDEX IF NOT EXISTS idx_positions_ts_flight "
             "ON positions(ts, flight_id)"
         )
+    # Covering index for /api/map/heatmap: avoids table heap reads (lat/lon in-index)
+    if "lat" in pos_cols and "lon" in pos_cols:
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_positions_ts_lat_lon "
+            "ON positions(ts, lat, lon)"
+        )
 
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_flights_registration ON flights(registration)"

@@ -22,6 +22,7 @@ from urllib.parse import urlparse
 
 import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -60,6 +61,7 @@ async def _lifespan(app_: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(root_path=config.ROOT_PATH, docs_url=None, redoc_url=None, lifespan=_lifespan)
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 templates.env.globals["root_path"] = config.ROOT_PATH
@@ -82,10 +84,14 @@ def db() -> sqlite3.Connection:
 # ---------------------------------------------------------------------------
 _cache: dict[str, tuple[float, object]] = {}
 _CACHE_TTLS: dict[str, int] = {
-    "stats":   120,   # seconds — aggregate data, no need to recompute often
-    "polar":   300,   # seconds — max range rarely shifts
-    "records": 300,   # seconds — all-time bests, very stable
-    "health":   60,   # seconds — matches metrics_collector poll cycle
+    "stats":        120,   # seconds — aggregate data, no need to recompute often
+    "polar":        300,   # seconds — max range rarely shifts
+    "records":      300,   # seconds — all-time bests, very stable
+    "health":        60,   # seconds — matches metrics_collector poll cycle
+    "heatmap:24h":  300,   # 5 min — recent data changes frequently
+    "heatmap:7d":  1800,   # 30 min
+    "heatmap:30d": 7200,   # 2 h — large query, cache aggressively
+    "heatmap:all": 21600,  # 6 h — full-history scan, very stable
 }
 _DEFAULT_TTL  = 30    # seconds
 _AIRSPACE_TTL = 3600  # seconds — airspace data rarely changes
@@ -1408,6 +1414,82 @@ async def api_stats_polar() -> dict:
         ]
     }
     _set_cache("polar", result)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# API — position density heatmap
+# ---------------------------------------------------------------------------
+
+_HEATMAP_WINDOWS: dict[str, int | None] = {
+    "24h": 86_400,
+    "7d":  7 * 86_400,
+    "30d": 30 * 86_400,
+    "all": None,
+}
+# 30d/all scan millions of rows — use coarser grid (0.1° ≈ 11 km) to keep
+# GROUP BY small enough for a Pi 4.  24h/7d use fine grid (0.01° ≈ 1 km).
+_HEATMAP_PRECISION: dict[str, int] = {
+    "24h": 2,
+    "7d":  2,
+    "30d": 1,
+    "all": 1,
+}
+
+
+def _compute_heatmap_sync(window: str) -> dict:
+    """Run the heavy aggregation query — call via run_in_executor to avoid blocking the event loop."""
+    precision = _HEATMAP_PRECISION[window]
+    secs = _HEATMAP_WINDOWS[window]
+    params: list = []
+    extra = ""
+    if secs is not None:
+        extra = "AND ts > ?"
+        params.append(int(time.time()) - secs)
+
+    rows = db().execute(
+        f"""
+        SELECT round(lat, {precision}) AS rlat, round(lon, {precision}) AS rlon, COUNT(*) AS w
+        FROM positions
+        WHERE lat IS NOT NULL AND lon IS NOT NULL
+          {extra}
+        GROUP BY rlat, rlon
+        """,
+        params,
+    ).fetchall()
+
+    if not rows:
+        return {"points": [], "window": window, "count": 0}
+
+    max_w = max(r["w"] for r in rows)
+    return {
+        "points": [[r["rlat"], r["rlon"], r["w"] / max_w] for r in rows],
+        "window": window,
+        "count": sum(r["w"] for r in rows),
+    }
+
+
+@app.get("/api/map/heatmap")
+async def api_map_heatmap(window: str = Query("7d")) -> dict:
+    """Return position density grid for Leaflet.heat overlay.
+
+    Intensities are normalised so the densest cell = 1.0.
+    Fine grid (0.01°) for 24h/7d; coarse grid (0.1°) for 30d/all.
+    """
+    if window not in _HEATMAP_WINDOWS:
+        raise HTTPException(
+            400, f"window must be one of: {', '.join(_HEATMAP_WINDOWS)}"
+        )
+
+    cache_key = f"heatmap:{window}"
+    cached = _get_cache(cache_key)
+    if cached is not None:
+        return cached
+
+    result = await asyncio.get_running_loop().run_in_executor(
+        None, _compute_heatmap_sync, window
+    )
+    _set_cache(cache_key, result)
     return result
 
 

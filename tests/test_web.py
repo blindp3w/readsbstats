@@ -2224,6 +2224,174 @@ class TestApiFlaggedAircraft:
 # API: /api/aircraft/{icao_hex}/photo  — photo by ICAO hex
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# /api/map/heatmap
+# ---------------------------------------------------------------------------
+
+class TestMapHeatmap:
+    def _insert_position(self, conn, *, lat, lon, ts=None, flight_id=None):
+        if flight_id is None:
+            flight_id = insert_flight(conn)
+        if ts is None:
+            ts = int(time.time())
+        conn.execute(
+            "INSERT INTO positions (flight_id, ts, lat, lon, source_type) VALUES (?,?,?,?,?)",
+            (flight_id, ts, lat, lon, "adsb_icao"),
+        )
+        conn.commit()
+        return flight_id
+
+    def test_empty_db_returns_empty_points(self, client):
+        r = client.get("/api/map/heatmap")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["points"] == []
+        assert data["count"] == 0
+
+    def test_invalid_window_returns_400(self, client):
+        r = client.get("/api/map/heatmap?window=99d")
+        assert r.status_code == 400
+
+    def test_all_window_includes_all_positions(self, client, db_conn):
+        now = int(time.time())
+        fid = insert_flight(db_conn)
+        # One recent, one old (90 days ago)
+        self._insert_position(db_conn, lat=52.10, lon=21.00, ts=now, flight_id=fid)
+        self._insert_position(db_conn, lat=52.20, lon=21.10, ts=now - 90 * 86400, flight_id=fid)
+        r = client.get("/api/map/heatmap?window=all")
+        assert r.status_code == 200
+        assert r.json()["count"] == 2
+
+    def test_24h_window_excludes_old_positions(self, client, db_conn):
+        now = int(time.time())
+        fid = insert_flight(db_conn)
+        self._insert_position(db_conn, lat=52.10, lon=21.00, ts=now - 100, flight_id=fid)
+        self._insert_position(db_conn, lat=52.20, lon=21.10, ts=now - 2 * 86400, flight_id=fid)
+        r = client.get("/api/map/heatmap?window=24h")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["count"] == 1
+
+    def test_7d_window_includes_last_week(self, client, db_conn):
+        now = int(time.time())
+        fid = insert_flight(db_conn)
+        self._insert_position(db_conn, lat=52.10, lon=21.00, ts=now - 3 * 86400, flight_id=fid)
+        self._insert_position(db_conn, lat=52.20, lon=21.10, ts=now - 8 * 86400, flight_id=fid)
+        r = client.get("/api/map/heatmap?window=7d")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["count"] == 1
+
+    def test_30d_window(self, client, db_conn):
+        now = int(time.time())
+        fid = insert_flight(db_conn)
+        self._insert_position(db_conn, lat=52.10, lon=21.00, ts=now - 15 * 86400, flight_id=fid)
+        self._insert_position(db_conn, lat=52.20, lon=21.10, ts=now - 31 * 86400, flight_id=fid)
+        r = client.get("/api/map/heatmap?window=30d")
+        assert r.status_code == 200
+        assert r.json()["count"] == 1
+
+    def test_max_intensity_is_one(self, client, db_conn):
+        now = int(time.time())
+        fid = insert_flight(db_conn)
+        # 3 points in one cell, 1 in another — max cell gets intensity 1.0
+        for _ in range(3):
+            self._insert_position(db_conn, lat=52.101, lon=21.001, ts=now, flight_id=fid)
+        self._insert_position(db_conn, lat=52.201, lon=21.101, ts=now, flight_id=fid)
+        r = client.get("/api/map/heatmap?window=all")
+        assert r.status_code == 200
+        intensities = [pt[2] for pt in r.json()["points"]]
+        assert max(intensities) == pytest.approx(1.0)
+        assert min(intensities) > 0.0
+        assert min(intensities) < 1.0
+
+    def test_nearby_points_aggregated_to_same_cell(self, client, db_conn):
+        now = int(time.time())
+        fid = insert_flight(db_conn)
+        # Two positions that differ only in 3rd decimal place → round(x, 2) lands in same cell
+        # round(52.101, 2) = 52.1  and  round(52.104, 2) = 52.1
+        self._insert_position(db_conn, lat=52.101, lon=21.001, ts=now, flight_id=fid)
+        self._insert_position(db_conn, lat=52.104, lon=21.004, ts=now + 5, flight_id=fid)
+        r = client.get("/api/map/heatmap?window=all")
+        assert r.status_code == 200
+        assert len(r.json()["points"]) == 1
+
+    def test_result_is_cached(self, client, db_conn):
+        fid = insert_flight(db_conn)
+        self._insert_position(db_conn, lat=52.10, lon=21.00, flight_id=fid)
+        r1 = client.get("/api/map/heatmap?window=all")
+        assert r1.status_code == 200
+        count1 = r1.json()["count"]
+        # Insert another position — should NOT appear (cached)
+        self._insert_position(db_conn, lat=52.30, lon=21.30, flight_id=fid)
+        r2 = client.get("/api/map/heatmap?window=all")
+        assert r2.json()["count"] == count1
+
+    def test_different_windows_use_separate_cache_keys(self, client, db_conn):
+        now = int(time.time())
+        fid = insert_flight(db_conn)
+        self._insert_position(db_conn, lat=52.10, lon=21.00, ts=now - 100, flight_id=fid)
+        self._insert_position(db_conn, lat=52.20, lon=21.10, ts=now - 10 * 86400, flight_id=fid)
+        r_7d = client.get("/api/map/heatmap?window=7d")
+        r_all = client.get("/api/map/heatmap?window=all")
+        assert r_7d.json()["count"] == 1
+        assert r_all.json()["count"] == 2
+
+    def test_fine_grid_aggregation_24h(self, client, db_conn):
+        """24h/7d uses precision=2 (~1 km cells); two points 0.003° apart share a cell."""
+        now = int(time.time())
+        fid = insert_flight(db_conn)
+        # round(52.101, 2) = 52.1  and  round(52.104, 2) = 52.1 → same cell
+        # round(21.001, 2) = 21.0  and  round(21.004, 2) = 21.0 → same cell
+        self._insert_position(db_conn, lat=52.101, lon=21.001, ts=now - 100, flight_id=fid)
+        self._insert_position(db_conn, lat=52.104, lon=21.004, ts=now - 200, flight_id=fid)
+        r = client.get("/api/map/heatmap?window=24h")
+        assert r.status_code == 200
+        data = r.json()
+        assert len(data["points"]) == 1   # aggregated into one cell
+        assert data["count"] == 2          # two raw samples
+
+    def test_null_positions_excluded(self, client, db_conn):
+        """Positions with NULL lat or lon must not appear in heatmap."""
+        fid = insert_flight(db_conn)
+        db_conn.execute(
+            "INSERT INTO positions (flight_id, ts, lat, lon, source_type) VALUES (?,?,?,?,?)",
+            (fid, int(time.time()), None, None, "adsb_icao"),
+        )
+        db_conn.execute(
+            "INSERT INTO positions (flight_id, ts, lat, lon, source_type) VALUES (?,?,?,?,?)",
+            (fid, int(time.time()), 52.10, None, "adsb_icao"),
+        )
+        db_conn.commit()
+        r = client.get("/api/map/heatmap?window=all")
+        assert r.status_code == 200
+        assert r.json()["points"] == []
+        assert r.json()["count"] == 0
+
+    def test_response_includes_window_field(self, client, db_conn):
+        fid = insert_flight(db_conn)
+        self._insert_position(db_conn, lat=52.10, lon=21.00, flight_id=fid)
+        for win in ("24h", "7d", "30d", "all"):
+            web._cache.clear()
+            r = client.get(f"/api/map/heatmap?window={win}")
+            assert r.json()["window"] == win
+
+    def test_count_is_sum_of_raw_samples_not_cells(self, client, db_conn):
+        """count = total raw position samples, not the number of grid cells."""
+        now = int(time.time())
+        fid = insert_flight(db_conn)
+        # 3 samples in one cell + 2 in another = count 5, len(points) 2
+        for _ in range(3):
+            self._insert_position(db_conn, lat=52.101, lon=21.001, ts=now, flight_id=fid)
+        for _ in range(2):
+            self._insert_position(db_conn, lat=52.501, lon=21.501, ts=now, flight_id=fid)
+        r = client.get("/api/map/heatmap?window=all")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["count"] == 5
+        assert len(data["points"]) == 2
+
+
 class TestApiAircraftPhoto:
     def test_cached_photo_returned(self, client, db_conn):
         db_conn.execute(

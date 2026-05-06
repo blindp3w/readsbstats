@@ -45,7 +45,7 @@ Designed to run alongside readsb, tar1090, and feed clients on a **Raspberry Pi 
   - Per-flight altitude + speed profile chart with RSSI signal strength chart
   - Per-flight aircraft photo thumbnail
   - Aircraft detail page (`/aircraft/{icao}`): full flight history for a single tail number, with aggregate stats, country of origin, and photo
-  - **Live map** (`/map`): full-screen Leaflet map replacing the old live board — aircraft rendered as type-specific SVG icons (airliner, light prop, helicopter, glider) rotated by heading; collapsible right-side sidebar showing all visible aircraft (ICAO, callsign, route, registration, type, altitude, speed, source, time since last position) with click-through to flight detail; live mode auto-refreshes every 10 s; **historical rewind** lets you scrub back up to `RSBS_MAP_HISTORY_HOURS` (default 24 h) and replay at 1×/2×/5×/10× speed; aircraft count badge in the nav bar stays in sync with the map; `/live` redirects to `/map`
+  - **Live map** (`/map`): full-screen Leaflet map replacing the old live board — aircraft rendered as type-specific SVG icons (airliner, light prop, helicopter, glider) rotated by heading; collapsible right-side sidebar showing all visible aircraft (ICAO, callsign, route, registration, type, altitude, speed, source, time since last position) with click-through to flight detail; live mode auto-refreshes every 10 s; **historical rewind** lets you scrub back up to `RSBS_MAP_HISTORY_HOURS` (default 24 h) and replay at 1×/2×/5×/10× speed; aircraft count badge in the nav bar stays in sync with the map; `/live` redirects to `/map`; **position density heatmap** overlay shows where aircraft are most commonly seen — toggle on/off with 24h / 7d / 30d / All time-window selector; fine (~1 km) grid for short windows, coarse (~11 km) for long windows; GZip-compressed response, per-window server-side cache (5 min → 6 h), query runs off the event loop via thread pool to avoid blocking live polling
   - Flight list CSV export (respects active filters and sort)
   - Polar range plot on the statistics page: max detection distance per compass direction, units-aware
   - Flagged aircraft gallery (`/gallery`): card grid of all detected military and interesting aircraft, with photo, registration, type, country of origin, flight count; filterable by flag type (all/military/interesting), sortable by last seen, first seen, or flight count
@@ -613,6 +613,7 @@ The web server exposes a JSON API alongside the HTML pages:
 | GET | `/api/stats/polar` | Max detection range per azimuth bucket (default 10°, 36 buckets) |
 | GET | `/api/live` | Currently tracked aircraft (used by nav badge; `/live` page redirects to `/map`) |
 | GET | `/api/map/snapshot` | Aircraft snapshot at a given timestamp (`at`, `trail` params) — powers the live map and rewind |
+| GET | `/api/map/heatmap` | Position density grid for Leaflet.heat overlay (`window`: `24h`/`7d`/`30d`/`all`); normalised intensities, adaptive grid resolution, per-window cache |
 | GET | `/api/dates` | Per-day flight counts |
 | GET | `/api/airlines/{prefix}/flights` | All flights by airline prefix (e.g. `LOT`) |
 | GET | `/api/types/{type}/flights` | All flights by aircraft type (e.g. `B738`) |
