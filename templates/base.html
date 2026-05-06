@@ -38,6 +38,12 @@
   <script>
     const ROOT = "{{ root_path }}";
 
+    (function() {
+      var setVH = function() { document.documentElement.style.setProperty('--real-vh', window.innerHeight + 'px'); };
+      setVH();
+      window.addEventListener('resize', setVH);
+    })();
+
     initUnitSelector();
 
     // Hamburger menu toggle

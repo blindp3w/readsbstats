@@ -25,6 +25,7 @@ Thumbs.db
 .coverage
 .pytest_cache/
 htmlcov/
+tests/ui/screenshots/
 
 # Logs
 *.log

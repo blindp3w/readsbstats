@@ -192,6 +192,31 @@ To see coverage:
 .venv/bin/pytest --cov=readsbstats --cov-report=term-missing
 ```
 
+#### Playwright mobile UI tests (optional, local only)
+
+Smoke tests that load each page in a real headless browser at mobile and tablet viewports and verify layout, key elements, and horizontal overflow.
+
+One-time setup:
+
+```bash
+pip install -e ".[ui-tests]"
+playwright install chromium webkit
+```
+
+Run:
+
+```bash
+pytest tests/ui/ -v -m ui          # all 35 tests (7 devices × 5 pages)
+pytest tests/ui/ -v -m ui -k "lenovo_portrait"   # single device
+pytest tests/ui/ -v -m ui -k "statistics"        # single page across all devices
+```
+
+Devices: iPhone 15 (393 px, WebKit), iPhone 15 Pro Max (430 px, WebKit), iPad Pro 11 (834 px, WebKit), Pixel 7 (412 px, Chromium), Galaxy S24 (360 px, Chromium), Lenovo IdeaTab 11 landscape (1180 px, Chromium), Lenovo IdeaTab 11 portrait (800 px, Chromium).
+
+Pages: `/` (statistics), `/map`, `/live` (redirect check), `/history`, `/flight/{id}`.
+
+Screenshots are saved to `tests/ui/screenshots/{device}/{page}.png` (gitignored, for visual inspection after a run).
+
 | Test file | What it covers |
 |---|---|
 | `tests/test_web.py` | FastAPI routes (JSON API + HTML pages), filter helpers, cache (incl. filtered-range cache), `_fmt_ts`, personal records, host-local TZ date filter |
@@ -215,8 +240,9 @@ To see coverage:
 | `tests/js/test_units.mjs` | JS formatters: `fmtAlt`/`fmtSpd`/`fmtDist`/`fmtClimb`, labels, `getUnits`/`setUnits` |
 | `tests/js/test_table_utils.mjs` | JS `flagBadge` bitmask interpretation (military precedence, all flag combinations) |
 | `tests/js/test_flight_detail.mjs` | `airspacePopup` HTML escaping — XSS rejection across all interpolated fields |
+| `tests/ui/test_mobile_smoke.py` | Playwright: layout, element visibility, no horizontal overflow at 7 mobile/tablet viewports across 5 pages |
 
-Python tests use an in-memory SQLite database — no Pi required. JS tests use Node 22's built-in `node --test` runner with `vm`-sandboxed loading; no npm/package.json/node_modules.
+Python tests use an in-memory SQLite database — no Pi required. JS tests use Node 22's built-in `node --test` runner with `vm`-sandboxed loading; no npm/package.json/node_modules. Playwright UI tests are excluded from the default `pytest` run and CI — they require a one-time local browser install.
 
 ### Deploy to the Pi
 
@@ -513,7 +539,7 @@ readsbstats/
 │   ├── purge_ghosts.py         # One-shot cleanup: removes ghost positions
 │   ├── purge_bad_gs.py         # One-shot cleanup: nulls implausible gs values
 │   └── purge_mlat_gs_spikes.py # One-shot cleanup: nulls MLAT gs acceleration spikes
-├── tests/                      # pytest suite (18 files, 877 tests) + JS tests (tests/js/, 54 tests)
+├── tests/                      # pytest suite (18 files, 877 tests) + JS tests (tests/js/, 54 tests) + Playwright UI tests (tests/ui/, 35 tests)
 ├── templates/
 │   ├── base.html               # Shared layout, nav bar with unit selector
 │   ├── index.html              # Flight list

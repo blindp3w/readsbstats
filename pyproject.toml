@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "readsbstats"
-version = "1.2.1"
+version = "1.2.2"
 requires-python = ">=3.10"
 dependencies = [
     "fastapi==0.136.0",
@@ -17,9 +17,19 @@ dependencies = [
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[project.optional-dependencies]
+ui-tests = [
+    "playwright>=1.44.0",
+    "pytest-playwright>=0.5.0",
+]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src", "scripts"]
+norecursedirs = ["tests/ui", "tests/js", ".git", "__pycache__", ".venv", "venv"]
+markers = [
+    "ui: Playwright mobile smoke tests — run with: pytest tests/ui/ -v -m ui",
+]
 
 [tool.coverage.run]
 source = ["readsbstats", "purge_ghosts", "purge_bad_gs", "purge_mlat_gs_spikes"]
