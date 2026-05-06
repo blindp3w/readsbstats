@@ -88,10 +88,14 @@ _CACHE_TTLS: dict[str, int] = {
     "polar":        300,   # seconds — max range rarely shifts
     "records":      300,   # seconds — all-time bests, very stable
     "health":        60,   # seconds — matches metrics_collector poll cycle
-    "heatmap:24h":  300,   # 5 min — recent data changes frequently
-    "heatmap:7d":  1800,   # 30 min
-    "heatmap:30d": 7200,   # 2 h — large query, cache aggressively
-    "heatmap:all": 21600,  # 6 h — full-history scan, very stable
+    "heatmap:24h":   300,   # 5 min — recent data changes frequently
+    "heatmap:7d":   1800,   # 30 min
+    "heatmap:30d":  7200,   # 2 h — large query, cache aggressively
+    "heatmap:all":  21600,  # 6 h — full-history scan, very stable
+    "coverage:24h":  300,
+    "coverage:7d":  1800,
+    "coverage:30d": 7200,
+    "coverage:all": 21600,
 }
 _DEFAULT_TTL  = 30    # seconds
 _AIRSPACE_TTL = 3600  # seconds — airspace data rarely changes
@@ -1488,6 +1492,96 @@ async def api_map_heatmap(window: str = Query("7d")) -> dict:
 
     result = await asyncio.get_running_loop().run_in_executor(
         None, _compute_heatmap_sync, window
+    )
+    _set_cache(cache_key, result)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# API — coverage range outline
+# ---------------------------------------------------------------------------
+
+_BUCKET_DEG = 10
+_NUM_BUCKETS = 360 // _BUCKET_DEG
+
+
+def _compute_coverage_sync(window: str) -> dict:
+    """Compute per-bearing max-range polygon from raw positions — call via run_in_executor.
+
+    Bearing and haversine distance are computed per-position in SQL so each 10° bucket
+    reflects the actual farthest position recorded in that direction, not just the single
+    furthest-point bearing stored on the flight row.
+    """
+    secs = _HEATMAP_WINDOWS[window]
+    params: dict = {"rlat": config.RECEIVER_LAT, "rlon": config.RECEIVER_LON}
+    extra = ""
+    if secs is not None:
+        extra = "AND ts > :cutoff"
+        params["cutoff"] = int(time.time()) - secs
+
+    rows = db().execute(
+        f"""
+        WITH pos_bearing AS (
+            SELECT
+                (degrees(atan2(
+                    sin(radians(lon - :rlon)) * cos(radians(lat)),
+                    cos(radians(:rlat)) * sin(radians(lat))
+                    - sin(radians(:rlat)) * cos(radians(lat)) * cos(radians(lon - :rlon))
+                )) + 360.0) % 360.0 AS bearing_deg,
+                2.0 * 3440.065 * asin(sqrt(
+                    sin(radians((lat - :rlat) / 2.0)) * sin(radians((lat - :rlat) / 2.0)) +
+                    cos(radians(:rlat)) * cos(radians(lat)) *
+                    sin(radians((lon - :rlon) / 2.0)) * sin(radians((lon - :rlon) / 2.0))
+                )) AS dist_nm
+            FROM positions
+            WHERE lat IS NOT NULL AND lon IS NOT NULL
+              {extra}
+        )
+        SELECT
+            CAST(bearing_deg / {_BUCKET_DEG}.0 AS INT) % {_NUM_BUCKETS} AS bucket,
+            MAX(dist_nm) AS max_dist
+        FROM pos_bearing
+        GROUP BY bucket
+        """,
+        params,
+    ).fetchall()
+
+    by_bucket: dict[int, float] = {r["bucket"]: r["max_dist"] for r in rows}
+    polygon: list[list[float]] = []
+    for i in range(_NUM_BUCKETS):
+        dist = by_bucket.get(i, 0.0)
+        if dist > 0:
+            lat, lon = geo.destination_point(
+                config.RECEIVER_LAT, config.RECEIVER_LON, float(i * _BUCKET_DEG), dist
+            )
+        else:
+            lat, lon = config.RECEIVER_LAT, config.RECEIVER_LON
+        polygon.append([lat, lon])
+
+    max_range = max(by_bucket.values(), default=0.0)
+    return {"polygon": polygon, "max_range_nm": max_range, "window": window}
+
+
+@app.get("/api/map/coverage")
+async def api_map_coverage(window: str = Query("7d")) -> dict:
+    """Return receiver coverage polygon for Leaflet overlay.
+
+    Each of 36 bearing buckets (10° each) contains the max detection range
+    in that direction, projected to a lat/lon point.  Buckets with no data
+    collapse to the receiver location, pulling the polygon inward.
+    """
+    if window not in _HEATMAP_WINDOWS:
+        raise HTTPException(
+            400, f"window must be one of: {', '.join(_HEATMAP_WINDOWS)}"
+        )
+
+    cache_key = f"coverage:{window}"
+    cached = _get_cache(cache_key)
+    if cached is not None:
+        return cached
+
+    result = await asyncio.get_running_loop().run_in_executor(
+        None, _compute_coverage_sync, window
     )
     _set_cache(cache_key, result)
     return result

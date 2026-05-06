@@ -544,9 +544,14 @@ class TestSendDailySummary:
     def test_longest_tracked(self, db_conn, monkeypatch):
         sent = []
         monkeypatch.setattr(notifier, "_send", lambda txt: sent.append(txt))
-        now = int(time.time())
+        import datetime as _dt
+        today = _dt.date.today()
+        day_start = int(_dt.datetime.combine(today, _dt.time.min).timestamp())
+        # Anchor to today's midnight so flight stays within today regardless of wall-clock hour.
+        first_seen = day_start + 3600
+        last_seen  = day_start + 3600 + 7200
         insert_flight(db_conn, icao="long11", registration="SP-LNG",
-                      first_seen=now - 7200, last_seen=now)
+                      first_seen=first_seen, last_seen=last_seen)
         notifier.send_daily_summary(db_conn)
         msg = sent[0]
         assert "Longest" in msg

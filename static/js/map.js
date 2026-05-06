@@ -24,7 +24,11 @@ let lastSnapshot  = null;
 
 let heatLayer  = null;   // Leaflet.heat layer instance
 let heatActive = false;
-let heatWindow = "24h";
+
+let coverageLayer  = null;
+let coverageActive = false;
+
+let overlayWindow = "24h";   // shared window for heatmap + coverage
 
 // DOM refs (set in init)
 let sliderEl, timeDispEl, playBtn, modeLiveBtn, modeRewindBtn, jumpNowBtn, acCountEl;
@@ -357,7 +361,7 @@ function startLivePolling() {
 // ---------- Position density heatmap ----------
 
 async function loadHeatmap(win) {
-  const statusEl = document.getElementById("map-heat-status");
+  const statusEl = document.getElementById("map-overlay-status");
   if (statusEl) { statusEl.textContent = "Loading…"; statusEl.classList.remove("hidden"); }
   const ctrl = new AbortController();
   const timeout = setTimeout(() => ctrl.abort(), 55000); // 55s < nginx 60s
@@ -392,20 +396,77 @@ async function loadHeatmap(win) {
 }
 
 async function toggleHeatmap() {
-  const btn    = document.getElementById("map-heat-btn");
-  const winSel = document.getElementById("map-heat-windows");
+  const btn      = document.getElementById("map-heat-btn");
+  const winSel   = document.getElementById("map-overlay-windows");
+  const statusEl = document.getElementById("map-overlay-status");
   if (heatActive) {
     if (heatLayer) { mapInstance.removeLayer(heatLayer); heatLayer = null; }
     heatActive = false;
-    if (btn)    btn.classList.remove("active");
-    if (winSel) winSel.classList.add("hidden");
-    const statusEl = document.getElementById("map-heat-status");
-    if (statusEl) statusEl.classList.add("hidden");
+    if (btn) btn.classList.remove("active");
+    if (!coverageActive) {
+      if (winSel)   winSel.classList.add("hidden");
+      if (statusEl) statusEl.classList.add("hidden");
+    }
   } else {
     heatActive = true;
     if (btn)    btn.classList.add("active");
     if (winSel) winSel.classList.remove("hidden");
-    await loadHeatmap(heatWindow);
+    await loadHeatmap(overlayWindow);
+  }
+}
+
+// ---------- Coverage range outline ----------
+
+async function loadCoverage(win) {
+  const statusEl = document.getElementById("map-overlay-status");
+  if (statusEl) { statusEl.textContent = "Loading…"; statusEl.classList.remove("hidden"); }
+  const ctrl = new AbortController();
+  const timeout = setTimeout(() => ctrl.abort(), 55000);
+  try {
+    const resp = await fetch(ROOT + "/api/map/coverage?window=" + encodeURIComponent(win),
+                             { signal: ctrl.signal });
+    if (!resp.ok) throw new Error("HTTP " + resp.status);
+    const data = await resp.json();
+    if (!coverageActive) return;
+    if (coverageLayer) { mapInstance.removeLayer(coverageLayer); coverageLayer = null; }
+    if (data.polygon.length > 0 && data.max_range_nm > 0) {
+      coverageLayer = L.polygon(data.polygon, {
+        color:       "#00bcd4",
+        weight:      2,
+        opacity:     0.8,
+        fillColor:   "#00bcd4",
+        fillOpacity: 0.08,
+      }).addTo(mapInstance);
+    }
+    if (statusEl) statusEl.classList.add("hidden");
+  } catch (err) {
+    console.error("Coverage load failed:", err);
+    if (statusEl) {
+      statusEl.textContent = err.name === "AbortError" ? "Timed out — try a shorter window" : "Failed to load";
+      statusEl.classList.remove("hidden");
+    }
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function toggleCoverage() {
+  const btn      = document.getElementById("map-coverage-btn");
+  const winSel   = document.getElementById("map-overlay-windows");
+  const statusEl = document.getElementById("map-overlay-status");
+  if (coverageActive) {
+    if (coverageLayer) { mapInstance.removeLayer(coverageLayer); coverageLayer = null; }
+    coverageActive = false;
+    if (btn) btn.classList.remove("active");
+    if (!heatActive) {
+      if (winSel)   winSel.classList.add("hidden");
+      if (statusEl) statusEl.classList.add("hidden");
+    }
+  } else {
+    coverageActive = true;
+    if (btn)    btn.classList.add("active");
+    if (winSel) winSel.classList.remove("hidden");
+    await loadCoverage(overlayWindow);
   }
 }
 
@@ -474,15 +535,18 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   });
 
-  // Heatmap toggle + window selector
+  // Heatmap + coverage overlays (shared window selector)
   const heatBtn = document.getElementById("map-heat-btn");
   if (heatBtn) heatBtn.addEventListener("click", toggleHeatmap);
-  document.querySelectorAll(".map-heat-win").forEach(btn => {
+  const coverageBtn = document.getElementById("map-coverage-btn");
+  if (coverageBtn) coverageBtn.addEventListener("click", toggleCoverage);
+  document.querySelectorAll(".map-overlay-win").forEach(btn => {
     btn.addEventListener("click", async () => {
-      document.querySelectorAll(".map-heat-win").forEach(b => b.classList.remove("active"));
+      document.querySelectorAll(".map-overlay-win").forEach(b => b.classList.remove("active"));
       btn.classList.add("active");
-      heatWindow = btn.dataset.win;
-      if (heatActive) await loadHeatmap(heatWindow);
+      overlayWindow = btn.dataset.win;
+      if (heatActive)     await loadHeatmap(overlayWindow);
+      if (coverageActive) await loadCoverage(overlayWindow);
     });
   });
 

@@ -2392,6 +2392,142 @@ class TestMapHeatmap:
         assert len(data["points"]) == 2
 
 
+class TestApiMapCoverage:
+    """Coverage endpoint now queries positions directly, computing per-position bearing
+    and haversine distance in SQL.  All tests insert real positions at computed lat/lon."""
+
+    def _insert_position_at(self, conn, bearing_deg, dist_nm, *, ts=None, flight_id=None):
+        """Insert a position at (bearing_deg, dist_nm) from the receiver."""
+        from readsbstats import geo as _geo
+        lat, lon = _geo.destination_point(
+            config.RECEIVER_LAT, config.RECEIVER_LON, bearing_deg, dist_nm
+        )
+        if flight_id is None:
+            flight_id = insert_flight(conn)
+        if ts is None:
+            ts = int(time.time()) - 100
+        conn.execute(
+            "INSERT INTO positions (flight_id, ts, lat, lon, source_type) VALUES (?,?,?,?,?)",
+            (flight_id, ts, lat, lon, "adsb_icao"),
+        )
+        conn.commit()
+        return flight_id
+
+    def test_empty_db_returns_36_point_polygon(self, client):
+        web._cache.clear()
+        r = client.get("/api/map/coverage")
+        assert r.status_code == 200
+        assert len(r.json()["polygon"]) == 36
+
+    def test_empty_db_all_points_at_receiver(self, client):
+        web._cache.clear()
+        r = client.get("/api/map/coverage")
+        for pt in r.json()["polygon"]:
+            assert pt[0] == pytest.approx(config.RECEIVER_LAT, abs=1e-6)
+            assert pt[1] == pytest.approx(config.RECEIVER_LON, abs=1e-6)
+
+    def test_empty_db_max_range_is_zero(self, client):
+        web._cache.clear()
+        r = client.get("/api/map/coverage")
+        assert r.json()["max_range_nm"] == pytest.approx(0.0)
+
+    def test_position_in_bucket_0_projects_correctly(self, client, db_conn):
+        """Position at bearing 5° → bucket 0 → polygon vertex at bearing 0°, same distance."""
+        web._cache.clear()
+        self._insert_position_at(db_conn, bearing_deg=5.0, dist_nm=100.0)
+        r = client.get("/api/map/coverage?window=all")
+        from readsbstats import geo as _geo
+        exp_lat, exp_lon = _geo.destination_point(
+            config.RECEIVER_LAT, config.RECEIVER_LON, 0.0, 100.0
+        )
+        assert r.json()["polygon"][0][0] == pytest.approx(exp_lat, abs=0.01)
+        assert r.json()["polygon"][0][1] == pytest.approx(exp_lon, abs=0.01)
+
+    def test_missing_bucket_maps_to_receiver(self, client, db_conn):
+        """Bucket with no positions collapses to receiver location."""
+        web._cache.clear()
+        self._insert_position_at(db_conn, bearing_deg=15.0, dist_nm=100.0)  # bucket 1
+        data = client.get("/api/map/coverage?window=all").json()
+        assert data["polygon"][0][0] == pytest.approx(config.RECEIVER_LAT, abs=1e-6)
+        assert data["polygon"][0][1] == pytest.approx(config.RECEIVER_LON, abs=1e-6)
+
+    def test_max_range_nm_is_maximum_across_buckets(self, client, db_conn):
+        web._cache.clear()
+        self._insert_position_at(db_conn, bearing_deg=5.0, dist_nm=100.0)
+        self._insert_position_at(db_conn, bearing_deg=95.0, dist_nm=200.0)
+        assert client.get("/api/map/coverage?window=all").json()["max_range_nm"] == pytest.approx(200.0)
+
+    def test_bucket_uses_max_distance(self, client, db_conn):
+        """Two positions both in bucket 0 — polygon uses the farther one."""
+        web._cache.clear()
+        fid = insert_flight(db_conn)
+        self._insert_position_at(db_conn, bearing_deg=2.0, dist_nm=100.0, flight_id=fid)
+        self._insert_position_at(db_conn, bearing_deg=8.0, dist_nm=150.0, flight_id=fid)
+        from readsbstats import geo as _geo
+        exp_lat, _ = _geo.destination_point(config.RECEIVER_LAT, config.RECEIVER_LON, 0.0, 150.0)
+        assert client.get("/api/map/coverage?window=all").json()["polygon"][0][0] == pytest.approx(exp_lat, abs=0.01)
+
+    def test_window_24h_excludes_old_position(self, client, db_conn):
+        web._cache.clear()
+        now = int(time.time())
+        self._insert_position_at(db_conn, bearing_deg=5.0, dist_nm=100.0, ts=now - 2 * 86400)
+        data = client.get("/api/map/coverage?window=24h").json()
+        for pt in data["polygon"]:
+            assert pt[0] == pytest.approx(config.RECEIVER_LAT, abs=1e-6)
+
+    def test_window_all_includes_old_position(self, client, db_conn):
+        web._cache.clear()
+        now = int(time.time())
+        self._insert_position_at(db_conn, bearing_deg=5.0, dist_nm=100.0, ts=now - 90 * 86400)
+        assert client.get("/api/map/coverage?window=all").json()["max_range_nm"] == pytest.approx(100.0, rel=0.01)
+
+    def test_window_filter_uses_position_ts_not_flight_dates(self, client, db_conn):
+        """A position with recent ts is included in 24h even if its flight started long ago."""
+        web._cache.clear()
+        now = int(time.time())
+        fid = insert_flight(db_conn, first_seen=now - 30 * 3600, last_seen=now - 29 * 3600)
+        # Position recorded 10 min ago — within 24h window
+        self._insert_position_at(db_conn, bearing_deg=5.0, dist_nm=120.0, ts=now - 600, flight_id=fid)
+        assert client.get("/api/map/coverage?window=24h").json()["max_range_nm"] == pytest.approx(120.0, rel=0.01)
+
+    def test_position_near_360_goes_to_bucket_35(self, client, db_conn):
+        """A position at bearing ~355° should land in bucket 35, not overflow."""
+        web._cache.clear()
+        self._insert_position_at(db_conn, bearing_deg=355.0, dist_nm=100.0)
+        data = client.get("/api/map/coverage?window=all").json()
+        assert data["max_range_nm"] == pytest.approx(100.0, rel=0.01)
+        # bucket 35 (bearing 350°) should have data; bucket 0 should be at receiver
+        assert data["polygon"][35][0] != pytest.approx(config.RECEIVER_LAT, abs=0.1)
+        assert data["polygon"][0][0] == pytest.approx(config.RECEIVER_LAT, abs=1e-6)
+
+    def test_invalid_window_returns_400(self, client):
+        assert client.get("/api/map/coverage?window=99d").status_code == 400
+
+    def test_response_includes_window_field(self, client, db_conn):
+        self._insert_position_at(db_conn, bearing_deg=5.0, dist_nm=50.0)
+        for win in ("24h", "7d", "30d", "all"):
+            web._cache.clear()
+            assert client.get(f"/api/map/coverage?window={win}").json()["window"] == win
+
+    def test_result_is_cached(self, client, db_conn):
+        web._cache.clear()
+        self._insert_position_at(db_conn, bearing_deg=5.0, dist_nm=100.0)
+        max1 = client.get("/api/map/coverage?window=all").json()["max_range_nm"]
+        self._insert_position_at(db_conn, bearing_deg=95.0, dist_nm=300.0)
+        assert client.get("/api/map/coverage?window=all").json()["max_range_nm"] == pytest.approx(max1)
+
+    def test_different_windows_independent_cache_keys(self, client, db_conn):
+        now = int(time.time())
+        fid = insert_flight(db_conn)
+        self._insert_position_at(db_conn, bearing_deg=5.0, dist_nm=100.0, ts=now - 100, flight_id=fid)
+        self._insert_position_at(db_conn, bearing_deg=5.0, dist_nm=200.0, ts=now - 10 * 86400, flight_id=fid)
+        web._cache.clear()
+        r_24h = client.get("/api/map/coverage?window=24h")
+        r_all  = client.get("/api/map/coverage?window=all")
+        assert r_24h.json()["max_range_nm"] == pytest.approx(100.0, rel=0.01)
+        assert r_all.json()["max_range_nm"]  == pytest.approx(200.0, rel=0.01)
+
+
 class TestApiAircraftPhoto:
     def test_cached_photo_returned(self, client, db_conn):
         db_conn.execute(

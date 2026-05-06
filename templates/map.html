@@ -63,16 +63,17 @@
     <button id="map-jump-now" class="map-ctrl-btn" title="Return to live" style="margin-left:.3rem">→ Now</button>
   </div>
 
-  <!-- Row 4: heatmap toggle -->
+  <!-- Row 4: heatmap + coverage overlays (shared window selector) -->
   <div class="map-heat-row">
     <button id="map-heat-btn" class="map-mode-btn" title="Toggle position density heatmap">Heatmap</button>
-    <span id="map-heat-windows" class="hidden">
-      <button class="map-heat-win active" data-win="24h">24h</button>
-      <button class="map-heat-win" data-win="7d">7d</button>
-      <button class="map-heat-win" data-win="30d">30d</button>
-      <button class="map-heat-win" data-win="all">All</button>
+    <button id="map-coverage-btn" class="map-mode-btn" title="Toggle coverage range outline">Coverage</button>
+    <span id="map-overlay-windows" class="hidden">
+      <button class="map-overlay-win active" data-win="24h">24h</button>
+      <button class="map-overlay-win" data-win="7d">7d</button>
+      <button class="map-overlay-win" data-win="30d">30d</button>
+      <button class="map-overlay-win" data-win="all">All</button>
     </span>
-    <span id="map-heat-status" class="hidden map-heat-status-text">Loading…</span>
+    <span id="map-overlay-status" class="hidden map-heat-status-text">Loading…</span>
   </div>
 
 </div>
