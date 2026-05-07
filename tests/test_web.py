@@ -1328,8 +1328,9 @@ class TestApiStatsPolarCacheAndData:
 
 class _FakeResponse:
     """Minimal httpx response stand-in."""
-    def __init__(self, payload):
+    def __init__(self, payload, status_code=200):
         self._payload = payload
+        self.status_code = status_code
 
     def raise_for_status(self):
         pass
@@ -2561,3 +2562,200 @@ class TestApiAircraftPhoto:
         r = client.get("/api/aircraft/aabbcc/photo")
         assert r.status_code == 200
         assert r.json() is None
+
+    def test_specific_photo_annotated_with_is_type_photo_false(self, client, db_conn):
+        db_conn.execute(
+            "INSERT INTO photos VALUES (?,?,?,?,?,?)",
+            ("aabbcc", "https://t.jpg", "https://l.jpg", "https://link", "Alice", int(time.time())),
+        )
+        db_conn.commit()
+        r = client.get("/api/aircraft/aabbcc/photo")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["is_type_photo"] is False
+        assert data["type_code"] is None
+        assert data["type_desc"] is None
+
+
+class TestFetchTypePhoto:
+    """Tests for _fetch_type_photo() and the type-fallback in photo endpoints."""
+
+    def _seed_aircraft_db(self, db_conn, icao, type_code, type_desc="Boeing 737-800"):
+        db_conn.execute(
+            "INSERT OR REPLACE INTO aircraft_db (icao_hex, registration, type_code, type_desc, flags) "
+            "VALUES (?,?,?,?,0)", (icao, "G-TEST", type_code, type_desc)
+        )
+        db_conn.commit()
+
+    def _seed_type_photo(self, db_conn, type_code, url):
+        db_conn.execute(
+            "INSERT INTO type_photos (type_code, thumbnail_url, large_url, link_url, photographer, fetched_at) "
+            "VALUES (?,?,NULL,NULL,NULL,?)", (type_code, url, int(time.time()))
+        )
+        db_conn.commit()
+
+    def _seed_specific_photo(self, db_conn, icao, url):
+        db_conn.execute(
+            "INSERT INTO photos VALUES (?,?,NULL,NULL,NULL,?)",
+            (icao, url, int(time.time()))
+        )
+        db_conn.commit()
+
+    def test_null_type_code_returns_none(self, client, db_conn):
+        import asyncio
+        result = asyncio.get_event_loop().run_until_complete(web._fetch_type_photo(None))
+        assert result is None
+
+    def test_empty_type_code_returns_none(self, client, db_conn):
+        import asyncio
+        result = asyncio.get_event_loop().run_until_complete(web._fetch_type_photo(""))
+        assert result is None
+
+    def test_type_photos_cache_hit(self, client, db_conn):
+        self._seed_type_photo(db_conn, "B738", "https://example.com/b738.jpg")
+        import asyncio
+        result = asyncio.get_event_loop().run_until_complete(web._fetch_type_photo("B738"))
+        assert result is not None
+        assert result["thumbnail_url"] == "https://example.com/b738.jpg"
+
+    def test_type_photos_negative_cache_returns_none(self, client, db_conn):
+        db_conn.execute(
+            "INSERT INTO type_photos (type_code, thumbnail_url, large_url, link_url, photographer, fetched_at) "
+            "VALUES ('B738', NULL, NULL, NULL, NULL, ?)", (int(time.time()),)
+        )
+        db_conn.commit()
+        import asyncio
+        result = asyncio.get_event_loop().run_until_complete(web._fetch_type_photo("B738"))
+        assert result is None
+
+    def test_db_join_reuses_cached_photo(self, client, db_conn, monkeypatch):
+        self._seed_aircraft_db(db_conn, "aabbcc", "B738")
+        self._seed_specific_photo(db_conn, "aabbcc", "https://example.com/cached.jpg")
+        http_calls = []
+        monkeypatch.setattr("readsbstats.web.httpx.AsyncClient",
+                            lambda **kw: _FakeAsyncClient(lambda u: http_calls.append(u) or {"photos": []}))
+        import asyncio
+        result = asyncio.get_event_loop().run_until_complete(web._fetch_type_photo("B738"))
+        assert result is not None
+        assert result["thumbnail_url"] == "https://example.com/cached.jpg"
+        assert http_calls == []
+
+    def test_probe_planespotters_success(self, client, db_conn, monkeypatch):
+        self._seed_aircraft_db(db_conn, "probe01", "EF2K", "Eurofighter Typhoon")
+
+        def per_url(url):
+            if "probe01" in url and "planespotters" in url:
+                return {"photos": [{"thumbnail": {"src": "https://example.com/ef2k.jpg"},
+                                    "thumbnail_large": {"src": "https://example.com/ef2k_l.jpg"},
+                                    "link": None, "photographer": "Alice"}]}
+            return {"photos": []}
+
+        monkeypatch.setattr("readsbstats.web.httpx.AsyncClient",
+                            lambda **kw: _FakeAsyncClient(per_url))
+        import asyncio
+        result = asyncio.get_event_loop().run_until_complete(web._fetch_type_photo("EF2K"))
+        assert result is not None
+        assert result["thumbnail_url"] == "https://example.com/ef2k.jpg"
+        row = db_conn.execute("SELECT thumbnail_url FROM type_photos WHERE type_code='EF2K'").fetchone()
+        assert row and row[0] == "https://example.com/ef2k.jpg"
+
+    def test_all_fail_stores_negative(self, client, db_conn, monkeypatch):
+        self._seed_aircraft_db(db_conn, "probe01", "EF2K")
+        monkeypatch.setattr("readsbstats.web.httpx.AsyncClient",
+                            lambda **kw: _FakeAsyncClient({"photos": []}))
+        import asyncio
+        result = asyncio.get_event_loop().run_until_complete(web._fetch_type_photo("EF2K"))
+        assert result is None
+        row = db_conn.execute("SELECT thumbnail_url FROM type_photos WHERE type_code='EF2K'").fetchone()
+        assert row is not None
+        assert row[0] is None
+
+    def _no_photo_client(self):
+        """Fake async client that returns no-photo responses for all sources."""
+        def per_url(url):
+            if "planespotters" in url:
+                return {"photos": []}
+            if "airport-data.com" in url:
+                return {"status": 404, "data": []}
+            return "n/a"  # hexdb.io: "n/a" means no photo
+        return _FakeAsyncClient(per_url)
+
+    def test_flight_photo_endpoint_falls_back_to_type(self, client, db_conn, monkeypatch):
+        fid = insert_flight(db_conn, icao="aabbcc", aircraft_type="B738")
+        self._seed_aircraft_db(db_conn, "aabbcc", "B738")
+        self._seed_type_photo(db_conn, "B738", "https://example.com/b738.jpg")
+        monkeypatch.setattr("readsbstats.web.httpx.AsyncClient",
+                            lambda **kw: self._no_photo_client())
+        r = client.get(f"/api/flights/{fid}/photo")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["thumbnail_url"] == "https://example.com/b738.jpg"
+        assert data["is_type_photo"] is True
+        assert data["type_code"] == "B738"
+
+    def test_aircraft_photo_endpoint_falls_back_to_type(self, client, db_conn, monkeypatch):
+        self._seed_aircraft_db(db_conn, "aabbcc", "B738", "Boeing 737-800")
+        self._seed_type_photo(db_conn, "B738", "https://example.com/b738.jpg")
+        monkeypatch.setattr("readsbstats.web.httpx.AsyncClient",
+                            lambda **kw: self._no_photo_client())
+        r = client.get("/api/aircraft/aabbcc/photo")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["thumbnail_url"] == "https://example.com/b738.jpg"
+        assert data["is_type_photo"] is True
+        assert data["type_code"] == "B738"
+        assert data["type_desc"] == "Boeing 737-800"
+
+    def test_aircraft_photo_no_type_fallback_when_no_type_code(self, client, db_conn, monkeypatch):
+        monkeypatch.setattr("readsbstats.web.httpx.AsyncClient",
+                            lambda **kw: self._no_photo_client())
+        r = client.get("/api/aircraft/aabbcc/photo")
+        assert r.status_code == 200
+        assert r.json() is None
+
+    def test_flagged_endpoint_includes_is_type_photo_field(self, client, db_conn):
+        db_conn.execute(
+            "INSERT INTO aircraft_db (icao_hex, registration, type_code, type_desc, flags) "
+            "VALUES ('aabbcc', 'SP-ABC', 'B738', 'Boeing 737-800', 1)"
+        )
+        db_conn.commit()
+        insert_flight(db_conn, icao="aabbcc", aircraft_type="B738")
+        r = client.get("/api/aircraft/flagged")
+        assert r.status_code == 200
+        ac = r.json()["aircraft"]
+        assert len(ac) == 1
+        assert "is_type_photo" in ac[0]
+        assert isinstance(ac[0]["is_type_photo"], bool)
+
+    def test_flagged_endpoint_type_photo_from_type_photos_table(self, client, db_conn):
+        db_conn.execute(
+            "INSERT INTO aircraft_db (icao_hex, registration, type_code, type_desc, flags) "
+            "VALUES ('aabbcc', 'SP-ABC', 'B738', 'Boeing 737-800', 1)"
+        )
+        self._seed_type_photo(db_conn, "B738", "https://example.com/b738.jpg")
+        db_conn.commit()
+        insert_flight(db_conn, icao="aabbcc", aircraft_type="B738")
+        r = client.get("/api/aircraft/flagged")
+        assert r.status_code == 200
+        ac = r.json()["aircraft"]
+        assert len(ac) == 1
+        assert ac[0]["thumbnail_url"] == "https://example.com/b738.jpg"
+        assert ac[0]["is_type_photo"] is True
+
+    def test_flagged_endpoint_specific_photo_not_type(self, client, db_conn):
+        db_conn.execute(
+            "INSERT INTO aircraft_db (icao_hex, registration, type_code, type_desc, flags) "
+            "VALUES ('aabbcc', 'SP-ABC', 'B738', 'Boeing 737-800', 1)"
+        )
+        db_conn.execute(
+            "INSERT INTO photos VALUES (?,?,NULL,NULL,NULL,?)",
+            ("aabbcc", "https://example.com/specific.jpg", int(time.time()))
+        )
+        self._seed_type_photo(db_conn, "B738", "https://example.com/b738.jpg")
+        db_conn.commit()
+        insert_flight(db_conn, icao="aabbcc", aircraft_type="B738")
+        r = client.get("/api/aircraft/flagged")
+        assert r.status_code == 200
+        ac = r.json()["aircraft"]
+        assert ac[0]["thumbnail_url"] == "https://example.com/specific.jpg"
+        assert ac[0]["is_type_photo"] is False

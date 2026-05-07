@@ -157,6 +157,7 @@ TELEGRAM_TOKEN        = os.getenv("RSBS_TELEGRAM_TOKEN",    "")
 TELEGRAM_CHAT_ID      = os.getenv("RSBS_TELEGRAM_CHAT_ID",  "")
 TELEGRAM_SUMMARY_TIME = os.getenv("RSBS_SUMMARY_TIME",      "21:00")  # local HH:MM; "" or "off" to disable
 TELEGRAM_UNITS        = os.getenv("RSBS_TELEGRAM_UNITS",    "metric") # metric|imperial|aeronautical
+TELEGRAM_PHOTOS       = _int("RSBS_TELEGRAM_PHOTOS",         "1")     # 0 to disable photo enrichment
 BASE_URL              = os.getenv("RSBS_BASE_URL", "http://homepi.local/stats")
 
 # ---------------------------------------------------------------------------

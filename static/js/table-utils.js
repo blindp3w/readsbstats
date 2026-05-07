@@ -97,9 +97,13 @@ async function loadPhoto(flightId, sectionId) {
     const section = document.getElementById(sectionId || "photo-section");
     section.classList.remove("hidden");
     const img = `<img src="${escHtml(thumb)}" alt="Aircraft photo" class="aircraft-photo">`;
+    const typeNote = photo.is_type_photo
+      ? `<div class="photo-type-note">Photo: <em>${escHtml(photo.type_desc || photo.type_code || "")}</em> — not this specific aircraft</div>`
+      : "";
     section.innerHTML = `
       ${link ? `<a href="${escHtml(link)}" target="_blank" rel="noopener">${img}</a>` : img}
       ${photo.photographer ? `<div class="photo-credit">&copy; ${escHtml(photo.photographer)} via Planespotters.net</div>` : ""}
+      ${typeNote}
     `;
   } catch (err) { console.error("loadPhoto:", err); }
 }

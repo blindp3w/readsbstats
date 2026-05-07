@@ -438,6 +438,12 @@ tbody tr.clickable { cursor: pointer; }
   color: var(--text-dim);
   margin-top: .3rem;
 }
+.photo-type-note {
+  font-size: .72rem;
+  color: var(--text-dim);
+  margin-top: .2rem;
+  font-style: italic;
+}
 
 /* ----- Furthest card -------------------------------------------------- */
 .furthest-detail { margin-top: .4rem; font-size: .82rem; }
@@ -893,6 +899,17 @@ tbody tr.clickable { cursor: pointer; }
 .gallery-no-photo {
   color: var(--text-dim);
   font-size: .82rem;
+}
+.gallery-photo { position: relative; }
+.gallery-type-badge {
+  position: absolute;
+  bottom: 0; left: 0; right: 0;
+  background: rgba(0,0,0,.55);
+  color: #ddd;
+  font-size: .65rem;
+  text-align: center;
+  padding: 2px 0;
+  pointer-events: none;
 }
 
 .gallery-info {

@@ -1070,3 +1070,321 @@ class TestWatchlistBotCommands:
         assert "/watchlist" in msg
         assert "/watch" in msg
         assert "/unwatch" in msg
+
+
+# ---------------------------------------------------------------------------
+# _get_photo_result
+# ---------------------------------------------------------------------------
+
+class TestGetPhotoResult:
+    """All tests use a temp-file DB so _get_photo_result can open/close it normally."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self, monkeypatch, tmp_path):
+        db_path = str(tmp_path / "test.db")
+        conn = database.connect(db_path)
+        conn.executescript(database.DDL)
+        database._migrate(conn)
+        conn.close()
+        monkeypatch.setattr(config, "DB_PATH", db_path)
+        self.db_path = db_path
+
+        # Convenience: a short-lived connection for test setup/assertions
+        self._setup_conn = database.connect(db_path)
+        yield
+        self._setup_conn.close()
+
+    @property
+    def conn(self):
+        return self._setup_conn
+
+    def test_photos_cache_hit_returns_url_and_false(self, monkeypatch):
+        now = int(time.time())
+        self.conn.execute(
+            "INSERT INTO photos (icao_hex, thumbnail_url, large_url, link_url, photographer, fetched_at) "
+            "VALUES ('abc123', 'https://example.com/t.jpg', NULL, NULL, NULL, ?)", (now,)
+        )
+        self.conn.commit()
+        url, is_type = notifier._get_photo_result("abc123", None, None)
+        assert url == "https://example.com/t.jpg"
+        assert is_type is False
+
+    def test_photos_negative_cache_returns_none_no_http(self, monkeypatch):
+        now = int(time.time())
+        self.conn.execute(
+            "INSERT INTO photos (icao_hex, thumbnail_url, large_url, link_url, photographer, fetched_at) "
+            "VALUES ('abc123', NULL, NULL, NULL, NULL, ?)", (now,)
+        )
+        self.conn.commit()
+        fetched = []
+        monkeypatch.setattr(notifier, "_planespotters_fetch", lambda h: fetched.append(h) or None)
+        url, is_type = notifier._get_photo_result("abc123", None, None)
+        assert url is None
+        assert is_type is False
+        assert fetched == []
+
+    def test_type_photos_cache_hit_returns_url_and_true(self, monkeypatch):
+        now = int(time.time())
+        self.conn.execute(
+            "INSERT INTO type_photos (type_code, thumbnail_url, large_url, link_url, photographer, fetched_at) "
+            "VALUES ('B738', 'https://example.com/b738.jpg', NULL, NULL, NULL, ?)", (now,)
+        )
+        self.conn.commit()
+        monkeypatch.setattr(notifier, "_planespotters_fetch", lambda h: (_ for _ in ()).throw(AssertionError("should not fetch")))
+        url, is_type = notifier._get_photo_result("abc123", "B738", "Boeing 737-800")
+        assert url == "https://example.com/b738.jpg"
+        assert is_type is True
+
+    def test_type_photos_negative_cache_returns_none(self, monkeypatch):
+        now = int(time.time())
+        self.conn.execute(
+            "INSERT INTO type_photos (type_code, thumbnail_url, large_url, link_url, photographer, fetched_at) "
+            "VALUES ('B738', NULL, NULL, NULL, NULL, ?)", (now,)
+        )
+        self.conn.commit()
+        fetched = []
+        monkeypatch.setattr(notifier, "_planespotters_fetch", lambda h: fetched.append(h) or None)
+        url, is_type = notifier._get_photo_result("abc123", "B738", "Boeing 737-800")
+        assert url is None
+        assert fetched == []
+
+    def test_db_join_finds_cached_type_photo(self, monkeypatch):
+        now = int(time.time())
+        self.conn.execute(
+            "INSERT INTO aircraft_db (icao_hex, registration, type_code, type_desc, flags) "
+            "VALUES ('aabbcc', 'G-ABCD', 'B738', 'Boeing 737-800', 0)"
+        )
+        self.conn.execute(
+            "INSERT INTO photos (icao_hex, thumbnail_url, large_url, link_url, photographer, fetched_at) "
+            "VALUES ('aabbcc', 'https://example.com/other.jpg', NULL, NULL, NULL, ?)", (now,)
+        )
+        self.conn.commit()
+        fetched = []
+        monkeypatch.setattr(notifier, "_planespotters_fetch", lambda h: fetched.append(h) or None)
+        url, is_type = notifier._get_photo_result("abc123", "B738", "Boeing 737-800")
+        assert url == "https://example.com/other.jpg"
+        assert is_type is True
+        assert fetched == []
+        row = self.conn.execute("SELECT thumbnail_url FROM type_photos WHERE type_code='B738'").fetchone()
+        assert row and row[0] == "https://example.com/other.jpg"
+
+    def test_planespotters_fetch_specific_icao(self, monkeypatch):
+        fetched = []
+        def fake_fetch(icao):
+            fetched.append(icao)
+            return "https://example.com/sp.jpg" if icao == "abc123" else None
+        monkeypatch.setattr(notifier, "_planespotters_fetch", fake_fetch)
+        url, is_type = notifier._get_photo_result("abc123", None, None)
+        assert url == "https://example.com/sp.jpg"
+        assert is_type is False
+        assert fetched == ["abc123"]
+        row = self.conn.execute("SELECT thumbnail_url FROM photos WHERE icao_hex='abc123'").fetchone()
+        assert row and row[0] == "https://example.com/sp.jpg"
+
+    def test_specific_fails_probes_type(self, monkeypatch):
+        self.conn.execute(
+            "INSERT INTO aircraft_db (icao_hex, registration, type_code, type_desc, flags) "
+            "VALUES ('probe01', 'G-PRB', 'EF2K', 'Eurofighter Typhoon', 1)"
+        )
+        self.conn.commit()
+        fetched = []
+        def fake_fetch(icao):
+            fetched.append(icao)
+            return "https://example.com/ef2k.jpg" if icao == "probe01" else None
+        monkeypatch.setattr(notifier, "_planespotters_fetch", fake_fetch)
+        url, is_type = notifier._get_photo_result("abc123", "EF2K", "Eurofighter Typhoon")
+        assert url == "https://example.com/ef2k.jpg"
+        assert is_type is True
+        assert fetched == ["abc123", "probe01"]
+
+    def test_all_fail_stores_negatives_returns_none(self, monkeypatch):
+        self.conn.execute(
+            "INSERT INTO aircraft_db (icao_hex, registration, type_code, type_desc, flags) "
+            "VALUES ('probe01', 'G-PRB', 'EF2K', 'Eurofighter Typhoon', 1)"
+        )
+        self.conn.commit()
+        monkeypatch.setattr(notifier, "_planespotters_fetch", lambda h: None)
+        url, is_type = notifier._get_photo_result("abc123", "EF2K", "Eurofighter Typhoon")
+        assert url is None
+        assert is_type is False
+        p_row = self.conn.execute("SELECT thumbnail_url FROM photos WHERE icao_hex='abc123'").fetchone()
+        t_row = self.conn.execute("SELECT thumbnail_url FROM type_photos WHERE type_code='EF2K'").fetchone()
+        assert p_row is not None
+        assert t_row is not None
+
+    def test_null_type_code_skips_type_logic(self, monkeypatch):
+        fetched = []
+        monkeypatch.setattr(notifier, "_planespotters_fetch", lambda h: fetched.append(h) or None)
+        url, is_type = notifier._get_photo_result("abc123", None, None)
+        assert url is None
+        assert is_type is False
+        assert fetched == ["abc123"]
+        t_row = self.conn.execute("SELECT * FROM type_photos").fetchone()
+        assert t_row is None
+
+
+# ---------------------------------------------------------------------------
+# _send_photo
+# ---------------------------------------------------------------------------
+
+class TestSendPhoto:
+    @pytest.fixture(autouse=True)
+    def setup(self, monkeypatch):
+        notifier._tg_enabled = None
+        notifier._tg_validated = False
+        monkeypatch.setattr(config, "TELEGRAM_TOKEN", "tok")
+        monkeypatch.setattr(config, "TELEGRAM_CHAT_ID", "99")
+        yield
+        notifier._tg_enabled = None
+        notifier._tg_validated = False
+
+    def test_calls_send_photo_api(self, monkeypatch):
+        calls = []
+        mock_resp = _mock_urlopen()
+        monkeypatch.setattr("urllib.request.urlopen", lambda req, timeout=None: (calls.append(req) or mock_resp))
+        result = notifier._send_photo("https://example.com/photo.jpg", "caption")
+        assert result is True
+        assert len(calls) == 1
+        assert "sendPhoto" in calls[0].full_url
+        body = json.loads(calls[0].data)
+        assert body["photo"] == "https://example.com/photo.jpg"
+        assert body["caption"] == "caption"
+        assert body["parse_mode"] == "HTML"
+
+    def test_api_failure_falls_back_to_send_message(self, monkeypatch):
+        def raise_error(req, timeout=None):
+            raise OSError("network")
+        monkeypatch.setattr("urllib.request.urlopen", raise_error)
+        sent = []
+        monkeypatch.setattr(notifier, "_send", lambda txt: sent.append(txt) or True)
+        result = notifier._send_photo("https://example.com/photo.jpg", "caption text")
+        assert result is True
+        assert sent == ["caption text"]
+
+    def test_non_http_url_falls_back_without_api_call(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr("urllib.request.urlopen", lambda req, timeout=None: calls.append(req))
+        sent = []
+        monkeypatch.setattr(notifier, "_send", lambda txt: sent.append(txt) or True)
+        notifier._send_photo("ftp://bad.url/photo.jpg", "caption")
+        assert calls == []
+        assert sent == ["caption"]
+
+    def test_telegram_disabled_returns_false(self, monkeypatch):
+        monkeypatch.setattr(config, "TELEGRAM_TOKEN", "")
+        notifier._tg_enabled = None
+        notifier._tg_validated = False
+        result = notifier._send_photo("https://example.com/photo.jpg", "caption")
+        assert result is False
+
+
+# ---------------------------------------------------------------------------
+# notify_military / notify_interesting / notify_watchlist — photo dispatch
+# ---------------------------------------------------------------------------
+
+class TestNotifyWithPhoto:
+    """Tests for the photo-dispatch path in the three notify functions."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self, monkeypatch, tmp_path):
+        db_path = str(tmp_path / "test.db")
+        conn = database.connect(db_path)
+        conn.executescript(database.DDL)
+        database._migrate(conn)
+        conn.close()
+        monkeypatch.setattr(config, "DB_PATH", db_path)
+        monkeypatch.setattr(config, "TELEGRAM_PHOTOS", 1)
+        self._setup_conn = database.connect(db_path)
+        yield
+        self._setup_conn.close()
+
+    @property
+    def conn(self):
+        return self._setup_conn
+
+    def _seed_photo(self, icao, url):
+        now = int(time.time())
+        self.conn.execute(
+            "INSERT INTO photos (icao_hex, thumbnail_url, large_url, link_url, photographer, fetched_at) "
+            "VALUES (?,?,NULL,NULL,NULL,?)", (icao, url, now)
+        )
+        self.conn.commit()
+
+    def test_notify_military_with_specific_photo_uses_send_photo(self, monkeypatch):
+        self._seed_photo("abc123", "https://example.com/mil.jpg")
+        sent_photos = []
+        monkeypatch.setattr(notifier, "_send_photo", lambda url, cap: sent_photos.append((url, cap)) or True)
+        notifier.notify_military("abc123", "SP-MIL", None, "F-16", "F16", 100.0)
+        assert len(sent_photos) == 1
+        url, cap = sent_photos[0]
+        assert url == "https://example.com/mil.jpg"
+        assert "Military aircraft" in cap
+        assert "is_type_photo" not in cap  # no type note for specific photo
+
+    def test_notify_military_with_type_photo_appends_type_note(self, monkeypatch):
+        now = int(time.time())
+        self.conn.execute(
+            "INSERT INTO type_photos (type_code, thumbnail_url, large_url, link_url, photographer, fetched_at) "
+            "VALUES ('F16', 'https://example.com/f16.jpg', NULL, NULL, NULL, ?)", (now,)
+        )
+        self.conn.commit()
+        sent_photos = []
+        monkeypatch.setattr(notifier, "_send_photo", lambda url, cap: sent_photos.append((url, cap)) or True)
+        notifier.notify_military("abc123", "SP-MIL", None, "General Dynamics F-16", "F16", 100.0)
+        assert len(sent_photos) == 1
+        url, cap = sent_photos[0]
+        assert url == "https://example.com/f16.jpg"
+        assert "General Dynamics F-16" in cap
+        assert "not this specific aircraft" in cap
+
+    def test_notify_military_no_photo_uses_send_text(self, monkeypatch):
+        monkeypatch.setattr(notifier, "_planespotters_fetch", lambda h: None)
+        sent = []
+        monkeypatch.setattr(notifier, "_send", lambda txt: sent.append(txt) or True)
+        send_photos = []
+        monkeypatch.setattr(notifier, "_send_photo", lambda u, c: send_photos.append(u))
+        notifier.notify_military("abc123", "SP-MIL", None, None, None, 100.0)
+        assert len(sent) == 1
+        assert send_photos == []
+
+    def test_notify_military_photos_disabled_skips_lookup(self, monkeypatch):
+        monkeypatch.setattr(config, "TELEGRAM_PHOTOS", 0)
+        fetched = []
+        monkeypatch.setattr(notifier, "_get_photo_result",
+                            lambda *a: fetched.append(a) or (None, False))
+        sent = []
+        monkeypatch.setattr(notifier, "_send", lambda txt: sent.append(txt) or True)
+        notifier.notify_military("abc123", "SP-MIL", None, None, None, 100.0)
+        assert fetched == []
+        assert len(sent) == 1
+
+    def test_notify_interesting_with_photo(self, monkeypatch):
+        self._seed_photo("abc123", "https://example.com/int.jpg")
+        sent_photos = []
+        monkeypatch.setattr(notifier, "_send_photo", lambda url, cap: sent_photos.append((url, cap)) or True)
+        notifier.notify_interesting("abc123", "G-EXEC", None, "Gulfstream G650", "GL5T", 200.0)
+        assert len(sent_photos) == 1
+        assert "Interesting aircraft" in sent_photos[0][1]
+
+    def test_notify_watchlist_with_photo(self, monkeypatch):
+        self._seed_photo("abc123", "https://example.com/wl.jpg")
+        sent_photos = []
+        monkeypatch.setattr(notifier, "_send_photo", lambda url, cap: sent_photos.append((url, cap)) or True)
+        notifier.notify_watchlist("abc123", "G-EXEC", None, None, None, 50.0, "My plane", 42)
+        assert len(sent_photos) == 1
+        assert "Watchlist" in sent_photos[0][1]
+
+    def test_type_note_html_escapes_special_chars(self, monkeypatch):
+        now = int(time.time())
+        self.conn.execute(
+            "INSERT INTO type_photos (type_code, thumbnail_url, large_url, link_url, photographer, fetched_at) "
+            "VALUES ('A&B', 'https://example.com/ab.jpg', NULL, NULL, NULL, ?)", (now,)
+        )
+        self.conn.commit()
+        sent_photos = []
+        monkeypatch.setattr(notifier, "_send_photo", lambda url, cap: sent_photos.append((url, cap)) or True)
+        notifier.notify_military("abc123", "SP-MIL", None, "Type A&B", "A&B", 100.0)
+        assert len(sent_photos) == 1
+        cap = sent_photos[0][1]
+        # The <i> type note must use &amp; — raw & in HTML tags is an XSS risk
+        assert "<i>Photo: Type A&amp;B — not this specific aircraft</i>" in cap

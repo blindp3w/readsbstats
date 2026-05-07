@@ -17,6 +17,7 @@ are not set, so the feature is fully opt-in.
 from __future__ import annotations
 
 import datetime
+import html as _html
 import json
 import logging
 import sqlite3
@@ -149,6 +150,160 @@ def _send(text: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Photo helpers
+# ---------------------------------------------------------------------------
+
+_PHOTO_UA = {"User-Agent": "readsbstats/1.0"}
+
+
+def _get_photo_result(
+    icao_hex: str,
+    type_code: str | None,
+    type_desc: str | None,
+) -> tuple[str | None, bool]:
+    """Return (thumbnail_url | None, is_type_photo).
+
+    Lookup order (all cache-first, no unnecessary HTTP):
+    1. photos cache for the specific aircraft.
+    2. type_photos cache for the type code.
+    3. photos JOIN aircraft_db — reuse any already-cached photo of that type.
+    4. Planespotters fetch for the specific ICAO.
+    5. Planespotters fetch for one probe ICAO of the same type.
+    """
+    if not config.DB_PATH:
+        return None, False
+
+    cutoff = int(time.time()) - config.PHOTO_CACHE_DAYS * 86400
+
+    try:
+        conn = sqlite3.connect(config.DB_PATH, timeout=5)
+        conn.row_factory = sqlite3.Row
+        try:
+            # 1. Specific aircraft cache (includes negative cache)
+            row = conn.execute(
+                "SELECT thumbnail_url, fetched_at FROM photos WHERE icao_hex = ?",
+                (icao_hex,),
+            ).fetchone()
+            if row and row["fetched_at"] > cutoff:
+                return row["thumbnail_url"], False
+
+            # 2. Type cache (includes negative cache)
+            if type_code:
+                row = conn.execute(
+                    "SELECT thumbnail_url, fetched_at FROM type_photos WHERE type_code = ?",
+                    (type_code,),
+                ).fetchone()
+                if row and row["fetched_at"] > cutoff:
+                    return row["thumbnail_url"], True
+
+            # 3. photos JOIN aircraft_db — zero HTTP
+            if type_code:
+                row = conn.execute(
+                    """
+                    SELECT p.thumbnail_url
+                    FROM photos p
+                    JOIN aircraft_db adb ON adb.icao_hex = p.icao_hex
+                    WHERE adb.type_code = ? AND p.thumbnail_url IS NOT NULL
+                    ORDER BY p.fetched_at DESC LIMIT 1
+                    """,
+                    (type_code,),
+                ).fetchone()
+                if row:
+                    url = row["thumbnail_url"]
+                    _cache_type_photo(conn, type_code, url)
+                    return url, True
+
+            # 4. Fetch Planespotters for the specific ICAO
+            url = _planespotters_fetch(icao_hex)
+            now = int(time.time())
+            conn.execute(
+                "INSERT OR REPLACE INTO photos "
+                "(icao_hex, thumbnail_url, large_url, link_url, photographer, fetched_at) "
+                "VALUES (?,?,NULL,NULL,NULL,?)",
+                (icao_hex, url, now),
+            )
+            conn.commit()
+            if url:
+                return url, False
+
+            # 5. Probe one ICAO of the same type
+            if type_code:
+                probe_row = conn.execute(
+                    "SELECT icao_hex FROM aircraft_db WHERE type_code = ? LIMIT 1",
+                    (type_code,),
+                ).fetchone()
+                if probe_row:
+                    probe_url = _planespotters_fetch(probe_row["icao_hex"])
+                    _cache_type_photo(conn, type_code, probe_url)
+                    if probe_url:
+                        return probe_url, True
+
+            # Store negative for type too
+            if type_code:
+                _cache_type_photo(conn, type_code, None)
+            return None, False
+
+        finally:
+            conn.close()
+    except Exception as exc:
+        log.debug("photo lookup failed for %s: %s", icao_hex, exc)
+        return None, False
+
+
+def _planespotters_fetch(icao_hex: str) -> str | None:
+    """Try Planespotters.net for a single ICAO; return thumbnail_url or None."""
+    try:
+        req = urllib.request.Request(
+            f"https://api.planespotters.net/pub/photos/hex/{icao_hex}",
+            headers=_PHOTO_UA,
+        )
+        with urllib.request.urlopen(req, timeout=6) as resp:
+            data = json.loads(resp.read())
+            if data.get("photos"):
+                return data["photos"][0].get("thumbnail", {}).get("src") or None
+    except Exception as exc:
+        log.debug("Planespotters fetch failed for %s: %s", icao_hex, exc)
+    return None
+
+
+def _cache_type_photo(conn: sqlite3.Connection, type_code: str, url: str | None) -> None:
+    now = int(time.time())
+    conn.execute(
+        "INSERT OR REPLACE INTO type_photos "
+        "(type_code, thumbnail_url, large_url, link_url, photographer, fetched_at) "
+        "VALUES (?,?,NULL,NULL,NULL,?)",
+        (type_code, url, now),
+    )
+    conn.commit()
+
+
+def _send_photo(photo_url: str, caption: str) -> bool:
+    """POST a photo message to Telegram. Falls back to text on any failure."""
+    if not telegram_enabled():
+        return False
+    if not photo_url.startswith(("http://", "https://")):
+        return _send(caption)
+    try:
+        payload = json.dumps({
+            "chat_id":    config.TELEGRAM_CHAT_ID,
+            "photo":      photo_url,
+            "caption":    caption,
+            "parse_mode": "HTML",
+        }).encode()
+        req = urllib.request.Request(
+            f"https://api.telegram.org/bot{config.TELEGRAM_TOKEN}/sendPhoto",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            resp.read()
+        return True
+    except Exception as exc:
+        log.warning("Telegram sendPhoto failed: %s — falling back to text", exc)
+        return _send(caption)
+
+
+# ---------------------------------------------------------------------------
 # Alert messages
 # ---------------------------------------------------------------------------
 
@@ -166,6 +321,24 @@ def _fmt_aircraft_line(
     return reg, cs, ac
 
 
+def _dispatch_with_photo(
+    caption: str,
+    icao: str,
+    aircraft_type: str | None,
+    type_desc: str | None,
+) -> None:
+    """Send *caption* via sendPhoto if a photo is available, else sendMessage."""
+    if config.TELEGRAM_PHOTOS:
+        photo_url, is_type = _get_photo_result(icao, aircraft_type, type_desc)
+        if is_type and photo_url:
+            label = _html.escape(type_desc or aircraft_type or "")
+            caption += f"\n<i>Photo: {label} — not this specific aircraft</i>"
+        if photo_url:
+            _send_photo(photo_url, caption)
+            return
+    _send(caption)
+
+
 def notify_military(
     icao:          str,
     registration:  str | None,
@@ -176,12 +349,13 @@ def notify_military(
 ) -> None:
     reg, cs, ac = _fmt_aircraft_line(icao, registration, callsign, type_desc, aircraft_type)
     url = f"{config.BASE_URL}/aircraft/{icao}"
-    _send(
+    caption = (
         f"✈️ <b>Military aircraft — first sighting</b>\n"
         f"<b>{reg}</b>{cs} — {ac}\n"
         f"Distance: {_fmt_dist(distance_nm)}\n"
         f'<a href="{url}">View profile</a>'
     )
+    _dispatch_with_photo(caption, icao, aircraft_type, type_desc)
 
 
 def notify_interesting(
@@ -194,12 +368,13 @@ def notify_interesting(
 ) -> None:
     reg, cs, ac = _fmt_aircraft_line(icao, registration, callsign, type_desc, aircraft_type)
     url = f"{config.BASE_URL}/aircraft/{icao}"
-    _send(
+    caption = (
         f"⭐ <b>Interesting aircraft — first sighting</b>\n"
         f"<b>{reg}</b>{cs} — {ac}\n"
         f"Distance: {_fmt_dist(distance_nm)}\n"
         f'<a href="{url}">View profile</a>'
     )
+    _dispatch_with_photo(caption, icao, aircraft_type, type_desc)
 
 
 def notify_watchlist(
@@ -216,13 +391,14 @@ def notify_watchlist(
     label_line   = f"Label: {label}\n" if label else ""
     aircraft_url = f"{config.BASE_URL}/aircraft/{icao}"
     flight_url   = f"{config.BASE_URL}/flight/{flight_id}"
-    _send(
+    caption = (
         f"👁 <b>Watchlist — {reg}</b>\n"
         f"<b>{reg}</b>{cs} — {ac}\n"
         f"{label_line}"
         f"Distance: {_fmt_dist(distance_nm)}\n"
         f'<a href="{flight_url}">View flight</a> · <a href="{aircraft_url}">View aircraft</a>'
     )
+    _dispatch_with_photo(caption, icao, aircraft_type, type_desc)
 
 
 def notify_squawk(

@@ -127,6 +127,16 @@ CREATE TABLE IF NOT EXISTS photos (
     fetched_at    INTEGER NOT NULL
 );
 
+-- Cached representative photo per aircraft type code (type-level fallback)
+CREATE TABLE IF NOT EXISTS type_photos (
+    type_code     TEXT PRIMARY KEY,
+    thumbnail_url TEXT,
+    large_url     TEXT,
+    link_url      TEXT,
+    photographer  TEXT,
+    fetched_at    INTEGER NOT NULL
+);
+
 -- User-defined aircraft watchlist (Telegram alerts on new flight)
 CREATE TABLE IF NOT EXISTS watchlist (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -332,6 +342,28 @@ def _migrate(conn: sqlite3.Connection) -> None:
         )
         """
     )
+
+    # Type-level photo cache (fallback when no specific aircraft photo exists)
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS type_photos (
+            type_code     TEXT PRIMARY KEY,
+            thumbnail_url TEXT,
+            large_url     TEXT,
+            link_url      TEXT,
+            photographer  TEXT,
+            fetched_at    INTEGER NOT NULL
+        )
+        """
+    )
+
+    # Index for type-based photo lookups (photos JOIN aircraft_db WHERE type_code = ?)
+    # Guard: aircraft_db may not exist in very old test/minimal schemas
+    tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    if "aircraft_db" in tables:
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_aircraft_db_type_code ON aircraft_db(type_code)"
+        )
 
     # Receiver metrics time-series (metrics_collector.py)
     conn.execute(

@@ -28,7 +28,7 @@ Designed to run alongside readsb, tar1090, and feed clients on a **Raspberry Pi 
 - Stores everything in a lightweight SQLite database (no extra database server)
 - **Aircraft enrichment**: registration, type code, and full type description sourced from [tar1090-db](https://github.com/wiedehopf/tar1090-db) (~620k aircraft)
 - **Airline names**: full airline names sourced from [OpenFlights](https://openflights.org/data.php) and matched to callsign ICAO prefix
-- **Aircraft photos**: thumbnails with fallback chain — [Planespotters.net](https://www.planespotters.net/) → [airport-data.com](https://www.airport-data.com/) → [hexdb.io](https://hexdb.io/); cached 30 days
+- **Aircraft photos**: thumbnails with fallback chain — [Planespotters.net](https://www.planespotters.net/) → [airport-data.com](https://www.airport-data.com/) → [hexdb.io](https://hexdb.io/); cached 30 days; when no specific aircraft photo exists, a **type-level photo** of the same aircraft type is shown with a "not this specific aircraft" note (web UI) or caption suffix (Telegram)
 - **Max distance**: tracks furthest detected aircraft (great-circle distance in nautical miles)
 - **Unit switching**: toggle between Aeronautical, Metric, and Imperial — persisted in browser
 - **Military & interesting aircraft**: flags from tar1090-db surfaced as badges in the flight list and detail page, with counts on the statistics page; military and interesting are mutually exclusive in all counts and filters; dedicated **Gallery** page with card grid view showing photo, registration, type, country of origin, and flight count for every flagged aircraft detected
@@ -36,7 +36,7 @@ Designed to run alongside readsb, tar1090, and feed clients on a **Raspberry Pi 
 - **Route enrichment**: origin and destination airport per flight via [adsbdb.com](https://www.adsbdb.com/) free API (no auth); stored and cached in SQLite; shown on flight detail, history list, live board, and stats
 - **All-time personal records**: furthest detected, fastest, highest altitude, and longest tracked flight — each linked to the source flight; always all-time regardless of date range filter; units-aware
 - **Airspace overlay**: CTR / TMA / Restricted / Danger / Prohibited zones rendered as semi-transparent Leaflet overlays on the flight track map; bundled Polish airspace (`static/airspace/poland.geojson`); toggle via Leaflet layer control; zone-type legend below the map; override data with `RSBS_AIRSPACE_GEOJSON`
-- **Telegram notifications**: optional bot notifications for first sighting of military/interesting aircraft, emergency squawks (7500/7600/7700), watchlist hits, and configurable daily summary; interactive commands (`/summary`, `/status`, `/watchlist`, `/watch`, `/unwatch`, `/help`) via long polling; notification units (metric/imperial/aeronautical) are independently configurable
+- **Telegram notifications**: optional bot notifications for first sighting of military/interesting aircraft, emergency squawks (7500/7600/7700), watchlist hits, and configurable daily summary; military/interesting/watchlist alerts include a **photo** when available (specific aircraft photo or type-level fallback with a caption note); interactive commands (`/summary`, `/status`, `/watchlist`, `/watch`, `/unwatch`, `/help`) via long polling; notification units (metric/imperial/aeronautical) are independently configurable; set `RSBS_TELEGRAM_PHOTOS=0` to disable photo enrichment
 - **Aircraft watchlist**: track specific aircraft by ICAO hex, registration, or callsign prefix; Telegram alert fires once per flight when a watched aircraft is first detected; managed via the `/watchlist` web UI or bot commands (`/watch`, `/unwatch`); "Watch" button on aircraft detail page
 - Web UI accessible via your existing nginx at `/stats/`
   - Statistics page with date-range picker (all time, last 7/30 days, this/last month, custom): hourly activity, activity heatmap (day × hour), new aircraft, daily unique aircraft, data source breakdown, altitude distribution, emergency squawk counts with links to filtered flight list, top airlines, top aircraft types, top routes, top airports, top countries, most frequent aircraft, polar range plot, all-time personal records; all sections collapsible with state persisted in localStorage
@@ -181,7 +181,7 @@ The simulator writes 8 aircraft orbiting Warsaw every 5 seconds in readsb's airc
 ### Running tests
 
 ```bash
-.venv/bin/pytest                                              # 914 Python tests
+.venv/bin/pytest                                              # 948 Python tests
 node --test tests/js/test_*.mjs                               # 54 JS tests (Node 22+)
 for f in static/js/*.js; do node --check "$f"; done           # JS syntax check
 ```
@@ -335,6 +335,7 @@ Environment="RSBS_FLIGHT_GAP=1200"
 | `RSBS_TELEGRAM_CHAT_ID` | _(empty)_ | Telegram chat/user ID to send messages to |
 | `RSBS_SUMMARY_TIME` | `21:00` | Local time (HH:MM) to send the daily summary; `""` or `"off"` to disable |
 | `RSBS_TELEGRAM_UNITS` | `metric` | Units in notification messages: `metric`, `imperial`, or `aeronautical` |
+| `RSBS_TELEGRAM_PHOTOS` | `1` | Send aircraft photo with military/interesting/watchlist Telegram alerts (`0` to disable) |
 | `RSBS_BASE_URL` | `http://homepi.local/stats` | Base URL used for profile links in Telegram messages |
 | `RSBS_MAP_HISTORY_HOURS` | `24` | How many hours back the live map's rewind slider can reach (1–168) |
 | `RSBS_HEALTH_*` | _(see /settings)_ | Health-dashboard thresholds — heartbeat warn/critical, noise floor, CPU, baseline lookback, drop percentages, gain saturation, range-trend ratio. All effective values are listed on the `/settings` page; defaults are tuned for a stock readsb + Pi 4 setup |
@@ -384,9 +385,10 @@ Environment="RSBS_BASE_URL=http://homepi.local/stats"
 Notifications are disabled when the token or chat ID is not set, so this is fully opt-in. If only one of the two is set (or the chat ID is not numeric), the collector logs a warning at startup explaining what's wrong. When Telegram is disabled, all notification-related logic is skipped entirely — no watchlist queries, no flag checks, no daily summary timer, no background listener thread.
 
 **What gets sent:**
-- **Military aircraft** — once per ICAO hex, the first time it's ever detected (not repeated on subsequent visits)
-- **Interesting aircraft** — same (government, VIP, air ambulance, special mission per tar1090-db flags); mutually exclusive with military — an aircraft counts as one or the other, never both
-- **Emergency squawk** — once per flight when squawk 7500, 7600, or 7700 is detected
+- **Military aircraft** — once per ICAO hex, the first time it's ever detected (not repeated on subsequent visits); includes a photo via `sendPhoto` when available — specific aircraft photo first, type-level fallback second (with a caption note: _"Photo: Eurofighter Typhoon — not this specific aircraft"_)
+- **Interesting aircraft** — same (government, VIP, air ambulance, special mission per tar1090-db flags); mutually exclusive with military — an aircraft counts as one or the other, never both; also includes photo enrichment
+- **Watchlist hits** — once per flight for each watched aircraft (ICAO/reg/callsign prefix match); also includes photo enrichment
+- **Emergency squawk** — once per flight when squawk 7500, 7600, or 7700 is detected (no photo enrichment for emergency alerts)
 - **Daily summary** — sent at `RSBS_SUMMARY_TIME` local time: total flights, unique aircraft, military/interesting counts, emergency squawks, furthest/fastest/highest/longest aircraft, busiest hour
 
 **Interactive commands** (text the bot directly):
@@ -539,7 +541,7 @@ readsbstats/
 │   ├── purge_ghosts.py         # One-shot cleanup: removes ghost positions
 │   ├── purge_bad_gs.py         # One-shot cleanup: nulls implausible gs values
 │   └── purge_mlat_gs_spikes.py # One-shot cleanup: nulls MLAT gs acceleration spikes
-├── tests/                      # pytest suite (19 files, 914 tests) + JS tests (tests/js/, 54 tests) + Playwright UI tests (tests/ui/, 35 tests)
+├── tests/                      # pytest suite (19 files, 948 tests) + JS tests (tests/js/, 54 tests) + Playwright UI tests (tests/ui/, 35 tests)
 ├── templates/
 │   ├── base.html               # Shared layout, nav bar with unit selector
 │   ├── index.html              # Flight list
@@ -590,6 +592,7 @@ readsbstats/
 | `airports` | Airport metadata from adsbdb.com: ICAO/IATA codes, name, country, lat/lon |
 | `callsign_routes` | Route cache: callsign → origin/dest airport; NULL sentinel for confirmed-unknown callsigns |
 | `photos` | Cached aircraft photo URLs from Planespotters.net / airport-data.com / hexdb.io (keyed by ICAO hex, TTL 30 days) |
+| `type_photos` | Cached representative photo per aircraft type code (e.g. `B738`), populated lazily as a fallback when no specific aircraft photo exists |
 | `watchlist` | User-defined aircraft watchlist: ICAO hex, registration, or callsign prefix entries with optional labels |
 
 SQLite is opened in **WAL mode** so the web server can read while the collector is writing.

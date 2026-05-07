@@ -649,6 +649,15 @@ async def api_flight_detail(flight_id: int) -> dict:
 
 _PHOTO_UA = {"User-Agent": "readsbstats/1.0"}
 
+# Per-type asyncio locks — prevent concurrent duplicate fetches for the same type
+_type_fetch_locks: dict[str, asyncio.Lock] = {}
+
+
+def _type_lock(type_code: str) -> asyncio.Lock:
+    if type_code not in _type_fetch_locks:
+        _type_fetch_locks[type_code] = asyncio.Lock()
+    return _type_fetch_locks[type_code]
+
 
 async def _fetch_photo(icao_hex: str) -> dict | None:
     """Try Planespotters.net, airport-data.com, then hexdb.io.  Returns result dict or None."""
@@ -682,8 +691,8 @@ async def _fetch_photo(icao_hex: str) -> dict | None:
                     "link_url":      p.get("link"),
                     "photographer":  p.get("photographer"),
                 }
-    except Exception:
-        log.exception("Planespotters photo fetch failed for %s", icao_hex)
+    except Exception as exc:
+        log.warning("Planespotters photo fetch failed for %s: %s", icao_hex, exc)
 
     # --- Source 2: airport-data.com fallback ---
     if result is None:
@@ -704,10 +713,12 @@ async def _fetch_photo(icao_hex: str) -> dict | None:
                         "link_url":      item.get("link"),
                         "photographer":  item.get("photographer"),
                     }
-        except Exception:
-            log.exception("airport-data.com photo fetch failed for %s", icao_hex)
+        except Exception as exc:
+            log.warning("airport-data.com photo fetch failed for %s: %s", icao_hex, exc)
 
     # --- Source 3: hexdb.io fallback ---
+    # hexdb.io returns HTTP 404 (not 200 with empty body) when no photo exists —
+    # skip raise_for_status() and treat any non-200 as "no photo here".
     if result is None:
         try:
             async with httpx.AsyncClient(timeout=6.0) as client:
@@ -715,18 +726,18 @@ async def _fetch_photo(icao_hex: str) -> dict | None:
                     f"https://hexdb.io/hex-image?hex={icao_hex}",
                     headers=_PHOTO_UA,
                 )
-                resp.raise_for_status()
-                url = resp.text.strip()
-                if url and url != "n/a":
-                    result = {
-                        "icao_hex":      icao_hex,
-                        "thumbnail_url": url,
-                        "large_url":     url,
-                        "link_url":      None,
-                        "photographer":  None,
-                    }
-        except Exception:
-            log.exception("hexdb.io photo fetch failed for %s", icao_hex)
+                if resp.status_code == 200:
+                    url = resp.text.strip()
+                    if url and url != "n/a":
+                        result = {
+                            "icao_hex":      icao_hex,
+                            "thumbnail_url": url,
+                            "large_url":     url,
+                            "link_url":      None,
+                            "photographer":  None,
+                        }
+        except Exception as exc:
+            log.warning("hexdb.io photo fetch failed for %s: %s", icao_hex, exc)
 
     # --- Cache result (including NULL for "no photo anywhere") ---
     now = int(time.time())
@@ -748,12 +759,159 @@ async def _fetch_photo(icao_hex: str) -> dict | None:
     return result
 
 
+async def _fetch_type_photo(type_code: str | None) -> dict | None:
+    """Return a cached type-level photo for *type_code*, or None.
+
+    Strategy (in order):
+    1. type_photos cache hit (including negative cache — NULL thumbnail_url → None).
+    2. photos JOIN aircraft_db — reuse any already-cached specific photo of that type.
+    3. Probe ONE ICAO from aircraft_db for that type via Planespotters only (6 s).
+    Worst-case latency: 6 s for the probe.  Result is stored in type_photos.
+    """
+    if not type_code:
+        return None
+
+    conn = db()
+    cutoff = int(time.time()) - config.PHOTO_CACHE_DAYS * 86400
+
+    # 1. type_photos cache (fresh rows only)
+    cached = conn.execute(
+        "SELECT * FROM type_photos WHERE type_code = ? AND fetched_at > ?",
+        (type_code, cutoff),
+    ).fetchone()
+    if cached is not None:
+        return dict(cached) if cached["thumbnail_url"] else None
+
+    # Acquire per-type lock to coalesce concurrent requests
+    async with _type_lock(type_code):
+        # Re-check after acquiring lock — another coroutine may have populated it
+        cached = conn.execute(
+            "SELECT * FROM type_photos WHERE type_code = ? AND fetched_at > ?",
+            (type_code, cutoff),
+        ).fetchone()
+        if cached is not None:
+            return dict(cached) if cached["thumbnail_url"] else None
+
+        now = int(time.time())
+        result: dict | None = None
+
+        # 2. photos JOIN aircraft_db — zero HTTP calls
+        joined = conn.execute(
+            """
+            SELECT p.thumbnail_url, p.large_url, p.link_url, p.photographer
+            FROM photos p
+            JOIN aircraft_db adb ON adb.icao_hex = p.icao_hex
+            WHERE adb.type_code = ? AND p.thumbnail_url IS NOT NULL
+            ORDER BY p.fetched_at DESC
+            LIMIT 1
+            """,
+            (type_code,),
+        ).fetchone()
+        if joined:
+            result = {
+                "type_code":     type_code,
+                "thumbnail_url": joined["thumbnail_url"],
+                "large_url":     joined["large_url"],
+                "link_url":      joined["link_url"],
+                "photographer":  joined["photographer"],
+                "fetched_at":    now,
+            }
+
+        # 3. Probe one ICAO from aircraft_db via Planespotters only
+        if result is None:
+            probe_row = conn.execute(
+                "SELECT icao_hex FROM aircraft_db WHERE type_code = ? LIMIT 1",
+                (type_code,),
+            ).fetchone()
+            if probe_row:
+                probe_icao = probe_row["icao_hex"]
+                try:
+                    async with httpx.AsyncClient(timeout=6.0) as client:
+                        resp = await client.get(
+                            f"https://api.planespotters.net/pub/photos/hex/{probe_icao}",
+                            headers=_PHOTO_UA,
+                        )
+                        resp.raise_for_status()
+                        photos = resp.json().get("photos", [])
+                        if photos:
+                            p = photos[0]
+                            photo_url = p.get("thumbnail", {}).get("src")
+                            if photo_url:
+                                result = {
+                                    "type_code":     type_code,
+                                    "thumbnail_url": photo_url,
+                                    "large_url":     p.get("thumbnail_large", {}).get("src"),
+                                    "link_url":      p.get("link"),
+                                    "photographer":  p.get("photographer"),
+                                    "fetched_at":    now,
+                                }
+                                # Also cache the probe aircraft's specific photo
+                                conn.execute(
+                                    "INSERT OR REPLACE INTO photos VALUES (?,?,?,?,?,?)",
+                                    (probe_icao, result["thumbnail_url"], result["large_url"],
+                                     result["link_url"], result["photographer"], now),
+                                )
+                except Exception as exc:
+                    log.warning("type photo probe failed for type=%s icao=%s: %s",
+                                type_code, probe_icao, exc)
+
+        # Write to type_photos (result or negative)
+        if result:
+            conn.execute(
+                "INSERT OR REPLACE INTO type_photos "
+                "(type_code, thumbnail_url, large_url, link_url, photographer, fetched_at) "
+                "VALUES (?,?,?,?,?,?)",
+                (type_code, result["thumbnail_url"], result["large_url"],
+                 result["link_url"], result["photographer"], now),
+            )
+        else:
+            conn.execute(
+                "INSERT OR REPLACE INTO type_photos "
+                "(type_code, thumbnail_url, large_url, link_url, photographer, fetched_at) "
+                "VALUES (?,NULL,NULL,NULL,NULL,?)",
+                (type_code, now),
+            )
+        conn.commit()
+        return result
+
+
+def _annotate_photo(result: dict | None, *,
+                    is_type: bool = False,
+                    type_code: str | None = None,
+                    type_desc: str | None = None) -> dict | None:
+    """Attach is_type_photo / type_code / type_desc fields to a photo result dict."""
+    if result is None:
+        return None
+    return {
+        **result,
+        "is_type_photo": is_type,
+        "type_code":     type_code if is_type else None,
+        "type_desc":     type_desc if is_type else None,
+    }
+
+
 @app.get("/api/flights/{flight_id}/photo")
 async def api_flight_photo(flight_id: int) -> dict | None:
-    row = db().execute("SELECT icao_hex FROM flights WHERE id = ?", (flight_id,)).fetchone()
+    row = db().execute(
+        """
+        SELECT f.icao_hex,
+               COALESCE(f.aircraft_type, adb.type_code, axo.type_code) AS type_code,
+               COALESCE(adb.type_desc, axo.type_desc, f.aircraft_type) AS type_desc
+        FROM flights f
+        LEFT JOIN aircraft_db     adb ON adb.icao_hex = f.icao_hex
+        LEFT JOIN adsbx_overrides axo ON axo.icao_hex = f.icao_hex
+        WHERE f.id = ?
+        """,
+        (flight_id,),
+    ).fetchone()
     if not row:
         raise HTTPException(404)
-    return await _fetch_photo(row["icao_hex"])
+    specific = await _fetch_photo(row["icao_hex"])
+    if specific:
+        return _annotate_photo(specific, is_type=False)
+    type_photo = await _fetch_type_photo(row["type_code"])
+    return _annotate_photo(type_photo, is_type=True,
+                           type_code=row["type_code"], type_desc=row["type_desc"])
 
 
 # ---------------------------------------------------------------------------
@@ -855,19 +1013,23 @@ async def api_aircraft_flagged(
         f"""
         SELECT
             f.icao_hex,
-            COALESCE(f.registration, adb.registration, axo.registration) AS registration,
-            COALESCE(f.aircraft_type, adb.type_code, axo.type_code)      AS aircraft_type,
-            COALESCE(adb.type_desc, axo.type_desc, '')                   AS type_desc,
-            {flag_expr}                                                  AS flags,
-            COUNT(*)                                                     AS flight_count,
-            MIN(f.first_seen)                                            AS first_seen,
-            MAX(f.last_seen)                                             AS last_seen,
-            p.thumbnail_url,
-            p.large_url,
-            p.link_url,
-            p.photographer
+            COALESCE(f.registration, adb.registration, axo.registration)    AS registration,
+            COALESCE(f.aircraft_type, adb.type_code, axo.type_code)         AS aircraft_type,
+            COALESCE(adb.type_desc, axo.type_desc, '')                      AS type_desc,
+            {flag_expr}                                                     AS flags,
+            COUNT(*)                                                        AS flight_count,
+            MIN(f.first_seen)                                               AS first_seen,
+            MAX(f.last_seen)                                                AS last_seen,
+            COALESCE(p.thumbnail_url, tp.thumbnail_url)                     AS thumbnail_url,
+            COALESCE(p.large_url,     tp.large_url)                         AS large_url,
+            COALESCE(p.link_url,      tp.link_url)                          AS link_url,
+            COALESCE(p.photographer,  tp.photographer)                      AS photographer,
+            CASE WHEN p.thumbnail_url IS NULL AND tp.thumbnail_url IS NOT NULL
+                 THEN 1 ELSE 0 END                                          AS is_type_photo
         {base_joins}
-        LEFT JOIN photos p ON p.icao_hex = f.icao_hex
+        LEFT JOIN photos p     ON p.icao_hex  = f.icao_hex
+        LEFT JOIN type_photos tp
+               ON tp.type_code = COALESCE(adb.type_code, axo.type_code, f.aircraft_type)
         WHERE {flag_filter}
         GROUP BY f.icao_hex
         ORDER BY {order_col} {order_dir}
@@ -879,6 +1041,7 @@ async def api_aircraft_flagged(
     aircraft = []
     for r in rows:
         d = dict(r)
+        d["is_type_photo"] = bool(d["is_type_photo"])
         d["country"] = icao_ranges.icao_to_country(d["icao_hex"])
         aircraft.append(d)
 
@@ -887,7 +1050,24 @@ async def api_aircraft_flagged(
 
 @app.get("/api/aircraft/{icao_hex}/photo")
 async def api_aircraft_photo(icao_hex: str) -> dict | None:
-    return await _fetch_photo(icao_hex.lower().lstrip("~"))
+    icao = icao_hex.lower().lstrip("~")
+    row = db().execute(
+        """
+        SELECT COALESCE(adb.type_code, axo.type_code) AS type_code,
+               COALESCE(adb.type_desc, axo.type_desc) AS type_desc
+        FROM (SELECT ? AS h) base
+        LEFT JOIN aircraft_db     adb ON adb.icao_hex = base.h
+        LEFT JOIN adsbx_overrides axo ON axo.icao_hex = base.h
+        """,
+        (icao,),
+    ).fetchone()
+    type_code = row["type_code"] if row else None
+    type_desc = row["type_desc"] if row else None
+    specific = await _fetch_photo(icao)
+    if specific:
+        return _annotate_photo(specific, is_type=False)
+    type_photo = await _fetch_type_photo(type_code)
+    return _annotate_photo(type_photo, is_type=True, type_code=type_code, type_desc=type_desc)
 
 
 # ---------------------------------------------------------------------------

@@ -34,10 +34,12 @@ function renderCard(ac) {
   const photoId = "photo-" + ac.icao_hex;
 
   const safeThumb = safeHttpUrl(ac.thumbnail_url);
+  const typeOverlay = (safeThumb && ac.is_type_photo)
+    ? '<div class="gallery-type-badge">Type photo</div>' : "";
   card.innerHTML = `
     <div class="gallery-photo" id="${photoId}">
       ${safeThumb
-        ? `<img src="${escHtml(safeThumb)}" alt="${reg}" loading="lazy">`
+        ? `<img src="${escHtml(safeThumb)}" alt="${reg}" loading="lazy">${typeOverlay}`
         : '<div class="gallery-no-photo">No photo</div>'}
     </div>
     <div class="gallery-info">
@@ -68,7 +70,9 @@ async function loadAircraftPhoto(icaoHex, containerId) {
     if (!thumb) return;
     const container = document.getElementById(containerId);
     if (!container) return;
-    container.innerHTML = `<img src="${escHtml(thumb)}" alt="Aircraft" loading="lazy">`;
+    const typeOverlay = photo.is_type_photo
+      ? '<div class="gallery-type-badge">Type photo</div>' : "";
+    container.innerHTML = `<img src="${escHtml(thumb)}" alt="Aircraft" loading="lazy">${typeOverlay}`;
   } catch (err) { console.error("loadAircraftPhoto:", err); }
 }
 
