@@ -259,7 +259,8 @@ class TestMainCli:
         conn.commit()
         conn.close()
         import sys
-        sys.argv = ["purge_ghosts", "--db", db_path, "--max-speed", "2000", "--apply"]
+        sys.argv = ["purge_ghosts", "--db", db_path, "--max-speed", "2000",
+                    "--apply", "--i-have-a-backup"]
         main()
         out = capsys.readouterr().out
         assert "Done" in out
@@ -268,3 +269,28 @@ class TestMainCli:
         count = conn2.execute("SELECT COUNT(*) FROM positions WHERE flight_id = ?", (fid,)).fetchone()[0]
         assert count == 2
         conn2.close()
+
+    def test_apply_takes_snapshot_by_default(self, tmp_path, capsys):
+        """Without --i-have-a-backup, --apply must produce a backup-*.db
+        sibling file before mutating."""
+        from purge_ghosts import main
+        db_path = str(tmp_path / "test.db")
+        database.init_db(db_path)
+        conn = database.connect(db_path)
+        conn.execute(
+            "INSERT INTO flights (icao_hex, first_seen, last_seen, max_distance_nm, total_positions) "
+            "VALUES ('aabbcc', 1000, 2000, 100.0, 3)"
+        )
+        fid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute("INSERT INTO positions (flight_id, ts, lat, lon) VALUES (?, 1000, 52.0, 21.0)", (fid,))
+        conn.execute("INSERT INTO positions (flight_id, ts, lat, lon) VALUES (?, 1010, 80.0, 21.0)", (fid,))
+        conn.commit()
+        conn.close()
+        import sys
+        sys.argv = ["purge_ghosts", "--db", db_path, "--max-speed", "2000", "--apply"]
+        main()
+        out = capsys.readouterr().out
+        assert "Snapshot:" in out
+        # Exactly one backup file should now sit next to the DB.
+        backups = list(tmp_path.glob("test.db.backup-*.db"))
+        assert len(backups) == 1, f"expected 1 snapshot, got {backups}"

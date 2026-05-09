@@ -289,6 +289,65 @@ class TestSend:
             result = notifier._send("hello")
         assert result is False
 
+    def test_token_not_logged_on_http_error(self, monkeypatch, caplog):
+        """A 401 from Telegram must not echo the bot token into the log.
+        urllib.error.HTTPError exposes the request URL via .url; we format
+        only code+reason so the token never appears."""
+        import urllib.error as _ue
+        secret = "SUPERSECRETTOKEN12345"
+        monkeypatch.setattr(config, "TELEGRAM_TOKEN", secret)
+        monkeypatch.setattr(config, "TELEGRAM_CHAT_ID", "123")
+        err = _ue.HTTPError(
+            url=f"https://api.telegram.org/bot{secret}/sendMessage",
+            code=401, msg="Unauthorized", hdrs={}, fp=None,
+        )
+        with patch("urllib.request.urlopen", side_effect=err), \
+             caplog.at_level("WARNING", logger="notifier"):
+            notifier._send("hello")
+        joined = "\n".join(r.getMessage() for r in caplog.records)
+        assert secret not in joined
+        assert "401" in joined  # we still log something useful
+
+    def test_token_not_logged_on_url_error(self, monkeypatch, caplog):
+        import urllib.error as _ue
+        secret = "ANOTHERSECRET98765"
+        monkeypatch.setattr(config, "TELEGRAM_TOKEN", secret)
+        monkeypatch.setattr(config, "TELEGRAM_CHAT_ID", "123")
+        err = _ue.URLError(
+            reason="connection refused",
+            filename=f"https://api.telegram.org/bot{secret}/sendMessage",
+        )
+        with patch("urllib.request.urlopen", side_effect=err), \
+             caplog.at_level("WARNING", logger="notifier"):
+            notifier._send("hello")
+        joined = "\n".join(r.getMessage() for r in caplog.records)
+        assert secret not in joined
+
+
+class TestDescribeExc:
+    def test_http_error_uses_code_and_reason_only(self):
+        import urllib.error as _ue
+        err = _ue.HTTPError(
+            url="https://api.telegram.org/botSECRET/sendMessage",
+            code=429, msg="Too Many Requests", hdrs={}, fp=None,
+        )
+        result = notifier._describe_exc(err)
+        assert "429" in result
+        assert "Too Many Requests" in result
+        assert "SECRET" not in result
+
+    def test_url_error_uses_reason_only(self):
+        import urllib.error as _ue
+        err = _ue.URLError(reason="dns failure",
+                           filename="https://api.telegram.org/botSECRET/getUpdates")
+        result = notifier._describe_exc(err)
+        assert "dns failure" in result
+        assert "SECRET" not in result
+
+    def test_unknown_exception_falls_back_to_type_name(self):
+        result = notifier._describe_exc(RuntimeError("boom"))
+        assert result == "RuntimeError"
+
 
 # ---------------------------------------------------------------------------
 # notify_military
@@ -325,6 +384,21 @@ class TestNotifyMilitary:
         notifier.notify_military("abc123", "SP-X", None, None, None, 10.0)
         assert "Unknown type" in sent[0]
 
+    def test_message_contains_country(self, monkeypatch):
+        sent = []
+        monkeypatch.setattr(notifier, "_send", lambda txt: sent.append(txt))
+        notifier.notify_military("abc123", "SP-LRA", None, None, None, 50.0)
+        # abc123 = United States
+        assert "United States" in sent[0]
+
+    def test_message_country_unknown_for_unmapped_icao(self, monkeypatch):
+        """ICAO `000000` is in an unassigned range — country renders as
+        'Unknown' rather than crashing or omitting the line."""
+        sent = []
+        monkeypatch.setattr(notifier, "_send", lambda txt: sent.append(txt))
+        notifier.notify_military("000000", "TEST", None, None, None, 50.0)
+        assert "Country: Unknown" in sent[0]
+
     def test_message_html_structure(self, monkeypatch):
         """Verify message has correct HTML structure, not just substrings."""
         sent = []
@@ -340,10 +414,12 @@ class TestNotifyMilitary:
         assert "<b>SP-LRA</b>" in lines[1]
         assert "(LOT100)" in lines[1]
         assert "Boeing 737" in lines[1]
-        # Line 3: distance
-        assert lines[2].startswith("Distance:")
-        # Line 4: link
-        assert '<a href="http://test/stats/aircraft/abc123">' in lines[3]
+        # Line 3: country
+        assert lines[2].startswith("Country:")
+        # Line 4: distance
+        assert lines[3].startswith("Distance:")
+        # Line 5: link
+        assert '<a href="http://test/stats/aircraft/abc123">' in lines[4]
 
     def test_html_entities_in_registration_not_injected(self, monkeypatch):
         """Ensure registration with HTML chars doesn't break message."""
@@ -380,6 +456,12 @@ class TestNotifyInteresting:
         monkeypatch.setattr(notifier, "_send", lambda txt: sent.append(txt))
         notifier.notify_interesting("abc123", "SP-LRA", None, "Gulfstream", None, 100.0)
         assert "(" not in sent[0] or "Interesting" in sent[0]
+
+    def test_message_contains_country(self, monkeypatch):
+        sent = []
+        monkeypatch.setattr(notifier, "_send", lambda txt: sent.append(txt))
+        notifier.notify_interesting("abc123", "SP-LRA", None, None, None, 100.0)
+        assert "United States" in sent[0]
 
 
 # ---------------------------------------------------------------------------

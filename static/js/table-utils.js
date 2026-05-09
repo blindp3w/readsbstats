@@ -71,13 +71,14 @@ function renderPagination(containerId, total, pageSize, offset, onPage) {
 
 /**
  * Allowlist URL schemes for href/src — returns the original URL if it begins
- * with http:// or https://, else "". Photo URLs come from third-party APIs,
- * so a compromised provider must not be able to inject javascript:/data: URIs.
+ * with https://, else "". Photo URLs come from third-party APIs (Planespotters,
+ * airport-data, hexdb), all of which serve photos over HTTPS; rejecting plain
+ * http:// closes the MITM window for users on hostile networks.
  */
 function safeHttpUrl(url) {
   if (typeof url !== "string") return "";
   const trimmed = url.trim();
-  return /^https?:\/\//i.test(trimmed) ? trimmed : "";
+  return /^https:\/\//i.test(trimmed) ? trimmed : "";
 }
 
 /**

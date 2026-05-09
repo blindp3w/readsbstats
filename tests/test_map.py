@@ -73,8 +73,12 @@ def insert_flight_with_position(
 # ---------------------------------------------------------------------------
 
 class TestIndex:
-    def test_ts_flight_index_created_by_migrate(self):
-        conn = make_db()
+    def test_ts_flight_index_created_by_background_migration(self, tmp_path):
+        from readsbstats import database
+        db_path = str(tmp_path / "idx.db")
+        database.init_db(db_path)
+        database._build_positions_indexes(db_path)
+        conn = database.connect(db_path)
         indexes = {row[1] for row in conn.execute("PRAGMA index_list(positions)")}
         conn.close()
         assert "idx_positions_ts_flight" in indexes

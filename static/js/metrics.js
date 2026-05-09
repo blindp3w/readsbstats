@@ -481,3 +481,15 @@ document.addEventListener("unitschange", function() {
     fetchGroup(rangeGroup).then(result => renderChart(rangeGroup, result));
   }
 });
+
+// Tear down uPlot instances on navigation so they don't leak DOM/canvas
+// references in long-lived single-page sessions.
+window.addEventListener("beforeunload", function() {
+  for (const id in state.charts) {
+    const chart = state.charts[id];
+    if (chart && typeof chart.destroy === "function") {
+      try { chart.destroy(); } catch (e) { /* tab is closing — best effort */ }
+    }
+    state.charts[id] = null;
+  }
+});

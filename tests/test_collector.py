@@ -92,6 +92,42 @@ class TestShutdown:
         collector._running = True  # reset
 
 
+class TestWatchdogLoop:
+    def test_emits_watchdog_then_stops_on_running_false(self, monkeypatch):
+        """Watchdog loop must emit at least one WATCHDOG=1 and exit when
+        _running goes False, without taking another full sleep cycle."""
+        from readsbstats import collector
+        import threading as _t
+        sent: list[str] = []
+        monkeypatch.setattr(collector, "_sd_notify", lambda m: sent.append(m))
+        # Compress the interval so the test stays fast.
+        monkeypatch.setattr(collector, "_WATCHDOG_INTERVAL_SEC", 1)
+        collector._running = True
+        thread = _t.Thread(target=collector._watchdog_loop, daemon=True)
+        thread.start()
+        # Wait for first beat.
+        for _ in range(20):
+            if sent:
+                break
+            time.sleep(0.05)
+        assert sent and sent[0] == "WATCHDOG=1"
+        collector._running = False
+        thread.join(timeout=3)
+        assert not thread.is_alive()
+        collector._running = True  # reset for other tests
+
+    def test_does_not_emit_when_running_false_at_entry(self, monkeypatch):
+        from readsbstats import collector
+        sent: list[str] = []
+        monkeypatch.setattr(collector, "_sd_notify", lambda m: sent.append(m))
+        collector._running = False
+        try:
+            collector._watchdog_loop()
+        finally:
+            collector._running = True
+        assert sent == []
+
+
 # ---------------------------------------------------------------------------
 # haversine_nm
 # ---------------------------------------------------------------------------
@@ -2258,8 +2294,14 @@ class TestMain:
     def setup(self, monkeypatch):
         _reset_collector_state()
         enrichment.clear_cache()
-        from readsbstats import collector
+        from readsbstats import collector, database
         collector._running = True
+        # Stub the daemon threads main() spawns: the watchdog busy-loops with
+        # monkeypatched sleep, and run_background_migrations would close the
+        # shared in-memory connection out from under the main loop.
+        monkeypatch.setattr(database, "run_background_migrations",
+                            lambda *a, **kw: None)
+        monkeypatch.setattr(collector, "_watchdog_loop", lambda: None)
         yield
         collector._running = True  # always restore
 

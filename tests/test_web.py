@@ -560,6 +560,61 @@ class TestCache:
         assert web._get_cache("bar") is None
 
 
+class TestDbConnection:
+    """`db()` must be per-thread in production so requests don't serialize on
+    Python's per-connection sqlite mutex.  Tests that set `web._db` directly
+    must still see that connection from every thread (for in-memory DBs)."""
+
+    def test_test_override_shared_across_threads(self, db_conn, monkeypatch):
+        import threading as _t
+        monkeypatch.setattr(web, "_db", db_conn)
+        seen: list[object] = []
+        def fetch():
+            seen.append(web.db())
+        threads = [_t.Thread(target=fetch) for _ in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert all(c is db_conn for c in seen)
+
+    def test_per_thread_connection_when_no_override(self, tmp_path, monkeypatch):
+        import threading as _t
+        monkeypatch.setattr(web, "_db", None)
+        monkeypatch.setattr(web, "_thread_local", _t.local())
+        db_path = str(tmp_path / "perthread.db")
+        database.init_db(db_path)
+        original_connect = database.connect
+        monkeypatch.setattr(web.database, "connect",
+                            lambda path=db_path: original_connect(db_path))
+        seen: list[object] = []
+        lock = _t.Lock()
+        def fetch():
+            conn = web.db()
+            with lock:
+                seen.append(conn)
+        threads = [_t.Thread(target=fetch) for _ in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert len(set(id(c) for c in seen)) == 4
+
+    def test_same_thread_returns_same_connection(self, tmp_path, monkeypatch):
+        import threading as _t
+        monkeypatch.setattr(web, "_db", None)
+        monkeypatch.setattr(web, "_thread_local", _t.local())
+        db_path = str(tmp_path / "samethread.db")
+        database.init_db(db_path)
+        original_connect = database.connect
+        monkeypatch.setattr(web.database, "connect",
+                            lambda path=db_path: original_connect(db_path))
+        first = web.db()
+        second = web.db()
+        assert first is second
+        first.close()
+
+
 # ---------------------------------------------------------------------------
 # HTML page routes
 # ---------------------------------------------------------------------------
@@ -1252,6 +1307,22 @@ class TestApiDates:
         assert len(dates) == 2
         counts = {d["date"]: d["flight_count"] for d in dates}
         assert sum(counts.values()) == 3
+
+    def test_result_is_cached(self, client, db_conn):
+        """First call populates the cache; second call returns the cached value
+        even if the underlying data changes within the TTL window."""
+        insert_flight(db_conn, icao="aa0001", first_seen=1_000_000)
+        first = client.get("/api/dates").json()
+        assert len(first["dates"]) == 1
+        # Add another flight on a different day; cached response must still
+        # show one date.
+        insert_flight(db_conn, icao="aa0002", first_seen=2_000_000)
+        second = client.get("/api/dates").json()
+        assert second == first
+        # Bypass cache by clearing it; should now reflect the new flight.
+        web._cache.clear()
+        third = client.get("/api/dates").json()
+        assert len(third["dates"]) == 2
 
 
 # ---------------------------------------------------------------------------

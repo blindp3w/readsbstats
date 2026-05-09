@@ -26,7 +26,7 @@ import sqlite3
 import statistics
 import sys
 
-from readsbstats import config
+from readsbstats import config, database
 
 
 # ---------------------------------------------------------------------------
@@ -201,6 +201,9 @@ def main() -> None:
                         help="Min MLAT GS readings required for outlier scan (default: %(default)s)")
     parser.add_argument("--apply",          action="store_true",
                         help="Commit changes (default: dry-run)")
+    parser.add_argument("--i-have-a-backup", action="store_true",
+                        help="Skip the automatic VACUUM INTO snapshot taken "
+                             "before --apply (you've made one yourself)")
     args = parser.parse_args()
 
     conn = sqlite3.connect(args.db)
@@ -271,6 +274,10 @@ def main() -> None:
         print("\nDry-run — pass --apply to commit changes.")
         conn.close()
         return
+
+    if not args.i_have_a_backup:
+        snapshot = database.snapshot_db(args.db)
+        print(f"\nSnapshot: {snapshot}")
 
     apply_purge(conn, bad, orphans)
     print(f"\nDone — nulled {total_pos} gs spike(s) across {len(bad)} flight(s).")

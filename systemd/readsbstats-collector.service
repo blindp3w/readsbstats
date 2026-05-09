@@ -14,12 +14,14 @@ WorkingDirectory=/opt/readsbstats
 ExecStart=/opt/readsbstats/venv/bin/python -m readsbstats.collector
 Restart=on-failure
 RestartSec=10
+TimeoutStartSec=300
 
 # Be polite to the Pi — readsb/tar1090 are the primary tenants
 CPUQuota=15%
 MemoryMax=192M
 Nice=10
-IOSchedulingClass=idle
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
 
 # Security hardening
 NoNewPrivileges=yes

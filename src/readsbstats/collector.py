@@ -18,6 +18,7 @@ import socket
 import sqlite3
 import statistics
 import sys
+import threading
 import time
 
 from . import adsbx_enricher, config, database, enrichment, geo, metrics_collector, notifier
@@ -58,6 +59,23 @@ def _sd_notify(msg: str) -> None:
         sock.sendto(msg.encode(), addr)
     finally:
         sock.close()
+
+
+# Heartbeat interval: WatchdogSec is 60s in the unit file; ticking every 20s
+# leaves a 3× margin so a single skipped beat (or a long DB lock) won't trip
+# the watchdog.  The thread runs independently of `_poll()` so a write blocked
+# on a CREATE INDEX (background migration) cannot starve the heartbeat.
+_WATCHDOG_INTERVAL_SEC = 20
+
+
+def _watchdog_loop() -> None:
+    while _running:
+        _sd_notify("WATCHDOG=1")
+        # Sleep in short slices so shutdown is responsive.
+        for _ in range(_WATCHDOG_INTERVAL_SEC):
+            if not _running:
+                return
+            time.sleep(1)
 
 
 def _shutdown(sig, frame):
@@ -788,6 +806,12 @@ def main() -> None:
     metrics_collector.start_metrics_collector()
     _sd_notify("READY=1")
 
+    # Heartbeat must be independent of _poll() — a write blocked on the
+    # SQLite write lock during a background CREATE INDEX could otherwise
+    # exceed WatchdogSec and have systemd kill the process.
+    threading.Thread(target=_watchdog_loop, daemon=True).start()
+    threading.Thread(target=database.run_background_migrations, daemon=True).start()
+
     last_purge = time.time()
 
     while _running:
@@ -796,7 +820,6 @@ def main() -> None:
             _poll(conn)
         except Exception:
             log.exception("Poll error")
-        _sd_notify("WATCHDOG=1")
 
         if time.time() - last_purge >= config.PURGE_INTERVAL_SEC:
             try:

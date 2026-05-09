@@ -2,7 +2,9 @@
 readsbstats — database initialisation, schema, and connection management.
 """
 import logging
+import os
 import sqlite3
+import time
 from . import config
 
 SCHEMA_VERSION = 5
@@ -281,26 +283,6 @@ def _migrate(conn: sqlite3.Connection) -> None:
         "AND id NOT IN (SELECT flight_id FROM active_flights)"
     )
 
-    # Composite index for /api/live: latest position per active flight
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_positions_flight_id_desc "
-        "ON positions(flight_id, id DESC)"
-    )
-
-    # Composite index for /api/map/snapshot: time-range GROUP BY flight_id
-    pos_cols = {row[1] for row in conn.execute("PRAGMA table_info(positions)")}
-    if "ts" in pos_cols:
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_positions_ts_flight "
-            "ON positions(ts, flight_id)"
-        )
-    # Covering index for /api/map/heatmap: avoids table heap reads (lat/lon in-index)
-    if "lat" in pos_cols and "lon" in pos_cols:
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_positions_ts_lat_lon "
-            "ON positions(ts, lat, lon)"
-        )
-
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_flights_registration ON flights(registration)"
     )
@@ -419,18 +401,24 @@ def _migrate(conn: sqlite3.Connection) -> None:
 
     conn.commit()
 
-    # One-time backfill: compute max_distance_bearing for flights that have
-    # max_distance_nm but no bearing yet.  Processes in batches of 500 to
-    # avoid holding the WAL write lock for too long (collector writes
-    # concurrently).
-    rlat, rlon = config.RECEIVER_LAT, config.RECEIVER_LON
-    need_backfill = conn.execute(
-        "SELECT COUNT(*) FROM flights "
-        "WHERE max_distance_nm IS NOT NULL AND max_distance_bearing IS NULL"
-    ).fetchone()[0]
-    if need_backfill:
-        log = logging.getLogger(__name__)
-        log.info("Backfilling max_distance_bearing for %d flights …", need_backfill)
+
+def backfill_bearing(path: str = config.DB_PATH) -> None:
+    """Backfill max_distance_bearing for flights that have max_distance_nm but
+    no bearing yet.  Runs in batches to avoid long WAL write locks.  Called
+    from collector.py in a background thread after READY=1 so it never blocks
+    systemd startup."""
+    _log = logging.getLogger(__name__)
+    conn: sqlite3.Connection | None = None
+    try:
+        conn = connect(path)
+        rlat, rlon = config.RECEIVER_LAT, config.RECEIVER_LON
+        need_backfill = conn.execute(
+            "SELECT COUNT(*) FROM flights "
+            "WHERE max_distance_nm IS NOT NULL AND max_distance_bearing IS NULL"
+        ).fetchone()[0]
+        if not need_backfill:
+            return
+        _log.info("Backfilling max_distance_bearing for %d flights …", need_backfill)
         conn.execute("PRAGMA busy_timeout = 10000")
         batch_size = 500
         done = 0
@@ -464,8 +452,81 @@ def _migrate(conn: sqlite3.Connection) -> None:
             conn.commit()
             done += batch_size
             if done < need_backfill:
-                log.info("  … %d / %d", min(done, need_backfill), need_backfill)
-        log.info("Backfill complete.")
+                _log.info("  … %d / %d", min(done, need_backfill), need_backfill)
+        _log.info("Backfill complete.")
+    except Exception:
+        _log.exception("backfill_bearing failed")
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+def _build_positions_indexes(path: str = config.DB_PATH) -> None:
+    """Create the large composite indexes on the positions table.  Separated
+    from _migrate() so the collector can run them in a background thread
+    after READY=1 rather than blocking startup."""
+    _log = logging.getLogger(__name__)
+    conn: sqlite3.Connection | None = None
+    try:
+        conn = connect(path)
+        conn.execute("PRAGMA busy_timeout = 30000")
+        _log.info("Building positions indexes …")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_positions_flight_id_desc "
+            "ON positions(flight_id, id DESC)"
+        )
+        pos_cols = {row[1] for row in conn.execute("PRAGMA table_info(positions)")}
+        if "ts" in pos_cols:
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_positions_ts_flight "
+                "ON positions(ts, flight_id)"
+            )
+        if "lat" in pos_cols and "lon" in pos_cols:
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_positions_ts_lat_lon "
+                "ON positions(ts, lat, lon)"
+            )
+            # Partial index for /api/map/heatmap and /api/map/coverage which
+            # filter `WHERE lat IS NOT NULL AND lon IS NOT NULL`.  MLAT-only
+            # and Mode-S-only rows often have NULL coords; the partial index
+            # skips them so cache-cold scans don't read the whole table.
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_positions_ts_coords "
+                "ON positions(ts) "
+                "WHERE lat IS NOT NULL AND lon IS NOT NULL"
+            )
+        conn.commit()
+        _log.info("Positions indexes ready.")
+    except Exception:
+        _log.exception("_build_positions_indexes failed")
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+def run_background_migrations(path: str = config.DB_PATH) -> None:
+    """Run slow one-time migrations in a background thread (after READY=1).
+    Builds positions indexes and backfills max_distance_bearing."""
+    _build_positions_indexes(path)
+    backfill_bearing(path)
+
+
+def snapshot_db(src_path: str, dest_path: str | None = None) -> str:
+    """Atomic snapshot of `src_path` via `VACUUM INTO`.  When `dest_path` is
+    omitted, writes to a sibling `<src>.backup-<ts>.db` file.  Returns the
+    snapshot path.  Raises FileExistsError if the destination already exists
+    (refuses to clobber an earlier backup)."""
+    if dest_path is None:
+        ts = time.strftime("%Y%m%d-%H%M%S")
+        dest_path = f"{src_path}.backup-{ts}.db"
+    if os.path.exists(dest_path):
+        raise FileExistsError(dest_path)
+    conn = sqlite3.connect(src_path)
+    try:
+        conn.execute("VACUUM INTO ?", (dest_path,))
+    finally:
+        conn.close()
+    return dest_path
 
 
 def init_db(path: str = config.DB_PATH) -> None:

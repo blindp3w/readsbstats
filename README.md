@@ -181,7 +181,7 @@ The simulator writes 8 aircraft orbiting Warsaw every 5 seconds in readsb's airc
 ### Running tests
 
 ```bash
-.venv/bin/pytest                                              # 948 Python tests
+.venv/bin/pytest                                              # 972 Python tests
 node --test tests/js/test_*.mjs                               # 54 JS tests (Node 22+)
 for f in static/js/*.js; do node --check "$f"; done           # JS syntax check
 ```

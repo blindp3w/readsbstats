@@ -23,10 +23,11 @@ import logging
 import sqlite3
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 
-from . import config
+from . import config, icao_ranges
 
 log = logging.getLogger("notifier")
 
@@ -125,6 +126,19 @@ def _fmt_spd(kts: float | None) -> str:
 # Telegram transport
 # ---------------------------------------------------------------------------
 
+def _describe_exc(exc: BaseException) -> str:
+    """Format a urllib exception for logging without ever revealing the
+    request URL (which would expose the bot token in the path).  Current
+    stdlib `str()` formatting on HTTPError/URLError does not leak the URL,
+    but third-party libs and future stdlib changes might — so we extract
+    only fields known to be URL-free."""
+    if isinstance(exc, urllib.error.HTTPError):
+        return f"HTTP {exc.code} {exc.reason}"
+    if isinstance(exc, urllib.error.URLError):
+        return f"URLError: {exc.reason}"
+    return type(exc).__name__
+
+
 def _send(text: str) -> bool:
     """POST a message to the configured Telegram bot. Returns True on success."""
     if not telegram_enabled():
@@ -145,7 +159,7 @@ def _send(text: str) -> bool:
             resp.read()
         return True
     except Exception as exc:
-        log.warning("Telegram send failed: %s", exc)
+        log.warning("Telegram send failed: %s", _describe_exc(exc))
         return False
 
 
@@ -299,7 +313,8 @@ def _send_photo(photo_url: str, caption: str) -> bool:
             resp.read()
         return True
     except Exception as exc:
-        log.warning("Telegram sendPhoto failed: %s — falling back to text", exc)
+        log.warning("Telegram sendPhoto failed: %s — falling back to text",
+                    _describe_exc(exc))
         return _send(caption)
 
 
@@ -348,10 +363,12 @@ def notify_military(
     distance_nm:   float | None,
 ) -> None:
     reg, cs, ac = _fmt_aircraft_line(icao, registration, callsign, type_desc, aircraft_type)
+    country = icao_ranges.icao_to_country(icao)
     url = f"{config.BASE_URL}/aircraft/{icao}"
     caption = (
         f"✈️ <b>Military aircraft — first sighting</b>\n"
         f"<b>{reg}</b>{cs} — {ac}\n"
+        f"Country: {country}\n"
         f"Distance: {_fmt_dist(distance_nm)}\n"
         f'<a href="{url}">View profile</a>'
     )
@@ -367,10 +384,12 @@ def notify_interesting(
     distance_nm:   float | None,
 ) -> None:
     reg, cs, ac = _fmt_aircraft_line(icao, registration, callsign, type_desc, aircraft_type)
+    country = icao_ranges.icao_to_country(icao)
     url = f"{config.BASE_URL}/aircraft/{icao}"
     caption = (
         f"⭐ <b>Interesting aircraft — first sighting</b>\n"
         f"<b>{reg}</b>{cs} — {ac}\n"
+        f"Country: {country}\n"
         f"Distance: {_fmt_dist(distance_nm)}\n"
         f'<a href="{url}">View profile</a>'
     )
@@ -716,7 +735,7 @@ def _listener_loop(db_path: str) -> None:
                 except Exception:
                     log.exception("Error handling Telegram update")
         except Exception as exc:
-            log.warning("Telegram getUpdates failed: %s", exc)
+            log.warning("Telegram getUpdates failed: %s", _describe_exc(exc))
             time.sleep(5)
 
 

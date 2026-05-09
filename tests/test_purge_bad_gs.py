@@ -547,7 +547,8 @@ class TestMain:
         self.conn.commit()
 
         monkeypatch.setattr("sys.argv", [
-            "purge_bad_gs.py", "--db", self.db_path, "--apply",
+            "purge_bad_gs.py", "--db", self.db_path,
+            "--apply", "--i-have-a-backup",
         ])
         main()
 

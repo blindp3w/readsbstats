@@ -14,6 +14,7 @@ import math
 import os
 import sqlite3
 import sys
+import threading
 import time
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
@@ -55,6 +56,8 @@ from contextlib import asynccontextmanager
 async def _lifespan(app_: FastAPI) -> AsyncIterator[None]:
     log.info("Starting web server — DB: %s", config.DB_PATH)
     database._migrate(db())
+    # Background migrations (positions indexes, bearing backfill) are owned by
+    # the collector so two processes don't fight on the SQLite write lock.
     route_enricher.start_background_enricher()
     yield
     log.info("Web server stopped")
@@ -67,16 +70,26 @@ templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 templates.env.globals["root_path"] = config.ROOT_PATH
 
 # ---------------------------------------------------------------------------
-# DB connection — one per process (WAL allows concurrent readers)
+# DB connection — per-thread.  Python's sqlite3 module holds a per-connection
+# mutex, so sharing a single connection across uvicorn's threadpool would
+# serialize every request — destroying WAL's reader concurrency.  Each thread
+# gets its own connection, opened lazily on first use.
+#
+# Tests inject an in-memory connection by setting `_db` directly; when set,
+# every thread sees that connection (in-memory DBs cannot be reopened).
 # ---------------------------------------------------------------------------
-_db: sqlite3.Connection | None = None
+_db: sqlite3.Connection | None = None  # test override; None in production
+_thread_local = threading.local()
 
 
 def db() -> sqlite3.Connection:
-    global _db
-    if _db is None:
-        _db = database.connect()
-    return _db
+    if _db is not None:
+        return _db
+    conn = getattr(_thread_local, "conn", None)
+    if conn is None:
+        conn = database.connect()
+        _thread_local.conn = conn
+    return conn
 
 
 # ---------------------------------------------------------------------------
@@ -88,6 +101,7 @@ _CACHE_TTLS: dict[str, int] = {
     "polar":        300,   # seconds — max range rarely shifts
     "records":      300,   # seconds — all-time bests, very stable
     "health":        60,   # seconds — matches metrics_collector poll cycle
+    "dates":        600,   # seconds — calendar of flight days; only ticks daily
     "heatmap:24h":   300,   # 5 min — recent data changes frequently
     "heatmap:7d":   1800,   # 30 min
     "heatmap:30d":  7200,   # 2 h — large query, cache aggressively
@@ -230,35 +244,35 @@ def _metrics_agg(col: str) -> str:
 # ---------------------------------------------------------------------------
 
 @app.get("/", response_class=HTMLResponse)
-async def page_stats(request: Request) -> HTMLResponse:
+def page_stats(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(request, "stats.html")
 
 
 @app.get("/history", response_class=HTMLResponse)
-async def page_index(request: Request) -> HTMLResponse:
+def page_index(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(request, "index.html")
 
 
 @app.get("/flight/{flight_id}", response_class=HTMLResponse)
-async def page_flight(request: Request, flight_id: int) -> HTMLResponse:
+def page_flight(request: Request, flight_id: int) -> HTMLResponse:
     return templates.TemplateResponse(request, "flight.html", {"flight_id": flight_id})
 
 
 @app.get("/aircraft/{icao_hex}", response_class=HTMLResponse)
-async def page_aircraft(request: Request, icao_hex: str) -> HTMLResponse:
+def page_aircraft(request: Request, icao_hex: str) -> HTMLResponse:
     return templates.TemplateResponse(request, "aircraft.html",
         {"icao_hex": icao_hex.lower().lstrip("~")})
 
 
 @app.get("/live", response_class=HTMLResponse)
-async def page_live(request: Request) -> HTMLResponse:
+def page_live(request: Request) -> HTMLResponse:
     from fastapi.responses import RedirectResponse
     root = request.scope.get("root_path", "").rstrip("/")
     return RedirectResponse(url=root + "/map", status_code=301)
 
 
 @app.get("/map", response_class=HTMLResponse)
-async def page_map(request: Request) -> HTMLResponse:
+def page_map(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(request, "map.html", {
         "history_hours": config.MAP_HISTORY_HOURS,
         "receiver_lat":  config.RECEIVER_LAT,
@@ -267,7 +281,7 @@ async def page_map(request: Request) -> HTMLResponse:
 
 
 @app.get("/settings", response_class=HTMLResponse)
-async def page_settings(request: Request) -> HTMLResponse:
+def page_settings(request: Request) -> HTMLResponse:
     tok_masked = "configured" if config.TELEGRAM_TOKEN else "not set"
     cid_masked = "configured" if config.TELEGRAM_CHAT_ID else "not set"
     return templates.TemplateResponse(request, "settings.html", {
@@ -335,17 +349,17 @@ async def page_settings(request: Request) -> HTMLResponse:
 
 
 @app.get("/watchlist", response_class=HTMLResponse)
-async def page_watchlist(request: Request) -> HTMLResponse:
+def page_watchlist(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(request, "watchlist.html")
 
 
 @app.get("/gallery", response_class=HTMLResponse)
-async def page_gallery(request: Request) -> HTMLResponse:
+def page_gallery(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(request, "gallery.html")
 
 
 @app.get("/metrics", response_class=HTMLResponse)
-async def page_metrics(request: Request) -> HTMLResponse:
+def page_metrics(request: Request) -> HTMLResponse:
     has_data = db().execute(
         "SELECT 1 FROM receiver_stats LIMIT 1"
     ).fetchone() is not None
@@ -376,7 +390,7 @@ class _WatchlistEntry(BaseModel):
 
 
 @app.get("/api/watchlist")
-async def api_watchlist_list() -> dict:
+def api_watchlist_list() -> dict:
     rows = db().execute(
         """
         SELECT w.id, w.match_type, w.value, w.label, w.created_at,
@@ -391,7 +405,7 @@ async def api_watchlist_list() -> dict:
 
 
 @app.post("/api/watchlist", status_code=201, dependencies=[Depends(_csrf_check)])
-async def api_watchlist_add(body: _WatchlistEntry) -> dict:
+def api_watchlist_add(body: _WatchlistEntry) -> dict:
     if body.match_type not in _VALID_MATCH_TYPES:
         raise HTTPException(422, "match_type must be icao, registration, or callsign_prefix")
     value = body.value.strip().lower()
@@ -412,7 +426,7 @@ async def api_watchlist_add(body: _WatchlistEntry) -> dict:
 
 @app.delete("/api/watchlist/{entry_id}", status_code=204,
             dependencies=[Depends(_csrf_check)])
-async def api_watchlist_delete(entry_id: int) -> Response:
+def api_watchlist_delete(entry_id: int) -> Response:
     row = db().execute("SELECT id FROM watchlist WHERE id = ?", (entry_id,)).fetchone()
     if not row:
         raise HTTPException(404, "Not found")
@@ -486,7 +500,7 @@ def _build_flight_filter(
 
 
 @app.get("/api/flights")
-async def api_flights(
+def api_flights(
     date: str | None = Query(None, description="YYYY-MM-DD (UTC)"),
     icao: str | None = Query(None),
     callsign: str | None = Query(None),
@@ -544,7 +558,7 @@ _CSV_COLS = [
 
 
 @app.get("/api/flights/export.csv")
-async def api_flights_export(
+def api_flights_export(
     date: str | None = Query(None, description="YYYY-MM-DD (UTC)"),
     icao: str | None = Query(None),
     callsign: str | None = Query(None),
@@ -599,7 +613,7 @@ async def api_flights_export(
 # ---------------------------------------------------------------------------
 
 @app.get("/api/flights/{flight_id}")
-async def api_flight_detail(flight_id: int) -> dict:
+def api_flight_detail(flight_id: int) -> dict:
     conn = db()
     flight = conn.execute(
         f"SELECT {_FLIGHT_COLS} FROM flights f {_FLIGHT_JOIN} WHERE f.id = ?",
@@ -919,7 +933,7 @@ async def api_flight_photo(flight_id: int) -> dict | None:
 # ---------------------------------------------------------------------------
 
 @app.get("/api/aircraft/{icao_hex}/flights")
-async def api_aircraft_flights(
+def api_aircraft_flights(
     icao_hex: str,
     limit: int = Query(config.DEFAULT_PAGE_SIZE, ge=1, le=config.MAX_PAGE_SIZE),
     offset: int = Query(0, ge=0, le=500_000),
@@ -972,7 +986,7 @@ async def api_aircraft_flights(
 # ---------------------------------------------------------------------------
 
 @app.get("/api/aircraft/flagged")
-async def api_aircraft_flagged(
+def api_aircraft_flagged(
     flags: str | None = Query(None, description="military | interesting"),
     limit: int = Query(config.DEFAULT_PAGE_SIZE, ge=1, le=config.MAX_PAGE_SIZE),
     offset: int = Query(0, ge=0, le=500_000),
@@ -1075,7 +1089,7 @@ async def api_aircraft_photo(icao_hex: str) -> dict | None:
 # ---------------------------------------------------------------------------
 
 @app.get("/api/stats")
-async def api_stats(
+def api_stats(
     from_ts: int | None = Query(None, alias="from"),
     to_ts:   int | None = Query(None, alias="to"),
 ) -> dict:
@@ -1485,7 +1499,7 @@ async def api_stats(
 # ---------------------------------------------------------------------------
 
 @app.get("/api/stats/records")
-async def api_stats_records() -> dict:
+def api_stats_records() -> dict:
     """All-time personal records: furthest / fastest / highest / longest flight."""
     cached = _get_cache("records")
     if cached is not None:
@@ -1539,7 +1553,7 @@ async def api_stats_records() -> dict:
 # ---------------------------------------------------------------------------
 
 @app.get("/api/airspace")
-async def api_airspace() -> dict:
+def api_airspace() -> dict:
     """Serve the configured airspace GeoJSON (default: bundled poland.geojson)."""
     cached = _cache.get("airspace")
     if cached and time.time() - cached[0] < _AIRSPACE_TTL:
@@ -1562,7 +1576,7 @@ async def api_airspace() -> dict:
 # ---------------------------------------------------------------------------
 
 @app.get("/api/stats/polar")
-async def api_stats_polar() -> dict:
+def api_stats_polar() -> dict:
     """Max detection range per 10° azimuth bucket (36 buckets, 0 = North)."""
     cached = _get_cache("polar")
     if cached is not None:
@@ -1772,7 +1786,7 @@ async def api_map_coverage(window: str = Query("7d")) -> dict:
 # ---------------------------------------------------------------------------
 
 @app.get("/api/live")
-async def api_live() -> dict:
+def api_live() -> dict:
     conn = db()
     # Get active flight IDs first (small set), then fetch latest positions only for those
     active_ids = [r[0] for r in conn.execute("SELECT flight_id FROM active_flights").fetchall()]
@@ -1840,7 +1854,7 @@ _MAP_WINDOW_SEC = 600  # flight must have a position within this window of `at`
 
 
 @app.get("/api/map/snapshot")
-async def api_map_snapshot(
+def api_map_snapshot(
     at: int | None = Query(None, description="Unix timestamp (default: now → live mode)"),
     trail: int = Query(10, ge=0, description="Trail positions per aircraft (capped at 50)"),
 ) -> dict:
@@ -1940,7 +1954,10 @@ async def api_map_snapshot(
 # ---------------------------------------------------------------------------
 
 @app.get("/api/dates")
-async def api_dates() -> dict:
+def api_dates() -> dict:
+    cached = _get_cache("dates")
+    if cached is not None:
+        return cached
     conn = db()
     rows = conn.execute(
         """
@@ -1952,7 +1969,9 @@ async def api_dates() -> dict:
         LIMIT 365
         """
     ).fetchall()
-    return {"dates": [dict(r) for r in rows]}
+    result = {"dates": [dict(r) for r in rows]}
+    _set_cache("dates", result)
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -1960,7 +1979,7 @@ async def api_dates() -> dict:
 # ---------------------------------------------------------------------------
 
 @app.get("/api/airlines/{prefix}/flights")
-async def api_airline_flights(
+def api_airline_flights(
     prefix: str,
     limit: int = Query(config.DEFAULT_PAGE_SIZE, ge=1, le=config.MAX_PAGE_SIZE),
     offset: int = Query(0, ge=0, le=500_000),
@@ -1985,7 +2004,7 @@ async def api_airline_flights(
 
 
 @app.get("/api/types/{aircraft_type}/flights")
-async def api_type_flights(
+def api_type_flights(
     aircraft_type: str,
     limit: int = Query(config.DEFAULT_PAGE_SIZE, ge=1, le=config.MAX_PAGE_SIZE),
     offset: int = Query(0, ge=0, le=500_000),
@@ -2016,7 +2035,7 @@ async def api_type_flights(
 # ---------------------------------------------------------------------------
 
 @app.get("/api/metrics")
-async def api_metrics(
+def api_metrics(
     request: Request,
     metrics: str = "signal,noise",
 ) -> dict:
@@ -2092,7 +2111,7 @@ async def api_metrics(
 # ---------------------------------------------------------------------------
 
 @app.get("/api/health")
-async def api_health() -> dict:
+def api_health() -> dict:
     try:
         db().execute("SELECT 1")
         db_ok = True
@@ -2106,7 +2125,7 @@ async def api_health() -> dict:
 # ---------------------------------------------------------------------------
 
 @app.get("/api/metrics/health")
-async def api_metrics_health() -> dict:
+def api_metrics_health() -> dict:
     cached = _get_cache("health")
     if cached is not None:
         return cached

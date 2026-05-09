@@ -266,8 +266,6 @@ def main() -> None:
 
     end = last_update
 
-    end = last_update
-
     print(f"RRD dir:      {args.rrd_dir}")
     print(f"Database:     {args.db}")
     print(f"Last update:  {end}")

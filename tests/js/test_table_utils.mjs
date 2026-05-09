@@ -102,9 +102,11 @@ test("flagBadge: interesting bit set within larger bitmask (no military)", () =>
 // safeHttpUrl — URL scheme allowlist (XSS protection for href/src)
 // ---------------------------------------------------------------------------
 
-test("safeHttpUrl: accepts http:// URLs", () => {
+test("safeHttpUrl: rejects http:// URLs (https-only allowlist)", () => {
+  // Photo providers all serve over HTTPS; rejecting plain http:// closes the
+  // MITM window for users on hostile networks.
   const { safeHttpUrl } = loadTableUtils();
-  assert.equal(safeHttpUrl("http://example.com/foo"), "http://example.com/foo");
+  assert.equal(safeHttpUrl("http://example.com/foo"), "");
 });
 
 test("safeHttpUrl: accepts https:// URLs", () => {
@@ -112,7 +114,7 @@ test("safeHttpUrl: accepts https:// URLs", () => {
   assert.equal(safeHttpUrl("https://example.com/foo"), "https://example.com/foo");
 });
 
-test("safeHttpUrl: accepts mixed-case schemes", () => {
+test("safeHttpUrl: accepts mixed-case https schemes", () => {
   const { safeHttpUrl } = loadTableUtils();
   assert.equal(safeHttpUrl("HTTPS://example.com/"), "HTTPS://example.com/");
 });
@@ -121,7 +123,7 @@ test("safeHttpUrl: returns trimmed URL when leading whitespace is present", () =
   // Browsers tolerate leading whitespace in href/src but it's inconsistent —
   // return a clean trimmed URL so callers don't propagate the surprise.
   const { safeHttpUrl } = loadTableUtils();
-  assert.equal(safeHttpUrl("  http://example.com/x  "), "http://example.com/x");
+  assert.equal(safeHttpUrl("  https://example.com/x  "), "https://example.com/x");
 });
 
 test("safeHttpUrl: rejects javascript: URI", () => {
