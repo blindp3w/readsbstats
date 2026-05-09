@@ -280,12 +280,25 @@ class TestBackgroundMigrationsConcurrency:
         seed.close()
 
         stop = threading.Event()
+        first_write_done = threading.Event()
         errors: list[BaseException] = []
 
         def writer():
             try:
                 conn = database.connect(db_path)
                 ts = 1
+                # Synchronisation barrier: the test must observe at least one
+                # successful INSERT before the index build runs, otherwise the
+                # writer thread can be scheduled out for the entire (~µs)
+                # index build on a tiny CI runner and the test sees zero rows.
+                conn.execute(
+                    "INSERT INTO positions (flight_id, ts, lat, lon) "
+                    "VALUES (?, ?, ?, ?)",
+                    (fid, ts, 50.0, 20.0),
+                )
+                conn.commit()
+                first_write_done.set()
+                ts += 1
                 while not stop.is_set():
                     conn.execute(
                         "INSERT INTO positions (flight_id, ts, lat, lon) "
@@ -300,17 +313,17 @@ class TestBackgroundMigrationsConcurrency:
 
         t = threading.Thread(target=writer, daemon=True)
         t.start()
+        assert first_write_done.wait(timeout=5), "writer never produced first row"
         try:
             database._build_positions_indexes(db_path)
         finally:
             stop.set()
             t.join(timeout=10)
         assert not errors, f"writer hit errors: {errors!r}"
-        # Writes did get through.
         check = database.connect(db_path)
         n = check.execute("SELECT COUNT(*) FROM positions").fetchone()[0]
         check.close()
-        assert n > 0
+        assert n >= 1
 
     def test_backfill_skips_out_of_range_coords(self, tmp_path):
         """backfill_bearing must not crash or write nonsense bearings for

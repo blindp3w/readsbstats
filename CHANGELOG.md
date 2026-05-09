@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.5.2 — 2026-05-09
+
+### Tests
+
+- Deflake `test_index_build_under_concurrent_writes` — on the small CI
+  runner the writer thread could be scheduled out for the entire microsecond
+  index build and never get its first INSERT in, failing the
+  `count > 0` assertion. Added a `threading.Event` barrier so the test
+  blocks on the first successful write before the index build begins.
+  No production-code change.
+
 ## 1.5.1 — 2026-05-09
 
 Production-readiness sweep (seventh audit pass — see
