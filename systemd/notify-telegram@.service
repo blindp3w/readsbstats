@@ -1,0 +1,8 @@
+[Unit]
+Description=Telegram notification for failed service %i
+
+[Service]
+Type=oneshot
+User=readsbstats
+EnvironmentFile=/etc/readsbstats/readsbstats.env
+ExecStart=/opt/readsbstats/scripts/notify-telegram-failure.sh %i

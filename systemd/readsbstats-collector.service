@@ -2,6 +2,7 @@
 Description=readsbstats ADS-B History Collector
 After=network.target readsb.service
 Wants=readsb.service
+OnFailure=notify-telegram@%n.service
 StartLimitIntervalSec=120
 StartLimitBurst=5
 
