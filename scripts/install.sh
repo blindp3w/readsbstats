@@ -101,6 +101,7 @@ cp "$APP_DIR/systemd/readsbstats-collector.service" /etc/systemd/system/
 cp "$APP_DIR/systemd/readsbstats-web.service"       /etc/systemd/system/
 cp "$APP_DIR/systemd/readsbstats-updater.service"   /etc/systemd/system/
 cp "$APP_DIR/systemd/readsbstats-updater.timer"     /etc/systemd/system/
+cp "$APP_DIR/systemd/notify-telegram@.service"      /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable --now readsbstats-collector.service
 systemctl enable --now readsbstats-web.service

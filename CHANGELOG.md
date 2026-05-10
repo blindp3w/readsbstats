@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Operations
+
+- **Collector failure alert** — `notify-telegram@.service` fires via `OnFailure=`
+  when the collector permanently fails (after exhausting `StartLimitBurst=5`
+  restarts). Sends a Telegram message with the last 30 lines of `systemctl status`
+  output. Reads `RSBS_TELEGRAM_TOKEN` / `RSBS_TELEGRAM_CHAT_ID` from the existing
+  env file — no extra configuration required.
+
 ## 1.5.2 — 2026-05-09
 
 ### Tests

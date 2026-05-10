@@ -398,6 +398,8 @@ Notifications are disabled when the token or chat ID is not set, so this is full
 
 The bot only responds to the configured `RSBS_TELEGRAM_CHAT_ID` — all other senders are ignored.
 
+**Collector failure alert:** `notify-telegram@.service` fires automatically via systemd's `OnFailure=` when the collector permanently fails (after exhausting its restart budget — 5 attempts in 120 s). The alert includes the last 30 lines of `systemctl status` output so you can see why it died. No extra configuration needed beyond having the Telegram env vars set in `/etc/readsbstats/readsbstats.env`.
+
 ### Ghost position filtering
 
 ADS-B receivers occasionally decode "ghost" positions — phantom ICAO address collisions where two different aircraft share the same hex, or multipath/spoofing artefacts that place an aircraft thousands of nautical miles away for a single sample. Left unchecked these inflate `max_distance_nm` and distort the polar range plot.
@@ -569,7 +571,8 @@ readsbstats/
 │   ├── readsbstats-collector.service
 │   ├── readsbstats-web.service
 │   ├── readsbstats-updater.service
-│   └── readsbstats-updater.timer
+│   ├── readsbstats-updater.timer
+│   └── notify-telegram@.service    # OnFailure alert for collector crashes
 └── docs/
     ├── improvements.md             # Tracked codebase improvements (64 items, all resolved)
     ├── ux-review.md                # UI/UX review (12 items, all resolved)
