@@ -28,7 +28,7 @@ Designed to run alongside readsb, tar1090, and feed clients on a **Raspberry Pi 
 - Stores everything in a lightweight SQLite database (no extra database server)
 - **Aircraft enrichment**: registration, type code, and full type description sourced from [tar1090-db](https://github.com/wiedehopf/tar1090-db) (~620k aircraft)
 - **Airline names**: full airline names sourced from [OpenFlights](https://openflights.org/data.php) and matched to callsign ICAO prefix
-- **Aircraft photos**: thumbnails with fallback chain — [Planespotters.net](https://www.planespotters.net/) → [airport-data.com](https://www.airport-data.com/) → [hexdb.io](https://hexdb.io/); cached 30 days; when no specific aircraft photo exists, a **type-level photo** of the same aircraft type is shown with a "not this specific aircraft" note (web UI) or caption suffix (Telegram)
+- **Aircraft photos**: thumbnails with fallback chain — [Planespotters.net](https://www.planespotters.net/) → [airport-data.com](https://www.airport-data.com/) → [hexdb.io](https://hexdb.io/) → [Wikipedia](https://en.wikipedia.org/) (type-keyed fallback); cached 30 days; when no specific aircraft photo exists, a **type-level photo** of the same aircraft type is shown with a "not this specific aircraft" note (web UI) or caption suffix (Telegram). The Wikipedia step covers vintage, military, GA, and rotorcraft types that the commercial sources under-cover (e.g. `C152`, `MIG29`, `EUFI`, `H60`); it queries Wikipedia's opensearch + REST summary keyed on `aircraft_db.type_desc`, constrains returned URLs to `upload.wikimedia.org` / `en.wikipedia.org` for defence-in-depth, and is disabled with `RSBS_WIKIPEDIA_PHOTO=0`
 - **Max distance**: tracks furthest detected aircraft (great-circle distance in nautical miles)
 - **Unit switching**: toggle between Aeronautical, Metric, and Imperial — persisted in browser
 - **Military & interesting aircraft**: flags from tar1090-db surfaced as badges in the flight list and detail page, with counts on the statistics page; military and interesting are mutually exclusive in all counts and filters; dedicated **Gallery** page with card grid view showing photo, registration, type, country of origin, and flight count for every flagged aircraft detected
@@ -327,6 +327,7 @@ Environment="RSBS_FLIGHT_GAP=1200"
 | `RSBS_ROUTE_RATE_LIMIT` | `1.0` | Minimum seconds between adsbdb.com API requests |
 | `RSBS_AIRSPACE_GEOJSON` | _(empty)_ | Path to a custom airspace GeoJSON file; empty = use bundled `static/airspace/poland.geojson` |
 | `RSBS_PHOTO_CACHE_DAYS` | `30` | How long to cache aircraft photo URLs (all sources) |
+| `RSBS_WIKIPEDIA_PHOTO` | `1` | Wikipedia fallback for type photos (`0` / `false` / `no` to disable step 6 of the photo ladder) |
 | `RSBS_ROOT_PATH` | `/stats` | URL prefix for nginx reverse proxy |
 | `RSBS_WEB_PORT` | `8080` | Internal uvicorn port |
 | `RSBS_PAGE_SIZE` | `100` | Default flight list page size |
@@ -385,7 +386,7 @@ Environment="RSBS_BASE_URL=http://homepi.local/stats"
 Notifications are disabled when the token or chat ID is not set, so this is fully opt-in. If only one of the two is set (or the chat ID is not numeric), the collector logs a warning at startup explaining what's wrong. When Telegram is disabled, all notification-related logic is skipped entirely — no watchlist queries, no flag checks, no daily summary timer, no background listener thread.
 
 **What gets sent:**
-- **Military aircraft** — once per ICAO hex, the first time it's ever detected (not repeated on subsequent visits); includes a photo via `sendPhoto` when available — specific aircraft photo first, type-level fallback second (with a caption note: _"Photo: Eurofighter Typhoon — not this specific aircraft"_)
+- **Military aircraft** — once per ICAO hex, the first time it's ever detected (not repeated on subsequent visits); includes a photo via `sendPhoto` when available — specific aircraft photo first, type-level fallback second (with a caption note: _"Photo: Eurofighter Typhoon — not this specific aircraft"_). The type-level fallback queries Planespotters / airport-data / hexdb and finally Wikipedia, so vintage/military/GA types reliably get a photo.
 - **Interesting aircraft** — same (government, VIP, air ambulance, special mission per tar1090-db flags); mutually exclusive with military — an aircraft counts as one or the other, never both; also includes photo enrichment
 - **Watchlist hits** — once per flight for each watched aircraft (ICAO/reg/callsign prefix match); also includes photo enrichment
 - **Emergency squawk** — once per flight when squawk 7500, 7600, or 7700 is detected (no photo enrichment for emergency alerts)
@@ -531,7 +532,7 @@ readsbstats/
 │   ├── icao_ranges.py          # ICAO 24-bit address → country lookup table
 │   ├── notifier.py             # Telegram notification helper (mil/interesting/squawk/daily)
 │   ├── http_safe.py            # Shared SSRF-safe HTTP helpers (HTTPS-only, no redirect, size cap)
-│   ├── photo_sources.py        # Planespotters → airport-data.com → hexdb.io chain + 5-step lookup ladder
+│   ├── photo_sources.py        # Planespotters → airport-data.com → hexdb.io → Wikipedia chain + 6-step lookup ladder
 │   ├── route_enricher.py       # Background thread: callsign → route via adsbdb.com
 │   ├── db_updater.py           # Downloads tar1090-db CSV and OpenFlights airlines.dat
 │   ├── metrics_collector.py    # Optional: polls /run/readsb/stats.json into receiver_stats
@@ -597,7 +598,7 @@ readsbstats/
 | `airports` | Airport metadata from adsbdb.com: ICAO/IATA codes, name, country, lat/lon |
 | `callsign_routes` | Route cache: callsign → origin/dest airport; NULL sentinel for confirmed-unknown callsigns |
 | `photos` | Cached aircraft photo URLs from Planespotters.net / airport-data.com / hexdb.io (keyed by ICAO hex, TTL 30 days) |
-| `type_photos` | Cached representative photo per aircraft type code (e.g. `B738`), populated lazily as a fallback when no specific aircraft photo exists |
+| `type_photos` | Cached representative photo per aircraft type code (e.g. `B738`), populated lazily as a fallback when no specific aircraft photo exists. `photographer='Wikipedia'` marks rows resolved via the Wikipedia step. |
 | `watchlist` | User-defined aircraft watchlist: ICAO hex, registration, or callsign prefix entries with optional labels |
 
 SQLite is opened in **WAL mode** so the web server can read while the collector is writing.

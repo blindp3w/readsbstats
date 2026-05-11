@@ -719,13 +719,11 @@ async def _fetch_photo(icao_hex: str) -> dict | None:
 
 
 async def _fetch_type_photo(type_code: str | None) -> dict | None:
-    """Return a cached type-level photo for *type_code*, or None.
+    """Return a cached or freshly-resolved type-level photo dict (or None).
 
-    Strategy (in order):
-    1. type_photos cache hit (including negative cache — NULL thumbnail_url → None).
-    2. photos JOIN aircraft_db — reuse any already-cached specific photo of that type.
-    3. Probe ONE ICAO from aircraft_db via photo_sources chain (all sources).
-    Worst-case latency: ~18 s for the probe (3 sources × 6 s).  Result is stored in type_photos.
+    Delegates the full ladder (type-cache → photos JOIN aircraft_db → probe one
+    ICAO → Wikipedia type lookup) to :func:`photo_sources.resolve_photo` via the
+    threadpool.  A per-type asyncio.Lock serialises concurrent gallery requests.
     """
     if not type_code:
         return None
@@ -733,6 +731,7 @@ async def _fetch_type_photo(type_code: str | None) -> dict | None:
     conn = db()
     cutoff = int(time.time()) - config.PHOTO_CACHE_DAYS * 86400
 
+    # Fast path — cache hit avoids the executor hop entirely.
     cached = conn.execute(
         "SELECT * FROM type_photos WHERE type_code = ? AND fetched_at > ?",
         (type_code, cutoff),
@@ -748,72 +747,22 @@ async def _fetch_type_photo(type_code: str | None) -> dict | None:
         if cached is not None:
             return dict(cached) if cached["thumbnail_url"] else None
 
-        now = int(time.time())
-        result: dict | None = None
-
-        joined = conn.execute(
-            """
-            SELECT p.thumbnail_url, p.large_url, p.link_url, p.photographer
-            FROM photos p
-            JOIN aircraft_db adb ON adb.icao_hex = p.icao_hex
-            WHERE adb.type_code = ? AND p.thumbnail_url IS NOT NULL
-            ORDER BY p.fetched_at DESC
-            LIMIT 1
-            """,
-            (type_code,),
-        ).fetchone()
-        if joined:
-            result = {
-                "type_code":     type_code,
-                "thumbnail_url": joined["thumbnail_url"],
-                "large_url":     joined["large_url"],
-                "link_url":      joined["link_url"],
-                "photographer":  joined["photographer"],
-                "fetched_at":    now,
-            }
-
-        if result is None:
-            probe_row = conn.execute(
-                "SELECT icao_hex FROM aircraft_db WHERE type_code = ? LIMIT 1",
-                (type_code,),
-            ).fetchone()
-            if probe_row:
-                probe_icao = probe_row["icao_hex"]
-                pr = await asyncio.get_running_loop().run_in_executor(
-                    None, photo_sources.fetch_photo, probe_icao,
-                )
-                if pr:
-                    result = {
-                        "type_code":     type_code,
-                        "thumbnail_url": pr.thumbnail_url,
-                        "large_url":     pr.large_url,
-                        "link_url":      pr.link_url,
-                        "photographer":  pr.photographer,
-                        "fetched_at":    now,
-                    }
-                    conn.execute(
-                        "INSERT OR REPLACE INTO photos VALUES (?,?,?,?,?,?)",
-                        (probe_icao, pr.thumbnail_url, pr.large_url,
-                         pr.link_url, pr.photographer, now),
-                    )
-
-        if result:
-            conn.execute(
-                "INSERT OR REPLACE INTO type_photos "
-                "(type_code, thumbnail_url, large_url, link_url, photographer, fetched_at) "
-                "VALUES (?,?,?,?,?,?)",
-                (type_code, result["thumbnail_url"], result["large_url"],
-                 result["link_url"], result["photographer"], now),
+        def _resolve() -> dict | None:
+            # icao_hex="" is the documented type-only mode: resolve_photo skips
+            # the specific-aircraft cache check (step 1) and the specific fetch
+            # (step 4) so we don't pollute the ``photos`` table with an
+            # empty-key row.  ``conn`` is shared across the event-loop thread
+            # and this executor worker; Python's sqlite3 per-connection mutex
+            # serialises calls but contention is microseconds (no cursor is
+            # held across HTTP).  ``database.connect`` uses
+            # ``check_same_thread=False`` so cross-thread use is permitted.
+            result, _is_type = photo_sources.resolve_photo(
+                conn, "", type_code,
+                cache_seconds=config.PHOTO_CACHE_DAYS * 86400,
             )
-        else:
-            conn.execute(
-                "INSERT OR REPLACE INTO type_photos "
-                "(type_code, thumbnail_url, large_url, link_url, photographer, fetched_at) "
-                "VALUES (?,NULL,NULL,NULL,NULL,?)",
-                (type_code, now),
-            )
-        conn.commit()
-        return result
+            return result
+
+        return await asyncio.get_running_loop().run_in_executor(None, _resolve)
 
 
 def _annotate_photo(result: dict | None, *,

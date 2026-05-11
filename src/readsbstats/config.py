@@ -87,6 +87,7 @@ RECEIVER_MAX_RANGE = _int("RSBS_MAX_RANGE",    "450")      # nmi
 # Enrichment / photo cache
 # ---------------------------------------------------------------------------
 PHOTO_CACHE_DAYS      = _int("RSBS_PHOTO_CACHE_DAYS",    "30")
+WIKIPEDIA_PHOTO       = os.getenv("RSBS_WIKIPEDIA_PHOTO", "1").strip().lower() not in ("0", "false", "no", "")  # type-photo fallback via Wikipedia REST API
 AIRSPACE_GEOJSON      = os.getenv("RSBS_AIRSPACE_GEOJSON",        "")      # empty = use bundled poland.geojson
 ROUTE_CACHE_DAYS      = _int("RSBS_ROUTE_CACHE_DAYS",    "30")
 ROUTE_ENRICH_INTERVAL = _int("RSBS_ROUTE_INTERVAL",      "60")    # seconds between batch runs

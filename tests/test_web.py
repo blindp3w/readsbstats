@@ -2390,6 +2390,13 @@ class TestApiAircraftPhoto:
 class TestFetchTypePhoto:
     """Tests for _fetch_type_photo() and the type-fallback in photo endpoints."""
 
+    @pytest.fixture(autouse=True)
+    def _disable_wikipedia(self, monkeypatch):
+        # Existing tests assert that probe-miss writes a negative cache row.
+        # The Wikipedia step 6 in resolve_photo would otherwise hit the
+        # network.  Wikipedia-specific tests opt in via their own monkeypatch.
+        monkeypatch.setattr(photo_sources, "_WIKIPEDIA_ENABLED", False)
+
     def _seed_aircraft_db(self, db_conn, icao, type_code, type_desc="Boeing 737-800"):
         db_conn.execute(
             "INSERT OR REPLACE INTO aircraft_db (icao_hex, registration, type_code, type_desc, flags) "
@@ -2504,6 +2511,35 @@ class TestFetchTypePhoto:
         r = client.get("/api/aircraft/aabbcc/photo")
         assert r.status_code == 200
         assert r.json() is None
+
+    def test_aircraft_photo_endpoint_falls_back_to_wikipedia(self, client, db_conn, monkeypatch):
+        """When the existing chain misses for the probe ICAO, the Wikipedia
+        step should populate type_photos with photographer='Wikipedia'."""
+        self._seed_aircraft_db(db_conn, "aabbcc", "C152", "Cessna 152")
+        monkeypatch.setattr(photo_sources, "_WIKIPEDIA_ENABLED", True)
+        monkeypatch.setattr(photo_sources, "fetch_photo", lambda icao: None)
+        monkeypatch.setattr(
+            photo_sources, "_fetch_wikipedia_type",
+            lambda desc: photo_sources.PhotoResult(
+                thumbnail_url="https://upload.wikimedia.org/c152-thumb.jpg",
+                large_url="https://upload.wikimedia.org/c152-large.jpg",
+                link_url="https://en.wikipedia.org/wiki/Cessna_152",
+                photographer="Wikipedia",
+            ),
+        )
+        r = client.get("/api/aircraft/aabbcc/photo")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["thumbnail_url"] == "https://upload.wikimedia.org/c152-thumb.jpg"
+        assert data["photographer"] == "Wikipedia"
+        assert data["is_type_photo"] is True
+        assert data["type_code"] == "C152"
+        # type_photos row persisted with Wikipedia attribution
+        row = db_conn.execute(
+            "SELECT photographer, link_url FROM type_photos WHERE type_code='C152'"
+        ).fetchone()
+        assert row[0] == "Wikipedia"
+        assert row[1] == "https://en.wikipedia.org/wiki/Cessna_152"
 
     def test_flagged_endpoint_includes_is_type_photo_field(self, client, db_conn):
         db_conn.execute(

@@ -1186,6 +1186,9 @@ class TestGetPhotoResult:
 
     @pytest.fixture(autouse=True)
     def setup(self, monkeypatch, tmp_path):
+        # Disable Wikipedia step 6 by default — existing tests assume "all
+        # sources miss → None".  Tests for Wikipedia coverage opt back in.
+        monkeypatch.setattr(photo_sources, "_WIKIPEDIA_ENABLED", False)
         db_path = str(tmp_path / "test.db")
         conn = database.connect(db_path)
         conn.executescript(database.DDL)
@@ -1326,6 +1329,34 @@ class TestGetPhotoResult:
         assert fetched == ["abc123"]
         t_row = self.conn.execute("SELECT * FROM type_photos").fetchone()
         assert t_row is None
+
+    def test_wikipedia_fallback_used_for_notifier_alert(self, monkeypatch):
+        """When the specific+probe chain misses, the notifier's photo result
+        should come from the Wikipedia step (so Telegram alerts get a photo
+        for vintage / military / GA types)."""
+        monkeypatch.setattr(photo_sources, "_WIKIPEDIA_ENABLED", True)
+        self.conn.execute(
+            "INSERT INTO aircraft_db (icao_hex, registration, type_code, type_desc, flags) "
+            "VALUES ('probe01', 'G-PRB', 'C152', 'Cessna 152', 0)"
+        )
+        self.conn.commit()
+        monkeypatch.setattr(photo_sources, "fetch_photo", lambda h: None)
+        monkeypatch.setattr(
+            photo_sources, "_fetch_wikipedia_type",
+            lambda desc: PhotoResult(
+                thumbnail_url="https://upload.wikimedia.org/c152.jpg",
+                large_url="https://upload.wikimedia.org/c152-large.jpg",
+                link_url="https://en.wikipedia.org/wiki/Cessna_152",
+                photographer="Wikipedia",
+            ),
+        )
+        url, is_type = notifier._get_photo_result("abc123", "C152")
+        assert url == "https://upload.wikimedia.org/c152.jpg"
+        assert is_type is True
+        row = self.conn.execute(
+            "SELECT photographer FROM type_photos WHERE type_code='C152'"
+        ).fetchone()
+        assert row and row[0] == "Wikipedia"
 
 
 # ---------------------------------------------------------------------------

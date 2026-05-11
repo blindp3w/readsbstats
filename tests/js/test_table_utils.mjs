@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { loadJs } from "./_loader.mjs";
 
 function loadTableUtils() {
-  // table-utils.js references `document`, `ROOT`, `escHtml`, `fetch` at
+  // table-utils.js references `document`, `ROOT`, `escHtml`, `fetch`, `URL` at
   // top-level only inside function bodies; loading the source itself only
   // needs the `document` reference for `document.querySelectorAll(...)` to
   // exist as a name (it's never invoked during module-load).
@@ -21,6 +21,7 @@ function loadTableUtils() {
     ROOT: "",
     escHtml: (s) => String(s),
     fetch: async () => ({ ok: false, status: 404 }),
+    URL,
   });
 }
 
@@ -163,4 +164,72 @@ test("safeHttpUrl: rejects protocol-relative URLs (//evil.com)", () => {
   // to keep the allowlist simple and unambiguous.
   const { safeHttpUrl } = loadTableUtils();
   assert.equal(safeHttpUrl("//evil.com/x"), "");
+});
+
+// ---------------------------------------------------------------------------
+// photoSourceSuffix — derive credit-line " via <source>" from link host
+// ---------------------------------------------------------------------------
+
+test("photoSourceSuffix: empty/null returns ''", () => {
+  const { photoSourceSuffix } = loadTableUtils();
+  assert.equal(photoSourceSuffix(""), "");
+  assert.equal(photoSourceSuffix(null), "");
+  assert.equal(photoSourceSuffix(undefined), "");
+});
+
+test("photoSourceSuffix: planespotters link → ' via Planespotters.net'", () => {
+  const { photoSourceSuffix } = loadTableUtils();
+  assert.equal(
+    photoSourceSuffix("https://www.planespotters.net/photo/123"),
+    " via Planespotters.net",
+  );
+  assert.equal(
+    photoSourceSuffix("https://planespotters.net/photo/123"),
+    " via Planespotters.net",
+  );
+});
+
+test("photoSourceSuffix: airport-data link → ' via airport-data.com'", () => {
+  const { photoSourceSuffix } = loadTableUtils();
+  assert.equal(
+    photoSourceSuffix("https://www.airport-data.com/aircraft/N123.html"),
+    " via airport-data.com",
+  );
+});
+
+test("photoSourceSuffix: hexdb link → ' via hexdb.io'", () => {
+  const { photoSourceSuffix } = loadTableUtils();
+  assert.equal(
+    photoSourceSuffix("https://hexdb.io/aircraft/aabbcc"),
+    " via hexdb.io",
+  );
+});
+
+test("photoSourceSuffix: en.wikipedia.org link → ' via Wikipedia'", () => {
+  const { photoSourceSuffix } = loadTableUtils();
+  assert.equal(
+    photoSourceSuffix("https://en.wikipedia.org/wiki/Cessna_152"),
+    " via Wikipedia",
+  );
+});
+
+test("photoSourceSuffix: unknown host returns ''", () => {
+  const { photoSourceSuffix } = loadTableUtils();
+  assert.equal(
+    photoSourceSuffix("https://someotherhost.example/photo"),
+    "",
+  );
+});
+
+test("photoSourceSuffix: malformed URL returns '' (try/catch)", () => {
+  const { photoSourceSuffix } = loadTableUtils();
+  assert.equal(photoSourceSuffix("not a url"), "");
+});
+
+test("photoSourceSuffix: case-insensitive hostname matching", () => {
+  const { photoSourceSuffix } = loadTableUtils();
+  assert.equal(
+    photoSourceSuffix("https://EN.Wikipedia.ORG/wiki/Foo"),
+    " via Wikipedia",
+  );
 });

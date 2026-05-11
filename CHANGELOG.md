@@ -2,6 +2,92 @@
 
 ## Unreleased
 
+## 1.7.0 — 2026-05-11
+
+### Added
+
+- **Wikipedia type-photo fallback** — the photo lookup ladder gains a sixth
+  step that queries Wikipedia for a representative photo when the existing
+  chain (Planespotters → airport-data.com → hexdb.io) misses for both the
+  specific aircraft and a probe ICAO of the same type. Resolution is a
+  two-hop call: Wikipedia's `opensearch` endpoint maps `aircraft_db.type_desc`
+  (e.g. `"BOEING 737-800"`) to a canonical article title, then
+  `/api/rest_v1/page/summary/{title}` returns `thumbnail` + `originalimage` +
+  article URL. Result is stored in `type_photos` with
+  `photographer="Wikipedia"` and `link_url` pointing to the article
+  (CC-BY-SA attribution). Disambiguation pages, missing thumbnails,
+  400 / 404 / 410, and malformed responses all return a clean miss. Closes
+  the gap for vintage, military, GA, and rotorcraft types that the commercial
+  photo APIs under-cover (e.g. `MIG29`, `C152`, `EUFI`, `H60`, `AN26`,
+  `BE20`).
+  - **Defence-in-depth URL allowlist** — returned photo URLs are constrained
+    to `upload.wikimedia.org` (HTTPS) and the article link to
+    `en.wikipedia.org`. A wiki edit pointing the infobox image at an
+    attacker-controlled host gets dropped before it lands in the cache.
+  - **Telegram alerts benefit automatically** — `notifier._get_photo_result`
+    already routes through the shared `resolve_photo` ladder, and Wikipedia
+    URLs on `upload.wikimedia.org` pass the existing SSRF guard and the
+    10 MB download cap.
+  - **New env var** `RSBS_WIKIPEDIA_PHOTO` (default `1`) — set to `0` to
+    skip step 6 entirely. Lives next to `PHOTO_CACHE_DAYS` and
+    `TELEGRAM_PHOTOS` in `config.py`. Toggling it does **not** invalidate
+    already-written `type_photos` rows; use
+    `DELETE FROM type_photos WHERE photographer='Wikipedia'` (or
+    `DELETE FROM type_photos WHERE thumbnail_url IS NULL` for negative rows)
+    to force re-evaluation.
+
+### Changed
+
+- **`web._fetch_type_photo` now delegates to `photo_sources.resolve_photo`** —
+  removed ~90 lines of duplicated ladder logic between the web and notifier
+  paths. Both code paths share a single source of truth for the
+  cache → JOIN → probe → Wikipedia sequence. The async wrapper keeps the
+  per-type `asyncio.Lock` and a cache-hit fast path so the hot read avoids
+  the executor hop entirely. `resolve_photo` now supports a "type-only" mode
+  when called with `icao_hex=""` — steps 1 and 4 (the icao-keyed cache and
+  fetch) are skipped so the type-only caller doesn't pollute the `photos`
+  table with an empty-key row.
+
+### Fixed
+
+- **Photo credit attribution on the frontend** — the `loadPhoto()` credit
+  line in `static/js/table-utils.js` previously hardcoded
+  `"© {photographer} via Planespotters.net"` for every hit, which was
+  already wrong for airport-data and hexdb hits and would have rendered
+  `"© Wikipedia via Planespotters.net"` for the new fallback. Replaced
+  with a new `photoSourceSuffix(link)` helper that derives the source
+  label from the link URL's hostname (Planespotters.net /
+  airport-data.com / hexdb.io / Wikipedia); empty suffix when the link is
+  missing or on an unrecognised host.
+
+### Operations
+
+- New log lines at `DEBUG` from the `photo_sources` logger on every
+  Wikipedia step-6 outcome (hit / miss / failure) — same convention as
+  the rest of the photo chain. For ongoing visibility, query the cache
+  directly:
+
+  ```sh
+  sqlite3 /mnt/ext/readsbstats/history.db \
+    "SELECT type_code, link_url,
+            datetime(fetched_at,'unixepoch','localtime') AS fetched
+     FROM type_photos WHERE photographer='Wikipedia'
+     ORDER BY fetched_at DESC;"
+  ```
+
+### Tests
+
+- +23 Python tests and 8 JS tests. `TestFetchWikipediaType` (14 cases)
+  covers defensive parsing, host allowlist, percent-encoding, HTTP
+  400 / 404 / 410 / 429 / 500 handling, User-Agent header, and missing /
+  non-list / non-string field handling. `TestUrlHostMatches` (4) covers
+  the host-allowlist helper. `TestResolvePhoto::test_wikipedia_*` (7)
+  covers integration with the ladder, including the new type-only mode.
+  `TestFetchTypePhoto` and `TestGetPhotoResult` each gain a Wikipedia
+  end-to-end test. Existing test classes get an autouse fixture that
+  disables `_WIKIPEDIA_ENABLED` so probe-miss tests don't accidentally
+  hit the network. Total suite: 1108 Python + 62 JS, all passing.
+
 ## 1.6.0 — 2026-05-11
 
 ### Security

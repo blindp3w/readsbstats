@@ -82,6 +82,30 @@ function safeHttpUrl(url) {
 }
 
 /**
+ * Build the " via <source>" suffix for the photo-credit line.  The source is
+ * derived from the link URL's hostname so it stays accurate as the photo
+ * fallback chain grows (Planespotters → airport-data.com → hexdb.io →
+ * Wikipedia).  Returns "" when no link URL or unrecognised host.
+ */
+const _PHOTO_SOURCE_HOSTS = {
+  "www.planespotters.net":  "Planespotters.net",
+  "planespotters.net":      "Planespotters.net",
+  "www.airport-data.com":   "airport-data.com",
+  "airport-data.com":       "airport-data.com",
+  "hexdb.io":               "hexdb.io",
+  "en.wikipedia.org":       "Wikipedia",
+};
+
+function photoSourceSuffix(linkUrl) {
+  if (!linkUrl) return "";
+  try {
+    const host = new URL(linkUrl).hostname.toLowerCase();
+    const label = _PHOTO_SOURCE_HOSTS[host];
+    return label ? ` via ${label}` : "";
+  } catch (_e) { return ""; }
+}
+
+/**
  * Fetch and render an aircraft photo into a section element.
  * @param {number} flightId   — flight ID to fetch photo for
  * @param {string} sectionId  — element ID for the photo container (default "photo-section")
@@ -103,7 +127,7 @@ async function loadPhoto(flightId, sectionId) {
       : "";
     section.innerHTML = `
       ${link ? `<a href="${escHtml(link)}" target="_blank" rel="noopener">${img}</a>` : img}
-      ${photo.photographer ? `<div class="photo-credit">&copy; ${escHtml(photo.photographer)} via Planespotters.net</div>` : ""}
+      ${photo.photographer ? `<div class="photo-credit">&copy; ${escHtml(photo.photographer)}${photoSourceSuffix(link)}</div>` : ""}
       ${typeNote}
     `;
   } catch (err) { console.error("loadPhoto:", err); }

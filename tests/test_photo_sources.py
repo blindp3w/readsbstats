@@ -294,6 +294,251 @@ class TestFetchHexdb:
 
 
 # ---------------------------------------------------------------------------
+# _fetch_wikipedia_type — Wikipedia opensearch → REST summary
+# ---------------------------------------------------------------------------
+
+def _patch_safe_open_seq(monkeypatch, responses):
+    """Patch _safe_open with a sequence of (body | Exception) responses.
+
+    Each call pops the next item.  Bytes/str are returned as body; an
+    Exception instance is raised.  Records (url, extra_headers) in `calls`.
+    """
+    seq = list(responses)
+    calls = []
+
+    def fake(url, *, timeout, max_bytes, extra_headers=None):
+        calls.append((url, extra_headers))
+        item = seq.pop(0)
+        if isinstance(item, BaseException):
+            raise item
+        body = item.encode() if isinstance(item, str) else item
+        return body, {}
+
+    monkeypatch.setattr(photo_sources, "_safe_open", fake)
+    return calls
+
+
+class TestFetchWikipediaType:
+    OPEN_HIT = json.dumps([
+        "Boeing 737-800",
+        ["Boeing 737 Next Generation"],
+        [""],
+        ["https://en.wikipedia.org/wiki/Boeing_737_Next_Generation"],
+    ])
+    SUMMARY_HIT = json.dumps({
+        "type": "standard",
+        "title": "Boeing 737 Next Generation",
+        "thumbnail":     {"source": "https://upload.wikimedia.org/wikipedia/commons/thumb/x/y/img.jpg/330px-img.jpg",
+                          "width": 330, "height": 186},
+        "originalimage": {"source": "https://upload.wikimedia.org/wikipedia/commons/thumb/x/y/img.jpg/3840px-img.jpg",
+                          "width": 3840, "height": 2160},
+        "content_urls": {"desktop": {"page": "https://en.wikipedia.org/wiki/Boeing_737_Next_Generation"}},
+    })
+
+    def test_empty_type_desc_returns_none_without_http(self, monkeypatch):
+        calls = _patch_safe_open_seq(monkeypatch, [])
+        assert photo_sources._fetch_wikipedia_type("") is None
+        assert calls == []
+
+    def test_whitespace_type_desc_returns_none_without_http(self, monkeypatch):
+        calls = _patch_safe_open_seq(monkeypatch, [])
+        assert photo_sources._fetch_wikipedia_type("   \t\n  ") is None
+        assert calls == []
+
+    def test_none_type_desc_returns_none_without_http(self, monkeypatch):
+        calls = _patch_safe_open_seq(monkeypatch, [])
+        assert photo_sources._fetch_wikipedia_type(None) is None  # type: ignore[arg-type]
+        assert calls == []
+
+    def test_opensearch_empty_returns_none(self, monkeypatch):
+        empty = json.dumps(["Foo", [], [], []])
+        calls = _patch_safe_open_seq(monkeypatch, [empty])
+        assert photo_sources._fetch_wikipedia_type("BOEING 737-800") is None
+        # Only the opensearch hop should fire.
+        assert len(calls) == 1
+
+    def test_opensearch_then_summary_success(self, monkeypatch):
+        calls = _patch_safe_open_seq(monkeypatch, [self.OPEN_HIT, self.SUMMARY_HIT])
+        result = photo_sources._fetch_wikipedia_type("BOEING 737-800")
+        assert result is not None
+        assert result.thumbnail_url.startswith("https://upload.wikimedia.org/")
+        assert "330px" in result.thumbnail_url
+        assert result.large_url is not None and "3840px" in result.large_url
+        assert result.link_url == "https://en.wikipedia.org/wiki/Boeing_737_Next_Generation"
+        assert result.photographer == "Wikipedia"
+        assert len(calls) == 2
+
+    def test_summary_disambiguation_returns_none(self, monkeypatch):
+        disambig = json.dumps({
+            "type": "disambiguation",
+            "title": "Boeing 737",
+            "thumbnail": {"source": "https://upload.wikimedia.org/x.jpg"},
+        })
+        _patch_safe_open_seq(monkeypatch, [self.OPEN_HIT, disambig])
+        assert photo_sources._fetch_wikipedia_type("Boeing 737") is None
+
+    def test_summary_missing_thumbnail_returns_none(self, monkeypatch):
+        no_thumb = json.dumps({"type": "standard", "title": "Foo"})
+        _patch_safe_open_seq(monkeypatch, [self.OPEN_HIT, no_thumb])
+        assert photo_sources._fetch_wikipedia_type("Foo") is None
+
+    def test_summary_404_returns_none(self, monkeypatch):
+        err = urllib.error.HTTPError("https://en.wikipedia.org/", 404, "Not Found", {}, None)
+        _patch_safe_open_seq(monkeypatch, [self.OPEN_HIT, err])
+        assert photo_sources._fetch_wikipedia_type("Nonexistent") is None
+
+    def test_summary_500_propagates(self, monkeypatch):
+        err = urllib.error.HTTPError("https://en.wikipedia.org/", 500, "Server Error", {}, None)
+        _patch_safe_open_seq(monkeypatch, [self.OPEN_HIT, err])
+        with pytest.raises(urllib.error.HTTPError):
+            photo_sources._fetch_wikipedia_type("BOEING 737-800")
+
+    def test_opensearch_oserror_propagates(self, monkeypatch):
+        _patch_safe_open_seq(monkeypatch, [OSError("timeout")])
+        with pytest.raises(OSError):
+            photo_sources._fetch_wikipedia_type("BOEING 737-800")
+
+    def test_originalimage_missing_falls_back_to_thumbnail(self, monkeypatch):
+        only_thumb = json.dumps({
+            "type": "standard",
+            "thumbnail": {"source": "https://upload.wikimedia.org/x.jpg"},
+            "content_urls": {"desktop": {"page": "https://en.wikipedia.org/wiki/X"}},
+        })
+        _patch_safe_open_seq(monkeypatch, [self.OPEN_HIT, only_thumb])
+        result = photo_sources._fetch_wikipedia_type("X")
+        assert result is not None
+        assert result.thumbnail_url == result.large_url == "https://upload.wikimedia.org/x.jpg"
+
+    def test_type_desc_is_percent_encoded(self, monkeypatch):
+        empty = json.dumps(["Foo", [], [], []])
+        calls = _patch_safe_open_seq(monkeypatch, [empty])
+        photo_sources._fetch_wikipedia_type("A330-200F & Friends")
+        url, _ = calls[0]
+        # Spaces and `&` must be encoded.
+        assert "%20" in url and "%26" in url
+        assert " " not in url
+        assert "&Friends" not in url
+
+    def test_summary_title_uses_underscores(self, monkeypatch):
+        calls = _patch_safe_open_seq(monkeypatch, [self.OPEN_HIT, self.SUMMARY_HIT])
+        photo_sources._fetch_wikipedia_type("BOEING 737-800")
+        # Second call is the summary endpoint — title path uses underscores.
+        url, _ = calls[1]
+        assert "/page/summary/Boeing_737_Next_Generation" in url
+
+    def test_user_agent_header_sent(self, monkeypatch):
+        calls = _patch_safe_open_seq(monkeypatch, [self.OPEN_HIT, self.SUMMARY_HIT])
+        photo_sources._fetch_wikipedia_type("BOEING 737-800")
+        for _, headers in calls:
+            assert headers is not None
+            assert "User-Agent" in headers
+            assert "readsbstats" in headers["User-Agent"]
+            assert "Wikipedia" in headers["User-Agent"]
+
+    def test_opensearch_returns_non_list_returns_none(self, monkeypatch):
+        # Wikipedia error envelopes look like {"error": {...}} — not a list.
+        envelope = json.dumps({"error": {"code": "bad-param"}})
+        _patch_safe_open_seq(monkeypatch, [envelope])
+        assert photo_sources._fetch_wikipedia_type("Foo") is None
+
+    def test_opensearch_titles_not_a_list_returns_none(self, monkeypatch):
+        # arr is a list but arr[1] is the wrong shape (e.g. None).
+        weird = json.dumps(["query", None, [], []])
+        _patch_safe_open_seq(monkeypatch, [weird])
+        assert photo_sources._fetch_wikipedia_type("Foo") is None
+
+    def test_opensearch_title_not_a_string_returns_none(self, monkeypatch):
+        weird = json.dumps(["query", [123], ["d"], ["u"]])
+        _patch_safe_open_seq(monkeypatch, [weird])
+        assert photo_sources._fetch_wikipedia_type("Foo") is None
+
+    def test_summary_returns_non_dict_returns_none(self, monkeypatch):
+        _patch_safe_open_seq(monkeypatch, [self.OPEN_HIT, json.dumps(["unexpected"])])
+        assert photo_sources._fetch_wikipedia_type("Foo") is None
+
+    def test_summary_400_returns_none(self, monkeypatch):
+        err = urllib.error.HTTPError("https://en.wikipedia.org/", 400, "Bad Request", {}, None)
+        _patch_safe_open_seq(monkeypatch, [self.OPEN_HIT, err])
+        assert photo_sources._fetch_wikipedia_type("Foo") is None
+
+    def test_summary_410_returns_none(self, monkeypatch):
+        err = urllib.error.HTTPError("https://en.wikipedia.org/", 410, "Gone", {}, None)
+        _patch_safe_open_seq(monkeypatch, [self.OPEN_HIT, err])
+        assert photo_sources._fetch_wikipedia_type("Foo") is None
+
+    def test_summary_429_propagates(self, monkeypatch):
+        err = urllib.error.HTTPError("https://en.wikipedia.org/", 429, "Too Many Requests", {}, None)
+        _patch_safe_open_seq(monkeypatch, [self.OPEN_HIT, err])
+        with pytest.raises(urllib.error.HTTPError):
+            photo_sources._fetch_wikipedia_type("Foo")
+
+    def test_thumbnail_on_unexpected_host_rejected(self, monkeypatch):
+        bad_host = json.dumps({
+            "type": "standard",
+            "thumbnail": {"source": "https://evil.example.com/img.jpg"},
+            "originalimage": {"source": "https://evil.example.com/img.jpg"},
+            "content_urls": {"desktop": {"page": "https://en.wikipedia.org/wiki/Foo"}},
+        })
+        _patch_safe_open_seq(monkeypatch, [self.OPEN_HIT, bad_host])
+        assert photo_sources._fetch_wikipedia_type("Foo") is None
+
+    def test_thumbnail_http_scheme_rejected(self, monkeypatch):
+        http_host = json.dumps({
+            "type": "standard",
+            "thumbnail": {"source": "http://upload.wikimedia.org/x.jpg"},
+            "content_urls": {"desktop": {"page": "https://en.wikipedia.org/wiki/Foo"}},
+        })
+        _patch_safe_open_seq(monkeypatch, [self.OPEN_HIT, http_host])
+        assert photo_sources._fetch_wikipedia_type("Foo") is None
+
+    def test_link_on_unexpected_host_dropped_but_photo_kept(self, monkeypatch):
+        # If only the page link points off-host, drop the link but still keep
+        # the photo (image host is the security-critical field).
+        weird_link = json.dumps({
+            "type": "standard",
+            "thumbnail": {"source": "https://upload.wikimedia.org/x.jpg"},
+            "originalimage": {"source": "https://upload.wikimedia.org/x-large.jpg"},
+            "content_urls": {"desktop": {"page": "https://malicious.example/whatever"}},
+        })
+        _patch_safe_open_seq(monkeypatch, [self.OPEN_HIT, weird_link])
+        result = photo_sources._fetch_wikipedia_type("Foo")
+        assert result is not None
+        assert result.thumbnail_url == "https://upload.wikimedia.org/x.jpg"
+        assert result.link_url is None
+
+    def test_originalimage_off_host_falls_back_to_thumbnail(self, monkeypatch):
+        mixed = json.dumps({
+            "type": "standard",
+            "thumbnail":     {"source": "https://upload.wikimedia.org/thumb.jpg"},
+            "originalimage": {"source": "https://evil.example.com/full.jpg"},
+            "content_urls":  {"desktop": {"page": "https://en.wikipedia.org/wiki/Foo"}},
+        })
+        _patch_safe_open_seq(monkeypatch, [self.OPEN_HIT, mixed])
+        result = photo_sources._fetch_wikipedia_type("Foo")
+        assert result is not None
+        assert result.thumbnail_url == "https://upload.wikimedia.org/thumb.jpg"
+        assert result.large_url == "https://upload.wikimedia.org/thumb.jpg"  # falls back
+
+
+class TestUrlHostMatches:
+    def test_matches_allowed_host(self):
+        assert photo_sources._url_host_matches(
+            "https://upload.wikimedia.org/x.jpg", ("upload.wikimedia.org",))
+
+    def test_rejects_unknown_host(self):
+        assert not photo_sources._url_host_matches(
+            "https://evil.example.com/x.jpg", ("upload.wikimedia.org",))
+
+    def test_rejects_http_scheme(self):
+        assert not photo_sources._url_host_matches(
+            "http://upload.wikimedia.org/x.jpg", ("upload.wikimedia.org",))
+
+    def test_rejects_empty(self):
+        assert not photo_sources._url_host_matches("", ("upload.wikimedia.org",))
+        assert not photo_sources._url_host_matches(None, ("upload.wikimedia.org",))
+
+
+# ---------------------------------------------------------------------------
 # fetch_photo — chain behaviour
 # ---------------------------------------------------------------------------
 
@@ -362,7 +607,12 @@ class TestFetchPhoto:
 
 class TestResolvePhoto:
     @pytest.fixture(autouse=True)
-    def setup(self, tmp_path):
+    def setup(self, tmp_path, monkeypatch):
+        # Existing tests expect step 5 (probe) failure to land in the negative
+        # cache.  The new Wikipedia step would otherwise hit the network, so
+        # disable it by default here.  Tests that exercise Wikipedia opt in
+        # via their own monkeypatch.
+        monkeypatch.setattr(photo_sources, "_WIKIPEDIA_ENABLED", False)
         db_path = str(tmp_path / "test.db")
         conn = database.connect(db_path)
         conn.executescript(database.DDL)
@@ -506,3 +756,154 @@ class TestResolvePhoto:
         assert result is None and is_type is False
         # No type_photos row should be written when type_code is None
         assert self.conn.execute("SELECT COUNT(*) FROM type_photos").fetchone()[0] == 0
+
+    # ----- Wikipedia step 6 -------------------------------------------------
+
+    def test_wikipedia_fallback_used_when_probe_fails(self, monkeypatch):
+        monkeypatch.setattr(photo_sources, "_WIKIPEDIA_ENABLED", True)
+        self.conn.execute(
+            "INSERT INTO aircraft_db (icao_hex, registration, type_code, type_desc, flags) "
+            "VALUES ('probe01', 'G-PRB', 'C152', 'Cessna 152', 0)"
+        )
+        self.conn.commit()
+        wiki_called = []
+        def fake_wiki(desc):
+            wiki_called.append(desc)
+            return PhotoResult(
+                thumbnail_url="https://upload.wikimedia.org/c152-thumb.jpg",
+                large_url="https://upload.wikimedia.org/c152-large.jpg",
+                link_url="https://en.wikipedia.org/wiki/Cessna_152",
+                photographer="Wikipedia",
+            )
+        monkeypatch.setattr(photo_sources, "_fetch_wikipedia_type", fake_wiki)
+        result, is_type = photo_sources.resolve_photo(
+            self.conn, "abc123", "C152", fetcher=lambda h: None,
+        )
+        assert is_type is True
+        assert result["thumbnail_url"] == "https://upload.wikimedia.org/c152-thumb.jpg"
+        assert result["photographer"] == "Wikipedia"
+        assert result["link_url"].startswith("https://en.wikipedia.org/")
+        assert wiki_called == ["Cessna 152"]
+        # type_photos row was written from the Wikipedia hit
+        row = self.conn.execute(
+            "SELECT photographer, thumbnail_url FROM type_photos WHERE type_code='C152'"
+        ).fetchone()
+        assert row["photographer"] == "Wikipedia"
+        assert row["thumbnail_url"] == "https://upload.wikimedia.org/c152-thumb.jpg"
+
+    def test_wikipedia_disabled_skips_step_6(self, monkeypatch):
+        monkeypatch.setattr(photo_sources, "_WIKIPEDIA_ENABLED", False)
+        self.conn.execute(
+            "INSERT INTO aircraft_db (icao_hex, registration, type_code, type_desc, flags) "
+            "VALUES ('probe01', 'G-PRB', 'C152', 'Cessna 152', 0)"
+        )
+        self.conn.commit()
+        wiki_called = []
+        def fake_wiki(desc):
+            wiki_called.append(desc)
+            return PhotoResult(thumbnail_url="https://upload.wikimedia.org/c152.jpg",
+                               photographer="Wikipedia")
+        monkeypatch.setattr(photo_sources, "_fetch_wikipedia_type", fake_wiki)
+        result, is_type = photo_sources.resolve_photo(
+            self.conn, "abc123", "C152", fetcher=lambda h: None,
+        )
+        assert result is None and is_type is False
+        assert wiki_called == []  # never invoked
+        # Negative cache row written
+        row = self.conn.execute(
+            "SELECT thumbnail_url FROM type_photos WHERE type_code='C152'"
+        ).fetchone()
+        assert row[0] is None
+
+    def test_wikipedia_miss_writes_negative_type_cache(self, monkeypatch):
+        monkeypatch.setattr(photo_sources, "_WIKIPEDIA_ENABLED", True)
+        self.conn.execute(
+            "INSERT INTO aircraft_db (icao_hex, registration, type_code, type_desc, flags) "
+            "VALUES ('probe01', 'G-PRB', 'C152', 'Cessna 152', 0)"
+        )
+        self.conn.commit()
+        monkeypatch.setattr(photo_sources, "_fetch_wikipedia_type", lambda desc: None)
+        result, is_type = photo_sources.resolve_photo(
+            self.conn, "abc123", "C152", fetcher=lambda h: None,
+        )
+        assert result is None and is_type is False
+        row = self.conn.execute(
+            "SELECT thumbnail_url FROM type_photos WHERE type_code='C152'"
+        ).fetchone()
+        assert row[0] is None
+
+    def test_wikipedia_skipped_when_type_desc_blank(self, monkeypatch):
+        monkeypatch.setattr(photo_sources, "_WIKIPEDIA_ENABLED", True)
+        self.conn.execute(
+            "INSERT INTO aircraft_db (icao_hex, registration, type_code, type_desc, flags) "
+            "VALUES ('probe01', 'G-PRB', 'WEIRD', '', 0)"
+        )
+        self.conn.commit()
+        wiki = MagicMock()
+        monkeypatch.setattr(photo_sources, "_fetch_wikipedia_type", wiki)
+        result, _is_type = photo_sources.resolve_photo(
+            self.conn, "abc123", "WEIRD", fetcher=lambda h: None,
+        )
+        assert result is None
+        wiki.assert_not_called()
+
+    def test_wikipedia_skipped_when_no_aircraft_db_row(self, monkeypatch):
+        monkeypatch.setattr(photo_sources, "_WIKIPEDIA_ENABLED", True)
+        wiki = MagicMock()
+        monkeypatch.setattr(photo_sources, "_fetch_wikipedia_type", wiki)
+        result, _is_type = photo_sources.resolve_photo(
+            self.conn, "abc123", "C152", fetcher=lambda h: None,
+        )
+        assert result is None
+        wiki.assert_not_called()
+        # type_photos negative row still written
+        row = self.conn.execute(
+            "SELECT thumbnail_url FROM type_photos WHERE type_code='C152'"
+        ).fetchone()
+        assert row is not None and row[0] is None
+
+    def test_wikipedia_exception_swallowed_writes_negative(self, monkeypatch):
+        monkeypatch.setattr(photo_sources, "_WIKIPEDIA_ENABLED", True)
+        self.conn.execute(
+            "INSERT INTO aircraft_db (icao_hex, registration, type_code, type_desc, flags) "
+            "VALUES ('probe01', 'G-PRB', 'C152', 'Cessna 152', 0)"
+        )
+        self.conn.commit()
+        def explode(desc):
+            raise OSError("network down")
+        monkeypatch.setattr(photo_sources, "_fetch_wikipedia_type", explode)
+        result, is_type = photo_sources.resolve_photo(
+            self.conn, "abc123", "C152", fetcher=lambda h: None,
+        )
+        assert result is None and is_type is False
+        row = self.conn.execute(
+            "SELECT thumbnail_url FROM type_photos WHERE type_code='C152'"
+        ).fetchone()
+        assert row[0] is None
+
+    def test_type_only_mode_skips_specific_paths(self, monkeypatch):
+        """resolve_photo(conn, "", type_code) is the type-only mode used by
+        web._fetch_type_photo — must not touch the photos table or invoke the
+        specific-aircraft fetcher."""
+        monkeypatch.setattr(photo_sources, "_WIKIPEDIA_ENABLED", True)
+        self.conn.execute(
+            "INSERT INTO aircraft_db (icao_hex, registration, type_code, type_desc, flags) "
+            "VALUES ('probe01', 'G-PRB', 'C152', 'Cessna 152', 0)"
+        )
+        self.conn.commit()
+        called = []
+        monkeypatch.setattr(photo_sources, "_fetch_wikipedia_type",
+                            lambda desc: PhotoResult(thumbnail_url="https://w/x.jpg",
+                                                     photographer="Wikipedia"))
+        result, is_type = photo_sources.resolve_photo(
+            self.conn, "", "C152", fetcher=lambda h: called.append(h) or None,
+        )
+        assert is_type is True
+        assert result["photographer"] == "Wikipedia"
+        # Step 5 may legitimately invoke the fetcher against the probe ICAO,
+        # but step 4 must NOT invoke it with the empty type-only key.
+        assert "" not in called
+        # No row written to photos with empty icao_hex.
+        assert self.conn.execute(
+            "SELECT COUNT(*) FROM photos WHERE icao_hex=''"
+        ).fetchone()[0] == 0
