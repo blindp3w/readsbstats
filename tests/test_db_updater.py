@@ -377,16 +377,30 @@ class TestBackfillFlights:
 
 class TestFetch:
     def test_fetch_returns_bytes(self, monkeypatch):
-        import urllib.request
+        """db_updater._fetch goes through http_safe.safe_urlopen — patch its
+        opener and bypass DNS validation."""
+        from readsbstats import http_safe
 
         class FakeResp:
-            def read(self): return b"hello"
+            url = "https://raw.githubusercontent.com/example/data"
+            headers = {}
+            def read(self, _max): return b"hello"
             def __enter__(self): return self
             def __exit__(self, *a): pass
 
-        monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout=60: FakeResp())
-        result = db_updater._fetch("http://example.com/data")
+        monkeypatch.setattr(http_safe, "validate_url", lambda url: None)
+        monkeypatch.setattr(http_safe._no_redirect_opener, "open",
+                            lambda req, timeout=None: FakeResp())
+        result = db_updater._fetch("https://raw.githubusercontent.com/example/data")
         assert result == b"hello"
+
+    def test_aircraft_url_is_direct_raw_githubusercontent(self):
+        """The aircraft CSV URL must point at raw.githubusercontent.com so the
+        SSRF-safe fetcher (which blocks redirects) can pull it without going
+        through the github.com /raw/ → raw.githubusercontent.com 302."""
+        assert db_updater.AIRCRAFT_CSV_URL.startswith(
+            "https://raw.githubusercontent.com/"
+        )
 
 
 # ---------------------------------------------------------------------------

@@ -281,6 +281,41 @@ class TestFetchArea:
         with pytest.raises(self.enricher._TransientError):
             self.enricher._fetch_area()
 
+    def test_fetch_raises_transient_on_redirect(self, monkeypatch):
+        """The airplanes.live API doesn't legitimately redirect; treat a 3xx
+        as transient so we don't silently follow to an attacker-chosen URL."""
+        from readsbstats import http_safe
+        monkeypatch.setattr(http_safe, "validate_url", lambda url: None)
+
+        class FakeResp:
+            status_code = 302
+            content = b""
+            headers = {"Location": "https://attacker.example/"}
+
+        import httpx
+        monkeypatch.setattr(httpx, "Client",
+                            lambda **kw: _MockClient(lambda *a, **kw: FakeResp()))
+
+        with pytest.raises(self.enricher._TransientError):
+            self.enricher._fetch_area()
+
+    def test_fetch_raises_transient_on_oversized_response(self, monkeypatch):
+        from readsbstats import http_safe
+        monkeypatch.setattr(http_safe, "validate_url", lambda url: None)
+
+        class FakeResp:
+            status_code = 200
+            content = b"x" * (10 * 1024 * 1024)  # 10 MB, over our 4 MB cap
+            def raise_for_status(self): pass
+            def json(self): return {"ac": []}
+
+        import httpx
+        monkeypatch.setattr(httpx, "Client",
+                            lambda **kw: _MockClient(lambda *a, **kw: FakeResp()))
+
+        with pytest.raises(self.enricher._TransientError):
+            self.enricher._fetch_area()
+
 
 class _MockClient:
     """Minimal mock for httpx.Client context manager."""

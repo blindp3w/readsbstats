@@ -530,6 +530,8 @@ readsbstats/
 │   ├── enrichment.py           # In-process cache for aircraft_db and airlines lookups
 │   ├── icao_ranges.py          # ICAO 24-bit address → country lookup table
 │   ├── notifier.py             # Telegram notification helper (mil/interesting/squawk/daily)
+│   ├── http_safe.py            # Shared SSRF-safe HTTP helpers (HTTPS-only, no redirect, size cap)
+│   ├── photo_sources.py        # Planespotters → airport-data.com → hexdb.io chain + 5-step lookup ladder
 │   ├── route_enricher.py       # Background thread: callsign → route via adsbdb.com
 │   ├── db_updater.py           # Downloads tar1090-db CSV and OpenFlights airlines.dat
 │   ├── metrics_collector.py    # Optional: polls /run/readsb/stats.json into receiver_stats
@@ -543,7 +545,7 @@ readsbstats/
 │   ├── purge_ghosts.py         # One-shot cleanup: removes ghost positions
 │   ├── purge_bad_gs.py         # One-shot cleanup: nulls implausible gs values
 │   └── purge_mlat_gs_spikes.py # One-shot cleanup: nulls MLAT gs acceleration spikes
-├── tests/                      # pytest suite (19 files, 948 tests) + JS tests (tests/js/, 54 tests) + Playwright UI tests (tests/ui/, 35 tests)
+├── tests/                      # pytest suite (1070 tests) + JS tests (tests/js/, 54 tests) + Playwright UI tests (tests/ui/, 35 tests)
 ├── templates/
 │   ├── base.html               # Shared layout, nav bar with unit selector
 │   ├── index.html              # Flight list

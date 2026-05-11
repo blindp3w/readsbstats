@@ -14,15 +14,20 @@ import logging
 import sqlite3
 import threading
 import time
+import urllib.parse
 
 import httpx
 
-from . import config, database
+from . import config, database, http_safe
 
 log = logging.getLogger("route_enricher")
 
 _ADSBDB_URL = "https://api.adsbdb.com/v0/callsign/{callsign}"
 _TIMEOUT    = 8.0
+# Per-request response cap.  Real adsbdb callsign payloads are < 2 KB; an
+# adversarial / compromised upstream returning multi-MB JSON would otherwise
+# pin memory in the background thread.
+_RESPONSE_MAX_BYTES = 64 * 1024
 
 
 # ---------------------------------------------------------------------------
@@ -156,10 +161,16 @@ def _fetch_route(callsign: str) -> dict | None:
     callers can skip persisting any result and retry later.
     """
     try:
-        with httpx.Client(timeout=_TIMEOUT) as client:
-            resp = client.get(
-                _ADSBDB_URL.format(callsign=callsign),
-                headers={"User-Agent": "readsbstats/1.0"},
+        # Percent-encode the callsign — it ultimately originates from
+        # third-party ADS-B telemetry and could carry path-traversal /
+        # query-injection characters.  Standard callsigns won't be affected.
+        url = _ADSBDB_URL.format(callsign=urllib.parse.quote(callsign, safe=""))
+        with httpx.Client(
+            timeout=_TIMEOUT,
+            headers={"User-Agent": "readsbstats/1.0"},
+        ) as client:
+            resp = http_safe.safe_httpx_get(
+                client, url, max_bytes=_RESPONSE_MAX_BYTES,
             )
             if resp.status_code == 404:
                 return None

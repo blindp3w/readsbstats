@@ -29,7 +29,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
-from . import config, database, enrichment, geo, health, icao_ranges, route_enricher
+from . import config, database, enrichment, geo, health, icao_ranges, photo_sources, route_enricher
 
 logging.basicConfig(
     level=logging.INFO,
@@ -661,8 +661,6 @@ def api_flight_detail(flight_id: int) -> dict:
 # API — aircraft photo (Planespotters → airport-data.com → hexdb.io, cached)
 # ---------------------------------------------------------------------------
 
-_PHOTO_UA = {"User-Agent": "readsbstats/1.0"}
-
 # Per-type asyncio locks — prevent concurrent duplicate fetches for the same type
 _type_fetch_locks: dict[str, asyncio.Lock] = {}
 
@@ -674,95 +672,42 @@ def _type_lock(type_code: str) -> asyncio.Lock:
 
 
 async def _fetch_photo(icao_hex: str) -> dict | None:
-    """Try Planespotters.net, airport-data.com, then hexdb.io.  Returns result dict or None."""
-    conn = db()
+    """Return the cached or freshly-fetched specific-ICAO photo dict (or None).
 
-    # Serve from cache if fresh
+    Delegates to :func:`photo_sources.fetch_photo` (full source chain), and
+    persists the result — including a negative cache row when all sources
+    fail — into the ``photos`` table.  Does NOT cascade to a type-level photo;
+    callers do that via :func:`_fetch_type_photo`.
+    """
+    conn = db()
+    cache_seconds = config.PHOTO_CACHE_DAYS * 86400
+
     cached = conn.execute(
         "SELECT * FROM photos WHERE icao_hex = ? AND fetched_at > ?",
-        (icao_hex, int(time.time()) - config.PHOTO_CACHE_DAYS * 86400),
+        (icao_hex, int(time.time()) - cache_seconds),
     ).fetchone()
     if cached:
         return dict(cached) if cached["thumbnail_url"] else None
 
-    result = None
-
-    # --- Source 1: Planespotters.net ---
-    try:
-        async with httpx.AsyncClient(timeout=6.0) as client:
-            resp = await client.get(
-                f"https://api.planespotters.net/pub/photos/hex/{icao_hex}",
-                headers=_PHOTO_UA,
-            )
-            resp.raise_for_status()
-            photos = resp.json().get("photos", [])
-            if photos:
-                p = photos[0]
-                result = {
-                    "icao_hex":      icao_hex,
-                    "thumbnail_url": p.get("thumbnail", {}).get("src"),
-                    "large_url":     p.get("thumbnail_large", {}).get("src"),
-                    "link_url":      p.get("link"),
-                    "photographer":  p.get("photographer"),
-                }
-    except Exception as exc:
-        log.warning("Planespotters photo fetch failed for %s: %s", icao_hex, exc)
-
-    # --- Source 2: airport-data.com fallback ---
-    if result is None:
-        try:
-            async with httpx.AsyncClient(timeout=6.0) as client:
-                resp = await client.get(
-                    f"https://airport-data.com/api/ac_thumb.json?m={icao_hex}&n=1",
-                    headers=_PHOTO_UA,
-                )
-                resp.raise_for_status()
-                ad = resp.json()
-                if ad.get("status") == 200 and ad.get("data"):
-                    item = ad["data"][0]
-                    result = {
-                        "icao_hex":      icao_hex,
-                        "thumbnail_url": item.get("image"),
-                        "large_url":     item.get("image"),
-                        "link_url":      item.get("link"),
-                        "photographer":  item.get("photographer"),
-                    }
-        except Exception as exc:
-            log.warning("airport-data.com photo fetch failed for %s: %s", icao_hex, exc)
-
-    # --- Source 3: hexdb.io fallback ---
-    # hexdb.io returns HTTP 404 (not 200 with empty body) when no photo exists —
-    # skip raise_for_status() and treat any non-200 as "no photo here".
-    if result is None:
-        try:
-            async with httpx.AsyncClient(timeout=6.0) as client:
-                resp = await client.get(
-                    f"https://hexdb.io/hex-image?hex={icao_hex}",
-                    headers=_PHOTO_UA,
-                )
-                if resp.status_code == 200:
-                    url = resp.text.strip()
-                    if url and url != "n/a":
-                        result = {
-                            "icao_hex":      icao_hex,
-                            "thumbnail_url": url,
-                            "large_url":     url,
-                            "link_url":      None,
-                            "photographer":  None,
-                        }
-        except Exception as exc:
-            log.warning("hexdb.io photo fetch failed for %s: %s", icao_hex, exc)
-
-    # --- Cache result (including NULL for "no photo anywhere") ---
+    pr = await asyncio.get_running_loop().run_in_executor(
+        None, photo_sources.fetch_photo, icao_hex,
+    )
     now = int(time.time())
-    if result:
-        result["fetched_at"] = now
+    if pr:
+        result = {
+            "icao_hex":      icao_hex,
+            "thumbnail_url": pr.thumbnail_url,
+            "large_url":     pr.large_url,
+            "link_url":      pr.link_url,
+            "photographer":  pr.photographer,
+            "fetched_at":    now,
+        }
         conn.execute(
             "INSERT OR REPLACE INTO photos VALUES (?,?,?,?,?,?)",
-            (icao_hex, result["thumbnail_url"], result["large_url"],
-             result["link_url"], result["photographer"], now),
+            (icao_hex, pr.thumbnail_url, pr.large_url, pr.link_url, pr.photographer, now),
         )
     else:
+        result = None
         conn.execute(
             "INSERT OR REPLACE INTO photos "
             "(icao_hex, thumbnail_url, large_url, link_url, photographer, fetched_at) "
@@ -779,8 +724,8 @@ async def _fetch_type_photo(type_code: str | None) -> dict | None:
     Strategy (in order):
     1. type_photos cache hit (including negative cache — NULL thumbnail_url → None).
     2. photos JOIN aircraft_db — reuse any already-cached specific photo of that type.
-    3. Probe ONE ICAO from aircraft_db for that type via Planespotters only (6 s).
-    Worst-case latency: 6 s for the probe.  Result is stored in type_photos.
+    3. Probe ONE ICAO from aircraft_db via photo_sources chain (all sources).
+    Worst-case latency: ~18 s for the probe (3 sources × 6 s).  Result is stored in type_photos.
     """
     if not type_code:
         return None
@@ -788,7 +733,6 @@ async def _fetch_type_photo(type_code: str | None) -> dict | None:
     conn = db()
     cutoff = int(time.time()) - config.PHOTO_CACHE_DAYS * 86400
 
-    # 1. type_photos cache (fresh rows only)
     cached = conn.execute(
         "SELECT * FROM type_photos WHERE type_code = ? AND fetched_at > ?",
         (type_code, cutoff),
@@ -796,9 +740,7 @@ async def _fetch_type_photo(type_code: str | None) -> dict | None:
     if cached is not None:
         return dict(cached) if cached["thumbnail_url"] else None
 
-    # Acquire per-type lock to coalesce concurrent requests
     async with _type_lock(type_code):
-        # Re-check after acquiring lock — another coroutine may have populated it
         cached = conn.execute(
             "SELECT * FROM type_photos WHERE type_code = ? AND fetched_at > ?",
             (type_code, cutoff),
@@ -809,7 +751,6 @@ async def _fetch_type_photo(type_code: str | None) -> dict | None:
         now = int(time.time())
         result: dict | None = None
 
-        # 2. photos JOIN aircraft_db — zero HTTP calls
         joined = conn.execute(
             """
             SELECT p.thumbnail_url, p.large_url, p.link_url, p.photographer
@@ -831,7 +772,6 @@ async def _fetch_type_photo(type_code: str | None) -> dict | None:
                 "fetched_at":    now,
             }
 
-        # 3. Probe one ICAO from aircraft_db via Planespotters only
         if result is None:
             probe_row = conn.execute(
                 "SELECT icao_hex FROM aircraft_db WHERE type_code = ? LIMIT 1",
@@ -839,37 +779,24 @@ async def _fetch_type_photo(type_code: str | None) -> dict | None:
             ).fetchone()
             if probe_row:
                 probe_icao = probe_row["icao_hex"]
-                try:
-                    async with httpx.AsyncClient(timeout=6.0) as client:
-                        resp = await client.get(
-                            f"https://api.planespotters.net/pub/photos/hex/{probe_icao}",
-                            headers=_PHOTO_UA,
-                        )
-                        resp.raise_for_status()
-                        photos = resp.json().get("photos", [])
-                        if photos:
-                            p = photos[0]
-                            photo_url = p.get("thumbnail", {}).get("src")
-                            if photo_url:
-                                result = {
-                                    "type_code":     type_code,
-                                    "thumbnail_url": photo_url,
-                                    "large_url":     p.get("thumbnail_large", {}).get("src"),
-                                    "link_url":      p.get("link"),
-                                    "photographer":  p.get("photographer"),
-                                    "fetched_at":    now,
-                                }
-                                # Also cache the probe aircraft's specific photo
-                                conn.execute(
-                                    "INSERT OR REPLACE INTO photos VALUES (?,?,?,?,?,?)",
-                                    (probe_icao, result["thumbnail_url"], result["large_url"],
-                                     result["link_url"], result["photographer"], now),
-                                )
-                except Exception as exc:
-                    log.warning("type photo probe failed for type=%s icao=%s: %s",
-                                type_code, probe_icao, exc)
+                pr = await asyncio.get_running_loop().run_in_executor(
+                    None, photo_sources.fetch_photo, probe_icao,
+                )
+                if pr:
+                    result = {
+                        "type_code":     type_code,
+                        "thumbnail_url": pr.thumbnail_url,
+                        "large_url":     pr.large_url,
+                        "link_url":      pr.link_url,
+                        "photographer":  pr.photographer,
+                        "fetched_at":    now,
+                    }
+                    conn.execute(
+                        "INSERT OR REPLACE INTO photos VALUES (?,?,?,?,?,?)",
+                        (probe_icao, pr.thumbnail_url, pr.large_url,
+                         pr.link_url, pr.photographer, now),
+                    )
 
-        # Write to type_photos (result or negative)
         if result:
             conn.execute(
                 "INSERT OR REPLACE INTO type_photos "

@@ -32,8 +32,11 @@ logging.basicConfig(
 )
 log = logging.getLogger("db_updater")
 
+# Direct raw-content URL avoids the 302 redirect through github.com/...
+# /raw/... so the SSRF-safe fetcher (which blocks all redirects) can be used
+# without an exception.
 AIRCRAFT_CSV_URL = (
-    "https://github.com/wiedehopf/tar1090-db/raw/csv/aircraft.csv.gz"
+    "https://raw.githubusercontent.com/wiedehopf/tar1090-db/csv/aircraft.csv.gz"
 )
 AIRLINES_DAT_URL = (
     "https://raw.githubusercontent.com/jpatokal/openflights/master/data/airlines.dat"
@@ -41,15 +44,22 @@ AIRLINES_DAT_URL = (
 
 HEADERS = {"User-Agent": "readsbstats/1.0 db_updater"}
 
+# Generous response cap (50 MB).  The compressed aircraft DB is ~10 MB today;
+# the airlines CSV is ~80 KB.  Anything dramatically larger is suspicious.
+_MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024
+
 
 # ---------------------------------------------------------------------------
 # Download helpers
 # ---------------------------------------------------------------------------
 
 def _fetch(url: str) -> bytes:
-    req = urllib.request.Request(url, headers=HEADERS)
-    with urllib.request.urlopen(req, timeout=60) as resp:
-        return resp.read()
+    """Download *url* through the shared SSRF-safe fetcher."""
+    from . import http_safe
+    body, _ = http_safe.safe_urlopen(
+        url, timeout=60, max_bytes=_MAX_DOWNLOAD_BYTES, extra_headers=HEADERS,
+    )
+    return body
 
 
 # ---------------------------------------------------------------------------

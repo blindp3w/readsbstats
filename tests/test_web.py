@@ -11,7 +11,8 @@ from unittest.mock import patch
 import pytest
 from fastapi.testclient import TestClient
 
-from readsbstats import config, database, enrichment, web
+from readsbstats import config, database, enrichment, photo_sources, web
+from readsbstats.photo_sources import PhotoResult
 
 
 # ---------------------------------------------------------------------------
@@ -1397,87 +1398,24 @@ class TestApiStatsPolarCacheAndData:
 # API: /api/flights/{flight_id}/photo
 # ---------------------------------------------------------------------------
 
-class _FakeResponse:
-    """Minimal httpx response stand-in."""
-    def __init__(self, payload, status_code=200):
-        self._payload = payload
-        self.status_code = status_code
-
-    def raise_for_status(self):
-        pass
-
-    def json(self):
-        return self._payload
-
-    @property
-    def text(self):
-        return self._payload if isinstance(self._payload, str) else json.dumps(self._payload)
-
-
-class _FakeAsyncClient:
-    """Async context manager that returns canned httpx responses.
-
-    payload can be:
-      - a dict  → same response for all URLs
-      - a callable(url) → return payload dict per URL (raise to simulate error)
-    """
-    def __init__(self, payload):
-        self._payload = payload
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *_):
-        pass
-
-    async def get(self, url, **kwargs):
-        if callable(self._payload):
-            return _FakeResponse(self._payload(url))
-        return _FakeResponse(self._payload)
-
-
-class _RaisingAsyncClient:
-    """Async context manager whose get() raises an exception."""
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *_):
-        pass
-
-    async def get(self, url, **kwargs):
-        raise ConnectionError("network down")
-
-
 class TestApiFlightPhoto:
     def test_unknown_flight_returns_404(self, client):
         r = client.get("/api/flights/9999/photo")
         assert r.status_code == 404
 
-    def test_network_error_returns_null(self, client, db_conn, monkeypatch):
+    def test_all_sources_fail_returns_null(self, client, db_conn, monkeypatch):
         fid = insert_flight(db_conn)
-        monkeypatch.setattr("readsbstats.web.httpx.AsyncClient", lambda **kw: _RaisingAsyncClient())
+        monkeypatch.setattr(photo_sources, "fetch_photo", lambda icao: None)
         r = client.get(f"/api/flights/{fid}/photo")
         assert r.status_code == 200
         assert r.json() is None
 
-    def test_empty_photos_list_returns_null_and_caches(self, client, db_conn, monkeypatch):
+    def test_no_sources_null_cached_in_db(self, client, db_conn, monkeypatch):
         fid = insert_flight(db_conn, icao="aabbcc")
-
-        def per_url(url):
-            if "planespotters" in url:
-                return {"photos": []}
-            if "airport-data.com" in url:
-                return {"status": 404}
-            return "n/a"
-
-        monkeypatch.setattr(
-            "readsbstats.web.httpx.AsyncClient",
-            lambda **kw: _FakeAsyncClient(per_url),
-        )
+        monkeypatch.setattr(photo_sources, "fetch_photo", lambda icao: None)
         r = client.get(f"/api/flights/{fid}/photo")
         assert r.status_code == 200
         assert r.json() is None
-        # Row with NULL thumbnail should be in the photos table
         row = db_conn.execute(
             "SELECT thumbnail_url FROM photos WHERE icao_hex = 'aabbcc'"
         ).fetchone()
@@ -1486,25 +1424,18 @@ class TestApiFlightPhoto:
 
     def test_photo_returned_and_stored(self, client, db_conn, monkeypatch):
         fid = insert_flight(db_conn, icao="aabbcc")
-        payload = {
-            "photos": [{
-                "thumbnail":       {"src": "https://example.com/thumb.jpg"},
-                "thumbnail_large": {"src": "https://example.com/large.jpg"},
-                "link":            "https://example.com/photo",
-                "photographer":    "Alice",
-            }]
-        }
-        monkeypatch.setattr(
-            "readsbstats.web.httpx.AsyncClient",
-            lambda **kw: _FakeAsyncClient(payload),
-        )
+        monkeypatch.setattr(photo_sources, "fetch_photo", lambda icao: PhotoResult(
+            thumbnail_url="https://example.com/thumb.jpg",
+            large_url="https://example.com/large.jpg",
+            link_url="https://example.com/photo",
+            photographer="Alice",
+        ))
         r = client.get(f"/api/flights/{fid}/photo")
         assert r.status_code == 200
         data = r.json()
         assert data["thumbnail_url"] == "https://example.com/thumb.jpg"
         assert data["photographer"] == "Alice"
         assert data["icao_hex"] == "aabbcc"
-        # Verify it was persisted
         row = db_conn.execute(
             "SELECT thumbnail_url FROM photos WHERE icao_hex = 'aabbcc'"
         ).fetchone()
@@ -1512,7 +1443,6 @@ class TestApiFlightPhoto:
 
     def test_cached_photo_served_from_db(self, client, db_conn):
         fid = insert_flight(db_conn, icao="aabbcc")
-        # Insert a fresh cached entry
         db_conn.execute(
             "INSERT INTO photos VALUES (?,?,?,?,?,?)",
             ("aabbcc", "https://cached.com/t.jpg", None, None, "Bob", int(time.time())),
@@ -1525,7 +1455,6 @@ class TestApiFlightPhoto:
 
     def test_cached_null_photo_served_from_db(self, client, db_conn):
         fid = insert_flight(db_conn, icao="aabbcc")
-        # Insert a fresh "no photo" cache entry
         db_conn.execute(
             "INSERT INTO photos (icao_hex, thumbnail_url, large_url, link_url, photographer, fetched_at) "
             "VALUES (?,NULL,NULL,NULL,NULL,?)",
@@ -1538,230 +1467,50 @@ class TestApiFlightPhoto:
 
 
 class TestPhotoFallback:
-    """Tests for airport-data.com fallback when Planespotters has no photo."""
+    """Web-layer photo caching behaviour (chain logic is in test_photo_sources.py)."""
 
-    def test_fallback_used_when_planespotters_empty(self, client, db_conn, monkeypatch):
+    def test_photo_result_stored_in_db(self, client, db_conn, monkeypatch):
         fid = insert_flight(db_conn, icao="aabbcc")
-
-        def per_url(url):
-            if "planespotters" in url:
-                return {"photos": []}
-            if "airport-data.com" in url:
-                return {
-                    "status": 200,
-                    "data": [{
-                        "image": "https://airport-data.com/thumb.jpg",
-                        "link": "https://airport-data.com/photo",
-                        "photographer": "Charlie",
-                    }],
-                }
-            return {}
-
-        monkeypatch.setattr(
-            "readsbstats.web.httpx.AsyncClient",
-            lambda **kw: _FakeAsyncClient(per_url),
-        )
+        monkeypatch.setattr(photo_sources, "fetch_photo", lambda icao: PhotoResult(
+            thumbnail_url="https://ad.com/t.jpg",
+            large_url="https://ad.com/t.jpg",
+            link_url="https://ad.com/p",
+            photographer="Charlie",
+        ))
         r = client.get(f"/api/flights/{fid}/photo")
-        assert r.status_code == 200
-        data = r.json()
-        assert data["thumbnail_url"] == "https://airport-data.com/thumb.jpg"
-        assert data["photographer"] == "Charlie"
-
-    def test_fallback_cached_in_db(self, client, db_conn, monkeypatch):
-        fid = insert_flight(db_conn, icao="aabbcc")
-
-        def per_url(url):
-            if "planespotters" in url:
-                return {"photos": []}
-            if "airport-data.com" in url:
-                return {
-                    "status": 200,
-                    "data": [{"image": "https://ad.com/t.jpg", "link": "https://ad.com/p", "photographer": "X"}],
-                }
-            return {}
-
-        monkeypatch.setattr(
-            "readsbstats.web.httpx.AsyncClient",
-            lambda **kw: _FakeAsyncClient(per_url),
-        )
-        client.get(f"/api/flights/{fid}/photo")
+        assert r.json()["thumbnail_url"] == "https://ad.com/t.jpg"
+        assert r.json()["photographer"] == "Charlie"
         row = db_conn.execute("SELECT thumbnail_url FROM photos WHERE icao_hex = 'aabbcc'").fetchone()
         assert row["thumbnail_url"] == "https://ad.com/t.jpg"
 
-    def test_null_cached_when_all_sources_empty(self, client, db_conn, monkeypatch):
+    def test_null_cached_when_all_sources_return_none(self, client, db_conn, monkeypatch):
         fid = insert_flight(db_conn, icao="aabbcc")
-
-        def per_url(url):
-            if "planespotters" in url:
-                return {"photos": []}
-            if "airport-data.com" in url:
-                return {"status": 404}
-            if "hexdb.io" in url:
-                return "n/a"
-            return {}
-
-        monkeypatch.setattr(
-            "readsbstats.web.httpx.AsyncClient",
-            lambda **kw: _FakeAsyncClient(per_url),
-        )
+        monkeypatch.setattr(photo_sources, "fetch_photo", lambda icao: None)
         r = client.get(f"/api/flights/{fid}/photo")
-        assert r.status_code == 200
         assert r.json() is None
         row = db_conn.execute("SELECT thumbnail_url FROM photos WHERE icao_hex = 'aabbcc'").fetchone()
         assert row is not None
         assert row["thumbnail_url"] is None
 
-    def test_planespotters_hit_skips_fallbacks(self, client, db_conn, monkeypatch):
-        """When Planespotters has a photo, fallbacks should not be called."""
-        fid = insert_flight(db_conn, icao="aabbcc")
-        fallback_called = []
-
-        def per_url(url):
-            if "airport-data.com" in url or "hexdb.io" in url:
-                fallback_called.append(url)
-            return {
-                "photos": [{
-                    "thumbnail": {"src": "https://ps.com/t.jpg"},
-                    "thumbnail_large": {"src": "https://ps.com/l.jpg"},
-                    "link": "https://ps.com/p",
-                    "photographer": "Alice",
-                }]
-            }
-
-        monkeypatch.setattr(
-            "readsbstats.web.httpx.AsyncClient",
-            lambda **kw: _FakeAsyncClient(per_url),
-        )
-        r = client.get(f"/api/flights/{fid}/photo")
-        assert r.json()["thumbnail_url"] == "https://ps.com/t.jpg"
-        assert fallback_called == []
-
-    def test_airport_data_hit_skips_hexdb(self, client, db_conn, monkeypatch):
-        fid = insert_flight(db_conn, icao="aabbcc")
-        hexdb_called = []
-
-        def per_url(url):
-            if "planespotters" in url:
-                return {"photos": []}
-            if "hexdb.io" in url:
-                hexdb_called.append(True)
-                return "https://hexdb.io/img.jpg"
-            return {
-                "status": 200,
-                "data": [{"image": "https://ad.com/t.jpg", "link": "https://ad.com/p", "photographer": "Y"}],
-            }
-
-        monkeypatch.setattr(
-            "readsbstats.web.httpx.AsyncClient",
-            lambda **kw: _FakeAsyncClient(per_url),
-        )
-        r = client.get(f"/api/flights/{fid}/photo")
-        assert r.json()["thumbnail_url"] == "https://ad.com/t.jpg"
-        assert hexdb_called == []
-
     def test_fallback_also_works_on_icao_photo_endpoint(self, client, monkeypatch):
-        def per_url(url):
-            if "planespotters" in url:
-                return {"photos": []}
-            if "airport-data.com" in url:
-                return {
-                    "status": 200,
-                    "data": [{"image": "https://ad.com/t.jpg", "link": "https://ad.com/p", "photographer": "Y"}],
-                }
-            return "n/a"
-
-        monkeypatch.setattr(
-            "readsbstats.web.httpx.AsyncClient",
-            lambda **kw: _FakeAsyncClient(per_url),
-        )
+        monkeypatch.setattr(photo_sources, "fetch_photo", lambda icao: PhotoResult(
+            thumbnail_url="https://ad.com/t.jpg",
+            large_url="https://ad.com/t.jpg",
+            link_url="https://ad.com/p",
+            photographer="Y",
+        ))
         r = client.get("/api/aircraft/aabbcc/photo")
         assert r.status_code == 200
         assert r.json()["thumbnail_url"] == "https://ad.com/t.jpg"
 
-    def test_hexdb_used_when_first_two_empty(self, client, db_conn, monkeypatch):
+    def test_hexdb_result_stored_in_db(self, client, db_conn, monkeypatch):
         fid = insert_flight(db_conn, icao="aabbcc")
-
-        def per_url(url):
-            if "planespotters" in url:
-                return {"photos": []}
-            if "airport-data.com" in url:
-                return {"status": 404}
-            if "hexdb.io" in url:
-                return "https://hexdb.io/static/aircraft-images/AABBCC.jpg"
-            return {}
-
-        monkeypatch.setattr(
-            "readsbstats.web.httpx.AsyncClient",
-            lambda **kw: _FakeAsyncClient(per_url),
-        )
-        r = client.get(f"/api/flights/{fid}/photo")
-        assert r.status_code == 200
-        data = r.json()
-        assert data["thumbnail_url"] == "https://hexdb.io/static/aircraft-images/AABBCC.jpg"
-
-    def test_hexdb_na_response_means_no_photo(self, client, db_conn, monkeypatch):
-        fid = insert_flight(db_conn, icao="aabbcc")
-
-        def per_url(url):
-            if "planespotters" in url:
-                return {"photos": []}
-            if "airport-data.com" in url:
-                return {"status": 404}
-            if "hexdb.io" in url:
-                return "n/a"
-            return {}
-
-        monkeypatch.setattr(
-            "readsbstats.web.httpx.AsyncClient",
-            lambda **kw: _FakeAsyncClient(per_url),
-        )
-        r = client.get(f"/api/flights/{fid}/photo")
-        assert r.json() is None
-
-    def test_hexdb_cached_in_db(self, client, db_conn, monkeypatch):
-        fid = insert_flight(db_conn, icao="aabbcc")
-
-        def per_url(url):
-            if "planespotters" in url:
-                return {"photos": []}
-            if "airport-data.com" in url:
-                return {"status": 404}
-            return "https://hexdb.io/img/AABBCC.jpg"
-
-        monkeypatch.setattr(
-            "readsbstats.web.httpx.AsyncClient",
-            lambda **kw: _FakeAsyncClient(per_url),
-        )
+        monkeypatch.setattr(photo_sources, "fetch_photo", lambda icao: PhotoResult(
+            thumbnail_url="https://hexdb.io/img/AABBCC.jpg",
+        ))
         client.get(f"/api/flights/{fid}/photo")
         row = db_conn.execute("SELECT thumbnail_url FROM photos WHERE icao_hex = 'aabbcc'").fetchone()
         assert row["thumbnail_url"] == "https://hexdb.io/img/AABBCC.jpg"
-
-    def test_all_three_sources_attempted_on_failure(self, client, db_conn, monkeypatch):
-        fid = insert_flight(db_conn, icao="aabbcc")
-        call_count = [0]
-
-        class _AllSourcesFail:
-            async def __aenter__(self):
-                return self
-            async def __aexit__(self, *_):
-                pass
-            async def get(self, url, **kwargs):
-                call_count[0] += 1
-                if "planespotters" in url:
-                    return _FakeResponse({"photos": []})
-                if "airport-data.com" in url:
-                    raise ConnectionError("down")
-                if "hexdb.io" in url:
-                    raise ConnectionError("also down")
-                raise ConnectionError("unknown")
-
-        monkeypatch.setattr(
-            "readsbstats.web.httpx.AsyncClient",
-            lambda **kw: _AllSourcesFail(),
-        )
-        r = client.get(f"/api/flights/{fid}/photo")
-        assert r.json() is None
-        assert call_count[0] == 3
 
 
 # ---------------------------------------------------------------------------
@@ -2613,23 +2362,13 @@ class TestApiAircraftPhoto:
         assert data["thumbnail_url"] == "https://t.jpg"
 
     def test_no_photo_returns_null(self, client, monkeypatch):
-        def per_url(url):
-            if "planespotters" in url:
-                return {"photos": []}
-            if "airport-data.com" in url:
-                return {"status": 404}
-            return "n/a"
-
-        monkeypatch.setattr(
-            "readsbstats.web.httpx.AsyncClient",
-            lambda **kw: _FakeAsyncClient(per_url),
-        )
+        monkeypatch.setattr(photo_sources, "fetch_photo", lambda icao: None)
         r = client.get("/api/aircraft/aabbcc/photo")
         assert r.status_code == 200
         assert r.json() is None
 
     def test_network_error_returns_null(self, client, monkeypatch):
-        monkeypatch.setattr("readsbstats.web.httpx.AsyncClient", lambda **kw: _RaisingAsyncClient())
+        monkeypatch.setattr(photo_sources, "fetch_photo", lambda icao: None)
         r = client.get("/api/aircraft/aabbcc/photo")
         assert r.status_code == 200
         assert r.json() is None
@@ -2702,27 +2441,23 @@ class TestFetchTypePhoto:
     def test_db_join_reuses_cached_photo(self, client, db_conn, monkeypatch):
         self._seed_aircraft_db(db_conn, "aabbcc", "B738")
         self._seed_specific_photo(db_conn, "aabbcc", "https://example.com/cached.jpg")
-        http_calls = []
-        monkeypatch.setattr("readsbstats.web.httpx.AsyncClient",
-                            lambda **kw: _FakeAsyncClient(lambda u: http_calls.append(u) or {"photos": []}))
+        fetch_calls = []
+        monkeypatch.setattr(photo_sources, "fetch_photo",
+                            lambda icao: fetch_calls.append(icao) or None)
         import asyncio
         result = asyncio.get_event_loop().run_until_complete(web._fetch_type_photo("B738"))
         assert result is not None
         assert result["thumbnail_url"] == "https://example.com/cached.jpg"
-        assert http_calls == []
+        assert fetch_calls == []
 
     def test_probe_planespotters_success(self, client, db_conn, monkeypatch):
         self._seed_aircraft_db(db_conn, "probe01", "EF2K", "Eurofighter Typhoon")
-
-        def per_url(url):
-            if "probe01" in url and "planespotters" in url:
-                return {"photos": [{"thumbnail": {"src": "https://example.com/ef2k.jpg"},
-                                    "thumbnail_large": {"src": "https://example.com/ef2k_l.jpg"},
-                                    "link": None, "photographer": "Alice"}]}
-            return {"photos": []}
-
-        monkeypatch.setattr("readsbstats.web.httpx.AsyncClient",
-                            lambda **kw: _FakeAsyncClient(per_url))
+        monkeypatch.setattr(photo_sources, "fetch_photo", lambda icao: PhotoResult(
+            thumbnail_url="https://example.com/ef2k.jpg",
+            large_url="https://example.com/ef2k_l.jpg",
+            link_url=None,
+            photographer="Alice",
+        ))
         import asyncio
         result = asyncio.get_event_loop().run_until_complete(web._fetch_type_photo("EF2K"))
         assert result is not None
@@ -2732,8 +2467,7 @@ class TestFetchTypePhoto:
 
     def test_all_fail_stores_negative(self, client, db_conn, monkeypatch):
         self._seed_aircraft_db(db_conn, "probe01", "EF2K")
-        monkeypatch.setattr("readsbstats.web.httpx.AsyncClient",
-                            lambda **kw: _FakeAsyncClient({"photos": []}))
+        monkeypatch.setattr(photo_sources, "fetch_photo", lambda icao: None)
         import asyncio
         result = asyncio.get_event_loop().run_until_complete(web._fetch_type_photo("EF2K"))
         assert result is None
@@ -2741,22 +2475,11 @@ class TestFetchTypePhoto:
         assert row is not None
         assert row[0] is None
 
-    def _no_photo_client(self):
-        """Fake async client that returns no-photo responses for all sources."""
-        def per_url(url):
-            if "planespotters" in url:
-                return {"photos": []}
-            if "airport-data.com" in url:
-                return {"status": 404, "data": []}
-            return "n/a"  # hexdb.io: "n/a" means no photo
-        return _FakeAsyncClient(per_url)
-
     def test_flight_photo_endpoint_falls_back_to_type(self, client, db_conn, monkeypatch):
         fid = insert_flight(db_conn, icao="aabbcc", aircraft_type="B738")
         self._seed_aircraft_db(db_conn, "aabbcc", "B738")
         self._seed_type_photo(db_conn, "B738", "https://example.com/b738.jpg")
-        monkeypatch.setattr("readsbstats.web.httpx.AsyncClient",
-                            lambda **kw: self._no_photo_client())
+        monkeypatch.setattr(photo_sources, "fetch_photo", lambda icao: None)
         r = client.get(f"/api/flights/{fid}/photo")
         assert r.status_code == 200
         data = r.json()
@@ -2767,8 +2490,7 @@ class TestFetchTypePhoto:
     def test_aircraft_photo_endpoint_falls_back_to_type(self, client, db_conn, monkeypatch):
         self._seed_aircraft_db(db_conn, "aabbcc", "B738", "Boeing 737-800")
         self._seed_type_photo(db_conn, "B738", "https://example.com/b738.jpg")
-        monkeypatch.setattr("readsbstats.web.httpx.AsyncClient",
-                            lambda **kw: self._no_photo_client())
+        monkeypatch.setattr(photo_sources, "fetch_photo", lambda icao: None)
         r = client.get("/api/aircraft/aabbcc/photo")
         assert r.status_code == 200
         data = r.json()
@@ -2778,8 +2500,7 @@ class TestFetchTypePhoto:
         assert data["type_desc"] == "Boeing 737-800"
 
     def test_aircraft_photo_no_type_fallback_when_no_type_code(self, client, db_conn, monkeypatch):
-        monkeypatch.setattr("readsbstats.web.httpx.AsyncClient",
-                            lambda **kw: self._no_photo_client())
+        monkeypatch.setattr(photo_sources, "fetch_photo", lambda icao: None)
         r = client.get("/api/aircraft/aabbcc/photo")
         assert r.status_code == 200
         assert r.json() is None

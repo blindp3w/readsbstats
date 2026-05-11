@@ -17,11 +17,15 @@ import time
 
 import httpx
 
-from . import config, database, enrichment
+from . import config, database, enrichment, http_safe
 
 log = logging.getLogger("adsbx_enricher")
 
 _TIMEOUT = 10.0
+# Per-poll response cap.  A 200 NM point query against airplanes.live returns
+# < 1 MB even in the busiest skies; cap at 4 MB to give headroom while still
+# bounding memory.
+_RESPONSE_MAX_BYTES = 4 * 1024 * 1024
 
 
 # ---------------------------------------------------------------------------
@@ -124,10 +128,12 @@ def _fetch_area() -> dict:
         f"/{config.ADSBX_RANGE_NM}"
     )
     try:
-        with httpx.Client(timeout=_TIMEOUT) as client:
-            resp = client.get(
-                url,
-                headers={"User-Agent": "readsbstats/1.0"},
+        with httpx.Client(
+            timeout=_TIMEOUT,
+            headers={"User-Agent": "readsbstats/1.0"},
+        ) as client:
+            resp = http_safe.safe_httpx_get(
+                client, url, max_bytes=_RESPONSE_MAX_BYTES,
             )
             resp.raise_for_status()
             return resp.json()

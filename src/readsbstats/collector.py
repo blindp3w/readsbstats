@@ -13,6 +13,7 @@ import json
 import logging
 import math
 import os
+import queue
 import signal
 import socket
 import sqlite3
@@ -45,6 +46,16 @@ _squawk_notified: set[int] = set()
 _last_summary_date: datetime.date | None = None
 
 _running = True
+
+# Single long-lived dispatch thread + queue.  Photo download + Telegram upload
+# can take ~20 s per alert in the worst case; doing this inline in `_poll()`
+# would block the poll loop, and spawning a thread per poll would let threads
+# accumulate.  The consumer reads alerts serially.
+_notification_queue: "queue.Queue[tuple | None]" = queue.Queue()
+_consumer_thread: threading.Thread | None = None
+# Back-compat alias for tests that want to assert the dispatch thread is
+# daemon / non-main.
+_notifications_thread: threading.Thread | None = None
 
 
 def _sd_notify(msg: str) -> None:
@@ -424,6 +435,100 @@ def _read_aircraft_json() -> dict | None:
     return data
 
 
+def _dispatch_one(item: tuple) -> None:
+    """Dispatch a single queued notification.  Exceptions are caller's
+    responsibility (the consumer logs and continues)."""
+    kind = item[0]
+    if kind == "mil":
+        notifier.notify_military(item[1], item[2], item[3], item[4], item[5], item[6])
+    elif kind == "int":
+        notifier.notify_interesting(item[1], item[2], item[3], item[4], item[5], item[6])
+    elif kind == "sqk":
+        notifier.notify_squawk(item[1], item[2], item[3], item[4], item[5])
+    elif kind == "wl":
+        notifier.notify_watchlist(item[1], item[2], item[3], item[4], item[5],
+                                  item[6], item[7], item[8])
+
+
+def _dispatch_notifications(pending: list) -> None:
+    """Process a batch of queued notifications synchronously.  Retained as a
+    sync entry point for unit tests; production now uses the queue-backed
+    consumer started in ``main()``."""
+    send_failed = 0
+    for item in pending:
+        try:
+            _dispatch_one(item)
+        except Exception:
+            send_failed += 1
+    if send_failed:
+        log.warning(
+            "Notification send failed for %d of %d queued alerts",
+            send_failed, len(pending),
+        )
+
+
+def _notification_consumer() -> None:
+    """Long-lived daemon: pull items off the notification queue and dispatch
+    them serially.  Opens one sqlite connection at startup and stashes it on
+    ``notifier._thread_local`` so every call to ``notifier._get_photo_result``
+    in this thread reuses it instead of reopening per alert.  A None sentinel
+    breaks the loop (used for graceful shutdown / test teardown)."""
+    conn = None
+    if config.DB_PATH:
+        try:
+            conn = database.connect(config.DB_PATH)
+        except Exception:
+            log.exception("Consumer failed to open DB connection; "
+                          "falling back to per-alert connections")
+            conn = None
+    if conn is not None:
+        notifier._thread_local.conn = conn
+    try:
+        while True:
+            item = _notification_queue.get()
+            try:
+                if item is None:
+                    return
+                try:
+                    _dispatch_one(item)
+                except Exception:
+                    log.exception("Notification dispatch error")
+            finally:
+                _notification_queue.task_done()
+    finally:
+        if conn is not None:
+            try:
+                del notifier._thread_local.conn
+            except AttributeError:
+                pass
+            conn.close()
+
+
+def start_notification_consumer() -> threading.Thread:
+    """Idempotently start the consumer thread.  Returns the thread."""
+    global _consumer_thread, _notifications_thread
+    if _consumer_thread is not None and _consumer_thread.is_alive():
+        return _consumer_thread
+    t = threading.Thread(
+        target=_notification_consumer, daemon=True, name="tg-dispatch",
+    )
+    _consumer_thread = t
+    _notifications_thread = t
+    t.start()
+    return t
+
+
+def _drain_notifications(timeout: float = 1.0) -> None:
+    """Block (busy-wait) until all queued notifications have been processed.
+    Used by tests after triggering ``_poll()``.  Returns silently after
+    *timeout* seconds even if work remains."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if _notification_queue.unfinished_tasks == 0:
+            return
+        time.sleep(0.01)
+
+
 def _poll(conn: sqlite3.Connection) -> None:
     data = _read_aircraft_json()
     if data is None:
@@ -668,22 +773,14 @@ def _poll(conn: sqlite3.Connection) -> None:
         if expired:
             log.debug("Closed %d expired flight(s)", len(expired))
 
-    # Send queued notifications outside the DB transaction
-    send_failed = 0
-    for n in _pending:
-        try:
-            if n[0] == "mil":
-                notifier.notify_military(n[1], n[2], n[3], n[4], n[5], n[6])
-            elif n[0] == "int":
-                notifier.notify_interesting(n[1], n[2], n[3], n[4], n[5], n[6])
-            elif n[0] == "sqk":
-                notifier.notify_squawk(n[1], n[2], n[3], n[4], n[5])
-            elif n[0] == "wl":
-                notifier.notify_watchlist(n[1], n[2], n[3], n[4], n[5], n[6], n[7], n[8])
-        except Exception:
-            send_failed += 1
-    if send_failed:
-        log.warning("Notification send failed for %d of %d queued alerts", send_failed, len(_pending))
+    # Enqueue alerts for the dispatch consumer.  Lazily start the consumer if
+    # it isn't already running (production starts it in main(); tests may
+    # invoke _poll without going through main()).
+    if _pending:
+        if _consumer_thread is None or not _consumer_thread.is_alive():
+            start_notification_consumer()
+        for item in _pending:
+            _notification_queue.put(item)
 
 
 # ---------------------------------------------------------------------------
@@ -804,6 +901,7 @@ def main() -> None:
         notifier.start_command_listener(config.DB_PATH)
     adsbx_enricher.start_background_enricher()
     metrics_collector.start_metrics_collector()
+    start_notification_consumer()
     _sd_notify("READY=1")
 
     # Heartbeat must be independent of _poll() — a write blocked on the

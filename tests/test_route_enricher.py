@@ -529,11 +529,19 @@ class TestFetchRoute:
         self.mod = route_enricher
         yield
 
+    def _bypass_validate(self, monkeypatch):
+        """Skip the real DNS / IP-class check from http_safe.validate_url so
+        the test never hits the network."""
+        from readsbstats import http_safe
+        monkeypatch.setattr(http_safe, "validate_url", lambda url: None)
+
     def test_returns_parsed_route_on_200(self, monkeypatch):
         import httpx
+        self._bypass_validate(monkeypatch)
 
         class FakeResp:
             status_code = 200
+            content = b'{"response":{"flightroute":{}}}'
             def raise_for_status(self): pass
             def json(self):
                 return {"response": {"flightroute": {
@@ -553,9 +561,11 @@ class TestFetchRoute:
 
     def test_returns_none_on_404(self, monkeypatch):
         import httpx
+        self._bypass_validate(monkeypatch)
 
         class FakeResp:
             status_code = 404
+            content = b""
 
         class FakeClient:
             def __enter__(self): return self
@@ -568,6 +578,7 @@ class TestFetchRoute:
 
     def test_raises_transient_on_network_error(self, monkeypatch):
         import httpx
+        self._bypass_validate(monkeypatch)
 
         class FakeClient:
             def __enter__(self): return self
@@ -580,9 +591,11 @@ class TestFetchRoute:
 
     def test_raises_transient_on_http_500(self, monkeypatch):
         import httpx
+        self._bypass_validate(monkeypatch)
 
         class FakeResp:
             status_code = 500
+            content = b""
             def raise_for_status(self):
                 raise httpx.HTTPStatusError("500", request=None, response=self)
 
@@ -594,6 +607,65 @@ class TestFetchRoute:
         monkeypatch.setattr(httpx, "Client", lambda **kw: FakeClient())
         with pytest.raises(self.mod._TransientError):
             self.mod._fetch_route("LOT123")
+
+    def test_redirect_treated_as_transient(self, monkeypatch):
+        """A 3xx from adsbdb is not legitimate — surface as transient so the
+        callsign is retried later rather than silently dropped."""
+        import httpx
+        self._bypass_validate(monkeypatch)
+
+        class FakeResp:
+            status_code = 302
+            content = b""
+            headers = {"Location": "https://attacker.example/"}
+
+        class FakeClient:
+            def __enter__(self): return self
+            def __exit__(self, *a): pass
+            def get(self, url, **kw): return FakeResp()
+
+        monkeypatch.setattr(httpx, "Client", lambda **kw: FakeClient())
+        with pytest.raises(self.mod._TransientError):
+            self.mod._fetch_route("LOT123")
+
+    def test_oversized_response_treated_as_transient(self, monkeypatch):
+        import httpx
+        self._bypass_validate(monkeypatch)
+
+        class FakeResp:
+            status_code = 200
+            content = b"x" * (1024 * 1024)  # 1 MB, over our 64 KB cap
+
+        class FakeClient:
+            def __enter__(self): return self
+            def __exit__(self, *a): pass
+            def get(self, url, **kw): return FakeResp()
+
+        monkeypatch.setattr(httpx, "Client", lambda **kw: FakeClient())
+        with pytest.raises(self.mod._TransientError):
+            self.mod._fetch_route("LOT123")
+
+    def test_callsign_percent_encoded_in_url(self, monkeypatch):
+        import httpx
+        self._bypass_validate(monkeypatch)
+        captured = []
+
+        class FakeResp:
+            status_code = 404
+            content = b""
+
+        class FakeClient:
+            def __enter__(self): return self
+            def __exit__(self, *a): pass
+            def get(self, url, **kw):
+                captured.append(url)
+                return FakeResp()
+
+        monkeypatch.setattr(httpx, "Client", lambda **kw: FakeClient())
+        self.mod._fetch_route("LOT/123")
+        assert len(captured) == 1
+        assert "LOT%2F123" in captured[0]
+        assert "LOT/123" not in captured[0].split("/callsign/")[-1]
 
 
 # ---------------------------------------------------------------------------

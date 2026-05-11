@@ -1547,12 +1547,14 @@ class TestPollEdgeCases:
         assert row["alt_baro"] is None
 
     def test_emergency_squawk_triggers_notification(self):
+        from readsbstats import collector
         from readsbstats.collector import _poll
         self._write_json([
             {"hex": "aabbcc", "lat": 52.0, "lon": 21.0, "seen_pos": 0,
              "squawk": "7700"},
         ])
         _poll(self.conn)
+        collector._drain_notifications(timeout=1.0)
         assert len(self.squawk_calls) == 1
         assert self.squawk_calls[0][3] == "7700"  # squawk value in args
 
@@ -1641,7 +1643,7 @@ class TestPollEdgeCases:
 
     def test_military_first_sighting_queues_notification(self, monkeypatch):
         """First new flight for a military ICAO must call notify_military."""
-        from readsbstats import notifier
+        from readsbstats import collector, notifier
         mil_calls = []
         monkeypatch.setattr(notifier, "notify_military", lambda *a: mil_calls.append(a))
 
@@ -1655,11 +1657,12 @@ class TestPollEdgeCases:
         from readsbstats.collector import _poll
         self._write_json([{"hex": "aabbcc", "lat": 52.0, "lon": 21.0, "seen_pos": 0}])
         _poll(self.conn)
+        collector._notifications_thread.join(timeout=1)
         assert len(mil_calls) == 1
 
     def test_military_second_sighting_no_repeat_notification(self, monkeypatch):
         """Subsequent flights for the same military ICAO must not re-notify."""
-        from readsbstats import config, notifier
+        from readsbstats import collector, config, notifier
         mil_calls = []
         monkeypatch.setattr(notifier, "notify_military", lambda *a: mil_calls.append(a))
 
@@ -1676,21 +1679,25 @@ class TestPollEdgeCases:
         # First flight
         self._write_json([{"hex": "aabbcc", "lat": 52.0, "lon": 21.0, "seen_pos": 0}], now)
         _poll(self.conn)
+        collector._notifications_thread.join(timeout=1)
         fid = _active["aabbcc"]["flight_id"]
         self.conn.execute("UPDATE flights SET total_positions=5 WHERE id=?", (fid,))
         self.conn.commit()
 
-        # Gap → second flight
+        # Gap → second flight (no pending notifications expected, thread not updated)
         self.json_path.write_text(json.dumps({
             "now": now + gap,
             "aircraft": [{"hex": "aabbcc", "lat": 52.5, "lon": 21.5, "seen_pos": 0}],
         }))
         _poll(self.conn)
+        # Second flight for already-notified ICAO → no new thread, join existing (already done)
+        if collector._notifications_thread and collector._notifications_thread.is_alive():
+            collector._notifications_thread.join(timeout=1)
         assert len(mil_calls) == 1  # still only one notification
 
     def test_interesting_first_sighting_queues_notification(self, monkeypatch):
         """First new flight for an interesting ICAO must call notify_interesting."""
-        from readsbstats import notifier
+        from readsbstats import collector, notifier
         int_calls = []
         monkeypatch.setattr(notifier, "notify_interesting", lambda *a: int_calls.append(a))
 
@@ -1703,7 +1710,34 @@ class TestPollEdgeCases:
         from readsbstats.collector import _poll
         self._write_json([{"hex": "aabbcc", "lat": 52.0, "lon": 21.0, "seen_pos": 0}])
         _poll(self.conn)
+        collector._notifications_thread.join(timeout=1)
         assert len(int_calls) == 1
+
+    def test_notifications_run_in_daemon_thread(self, monkeypatch):
+        """notify_military must be called from a non-main daemon thread."""
+        import threading as _threading
+        from readsbstats import collector, notifier
+
+        notify_threads: list[_threading.Thread] = []
+
+        def capture_thread(*a):
+            notify_threads.append(_threading.current_thread())
+
+        monkeypatch.setattr(notifier, "notify_military", capture_thread)
+        self.conn.execute(
+            "INSERT INTO aircraft_db (icao_hex, registration, type_code, flags) "
+            "VALUES ('aabbcc', 'MIL-1', 'C130', 1)"
+        )
+        self.conn.commit()
+
+        from readsbstats.collector import _poll
+        self._write_json([{"hex": "aabbcc", "lat": 52.0, "lon": 21.0, "seen_pos": 0}])
+        _poll(self.conn)
+        collector._notifications_thread.join(timeout=1)
+
+        assert len(notify_threads) == 1
+        assert notify_threads[0] is not _threading.main_thread()
+        assert notify_threads[0].daemon
 
 
 # ---------------------------------------------------------------------------
@@ -2459,66 +2493,213 @@ class TestWatchlistAlerts:
         )
         self.conn.commit()
 
-    def test_icao_match_fires_alert(self):
+    def _poll_and_join(self):
+        from readsbstats import collector
         from readsbstats.collector import _poll
+        _poll(self.conn)
+        if collector._notifications_thread:
+            collector._notifications_thread.join(timeout=1)
+
+    def test_icao_match_fires_alert(self):
         self._add_watchlist("icao", "aabbcc")
         self._write_json([{"hex": "aabbcc", "lat": 52.0, "lon": 21.0, "seen_pos": 0}])
-        _poll(self.conn)
+        self._poll_and_join()
         assert len(self.wl_calls) == 1
         assert self.wl_calls[0][0] == "aabbcc"
 
     def test_registration_match_fires_alert(self):
-        from readsbstats.collector import _poll
         self._add_watchlist("registration", "sp-lrf")
         self.conn.execute(
             "INSERT INTO aircraft_db (icao_hex, registration) VALUES ('aabbcc', 'SP-LRF')"
         )
         self.conn.commit()
         self._write_json([{"hex": "aabbcc", "lat": 52.0, "lon": 21.0, "seen_pos": 0}])
-        _poll(self.conn)
+        self._poll_and_join()
         assert len(self.wl_calls) == 1
 
     def test_callsign_prefix_match_fires_alert(self):
-        from readsbstats.collector import _poll
         self._add_watchlist("callsign_prefix", "lot")
         self._write_json([
             {"hex": "aabbcc", "lat": 52.0, "lon": 21.0, "seen_pos": 0, "flight": "LOT123"}
         ])
-        _poll(self.conn)
+        self._poll_and_join()
         assert len(self.wl_calls) == 1
 
     def test_no_match_does_not_fire(self):
         from readsbstats.collector import _poll
         self._add_watchlist("icao", "111111")
         self._write_json([{"hex": "aabbcc", "lat": 52.0, "lon": 21.0, "seen_pos": 0}])
-        _poll(self.conn)
+        _poll(self.conn)  # no thread started — nothing to join
         assert len(self.wl_calls) == 0
 
     def test_no_duplicate_alert_same_flight(self):
         """Second poll for the same open flight must not re-trigger the alert."""
-        from readsbstats.collector import _poll
         self._add_watchlist("icao", "aabbcc")
         now = time.time()
         self._write_json([{"hex": "aabbcc", "lat": 52.0, "lon": 21.0, "seen_pos": 0}], now)
-        _poll(self.conn)
+        self._poll_and_join()
         # Write a second position within the same flight (no gap)
         self.json_path.write_text(json.dumps({
             "now": now + 5,
             "aircraft": [{"hex": "aabbcc", "lat": 52.1, "lon": 21.1, "seen_pos": 0}],
         }))
-        _poll(self.conn)
+        from readsbstats.collector import _poll
+        _poll(self.conn)  # no new notification → no thread started
         assert len(self.wl_calls) == 1  # still only one alert
 
     def test_label_passed_to_notify(self):
-        from readsbstats.collector import _poll
         self._add_watchlist("icao", "aabbcc", label="Neighbour's plane")
         self._write_json([{"hex": "aabbcc", "lat": 52.0, "lon": 21.0, "seen_pos": 0}])
-        _poll(self.conn)
+        self._poll_and_join()
         # notify_watchlist(icao, reg, callsign, type_desc, aircraft_type, dist, label, flight_id)
         assert self.wl_calls[0][6] == "Neighbour's plane"
 
     def test_empty_watchlist_no_alert(self):
         from readsbstats.collector import _poll
         self._write_json([{"hex": "aabbcc", "lat": 52.0, "lon": 21.0, "seen_pos": 0}])
-        _poll(self.conn)
+        _poll(self.conn)  # no watchlist match → no thread started
         assert len(self.wl_calls) == 0
+
+
+# ---------------------------------------------------------------------------
+# Notification queue / consumer
+# ---------------------------------------------------------------------------
+
+class TestNotificationConsumer:
+    @pytest.fixture(autouse=True)
+    def setup(self, monkeypatch):
+        _reset_collector_state()
+        from readsbstats import collector, notifier
+        # Drain any leftover queue items from earlier tests (defensive).
+        collector._drain_notifications(timeout=0.1)
+        # Re-prime telegram state.
+        monkeypatch.setattr(config, "TELEGRAM_TOKEN", "tok")
+        monkeypatch.setattr(config, "TELEGRAM_CHAT_ID", "123")
+        # Stub notify_* so we observe dispatch order.
+        self.calls: list = []
+        monkeypatch.setattr(notifier, "notify_military",
+                            lambda *a: self.calls.append(("mil", a)))
+        monkeypatch.setattr(notifier, "notify_squawk",
+                            lambda *a: self.calls.append(("sqk", a)))
+        yield
+
+    def test_consumer_dispatches_in_fifo_order(self):
+        from readsbstats import collector
+        collector.start_notification_consumer()
+        collector._notification_queue.put(
+            ("mil", "aabbcc", "REG1", None, "Type1", "T1", 100.0),
+        )
+        collector._notification_queue.put(
+            ("sqk", "ddeeff", "REG2", None, "7700", 50.0),
+        )
+        collector._drain_notifications(timeout=1.0)
+        assert [c[0] for c in self.calls] == ["mil", "sqk"]
+
+    def test_consumer_survives_dispatch_exception(self, monkeypatch):
+        from readsbstats import collector, notifier
+        # First call raises; second must still be processed.
+        boom_called = []
+        def boom(*a):
+            boom_called.append(a)
+            raise RuntimeError("simulated dispatch error")
+        monkeypatch.setattr(notifier, "notify_military", boom)
+        ok_called = []
+        monkeypatch.setattr(notifier, "notify_squawk",
+                            lambda *a: ok_called.append(a))
+
+        collector.start_notification_consumer()
+        collector._notification_queue.put(
+            ("mil", "aabbcc", "REG1", None, "T", "T1", 100.0),
+        )
+        collector._notification_queue.put(
+            ("sqk", "ddeeff", "REG2", None, "7700", 50.0),
+        )
+        collector._drain_notifications(timeout=1.0)
+        assert len(boom_called) == 1
+        assert len(ok_called) == 1
+
+    def test_start_notification_consumer_is_idempotent(self):
+        from readsbstats import collector
+        t1 = collector.start_notification_consumer()
+        t2 = collector.start_notification_consumer()
+        assert t1 is t2
+        assert t1.daemon is True
+        assert t1.name == "tg-dispatch"
+
+    def test_drain_returns_when_queue_empty(self):
+        from readsbstats import collector
+        # No work enqueued — drain must return immediately within timeout.
+        collector._drain_notifications(timeout=0.5)
+        assert collector._notification_queue.unfinished_tasks == 0
+
+
+# ---------------------------------------------------------------------------
+# Consumer thread reuses one sqlite connection
+# ---------------------------------------------------------------------------
+
+class TestConsumerSqliteReuse:
+    @pytest.fixture(autouse=True)
+    def setup(self, monkeypatch, tmp_path):
+        _reset_collector_state()
+        from readsbstats import collector, database, notifier
+        # Stop any previously started consumer so we can start a fresh one
+        # against our test DB path.
+        if collector._consumer_thread and collector._consumer_thread.is_alive():
+            collector._notification_queue.put(None)  # sentinel → exits
+            collector._consumer_thread.join(timeout=1.0)
+            collector._consumer_thread = None
+            collector._notifications_thread = None
+
+        db_path = str(tmp_path / "consumer.db")
+        database.init_db(db_path)
+        monkeypatch.setattr(config, "DB_PATH", db_path)
+        monkeypatch.setattr(config, "TELEGRAM_TOKEN", "tok")
+        monkeypatch.setattr(config, "TELEGRAM_CHAT_ID", "123")
+
+        # Stub Telegram-sending so we don't make network calls.
+        monkeypatch.setattr(notifier, "notify_military",
+                            lambda *a, **kw: None)
+        yield
+        # Tear down the consumer cleanly so it doesn't leak into other tests.
+        if collector._consumer_thread and collector._consumer_thread.is_alive():
+            collector._notification_queue.put(None)
+            collector._consumer_thread.join(timeout=1.0)
+            collector._consumer_thread = None
+            collector._notifications_thread = None
+
+    def test_consumer_opens_one_connection_for_its_lifetime(self, monkeypatch):
+        """Spawning the consumer should call database.connect() exactly once;
+        subsequent alerts must reuse the same connection via the thread-local."""
+        from readsbstats import collector, database, notifier
+
+        connect_calls = []
+        real_connect = database.connect
+        def counting_connect(path=None):
+            connect_calls.append(path)
+            return real_connect(path)
+        monkeypatch.setattr(database, "connect", counting_connect)
+
+        # Capture thread-local state inside the consumer (the main thread
+        # can't see it directly).
+        observed = {"conn_set_in_consumer": False}
+        orig_notify = notifier.notify_military
+        def watching_notify(*a, **kw):
+            if getattr(notifier._thread_local, "conn", None) is not None:
+                observed["conn_set_in_consumer"] = True
+            return orig_notify(*a, **kw)
+        monkeypatch.setattr(notifier, "notify_military", watching_notify)
+
+        collector.start_notification_consumer()
+        # Enqueue two alerts; each one would have opened its own connection
+        # under the old code path.
+        for _ in range(2):
+            collector._notification_queue.put(
+                ("mil", "aabbcc", "REG", None, "T", "T1", 100.0),
+            )
+        collector._drain_notifications(timeout=2.0)
+        # Exactly one connect call from the consumer; tests that pre-init the
+        # DB above use the unpatched connect.
+        assert len(connect_calls) == 1
+        # Inside the consumer thread, the thread-local must be populated when
+        # a dispatched alert runs.
+        assert observed["conn_set_in_consumer"] is True

@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+## 1.6.0 — 2026-05-11
+
+### Security
+
+- **Centralised SSRF guard** — new `src/readsbstats/http_safe.py` module
+  enforces HTTPS-only, public-IP-only (rejects RFC1918 / loopback / link-local /
+  metadata / reserved / multicast addresses via `ipaddress` checks), no
+  auto-redirect, and a per-call response-size cap on every outbound HTTP
+  request. Two entry points: `safe_urlopen()` for `urllib` callers and
+  `safe_httpx_get()` for `httpx` callers. Adopted by `photo_sources`
+  (256 KB / 10 MB caps), `route_enricher` (64 KB; callsign now percent-encoded),
+  `adsbx_enricher` (4 MB), and `db_updater` (50 MB).
+  `db_updater.AIRCRAFT_CSV_URL` switched to the direct `raw.githubusercontent.com`
+  URL so the redirect-blocking policy doesn't break the import.
+- **HTML-escape Telegram captions** — `registration`, `callsign`, watchlist
+  `label`, `type_desc`, `country`, `squawk`, and the daily-summary DB-JOIN
+  columns are all run through `notifier._h()` before HTML interpolation.
+  Prior to this, a `&` / `<` / `>` in any of those fields caused Telegram's
+  `parse_mode=HTML` to return 400 and the alert was silently dropped.
+- **Structure-aware caption clamp** — `_clamp_caption` replaces
+  `_truncate_caption`. Over-limit captions first drop the trailing
+  `<i>Photo …</i>` note, then the trailing `<a href="…">…</a>` link line,
+  then plain-truncate the body with `…`. Prevents the previous cut-in-the-middle
+  of an `href=` attribute that would also produce a 400 from Telegram.
+
 ### Operations
 
 - **Collector failure alert** — `notify-telegram@.service` fires via `OnFailure=`
@@ -9,6 +34,41 @@
   restarts). Sends a Telegram message with the last 30 lines of `systemctl status`
   output. Reads `RSBS_TELEGRAM_TOKEN` / `RSBS_TELEGRAM_CHAT_ID` from the existing
   env file — no extra configuration required.
+
+### Features
+
+- **Shared photo-source module** — `photo_sources.py` centralises the
+  Planespotters → airport-data.com → hexdb.io fallback chain. Both the web
+  service (`web.py` via `run_in_executor`) and the notifier use the same chain.
+  `SOURCES` is the single extension point: append a new callable to add a source.
+- **Shared photo lookup ladder** — `photo_sources.resolve_photo()` factors the
+  5-step cache → JOIN → fetch → probe ladder used by
+  `notifier._get_photo_result`. The web side keeps its own `_fetch_photo` /
+  `_fetch_type_photo` split for the asyncio path.
+
+### Bug fixes
+
+- **Telegram photo delivery** — Planespotters blocks hotlink requests from
+  Telegram's bot servers. Photos are now downloaded locally (up to 10 MB)
+  and uploaded to the `sendPhoto` API as `multipart/form-data`, so the image
+  always arrives in the chat. Content-Type detection maps JPEG / PNG / WebP to
+  the correct filename. Drops the dead URL-payload fallback (it almost always
+  failed for the same reason). Multipart boundary is randomized per upload via
+  `secrets.token_hex(16)`.
+
+- **Photo fallback in Telegram alerts** — when no specific aircraft photo exists,
+  the notifier now tries airport-data.com and hexdb.io before giving up (previously
+  only Planespotters was checked).
+
+### Performance
+
+- **Notification dispatch queue** — `_poll()` no longer spawns a daemon thread
+  per call. A single long-lived consumer thread (`tg-dispatch`, started in
+  `collector.main()`) reads alerts off `collector._notification_queue` and
+  dispatches them serially. The consumer holds one sqlite connection for its
+  lifetime (via `notifier._thread_local`) instead of reopening per alert.
+  Eliminates thread pileup under bursty alerts; ~5–10 ms saved per alert from
+  connection reuse.
 
 ## 1.5.2 — 2026-05-09
 

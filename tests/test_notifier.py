@@ -11,7 +11,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from readsbstats import config, database, notifier
+from readsbstats import config, database, notifier, photo_sources
+from readsbstats.photo_sources import PhotoResult
 
 
 # ---------------------------------------------------------------------------
@@ -51,10 +52,11 @@ def insert_flight(conn, *, icao="aabbcc", callsign=None, registration=None,
     return conn.execute("SELECT last_insert_rowid()").fetchone()[0]
 
 
-def _mock_urlopen(response_bytes=b'{"ok":true}'):
+def _mock_urlopen(response_bytes=b'{"ok":true}', content_type="image/jpeg"):
     mock_resp = MagicMock()
     mock_resp.__enter__.return_value = mock_resp
     mock_resp.read.return_value = response_bytes
+    mock_resp.headers = {"Content-Type": content_type}
     return mock_resp
 
 
@@ -421,14 +423,35 @@ class TestNotifyMilitary:
         # Line 5: link
         assert '<a href="http://test/stats/aircraft/abc123">' in lines[4]
 
-    def test_html_entities_in_registration_not_injected(self, monkeypatch):
-        """Ensure registration with HTML chars doesn't break message."""
+    def test_html_entities_in_registration_escaped(self, monkeypatch):
+        """Registration with HTML chars must be escaped so Telegram doesn't 400
+        on parse_mode=HTML.  The raw ``<script>`` must NOT survive into the
+        outgoing message; ``&lt;script&gt;`` must appear instead."""
         sent = []
         monkeypatch.setattr(notifier, "_send", lambda txt: sent.append(txt))
         notifier.notify_military("abc123", "<script>", None, None, None, 10.0)
-        # The reg is used in bold tags — verify it appears literally (not escaped,
-        # since Telegram HTML parse_mode handles this, but no injection)
-        assert "<script>" in sent[0]
+        assert "<script>" not in sent[0]
+        assert "&lt;script&gt;" in sent[0]
+
+    def test_ampersand_in_registration_escaped(self, monkeypatch):
+        sent = []
+        monkeypatch.setattr(notifier, "_send", lambda txt: sent.append(txt))
+        notifier.notify_military("abc123", "AC&DC", None, None, None, 10.0)
+        assert "AC&amp;DC" in sent[0]
+
+    def test_callsign_with_special_chars_escaped(self, monkeypatch):
+        sent = []
+        monkeypatch.setattr(notifier, "_send", lambda txt: sent.append(txt))
+        notifier.notify_military("abc123", "REG", "A<B>C", None, None, 10.0)
+        assert "(A&lt;B&gt;C)" in sent[0]
+        assert "A<B>C" not in sent[0]
+
+    def test_type_desc_with_ampersand_escaped(self, monkeypatch):
+        sent = []
+        monkeypatch.setattr(notifier, "_send", lambda txt: sent.append(txt))
+        notifier.notify_military("abc123", "REG", None, "Embraer 170 & 175", "E170", 10.0)
+        assert "Embraer 170 &amp; 175" in sent[0]
+        assert "Embraer 170 & 175" not in sent[0]
 
 
 # ---------------------------------------------------------------------------
@@ -1187,7 +1210,7 @@ class TestGetPhotoResult:
             "VALUES ('abc123', 'https://example.com/t.jpg', NULL, NULL, NULL, ?)", (now,)
         )
         self.conn.commit()
-        url, is_type = notifier._get_photo_result("abc123", None, None)
+        url, is_type = notifier._get_photo_result("abc123", None)
         assert url == "https://example.com/t.jpg"
         assert is_type is False
 
@@ -1199,8 +1222,8 @@ class TestGetPhotoResult:
         )
         self.conn.commit()
         fetched = []
-        monkeypatch.setattr(notifier, "_planespotters_fetch", lambda h: fetched.append(h) or None)
-        url, is_type = notifier._get_photo_result("abc123", None, None)
+        monkeypatch.setattr(photo_sources, "fetch_photo", lambda h: fetched.append(h) or None)
+        url, is_type = notifier._get_photo_result("abc123", None)
         assert url is None
         assert is_type is False
         assert fetched == []
@@ -1212,8 +1235,8 @@ class TestGetPhotoResult:
             "VALUES ('B738', 'https://example.com/b738.jpg', NULL, NULL, NULL, ?)", (now,)
         )
         self.conn.commit()
-        monkeypatch.setattr(notifier, "_planespotters_fetch", lambda h: (_ for _ in ()).throw(AssertionError("should not fetch")))
-        url, is_type = notifier._get_photo_result("abc123", "B738", "Boeing 737-800")
+        monkeypatch.setattr(photo_sources, "fetch_photo", lambda h: (_ for _ in ()).throw(AssertionError("should not fetch")))
+        url, is_type = notifier._get_photo_result("abc123", "B738")
         assert url == "https://example.com/b738.jpg"
         assert is_type is True
 
@@ -1225,8 +1248,8 @@ class TestGetPhotoResult:
         )
         self.conn.commit()
         fetched = []
-        monkeypatch.setattr(notifier, "_planespotters_fetch", lambda h: fetched.append(h) or None)
-        url, is_type = notifier._get_photo_result("abc123", "B738", "Boeing 737-800")
+        monkeypatch.setattr(photo_sources, "fetch_photo", lambda h: fetched.append(h) or None)
+        url, is_type = notifier._get_photo_result("abc123", "B738")
         assert url is None
         assert fetched == []
 
@@ -1242,21 +1265,21 @@ class TestGetPhotoResult:
         )
         self.conn.commit()
         fetched = []
-        monkeypatch.setattr(notifier, "_planespotters_fetch", lambda h: fetched.append(h) or None)
-        url, is_type = notifier._get_photo_result("abc123", "B738", "Boeing 737-800")
+        monkeypatch.setattr(photo_sources, "fetch_photo", lambda h: fetched.append(h) or None)
+        url, is_type = notifier._get_photo_result("abc123", "B738")
         assert url == "https://example.com/other.jpg"
         assert is_type is True
         assert fetched == []
         row = self.conn.execute("SELECT thumbnail_url FROM type_photos WHERE type_code='B738'").fetchone()
         assert row and row[0] == "https://example.com/other.jpg"
 
-    def test_planespotters_fetch_specific_icao(self, monkeypatch):
+    def test_fetch_photo_called_for_specific_icao(self, monkeypatch):
         fetched = []
         def fake_fetch(icao):
             fetched.append(icao)
-            return "https://example.com/sp.jpg" if icao == "abc123" else None
-        monkeypatch.setattr(notifier, "_planespotters_fetch", fake_fetch)
-        url, is_type = notifier._get_photo_result("abc123", None, None)
+            return PhotoResult(thumbnail_url="https://example.com/sp.jpg") if icao == "abc123" else None
+        monkeypatch.setattr(photo_sources, "fetch_photo", fake_fetch)
+        url, is_type = notifier._get_photo_result("abc123", None)
         assert url == "https://example.com/sp.jpg"
         assert is_type is False
         assert fetched == ["abc123"]
@@ -1272,9 +1295,9 @@ class TestGetPhotoResult:
         fetched = []
         def fake_fetch(icao):
             fetched.append(icao)
-            return "https://example.com/ef2k.jpg" if icao == "probe01" else None
-        monkeypatch.setattr(notifier, "_planespotters_fetch", fake_fetch)
-        url, is_type = notifier._get_photo_result("abc123", "EF2K", "Eurofighter Typhoon")
+            return PhotoResult(thumbnail_url="https://example.com/ef2k.jpg") if icao == "probe01" else None
+        monkeypatch.setattr(photo_sources, "fetch_photo", fake_fetch)
+        url, is_type = notifier._get_photo_result("abc123", "EF2K")
         assert url == "https://example.com/ef2k.jpg"
         assert is_type is True
         assert fetched == ["abc123", "probe01"]
@@ -1285,8 +1308,8 @@ class TestGetPhotoResult:
             "VALUES ('probe01', 'G-PRB', 'EF2K', 'Eurofighter Typhoon', 1)"
         )
         self.conn.commit()
-        monkeypatch.setattr(notifier, "_planespotters_fetch", lambda h: None)
-        url, is_type = notifier._get_photo_result("abc123", "EF2K", "Eurofighter Typhoon")
+        monkeypatch.setattr(photo_sources, "fetch_photo", lambda h: None)
+        url, is_type = notifier._get_photo_result("abc123", "EF2K")
         assert url is None
         assert is_type is False
         p_row = self.conn.execute("SELECT thumbnail_url FROM photos WHERE icao_hex='abc123'").fetchone()
@@ -1296,13 +1319,133 @@ class TestGetPhotoResult:
 
     def test_null_type_code_skips_type_logic(self, monkeypatch):
         fetched = []
-        monkeypatch.setattr(notifier, "_planespotters_fetch", lambda h: fetched.append(h) or None)
-        url, is_type = notifier._get_photo_result("abc123", None, None)
+        monkeypatch.setattr(photo_sources, "fetch_photo", lambda h: fetched.append(h) or None)
+        url, is_type = notifier._get_photo_result("abc123", None)
         assert url is None
         assert is_type is False
         assert fetched == ["abc123"]
         t_row = self.conn.execute("SELECT * FROM type_photos").fetchone()
         assert t_row is None
+
+
+# ---------------------------------------------------------------------------
+# _download_photo
+# ---------------------------------------------------------------------------
+
+class TestDownloadPhoto:
+    """_download_photo now goes through photo_sources._safe_open; patch that seam."""
+
+    def _patch_safe_open(self, monkeypatch, body, headers=None):
+        if headers is None:
+            headers = {"Content-Type": "image/jpeg"}
+        monkeypatch.setattr(
+            photo_sources, "_safe_open",
+            lambda url, *, timeout, max_bytes: (body, headers),
+        )
+
+    def test_returns_bytes_and_jpeg_content_type(self, monkeypatch):
+        self._patch_safe_open(monkeypatch, b"\xff\xd8image",
+                              {"Content-Type": "image/jpeg"})
+        assert notifier._download_photo("https://example.com/photo.jpg") == (
+            b"\xff\xd8image", "image/jpeg",
+        )
+
+    def test_detects_png_content_type(self, monkeypatch):
+        self._patch_safe_open(monkeypatch, b"\x89PNG",
+                              {"Content-Type": "image/png"})
+        result = notifier._download_photo("https://example.com/photo.png")
+        assert result is not None and result[1] == "image/png"
+
+    def test_detects_webp_content_type(self, monkeypatch):
+        self._patch_safe_open(monkeypatch, b"RIFF",
+                              {"Content-Type": "image/webp"})
+        result = notifier._download_photo("https://example.com/photo.webp")
+        assert result is not None and result[1] == "image/webp"
+
+    def test_strips_content_type_parameters(self, monkeypatch):
+        self._patch_safe_open(monkeypatch, b"data",
+                              {"Content-Type": "image/jpeg; charset=utf-8"})
+        result = notifier._download_photo("https://example.com/photo.jpg")
+        assert result is not None and result[1] == "image/jpeg"
+
+    def test_defaults_to_jpeg_when_no_content_type_header(self, monkeypatch):
+        self._patch_safe_open(monkeypatch, b"data", headers={})
+        result = notifier._download_photo("https://example.com/photo.jpg")
+        assert result is not None and result[1] == "image/jpeg"
+
+    def test_returns_none_when_response_too_large(self, monkeypatch):
+        def _oversize(url, *, timeout, max_bytes):
+            raise ValueError(f"max_bytes={max_bytes} exceeded")
+        monkeypatch.setattr(photo_sources, "_safe_open", _oversize)
+        assert notifier._download_photo("https://example.com/huge.jpg") is None
+
+    def test_returns_none_on_network_error(self, monkeypatch):
+        def _boom(url, *, timeout, max_bytes):
+            raise OSError("network")
+        monkeypatch.setattr(photo_sources, "_safe_open", _boom)
+        assert notifier._download_photo("https://example.com/photo.jpg") is None
+
+    def test_returns_none_on_ssrf_rejection(self, monkeypatch):
+        """_safe_open raises ValueError for private/loopback IPs — must surface as None."""
+        def _reject(url, *, timeout, max_bytes):
+            raise ValueError("non-public IP")
+        monkeypatch.setattr(photo_sources, "_safe_open", _reject)
+        assert notifier._download_photo("https://internal/photo.jpg") is None
+
+
+# ---------------------------------------------------------------------------
+# _multipart_photo
+# ---------------------------------------------------------------------------
+
+class TestMultipartPhoto:
+    """_multipart_photo now returns (body, boundary) and picks a fresh random
+    boundary per call (mitigates body-injection via caption / chat_id)."""
+
+    def test_jpeg_uses_photo_jpg_filename_and_content_type(self):
+        body, _ = notifier._multipart_photo("99", b"\xff\xd8", "cap", "image/jpeg")
+        assert b'filename="photo.jpg"' in body
+        assert b"Content-Type: image/jpeg" in body
+
+    def test_png_uses_photo_png_filename_and_content_type(self):
+        body, _ = notifier._multipart_photo("99", b"\x89PNG", "cap", "image/png")
+        assert b'filename="photo.png"' in body
+        assert b"Content-Type: image/png" in body
+
+    def test_webp_uses_photo_webp_filename_and_content_type(self):
+        body, _ = notifier._multipart_photo("99", b"RIFF", "cap", "image/webp")
+        assert b'filename="photo.webp"' in body
+        assert b"Content-Type: image/webp" in body
+
+    def test_unknown_mime_falls_back_to_jpeg(self):
+        body, _ = notifier._multipart_photo("99", b"data", "cap", "image/tiff")
+        assert b'filename="photo.jpg"' in body
+        assert b"Content-Type: image/tiff" in body
+
+    def test_caption_and_chat_id_present(self):
+        body, _ = notifier._multipart_photo("42", b"img", "hello world", "image/jpeg")
+        assert b"42" in body
+        assert b"hello world" in body
+
+    def test_boundary_terminates_body(self):
+        body, boundary = notifier._multipart_photo("1", b"img", "c", "image/jpeg")
+        assert body.endswith(b"--" + boundary.encode() + b"--\r\n")
+
+    def test_boundary_randomized_per_call(self):
+        """Two calls must produce different boundaries so that no fixed string
+        is available to a caption-injection attacker."""
+        _, b1 = notifier._multipart_photo("1", b"a", "x", "image/jpeg")
+        _, b2 = notifier._multipart_photo("1", b"a", "x", "image/jpeg")
+        assert b1 != b2
+        assert b1.startswith("----RSBS")
+        assert b2.startswith("----RSBS")
+
+    def test_explicit_boundary_honoured(self):
+        """When the caller pins a boundary (tests), it's used verbatim."""
+        body, boundary = notifier._multipart_photo(
+            "1", b"a", "x", "image/jpeg", boundary="----pinned",
+        )
+        assert boundary == "----pinned"
+        assert b"------pinned\r\n" in body
 
 
 # ---------------------------------------------------------------------------
@@ -1320,32 +1463,79 @@ class TestSendPhoto:
         notifier._tg_enabled = None
         notifier._tg_validated = False
 
+    def _patch_safe_open(self, monkeypatch, body, content_type="image/jpeg"):
+        monkeypatch.setattr(
+            photo_sources, "_safe_open",
+            lambda url, *, timeout, max_bytes: (body, {"Content-Type": content_type}),
+        )
+
     def test_calls_send_photo_api(self, monkeypatch):
+        """_send_photo: download via _safe_open, upload via urlopen — exactly one urlopen call."""
+        self._patch_safe_open(monkeypatch, b"\xff\xd8jpeg", "image/jpeg")
         calls = []
-        mock_resp = _mock_urlopen()
-        monkeypatch.setattr("urllib.request.urlopen", lambda req, timeout=None: (calls.append(req) or mock_resp))
-        result = notifier._send_photo("https://example.com/photo.jpg", "caption")
-        assert result is True
-        assert len(calls) == 1
+        mock_resp = _mock_urlopen(b"ok")
+        monkeypatch.setattr("urllib.request.urlopen",
+                            lambda req, timeout=None: (calls.append(req) or mock_resp))
+        assert notifier._send_photo("https://example.com/photo.jpg", "caption") is True
+        assert len(calls) == 1, "exactly one outbound urlopen (the Telegram upload)"
         assert "sendPhoto" in calls[0].full_url
-        body = json.loads(calls[0].data)
-        assert body["photo"] == "https://example.com/photo.jpg"
-        assert body["caption"] == "caption"
-        assert body["parse_mode"] == "HTML"
+        body = calls[0].data
+        ct = calls[0].get_header("Content-type")
+        assert "multipart/form-data; boundary=----RSBS" in ct
+        assert b"caption" in body
+        assert b"HTML" in body
+        assert b'filename="photo.jpg"' in body
+        assert b"Content-Type: image/jpeg" in body
+
+    def test_png_url_uses_png_filename_in_multipart(self, monkeypatch):
+        self._patch_safe_open(monkeypatch, b"\x89PNG", "image/png")
+        calls = []
+        mock_resp = _mock_urlopen(b"ok")
+        monkeypatch.setattr("urllib.request.urlopen",
+                            lambda req, timeout=None: (calls.append(req) or mock_resp))
+        notifier._send_photo("https://example.com/photo.png", "caption")
+        body = calls[0].data
+        assert b'filename="photo.png"' in body
+        assert b"Content-Type: image/png" in body
 
     def test_api_failure_falls_back_to_send_message(self, monkeypatch):
+        """sendPhoto upload error → text fallback via _send (no URL-payload retry)."""
+        self._patch_safe_open(monkeypatch, b"\xff\xd8jpeg", "image/jpeg")
         def raise_error(req, timeout=None):
             raise OSError("network")
         monkeypatch.setattr("urllib.request.urlopen", raise_error)
         sent = []
         monkeypatch.setattr(notifier, "_send", lambda txt: sent.append(txt) or True)
-        result = notifier._send_photo("https://example.com/photo.jpg", "caption text")
-        assert result is True
+        assert notifier._send_photo("https://example.com/photo.jpg", "caption text") is True
         assert sent == ["caption text"]
+
+    def test_download_failure_falls_back_to_text(self, monkeypatch):
+        """If _download_photo returns None, go straight to text — no URL-payload retry."""
+        monkeypatch.setattr(notifier, "_download_photo", lambda url: None)
+        upload_calls = []
+        monkeypatch.setattr("urllib.request.urlopen",
+                            lambda req, timeout=None: upload_calls.append(req))
+        sent = []
+        monkeypatch.setattr(notifier, "_send", lambda txt: sent.append(txt) or True)
+        notifier._send_photo("https://example.com/photo.jpg", "cap")
+        assert upload_calls == []  # never tries the URL-fetch path
+        assert sent == ["cap"]
+
+    def test_http_url_falls_back_without_api_call(self, monkeypatch):
+        """HTTP (non-https) URL is rejected before any network call."""
+        calls = []
+        monkeypatch.setattr("urllib.request.urlopen",
+                            lambda req, timeout=None: calls.append(req))
+        sent = []
+        monkeypatch.setattr(notifier, "_send", lambda txt: sent.append(txt) or True)
+        notifier._send_photo("http://example.com/photo.jpg", "caption")
+        assert calls == []
+        assert sent == ["caption"]
 
     def test_non_http_url_falls_back_without_api_call(self, monkeypatch):
         calls = []
-        monkeypatch.setattr("urllib.request.urlopen", lambda req, timeout=None: calls.append(req))
+        monkeypatch.setattr("urllib.request.urlopen",
+                            lambda req, timeout=None: calls.append(req))
         sent = []
         monkeypatch.setattr(notifier, "_send", lambda txt: sent.append(txt) or True)
         notifier._send_photo("ftp://bad.url/photo.jpg", "caption")
@@ -1420,7 +1610,7 @@ class TestNotifyWithPhoto:
         assert "not this specific aircraft" in cap
 
     def test_notify_military_no_photo_uses_send_text(self, monkeypatch):
-        monkeypatch.setattr(notifier, "_planespotters_fetch", lambda h: None)
+        monkeypatch.setattr(photo_sources, "fetch_photo", lambda h: None)
         sent = []
         monkeypatch.setattr(notifier, "_send", lambda txt: sent.append(txt) or True)
         send_photos = []
@@ -1470,3 +1660,116 @@ class TestNotifyWithPhoto:
         cap = sent_photos[0][1]
         # The <i> type note must use &amp; — raw & in HTML tags is an XSS risk
         assert "<i>Photo: Type A&amp;B — not this specific aircraft</i>" in cap
+
+
+# ---------------------------------------------------------------------------
+# _clamp_caption / _dispatch_with_photo caption-length cap
+# ---------------------------------------------------------------------------
+
+class TestClampCaption:
+    def test_short_caption_unchanged(self):
+        s = "hello"
+        assert notifier._clamp_caption(s, limit=1024) == s
+
+    def test_caption_at_limit_unchanged(self):
+        s = "x" * 1024
+        assert notifier._clamp_caption(s, limit=1024) == s
+
+    def test_over_limit_strips_photo_note_first(self):
+        """Dropping the trailing <i>Photo…</i> alone is enough → don't touch
+        the rest of the caption."""
+        body = "x" * 1000
+        note = '\n<i>Photo: B738 — not this specific aircraft</i>'
+        s = body + note
+        # body=1000, note≈50 → 1050 total, over limit by ~26
+        assert len(s) > 1024
+        out = notifier._clamp_caption(s, limit=1024)
+        assert out == body
+        assert "<i>Photo:" not in out
+
+    def test_over_limit_strips_trailing_link_line(self):
+        """When stripping the photo note still leaves us over, drop the
+        trailing <a href="…">…</a> line — never cut inside the href."""
+        body = "X" * 1010
+        link = '\n<a href="https://example.com/aircraft/abc">View profile</a>'
+        s = body + link
+        assert len(s) > 1024
+        out = notifier._clamp_caption(s, limit=1024)
+        # Link must be gone in its entirety (no half-closed tags)
+        assert "<a href" not in out
+        assert "</a>" not in out
+        assert out == body
+
+    def test_over_limit_strips_both_then_truncates(self):
+        body = "Y" * 1500
+        s = (body
+             + '\n<a href="https://example.com/aircraft/abc">View profile</a>'
+             + '\n<i>Photo: B738 — not this specific aircraft</i>')
+        out = notifier._clamp_caption(s, limit=1024)
+        assert len(out) <= 1024
+        assert "<a href" not in out
+        assert "<i>Photo:" not in out
+        assert out.endswith("…")
+
+    def test_dual_link_line_stripped_entirely(self):
+        """Watchlist captions have two anchors on the same line: both go."""
+        body = "Z" * 1100
+        link = (
+            '\n<a href="https://example.com/flight/1">View flight</a> · '
+            '<a href="https://example.com/aircraft/abc">View aircraft</a>'
+        )
+        out = notifier._clamp_caption(body + link, limit=1024)
+        assert "<a href" not in out
+        assert "·" not in out
+
+    def test_no_partial_tag_in_truncated_output(self):
+        """Final-resort truncation must not leave a half-open tag at the end."""
+        # Construct a case where after stripping note + link, the body itself
+        # is still over-limit and gets plain truncated.
+        body = ("<b>x</b> " * 200)  # plenty of HTML, ≈ 1600 chars
+        s = body + '\n<a href="https://example.com/x">View</a>'
+        out = notifier._clamp_caption(s, limit=1024)
+        # _clamp_caption guarantees the ellipsis is the last char; we don't
+        # promise tag-balanced output in the final-fallback branch (Telegram
+        # tolerates dangling open tags on text), only that the link/note
+        # didn't get half-cut.  Confirm the trailing structures are gone.
+        assert "<a href" not in out
+        assert out.endswith("…")
+        assert len(out) <= 1024
+
+    def test_default_limit_is_1024(self):
+        assert notifier._PHOTO_CAPTION_MAX == 1024
+
+    def test_truncate_caption_alias_preserved(self):
+        """``_truncate_caption`` is kept as a back-compat alias."""
+        assert notifier._truncate_caption is notifier._clamp_caption
+
+
+class TestDispatchTruncates:
+    @pytest.fixture(autouse=True)
+    def setup(self, monkeypatch, tmp_path):
+        db_path = str(tmp_path / "test.db")
+        conn = database.connect(db_path)
+        conn.executescript(database.DDL)
+        database._migrate(conn)
+        conn.close()
+        monkeypatch.setattr(config, "DB_PATH", db_path)
+        monkeypatch.setattr(config, "TELEGRAM_PHOTOS", 1)
+        # seed a specific photo so the dispatch reaches _send_photo
+        c = database.connect(db_path)
+        now = int(time.time())
+        c.execute(
+            "INSERT INTO photos VALUES ('abc123', 'https://example.com/p.jpg', "
+            "NULL, NULL, NULL, ?)", (now,))
+        c.commit()
+        c.close()
+        yield
+
+    def test_long_caption_truncated_before_send_photo(self, monkeypatch):
+        seen = []
+        monkeypatch.setattr(notifier, "_send_photo",
+                            lambda url, cap: seen.append(cap) or True)
+        long_caption = "X" * 4000
+        notifier._dispatch_with_photo(long_caption, "abc123", None, None)
+        assert len(seen) == 1
+        assert len(seen[0]) <= notifier._PHOTO_CAPTION_MAX

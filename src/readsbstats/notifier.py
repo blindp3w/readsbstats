@@ -20,6 +20,8 @@ import datetime
 import html as _html
 import json
 import logging
+import re
+import secrets
 import sqlite3
 import threading
 import time
@@ -27,7 +29,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from . import config, icao_ranges
+from . import config, icao_ranges, photo_sources
 
 log = logging.getLogger("notifier")
 
@@ -167,149 +169,153 @@ def _send(text: str) -> bool:
 # Photo helpers
 # ---------------------------------------------------------------------------
 
-_PHOTO_UA = {"User-Agent": "readsbstats/1.0"}
+# Thread-local sqlite connection.  The collector's dispatch consumer thread
+# sets ``conn`` at startup and clears it on shutdown so that every notification
+# in that thread reuses the same connection (avoiding open/close churn).
+# Tests and other callers leave it unset and we fall back to opening a fresh
+# connection against ``config.DB_PATH`` per call.
+_thread_local = threading.local()
 
 
 def _get_photo_result(
     icao_hex: str,
     type_code: str | None,
-    type_desc: str | None,
+    *,
+    conn: sqlite3.Connection | None = None,
 ) -> tuple[str | None, bool]:
-    """Return (thumbnail_url | None, is_type_photo).
+    """Return ``(thumbnail_url | None, is_type_photo)`` via the shared ladder
+    in :func:`photo_sources.resolve_photo`.
 
-    Lookup order (all cache-first, no unnecessary HTTP):
-    1. photos cache for the specific aircraft.
-    2. type_photos cache for the type code.
-    3. photos JOIN aircraft_db — reuse any already-cached photo of that type.
-    4. Planespotters fetch for the specific ICAO.
-    5. Planespotters fetch for one probe ICAO of the same type.
+    Uses, in order of preference: an explicitly passed ``conn``, the
+    thread-local connection set by the dispatch consumer, or a fresh
+    short-lived connection against ``config.DB_PATH``.
     """
-    if not config.DB_PATH:
-        return None, False
-
-    cutoff = int(time.time()) - config.PHOTO_CACHE_DAYS * 86400
-
-    try:
-        conn = sqlite3.connect(config.DB_PATH, timeout=5)
-        conn.row_factory = sqlite3.Row
+    if conn is None:
+        conn = getattr(_thread_local, "conn", None)
+    if conn is not None:
         try:
-            # 1. Specific aircraft cache (includes negative cache)
-            row = conn.execute(
-                "SELECT thumbnail_url, fetched_at FROM photos WHERE icao_hex = ?",
-                (icao_hex,),
-            ).fetchone()
-            if row and row["fetched_at"] > cutoff:
-                return row["thumbnail_url"], False
-
-            # 2. Type cache (includes negative cache)
-            if type_code:
-                row = conn.execute(
-                    "SELECT thumbnail_url, fetched_at FROM type_photos WHERE type_code = ?",
-                    (type_code,),
-                ).fetchone()
-                if row and row["fetched_at"] > cutoff:
-                    return row["thumbnail_url"], True
-
-            # 3. photos JOIN aircraft_db — zero HTTP
-            if type_code:
-                row = conn.execute(
-                    """
-                    SELECT p.thumbnail_url
-                    FROM photos p
-                    JOIN aircraft_db adb ON adb.icao_hex = p.icao_hex
-                    WHERE adb.type_code = ? AND p.thumbnail_url IS NOT NULL
-                    ORDER BY p.fetched_at DESC LIMIT 1
-                    """,
-                    (type_code,),
-                ).fetchone()
-                if row:
-                    url = row["thumbnail_url"]
-                    _cache_type_photo(conn, type_code, url)
-                    return url, True
-
-            # 4. Fetch Planespotters for the specific ICAO
-            url = _planespotters_fetch(icao_hex)
-            now = int(time.time())
-            conn.execute(
-                "INSERT OR REPLACE INTO photos "
-                "(icao_hex, thumbnail_url, large_url, link_url, photographer, fetched_at) "
-                "VALUES (?,?,NULL,NULL,NULL,?)",
-                (icao_hex, url, now),
+            result, is_type = photo_sources.resolve_photo(
+                conn, icao_hex, type_code,
+                cache_seconds=config.PHOTO_CACHE_DAYS * 86400,
             )
-            conn.commit()
-            if url:
-                return url, False
-
-            # 5. Probe one ICAO of the same type
-            if type_code:
-                probe_row = conn.execute(
-                    "SELECT icao_hex FROM aircraft_db WHERE type_code = ? LIMIT 1",
-                    (type_code,),
-                ).fetchone()
-                if probe_row:
-                    probe_url = _planespotters_fetch(probe_row["icao_hex"])
-                    _cache_type_photo(conn, type_code, probe_url)
-                    if probe_url:
-                        return probe_url, True
-
-            # Store negative for type too
-            if type_code:
-                _cache_type_photo(conn, type_code, None)
+            url = result["thumbnail_url"] if result else None
+            return url, is_type
+        except Exception as exc:
+            log.debug("photo lookup failed for %s: %s", icao_hex, exc)
             return None, False
 
+    if not config.DB_PATH:
+        return None, False
+    try:
+        fresh = sqlite3.connect(config.DB_PATH, timeout=5)
+        fresh.row_factory = sqlite3.Row
+        try:
+            result, is_type = photo_sources.resolve_photo(
+                fresh, icao_hex, type_code,
+                cache_seconds=config.PHOTO_CACHE_DAYS * 86400,
+            )
+            url = result["thumbnail_url"] if result else None
+            return url, is_type
         finally:
-            conn.close()
+            fresh.close()
     except Exception as exc:
         log.debug("photo lookup failed for %s: %s", icao_hex, exc)
         return None, False
 
 
-def _planespotters_fetch(icao_hex: str) -> str | None:
-    """Try Planespotters.net for a single ICAO; return thumbnail_url or None."""
+_MAX_PHOTO_BYTES = 10 * 1024 * 1024  # Telegram's sendPhoto limit
+_PHOTO_CAPTION_MAX = 1024            # Telegram's caption limit on sendPhoto
+
+_MIME_TO_FILENAME: dict[str, str] = {
+    "image/jpeg": "photo.jpg",
+    "image/png":  "photo.png",
+    "image/webp": "photo.webp",
+}
+
+
+def _download_photo(url: str) -> tuple[bytes, str] | None:
+    """Fetch image bytes and mime type from *url* via
+    :func:`photo_sources._safe_open` (HTTPS-only, redirect-blocked, IP-gated).
+
+    Returns ``(bytes, mime_type)`` or ``None`` on any failure (network, policy
+    violation, oversize).
+    """
     try:
-        req = urllib.request.Request(
-            f"https://api.planespotters.net/pub/photos/hex/{icao_hex}",
-            headers=_PHOTO_UA,
+        data, headers = photo_sources._safe_open(
+            url, timeout=8, max_bytes=_MAX_PHOTO_BYTES,
         )
-        with urllib.request.urlopen(req, timeout=6) as resp:
-            data = json.loads(resp.read())
-            if data.get("photos"):
-                return data["photos"][0].get("thumbnail", {}).get("src") or None
+        mime = (headers.get("Content-Type") or "image/jpeg").split(";")[0].strip()
+        return data, mime
     except Exception as exc:
-        log.debug("Planespotters fetch failed for %s: %s", icao_hex, exc)
-    return None
+        log.debug("photo download failed for %s: %s", url, exc)
+        return None
 
 
-def _cache_type_photo(conn: sqlite3.Connection, type_code: str, url: str | None) -> None:
-    now = int(time.time())
-    conn.execute(
-        "INSERT OR REPLACE INTO type_photos "
-        "(type_code, thumbnail_url, large_url, link_url, photographer, fetched_at) "
-        "VALUES (?,?,NULL,NULL,NULL,?)",
-        (type_code, url, now),
+def _multipart_photo(
+    chat_id: str,
+    image_bytes: bytes,
+    caption: str,
+    content_type: str = "image/jpeg",
+    boundary: str | None = None,
+) -> tuple[bytes, str]:
+    """Build a multipart/form-data body for sendPhoto file upload.
+
+    Returns ``(body_bytes, boundary_str)``.  A fresh random boundary is used
+    per call so that adversarial caption / chat_id content cannot prematurely
+    terminate the body."""
+    if boundary is None:
+        boundary = "----RSBS" + secrets.token_hex(16)
+    b        = boundary.encode()
+    filename = _MIME_TO_FILENAME.get(content_type, "photo.jpg").encode()
+    ct_bytes = content_type.encode()
+    parts: list[bytes] = []
+
+    def field(name: str, value: str) -> bytes:
+        return (
+            b"--" + b + b"\r\n"
+            + b'Content-Disposition: form-data; name="' + name.encode() + b'"\r\n\r\n'
+            + value.encode() + b"\r\n"
+        )
+
+    parts.append(field("chat_id", chat_id))
+    parts.append(field("caption", caption))
+    parts.append(field("parse_mode", "HTML"))
+    parts.append(
+        b"--" + b + b"\r\n"
+        + b'Content-Disposition: form-data; name="photo"; filename="' + filename + b'"\r\n'
+        + b"Content-Type: " + ct_bytes + b"\r\n\r\n"
+        + image_bytes + b"\r\n"
     )
-    conn.commit()
+    parts.append(b"--" + b + b"--\r\n")
+    return b"".join(parts), boundary
 
 
 def _send_photo(photo_url: str, caption: str) -> bool:
-    """POST a photo message to Telegram. Falls back to text on any failure."""
+    """POST a photo message to Telegram.
+
+    Images are downloaded first and uploaded as multipart bytes —
+    Planespotters' hotlink protection blocks direct Telegram fetches, so the
+    URL-payload path has been removed.  On any failure (non-https URL, download
+    error, upload error) we fall back to a plain text message.
+    """
     if not telegram_enabled():
         return False
-    if not photo_url.startswith(("http://", "https://")):
+    if not photo_url.startswith("https://"):
         return _send(caption)
+    download = _download_photo(photo_url)
+    if not download:
+        return _send(caption)
+    image_bytes, content_type = download
+    body, boundary = _multipart_photo(
+        config.TELEGRAM_CHAT_ID, image_bytes, caption, content_type,
+    )
     try:
-        payload = json.dumps({
-            "chat_id":    config.TELEGRAM_CHAT_ID,
-            "photo":      photo_url,
-            "caption":    caption,
-            "parse_mode": "HTML",
-        }).encode()
         req = urllib.request.Request(
             f"https://api.telegram.org/bot{config.TELEGRAM_TOKEN}/sendPhoto",
-            data=payload,
-            headers={"Content-Type": "application/json"},
+            data=body,
+            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
         )
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with urllib.request.urlopen(req, timeout=15) as resp:
             resp.read()
         return True
     except Exception as exc:
@@ -322,6 +328,16 @@ def _send_photo(photo_url: str, caption: str) -> bool:
 # Alert messages
 # ---------------------------------------------------------------------------
 
+def _h(s: str | None) -> str:
+    """HTML-escape a value for safe interpolation into Telegram ``parse_mode=HTML``
+    messages.  Telegram returns 400 on unescaped ``<``, ``>``, ``&`` even
+    inside text nodes — and the whole message is then dropped because the
+    text fallback also uses HTML mode.  Apply this to every dynamic field
+    that could carry user-supplied or third-party-sourced characters
+    (registrations, callsigns, watchlist labels, type descriptions)."""
+    return _html.escape(s or "")
+
+
 def _fmt_aircraft_line(
     icao: str,
     registration: str | None,
@@ -329,11 +345,48 @@ def _fmt_aircraft_line(
     type_desc: str | None = None,
     aircraft_type: str | None = None,
 ) -> tuple[str, str, str]:
-    """Return (reg, callsign_suffix, aircraft_type) formatted strings."""
-    reg = registration or icao.upper()
-    cs  = f" ({callsign})" if callsign else ""
-    ac  = type_desc or aircraft_type or "Unknown type"
+    """Return ``(reg, callsign_suffix, aircraft_type)`` already HTML-escaped
+    so callers can interpolate the tuple straight into HTML captions."""
+    reg = _h(registration or icao.upper())
+    cs  = f" ({_h(callsign)})" if callsign else ""
+    ac  = _h(type_desc or aircraft_type or "Unknown type")
     return reg, cs, ac
+
+
+# Trailing-link-line pattern.  Captions are built so the last line is one or
+# two ``<a href="…">…</a>`` anchors; the photo note (if any) is appended below.
+# A plain truncation can land inside the link's ``href`` attribute and corrupt
+# the HTML, so over-limit captions strip whole lines instead of cutting tags.
+_PHOTO_NOTE_RE = re.compile(r"\n<i>Photo: [^<]*</i>\s*$")
+_TRAILING_LINK_LINE_RE = re.compile(r"\n[^\n]*<a href=\"[^\"]+\">[^\n]*$")
+
+
+def _clamp_caption(caption: str, limit: int = _PHOTO_CAPTION_MAX) -> str:
+    """Trim *caption* to Telegram's photo-caption ``limit`` (1024) without
+    cutting through HTML tags.
+
+    Strategy (only invoked when over-limit):
+      1. Drop the optional trailing ``<i>Photo: …</i>`` note line.
+      2. Drop the trailing ``<a href="…">…</a>`` link line(s).
+      3. Plain-truncate the body with ``…`` as a last resort.
+
+    Steps 1 and 2 use anchored regexes so they only match well-formed
+    structures our own builders produce.
+    """
+    if len(caption) <= limit:
+        return caption
+    stripped = _PHOTO_NOTE_RE.sub("", caption)
+    if len(stripped) <= limit:
+        return stripped
+    stripped = _TRAILING_LINK_LINE_RE.sub("", stripped)
+    if len(stripped) <= limit:
+        return stripped
+    return stripped[: limit - 1] + "…"
+
+
+# Back-compat alias for any external callers / tests that still reference the
+# old name.  New code should use ``_clamp_caption``.
+_truncate_caption = _clamp_caption
 
 
 def _dispatch_with_photo(
@@ -344,12 +397,14 @@ def _dispatch_with_photo(
 ) -> None:
     """Send *caption* via sendPhoto if a photo is available, else sendMessage."""
     if config.TELEGRAM_PHOTOS:
-        photo_url, is_type = _get_photo_result(icao, aircraft_type, type_desc)
+        photo_url, is_type = _get_photo_result(icao, aircraft_type)
         if is_type and photo_url:
-            label = _html.escape(type_desc or aircraft_type or "")
-            caption += f"\n<i>Photo: {label} — not this specific aircraft</i>"
+            caption += (
+                f"\n<i>Photo: {_h(type_desc or aircraft_type)} "
+                f"— not this specific aircraft</i>"
+            )
         if photo_url:
-            _send_photo(photo_url, caption)
+            _send_photo(photo_url, _clamp_caption(caption))
             return
     _send(caption)
 
@@ -363,7 +418,7 @@ def notify_military(
     distance_nm:   float | None,
 ) -> None:
     reg, cs, ac = _fmt_aircraft_line(icao, registration, callsign, type_desc, aircraft_type)
-    country = icao_ranges.icao_to_country(icao)
+    country = _h(icao_ranges.icao_to_country(icao))
     url = f"{config.BASE_URL}/aircraft/{icao}"
     caption = (
         f"✈️ <b>Military aircraft — first sighting</b>\n"
@@ -384,7 +439,7 @@ def notify_interesting(
     distance_nm:   float | None,
 ) -> None:
     reg, cs, ac = _fmt_aircraft_line(icao, registration, callsign, type_desc, aircraft_type)
-    country = icao_ranges.icao_to_country(icao)
+    country = _h(icao_ranges.icao_to_country(icao))
     url = f"{config.BASE_URL}/aircraft/{icao}"
     caption = (
         f"⭐ <b>Interesting aircraft — first sighting</b>\n"
@@ -407,7 +462,7 @@ def notify_watchlist(
     flight_id:     int,
 ) -> None:
     reg, cs, ac  = _fmt_aircraft_line(icao, registration, callsign, type_desc, aircraft_type)
-    label_line   = f"Label: {label}\n" if label else ""
+    label_line   = f"Label: {_h(label)}\n" if label else ""
     aircraft_url = f"{config.BASE_URL}/aircraft/{icao}"
     flight_url   = f"{config.BASE_URL}/flight/{flight_id}"
     caption = (
@@ -427,11 +482,14 @@ def notify_squawk(
     squawk:       str,
     distance_nm:  float | None,
 ) -> None:
-    label = _SQUAWK_LABELS.get(squawk, squawk)
+    # _SQUAWK_LABELS values are static strings ("Hijack", "Radio failure",
+    # "Emergency") so they don't need escaping, but the squawk code itself
+    # comes from readsb output; escape both for defence-in-depth.
+    label = _h(_SQUAWK_LABELS.get(squawk, squawk))
     reg, cs, _ = _fmt_aircraft_line(icao, registration, callsign)
     url = f"{config.BASE_URL}/aircraft/{icao}"
     _send(
-        f"🚨 <b>Squawk {squawk} — {label}</b>\n"
+        f"🚨 <b>Squawk {_h(squawk)} — {label}</b>\n"
         f"<b>{reg}</b>{cs}\n"
         f"Distance: {_fmt_dist(distance_nm)}\n"
         f'<a href="{url}">View profile</a>'
@@ -534,29 +592,29 @@ def send_daily_summary(conn: sqlite3.Connection) -> None:
     ).fetchone()
 
     if furthest:
-        td = f" ({furthest['type_desc']})" if furthest["type_desc"] else ""
+        td = f" ({_h(furthest['type_desc'])})" if furthest["type_desc"] else ""
         lines.append(
-            f"Furthest: <b>{furthest['reg']}</b>{td} — {_fmt_dist(furthest['max_distance_nm'])}"
+            f"Furthest: <b>{_h(furthest['reg'])}</b>{td} — {_fmt_dist(furthest['max_distance_nm'])}"
         )
 
     if fastest:
-        td = f" ({fastest['type_desc']})" if fastest["type_desc"] else ""
+        td = f" ({_h(fastest['type_desc'])})" if fastest["type_desc"] else ""
         lines.append(
-            f"Fastest: <b>{fastest['reg']}</b>{td} — {_fmt_spd(fastest['max_gs'])}"
+            f"Fastest: <b>{_h(fastest['reg'])}</b>{td} — {_fmt_spd(fastest['max_gs'])}"
         )
 
     if highest:
-        td = f" ({highest['type_desc']})" if highest["type_desc"] else ""
+        td = f" ({_h(highest['type_desc'])})" if highest["type_desc"] else ""
         lines.append(
-            f"Highest: <b>{highest['reg']}</b>{td} — {_fmt_alt(highest['max_alt_baro'])}"
+            f"Highest: <b>{_h(highest['reg'])}</b>{td} — {_fmt_alt(highest['max_alt_baro'])}"
         )
 
     if longest:
-        td = f" ({longest['type_desc']})" if longest["type_desc"] else ""
+        td = f" ({_h(longest['type_desc'])})" if longest["type_desc"] else ""
         ds = longest["duration_s"]
         h, m = divmod(ds // 60, 60)
         lines.append(
-            f"Longest: <b>{longest['reg']}</b>{td} — {h}h {m:02d}m"
+            f"Longest: <b>{_h(longest['reg'])}</b>{td} — {h}h {m:02d}m"
         )
 
     if busiest:
@@ -611,9 +669,9 @@ def _send_status(conn: sqlite3.Connection) -> None:
     if active:
         lines.append(f"\nTracking <b>{len(active)}</b> aircraft now:")
         for a in active[:10]:
-            cs = f" ({a['callsign']})" if a["callsign"] else ""
-            td = f" — {a['type_desc']}" if a["type_desc"] else ""
-            lines.append(f"  • {a['reg']}{cs}{td}")
+            cs = f" ({_h(a['callsign'])})" if a["callsign"] else ""
+            td = f" — {_h(a['type_desc'])}" if a["type_desc"] else ""
+            lines.append(f"  • {_h(a['reg'])}{cs}{td}")
         if len(active) > 10:
             lines.append(f"  … and {len(active) - 10} more")
     else:
@@ -646,9 +704,9 @@ def _send_watchlist_list(conn: sqlite3.Connection) -> None:
         return
     lines = ["👁 <b>Watchlist</b>\n"]
     for row in rows:
-        tl = _WATCHLIST_TYPE_LABELS.get(row["match_type"], row["match_type"])
-        lb = f" — {row['label']}" if row["label"] else ""
-        lines.append(f"  [{tl}] {row['value'].upper()}{lb}")
+        tl = _h(_WATCHLIST_TYPE_LABELS.get(row["match_type"], row["match_type"]))
+        lb = f" — {_h(row['label'])}" if row["label"] else ""
+        lines.append(f"  [{tl}] {_h(row['value'].upper())}{lb}")
     _send("\n".join(lines))
 
 
