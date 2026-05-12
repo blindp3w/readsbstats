@@ -559,6 +559,8 @@ readsbstats/
 │   ├── watchlist.html          # Aircraft watchlist management
 │   └── settings.html           # Runtime settings (read-only display)
 ├── static/
+│   ├── favicon.svg             # App favicon (SVG — modern browsers)
+│   ├── favicon.png             # App favicon (PNG 512×512 — fallback)
 │   ├── css/app.css
 │   └── js/
 │       ├── units.js            # Unit conversion helpers (aero/metric/imperial)
