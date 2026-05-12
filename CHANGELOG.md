@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+## 1.7.1 — 2026-05-12
+
+### Fixed
+
+- **nginx CSP blocks Wikipedia type photos** — `upload.wikimedia.org` was
+  missing from the `img-src` directive in `nginx-readsbstats.conf`, causing
+  browsers to block the new Wikipedia fallback images with a Content Security
+  Policy violation. Added `https://upload.wikimedia.org` to `img-src`.
+  Apply by reloading nginx: `sudo nginx -t && sudo systemctl reload nginx`.
+
+### Tests
+
+- Fix race condition in `test_all_three_emergency_squawks_trigger` — the test
+  asserted `squawk_calls` immediately after three `_poll()` calls without
+  waiting for the async consumer thread to drain the queue, so the last
+  notification (7700) was consistently missing on CI. Added
+  `_drain_notifications(timeout=1.0)` before the assertion, matching the
+  pattern used in every other notification test. Hardened
+  `test_emergency_squawk_not_repeated_same_flight` with the same drain call.
+
 ## 1.7.0 — 2026-05-11
 
 ### Added

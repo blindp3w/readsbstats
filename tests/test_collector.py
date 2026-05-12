@@ -1560,6 +1560,7 @@ class TestPollEdgeCases:
 
     def test_emergency_squawk_not_repeated_same_flight(self):
         """Same flight_id with the same emergency squawk must only notify once."""
+        from readsbstats import collector
         from readsbstats.collector import _poll
         now = time.time()
         self._write_json([
@@ -1576,9 +1577,11 @@ class TestPollEdgeCases:
         }))
         _poll(self.conn)
 
+        collector._drain_notifications(timeout=1.0)
         assert len(self.squawk_calls) == 1  # still only one notification
 
     def test_all_three_emergency_squawks_trigger(self):
+        from readsbstats import collector
         from readsbstats.collector import _poll
         for i, sqk in enumerate(["7500", "7600", "7700"]):
             _reset_collector_state()
@@ -1591,6 +1594,7 @@ class TestPollEdgeCases:
             }))
             _poll(conn)
             conn.close()
+        collector._drain_notifications(timeout=1.0)
         assert len(self.squawk_calls) == 3
 
     def test_non_emergency_squawk_does_not_notify(self):
