@@ -614,9 +614,9 @@ The web server exposes a JSON API alongside the HTML pages:
 | GET | `/api/flights` | Flight list (filterable: date, icao, callsign, reg, type, source) |
 | GET | `/api/flights/export.csv` | CSV export of flight list (same filters as above, no pagination) |
 | GET | `/api/flights/{id}` | Full flight detail + all positions |
-| GET | `/api/flights/{id}/photo` | Aircraft photo (Planespotters → airport-data.com → hexdb.io; cached) |
+| GET | `/api/flights/{id}/photo` | Aircraft photo via the 6-step lookup ladder (specific-ICAO cache → type cache → `photos JOIN aircraft_db` → specific fetch via Planespotters / airport-data / hexdb → probe one ICAO of the same type → Wikipedia type fallback). Response carries `is_type_photo` so the UI can show a "not this specific aircraft" note. Negative results cached |
 | GET | `/api/aircraft/{icao}/flights` | All flights by a given ICAO hex |
-| GET | `/api/aircraft/{icao}/photo` | Aircraft photo by ICAO hex (same fallback chain; cached) |
+| GET | `/api/aircraft/{icao}/photo` | Aircraft photo by ICAO hex — same 6-step ladder as `/api/flights/{id}/photo`, including the Wikipedia type-level fallback. Returns `is_type_photo: true` when serving a type-level photo |
 | GET | `/api/aircraft/flagged` | Unique flagged aircraft — military / interesting / anonymous (non-ICAO hex); `flags=military|interesting|anonymous` filters to a single kind, default returns the union (paginated) |
 | GET | `/api/stats` | Aggregate statistics: summaries, charts, top routes/airports, furthest aircraft |
 | GET | `/api/stats/records` | All-time personal records: furthest, fastest, highest, longest |
