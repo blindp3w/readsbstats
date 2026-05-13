@@ -546,12 +546,11 @@ readsbstats/
 │   ├── purge_ghosts.py         # One-shot cleanup: removes ghost positions
 │   ├── purge_bad_gs.py         # One-shot cleanup: nulls implausible gs values
 │   └── purge_mlat_gs_spikes.py # One-shot cleanup: nulls MLAT gs acceleration spikes
-├── tests/                      # pytest suite (1070 tests) + JS tests (tests/js/, 54 tests) + Playwright UI tests (tests/ui/, 35 tests)
+├── tests/                      # pytest suite (1184 tests) + JS tests (tests/js/, 69 tests) + Playwright UI tests (tests/ui/, 35 tests)
 ├── templates/
 │   ├── base.html               # Shared layout, nav bar with unit selector
 │   ├── index.html              # Flight list
 │   ├── flight.html             # Flight detail
-│   ├── live.html               # Kept for redirect only (→ /map)
 │   ├── map.html                # Full-screen live map with rewind and aircraft sidebar
 │   ├── aircraft.html           # Per-aircraft history
 │   ├── stats.html              # Statistics
@@ -563,10 +562,9 @@ readsbstats/
 │   ├── favicon.png             # App favicon (PNG 512×512 — fallback)
 │   ├── css/app.css
 │   └── js/
-│       ├── units.js            # Unit conversion helpers (aero/metric/imperial)
+│       ├── units.js            # Unit conversion helpers (aeronautical/metric/imperial)
 │       ├── flights.js          # Flight list page
 │       ├── flight_detail.js    # Per-flight map, photo, and detail page
-│       ├── live.js             # Kept for completeness (page redirects to /map)
 │       ├── map.js              # Full-screen live map: aircraft icons, rewind, sidebar
 │       ├── stats.js            # Statistics charts
 │       ├── aircraft.js         # Per-aircraft history + Watch button
