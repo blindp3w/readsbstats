@@ -17,8 +17,8 @@ Designed to run alongside readsb, tar1090, and feed clients on a **Raspberry Pi 
 | Statistics — date-range filter, hourly activity, top airlines/types/routes/airports | Flight history — filters by callsign, registration, type, date, source, flag |
 | ![Live map with aircraft sidebar](docs/screenshots/live_1.png) | ![Receiver metrics with health banner](docs/screenshots/metrics_2.png) |
 | Live map — full-screen Leaflet map with aircraft type icons, historical rewind slider, and collapsible aircraft list sidebar | Metrics + health — banner with 9 rule-based and baseline-aware checks (heartbeat, noise floor, gain saturation, signal/aircraft drop vs. hour-of-week baseline) above the time-series charts |
-| ![Aircraft gallery](docs/screenshots/gallery_1.png) | |
-| Gallery — flagged military, interesting, and anonymous (non-ICAO hex) aircraft detected by the receiver | |
+| ![Aircraft gallery](docs/screenshots/gallery_1.png) | ![Feeder services health](docs/screenshots/feeders_1.png) |
+| Gallery — flagged military, interesting, and anonymous (non-ICAO hex) aircraft detected by the receiver | Feeders — live status, port, and detail panel for each configured feeder service (readsb, FR24, PiAware, ADSBexchange, airplanes.live) |
 
 ## Features
 
