@@ -548,7 +548,7 @@ readsbstats/
 │   ├── purge_ghosts.py         # One-shot cleanup: removes ghost positions
 │   ├── purge_bad_gs.py         # One-shot cleanup: nulls implausible gs values
 │   └── purge_mlat_gs_spikes.py # One-shot cleanup: nulls MLAT gs acceleration spikes
-├── tests/                      # pytest suite (1184 tests) + JS tests (tests/js/, 69 tests) + Playwright UI tests (tests/ui/, 35 tests)
+├── tests/                      # pytest suite (1188 tests) + JS tests (tests/js/, 69 tests) + Playwright UI tests (tests/ui/, 35 tests)
 ├── templates/
 │   ├── base.html               # Shared layout, nav bar with unit selector
 │   ├── index.html              # Flight list
