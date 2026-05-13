@@ -435,6 +435,35 @@ class TestOpenCloseFlight:
         row = self.conn.execute("SELECT * FROM flights WHERE id = ?", (fid,)).fetchone()
         assert row is None
 
+    def test_close_flight_keeps_anonymous_hex_with_few_positions(self):
+        """Non-ICAO (anonymous) hex addresses are computed via icao_ranges and
+        must be retained even with a single position — the whole point of the
+        flag is to surface OPSEC/test sightings at the edge of receiver range."""
+        from readsbstats.collector import _open_flight, _close_flight
+        # dd85cb falls outside every state-allocated block — see test_icao_ranges.
+        fid = _open_flight(
+            self.conn, "dd85cb", 1000, None, None, None,
+            None, None, 52.0, 21.0, None, None, None, None, None,
+        )
+        self.conn.execute("UPDATE flights SET total_positions=1 WHERE id=?", (fid,))
+        self.conn.commit()
+        enrichment.clear_cache()
+        with self.conn:
+            _close_flight(self.conn, "dd85cb")
+        row = self.conn.execute("SELECT * FROM flights WHERE id = ?", (fid,)).fetchone()
+        assert row is not None, "Anonymous hex flight must be kept despite few positions"
+
+    def test_enrich_sets_anonymous_flag_for_non_state_hex(self):
+        """_enrich must OR in FLAG_ANONYMOUS purely from the icao_hex, no DB row needed."""
+        from readsbstats.collector import _enrich
+        enrichment.clear_cache()
+        _, _, _, flags, _ = _enrich(self.conn, "dd85cb", None, None)
+        assert flags & config.FLAG_ANONYMOUS
+        # State-allocated address must not pick it up.
+        enrichment.clear_cache()
+        _, _, _, flags2, _ = _enrich(self.conn, "488001", None, None)
+        assert not (flags2 & config.FLAG_ANONYMOUS)
+
     def test_close_flight_nulls_mlat_gs_outlier(self):
         """MLAT GS spike >>5×p75 must be nulled and max_gs recomputed at close."""
         from readsbstats.collector import _open_flight, _close_flight
@@ -2165,21 +2194,79 @@ class TestLoadNotified:
         assert "int001" in collector._notified_icao
 
     def test_ignores_ordinary_aircraft(self):
+        # Use a real state-allocated hex (Poland 0x488000-0x48FFFF) — a
+        # synthetic mnemonic like 'ord001' would now be flagged as anonymous
+        # by the icao_ranges check (no state block contains 'ord').
         from readsbstats import collector
         self.conn.execute(
-            "INSERT INTO flights (icao_hex, first_seen, last_seen) VALUES ('ord001', 1000, 1000)"
+            "INSERT INTO flights (icao_hex, first_seen, last_seen) VALUES ('488042', 1000, 1000)"
         )
         self.conn.execute(
-            "INSERT INTO aircraft_db (icao_hex, registration, flags) VALUES ('ord001', 'ORD-1', 0)"
+            "INSERT INTO aircraft_db (icao_hex, registration, flags) VALUES ('488042', 'ORD-1', 0)"
         )
         self.conn.commit()
         collector._load_notified(self.conn)
-        assert "ord001" not in collector._notified_icao
+        assert "488042" not in collector._notified_icao
 
     def test_empty_db_leaves_set_empty(self):
         from readsbstats import collector
         collector._load_notified(self.conn)
         assert len(collector._notified_icao) == 0
+
+    def test_loads_anonymous_icao_without_aircraft_db_row(self):
+        """Non-ICAO hex (e.g. dd85cb) won't have an aircraft_db entry — the
+        computed-at-query-time anon CASE must still pull it into the notified
+        set so a restart doesn't re-alert."""
+        from readsbstats import collector
+        self.conn.execute(
+            "INSERT INTO flights (icao_hex, first_seen, last_seen) VALUES ('dd85cb', 1000, 1000)"
+        )
+        self.conn.commit()
+        collector._load_notified(self.conn)
+        assert "dd85cb" in collector._notified_icao
+
+    def test_does_not_load_state_allocated_icao_without_flags(self):
+        """Polish-allocated hex with no military/interesting flag must not be
+        pre-loaded — that would suppress the FIRST real alert when we later
+        spot it."""
+        from readsbstats import collector
+        self.conn.execute(
+            "INSERT INTO flights (icao_hex, first_seen, last_seen) VALUES ('488001', 1000, 1000)"
+        )
+        self.conn.commit()
+        collector._load_notified(self.conn)
+        assert "488001" not in collector._notified_icao
+
+
+# ---------------------------------------------------------------------------
+# _dispatch_one — routes a queued notification tuple to the right notify_* helper
+# ---------------------------------------------------------------------------
+
+class TestDispatchOne:
+    def test_routes_anon_kind_to_notify_anonymous(self, monkeypatch):
+        from readsbstats import collector, notifier
+        captured = {}
+        def fake_anon(icao, reg, cs, td, at, dist):
+            captured["args"] = (icao, reg, cs, td, at, dist)
+        monkeypatch.setattr(notifier, "notify_anonymous", fake_anon)
+        # Mirror the tuple shape that _poll() appends for kind="anon" — same
+        # shape as the existing "mil" / "int" tuples.
+        collector._dispatch_one(
+            ("anon", "dd85cb", None, None, None, None, 107.1)
+        )
+        assert captured["args"] == ("dd85cb", None, None, None, None, 107.1)
+
+    def test_mil_still_routes_to_notify_military(self, monkeypatch):
+        # Regression guard — adding the anon branch must not break the
+        # existing routing for military/interesting/squawk.
+        from readsbstats import collector, notifier
+        captured = []
+        monkeypatch.setattr(notifier, "notify_military",
+                            lambda *a: captured.append(("mil", a)))
+        monkeypatch.setattr(notifier, "notify_anonymous",
+                            lambda *a: captured.append(("anon", a)))
+        collector._dispatch_one(("mil", "abc123", "REG", "CS", "Type", "TYP", 50.0))
+        assert captured == [("mil", ("abc123", "REG", "CS", "Type", "TYP", 50.0))]
 
 
 # ---------------------------------------------------------------------------

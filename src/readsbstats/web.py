@@ -143,15 +143,27 @@ templates.env.filters["fmt_ts"] = _fmt_ts
 # Enrichment helper — resolves reg/type via aircraft_db when NULL in flights
 # ---------------------------------------------------------------------------
 
+# OR-merged flag bitmask: aircraft_db.flags | adsbx_overrides.flags | computed
+# anonymous bit.  The anon CASE evaluates the source icao_hex against the ICAO
+# state-allocation table at query time, so non-state addresses (e.g. dd85cb)
+# surface as FLAG_ANONYMOUS=16 retroactively without any DB column or backfill.
+# Use the variant matching the alias of the source column in scope.
+_ANON_SQL_F   = icao_ranges.anonymous_flag_sql("f.icao_hex",   config.FLAG_ANONYMOUS)
+_ANON_SQL_SUB = icao_ranges.anonymous_flag_sql("sub.icao_hex", config.FLAG_ANONYMOUS)
+_ANON_SQL_AF  = icao_ranges.anonymous_flag_sql("af.icao_hex",  config.FLAG_ANONYMOUS)
+_FLAGS_EXPR_F   = f"(COALESCE(adb.flags, 0) | COALESCE(axo.flags, 0) | {_ANON_SQL_F})"
+_FLAGS_EXPR_SUB = f"(COALESCE(adb.flags, 0) | COALESCE(axo.flags, 0) | {_ANON_SQL_SUB})"
+_FLAGS_EXPR_AF  = f"(COALESCE(adb.flags, 0) | COALESCE(axo.flags, 0) | {_ANON_SQL_AF})"
+
 # Joined SELECT fragment used in flight list and detail queries
-_FLIGHT_COLS = """
+_FLIGHT_COLS = f"""
     f.id,
     f.icao_hex,
     f.callsign                                            AS callsign,
     COALESCE(f.registration,  adb.registration, axo.registration)  AS registration,
     COALESCE(f.aircraft_type, adb.type_code,    axo.type_code)     AS aircraft_type,
     COALESCE(adb.type_desc,   axo.type_desc,    '')                AS type_desc,
-    (COALESCE(adb.flags, 0) | COALESCE(axo.flags, 0))             AS flags,
+    {_FLAGS_EXPR_F}                                                AS flags,
     f.squawk,
     f.category,
     f.primary_source,
@@ -484,11 +496,16 @@ def _build_flight_filter(
         params.append(source.lower())
 
     if flags == "military":
-        conditions.append("((COALESCE(adb.flags, 0) | COALESCE(axo.flags, 0)) & 1) = 1")
+        conditions.append(f"({_FLAGS_EXPR_F} & 1) = 1")
     elif flags == "interesting":
         conditions.append(
-            "((COALESCE(adb.flags, 0) | COALESCE(axo.flags, 0)) & 2) = 2"
-            " AND ((COALESCE(adb.flags, 0) | COALESCE(axo.flags, 0)) & 1) = 0"
+            f"({_FLAGS_EXPR_F} & 2) = 2 AND ({_FLAGS_EXPR_F} & 1) = 0"
+        )
+    elif flags == "anonymous":
+        # Show "anonymous-only" contacts — military/interesting take precedence
+        # and surface under their own filter (mirrors the interesting/military split).
+        conditions.append(
+            f"({_FLAGS_EXPR_F} & 16) = 16 AND ({_FLAGS_EXPR_F} & 3) = 0"
         )
 
     if squawk:
@@ -507,7 +524,7 @@ def api_flights(
     registration: str | None = Query(None),
     aircraft_type: str | None = Query(None),
     source: str | None = Query(None, description="adsb | mlat | mixed | other"),
-    flags: str | None = Query(None, description="military | interesting"),
+    flags: str | None = Query(None, description="military | interesting | anonymous"),
     squawk: str | None = Query(None),
     sort_by: str | None = Query(None),
     sort_dir: str | None = Query(None, description="asc | desc"),
@@ -565,7 +582,7 @@ def api_flights_export(
     registration: str | None = Query(None),
     aircraft_type: str | None = Query(None),
     source: str | None = Query(None, description="adsb | mlat | mixed | other"),
-    flags: str | None = Query(None, description="military | interesting"),
+    flags: str | None = Query(None, description="military | interesting | anonymous"),
     squawk: str | None = Query(None),
     sort_by: str | None = Query(None),
     sort_dir: str | None = Query(None, description="asc | desc"),
@@ -863,7 +880,7 @@ def api_aircraft_flights(
 
 @app.get("/api/aircraft/flagged")
 def api_aircraft_flagged(
-    flags: str | None = Query(None, description="military | interesting"),
+    flags: str | None = Query(None, description="military | interesting | anonymous"),
     limit: int = Query(config.DEFAULT_PAGE_SIZE, ge=1, le=config.MAX_PAGE_SIZE),
     offset: int = Query(0, ge=0, le=500_000),
     sort_by: str | None = Query(None),
@@ -871,13 +888,19 @@ def api_aircraft_flagged(
 ) -> dict:
     conn = db()
 
-    flag_expr = "(COALESCE(adb.flags, 0) | COALESCE(axo.flags, 0))"
+    flag_expr = _FLAGS_EXPR_F
     if flags == "military":
         flag_filter = f"({flag_expr} & 1) = 1"
     elif flags == "interesting":
         flag_filter = f"({flag_expr} & 2) = 2 AND ({flag_expr} & 1) = 0"
+    elif flags == "anonymous":
+        # Same precedence rule as the history filter — surface anon-only here.
+        flag_filter = f"({flag_expr} & 16) = 16 AND ({flag_expr} & 3) = 0"
     else:
-        flag_filter = f"({flag_expr} & 3) != 0"
+        # Default "all" tab: military | interesting | anonymous
+        flag_filter = (
+            f"({flag_expr} & {config.FLAG_MILITARY | config.FLAG_INTERESTING | config.FLAG_ANONYMOUS}) != 0"
+        )
 
     sort_map = {
         "last_seen": "last_seen",
@@ -1089,9 +1112,11 @@ def api_stats(
     flags_row = conn.execute(
         f"""
         SELECT
-            SUM(CASE WHEN ((COALESCE(adb.flags, 0) | COALESCE(axo.flags, 0)) & 1) = 1 THEN 1 ELSE 0 END) AS military,
-            SUM(CASE WHEN ((COALESCE(adb.flags, 0) | COALESCE(axo.flags, 0)) & 2) = 2
-                      AND ((COALESCE(adb.flags, 0) | COALESCE(axo.flags, 0)) & 1) = 0 THEN 1 ELSE 0 END) AS interesting
+            SUM(CASE WHEN ({_FLAGS_EXPR_F} & 1) = 1 THEN 1 ELSE 0 END) AS military,
+            SUM(CASE WHEN ({_FLAGS_EXPR_F} & 2) = 2
+                      AND ({_FLAGS_EXPR_F} & 1) = 0 THEN 1 ELSE 0 END) AS interesting,
+            SUM(CASE WHEN ({_FLAGS_EXPR_F} & 16) = 16
+                      AND ({_FLAGS_EXPR_F} & 3)  = 0 THEN 1 ELSE 0 END) AS anonymous
         FROM flights f
         LEFT JOIN aircraft_db     adb ON adb.icao_hex = f.icao_hex
         LEFT JOIN adsbx_overrides axo ON axo.icao_hex = f.icao_hex
@@ -1241,7 +1266,7 @@ def api_stats(
                COALESCE(f2.registration, adb.registration, axo.registration) AS registration,
                COALESCE(f2.aircraft_type, adb.type_code, axo.type_code)     AS aircraft_type,
                COALESCE(adb.type_desc, axo.type_desc, '')                   AS type_desc,
-               (COALESCE(adb.flags, 0) | COALESCE(axo.flags, 0))           AS flags,
+               {_FLAGS_EXPR_SUB}                                            AS flags,
                sub.first_seen_ever
         FROM (
             SELECT f.icao_hex, MIN(f.first_seen) AS first_seen_ever
@@ -1267,7 +1292,7 @@ def api_stats(
                COALESCE(f.registration, adb.registration, axo.registration)  AS registration,
                COALESCE(f.aircraft_type, adb.type_code, axo.type_code)       AS aircraft_type,
                COALESCE(adb.type_desc, axo.type_desc, '')                    AS type_desc,
-               (COALESCE(adb.flags, 0) | COALESCE(axo.flags, 0))            AS flags,
+               {_FLAGS_EXPR_F}                                              AS flags,
                COUNT(*)                                    AS flights,
                MAX(f.last_seen)                            AS last_seen
         FROM flights f
@@ -1346,6 +1371,7 @@ def api_stats(
         ],
         "military_flights":        flags_row["military"]     or 0,
         "interesting_flights":     flags_row["interesting"]  or 0,
+        "anonymous_flights":       flags_row["anonymous"]    or 0,
         "squawk_counts":           {
             "7700": agg["squawk_7700"] or 0,
             "7600": agg["squawk_7600"] or 0,
@@ -1687,12 +1713,12 @@ def api_live() -> dict:
         latest_pos = {}
 
     rows = conn.execute(
-        """
+        f"""
         SELECT af.icao_hex, af.flight_id, af.last_seen,
                f.callsign,
                COALESCE(f.registration, adb.registration, axo.registration) AS registration,
                COALESCE(f.aircraft_type, adb.type_code, axo.type_code)     AS aircraft_type,
-               (COALESCE(adb.flags, 0) | COALESCE(axo.flags, 0))          AS flags,
+               {_FLAGS_EXPR_AF}                                            AS flags,
                f.primary_source,
                cr.origin_icao,
                cr.dest_icao
@@ -1754,7 +1780,7 @@ def api_map_snapshot(
     conn = db()
 
     rows = conn.execute(
-        """
+        f"""
         WITH af AS (
             SELECT flight_id, MAX(id) AS lid
             FROM positions
@@ -1766,7 +1792,7 @@ def api_map_snapshot(
                p.source_type,
                f.icao_hex, f.callsign, f.registration, f.aircraft_type,
                f.category, f.primary_source,
-               (COALESCE(adb.flags, 0) | COALESCE(axo.flags, 0)) AS flags,
+               {_FLAGS_EXPR_F} AS flags,
                cr.origin_icao, cr.dest_icao
         FROM af
         JOIN positions p ON p.id = af.lid

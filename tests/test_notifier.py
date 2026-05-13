@@ -488,6 +488,59 @@ class TestNotifyInteresting:
 
 
 # ---------------------------------------------------------------------------
+# notify_anonymous
+# ---------------------------------------------------------------------------
+
+class TestNotifyAnonymous:
+    """First-sighting alert for non-ICAO Mode-S hex addresses (FLAG_ANONYMOUS).
+    The country line is intentionally absent — by definition the hex is not in
+    any state allocation, so 'Country: Unknown' would be noise."""
+
+    def test_message_labels_as_anonymous(self, monkeypatch):
+        sent = []
+        monkeypatch.setattr(notifier, "_send", lambda txt: sent.append(txt))
+        notifier.notify_anonymous("dd85cb", None, None, None, None, 107.1)
+        msg = sent[0]
+        assert "Anonymous aircraft" in msg
+        assert "first sighting" in msg.lower()
+        assert "Non-ICAO" in msg
+
+    def test_falls_back_to_icao_when_no_registration(self, monkeypatch):
+        sent = []
+        monkeypatch.setattr(notifier, "_send", lambda txt: sent.append(txt))
+        notifier.notify_anonymous("dd85cb", None, None, None, None, 100.0)
+        # _fmt_aircraft_line uppercases the ICAO when no reg.
+        assert "DD85CB" in sent[0]
+
+    def test_message_omits_country_line(self, monkeypatch):
+        # Country lookup returns "Unknown" for anon hex; rendering it would be
+        # noise.  The notify_anonymous template must skip the Country: line entirely.
+        sent = []
+        monkeypatch.setattr(notifier, "_send", lambda txt: sent.append(txt))
+        notifier.notify_anonymous("dd85cb", "X", "CS01", "Type", "TYP", 50.0)
+        assert "Country:" not in sent[0]
+
+    def test_message_includes_view_profile_link(self, monkeypatch):
+        sent = []
+        monkeypatch.setattr(notifier, "_send", lambda txt: sent.append(txt))
+        monkeypatch.setattr(config, "BASE_URL", "http://test/stats")
+        notifier.notify_anonymous("dd85cb", None, None, None, None, 100.0)
+        assert '<a href="http://test/stats/aircraft/dd85cb">' in sent[0]
+
+    def test_html_entities_in_callsign_escaped(self, monkeypatch):
+        # Same defence-in-depth as the other notify_* helpers — every dynamic
+        # field flows through _h() so Telegram parse_mode=HTML never 400s on
+        # an unescaped '<', '>', or '&'.
+        sent = []
+        monkeypatch.setattr(notifier, "_send", lambda txt: sent.append(txt))
+        notifier.notify_anonymous("dd85cb", "REG", "A&B", None, None, 10.0)
+        assert "A&amp;B" in sent[0]
+        # Raw ampersand-then-letter would have been "A&B"; with escaping the
+        # only occurrence is the entity, never a bare "&B".
+        assert "&B" not in sent[0].replace("&amp;B", "")
+
+
+# ---------------------------------------------------------------------------
 # notify_squawk
 # ---------------------------------------------------------------------------
 

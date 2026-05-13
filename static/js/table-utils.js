@@ -140,8 +140,12 @@ async function loadPhoto(flightId, sectionId) {
  */
 const FLAG_MILITARY    = 1;
 const FLAG_INTERESTING = 2;
+const FLAG_ANONYMOUS   = 16;
 
 function flagBadge(flags, style) {
+  // Precedence: military > interesting > anonymous.  A non-ICAO military hex
+  // shows the Military badge; the anon bit still rides along in the bitmask
+  // so callers that want both can render them side-by-side.
   if (flags & FLAG_MILITARY) {
     const label = style === "short" ? "MIL" : "Military" + (style === "long" ? " aircraft" : "");
     return ` <span class="badge badge-mil" title="Military aircraft \u2014 armed forces of any country">${label}</span>`;
@@ -149,6 +153,10 @@ function flagBadge(flags, style) {
   if (flags & FLAG_INTERESTING) {
     const label = style === "short" ? "\u2605" : "Interesting" + (style === "long" ? " aircraft" : "");
     return ` <span class="badge badge-int" title="Interesting aircraft \u2014 government, VIP, special mission, air ambulance">${label}</span>`;
+  }
+  if (flags & FLAG_ANONYMOUS) {
+    const label = style === "short" ? "?" : "Anonymous" + (style === "long" ? " hex" : "");
+    return ` <span class="badge badge-anon" title="Non-ICAO Mode-S address \u2014 hex falls outside every state-allocated block (likely military OPSEC, TIS-B, or test)">${label}</span>`;
   }
   return "";
 }

@@ -100,6 +100,58 @@ test("flagBadge: interesting bit set within larger bitmask (no military)", () =>
 });
 
 // ---------------------------------------------------------------------------
+// FLAG_ANONYMOUS = 16 \u2014 non-ICAO Mode-S hex (computed at query time, not stored).
+// Precedence: military > interesting > anonymous, so the badge falls through
+// in that order even when multiple bits are set.
+// ---------------------------------------------------------------------------
+
+test("flagBadge: anonymous short = '?'", () => {
+  const { flagBadge } = loadTableUtils();
+  assert.match(flagBadge(16, "short"), />\?</);
+});
+
+test("flagBadge: anonymous default label = 'Anonymous'", () => {
+  const { flagBadge } = loadTableUtils();
+  const html = flagBadge(16, "");
+  const labelMatch = html.match(/>([^<]+)<\/span>/);
+  assert.ok(labelMatch);
+  assert.equal(labelMatch[1], "Anonymous");
+});
+
+test("flagBadge: anonymous long = 'Anonymous hex'", () => {
+  const { flagBadge } = loadTableUtils();
+  assert.match(flagBadge(16, "long"), />Anonymous hex</);
+});
+
+test("flagBadge: anonymous uses badge-anon CSS class", () => {
+  const { flagBadge } = loadTableUtils();
+  assert.match(flagBadge(16, "short"), /badge-anon/);
+});
+
+test("flagBadge: military + anonymous wins (precedence)", () => {
+  // 1 | 16 = 17 \u2014 military takes precedence; the anon bit still rides along
+  // in the bitmask for any future double-badge renderer.
+  const { flagBadge } = loadTableUtils();
+  const html = flagBadge(17, "short");
+  assert.match(html, /badge-mil/);
+  assert.equal(html.includes("badge-anon"), false);
+});
+
+test("flagBadge: interesting + anonymous wins (precedence)", () => {
+  const { flagBadge } = loadTableUtils();
+  const html = flagBadge(18, "short");
+  assert.match(html, /badge-int/);
+  assert.equal(html.includes("badge-anon"), false);
+});
+
+test("flagBadge: anonymous with PIA/LADD-only bits still surfaces", () => {
+  // bits 4 (PIA) and 8 (LADD) have no badge of their own; the anon bit
+  // takes precedence when no military/interesting bit is set.
+  const { flagBadge } = loadTableUtils();
+  assert.match(flagBadge(28, "short"), /badge-anon/); // 16 | 4 | 8
+});
+
+// ---------------------------------------------------------------------------
 // safeHttpUrl — URL scheme allowlist (XSS protection for href/src)
 // ---------------------------------------------------------------------------
 

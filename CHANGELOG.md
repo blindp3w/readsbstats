@@ -2,6 +2,100 @@
 
 ## Unreleased
 
+## 1.8.0 — 2026-05-13
+
+### Added
+
+- **`FLAG_ANONYMOUS` — surface non-ICAO Mode-S addresses** — a new flag bit
+  (16) is computed at query time from `src/readsbstats/icao_ranges.py` and
+  OR-merged into every flag projection alongside `aircraft_db.flags` and
+  `adsbx_overrides.flags`. An address gets the bit set when it falls outside
+  every ICAO state-allocated block — typically military / OPSEC contacts,
+  TIS-B / ADS-R rebroadcasts, and MLAT-synthetic identifiers. No DB column,
+  no backfill: editing the state-allocation table retroactively reclassifies
+  every historical flight on the next query. Motivated by a real-world
+  sighting of hex `dd85cb` (a clean westbound transit across central Poland
+  whose Mode-S address ADSBExchange flagged as "Non-ICAO hex (dynamic)").
+  - **Filters and gallery** — `flags=anonymous` on `/api/flights` and
+    `/api/aircraft/flagged` returns anon-only contacts (military / interesting
+    take precedence under their own filters, matching the existing
+    interesting/military exclusion pattern). The "All" tab on the flagged
+    gallery now includes anonymous hits alongside military and interesting.
+    New "Anonymous" filter button in `templates/gallery.html`.
+  - **UI badge** — `flagBadge()` in `static/js/table-utils.js` gains a third
+    branch with a `"?"` short label / `"Anonymous"` long label and a new
+    `.badge-anon` CSS class. Precedence stays military > interesting >
+    anonymous so the existing badges aren't disturbed.
+  - **Stats page** — new "Anonymous" mini-stat alongside "Military" and
+    "Interesting" inside the redesigned flagged-flights card.
+  - **Telegram alert** — `notifier.notify_anonymous()` fires once per
+    first-ever-sighting of a non-ICAO hex (Country line intentionally
+    omitted since the address has no state by definition). Gated by
+    `RSBS_TELEGRAM_ANONYMOUS_ALERT` (default `1`). `_load_notified()` is
+    extended via a `LEFT JOIN` + the anon CASE so a restart doesn't re-fire
+    historical anon alerts.
+  - **Retention** — `_close_flight()` ghost-purge exemption is extended to
+    keep single-position anonymous sightings (same precedent as military /
+    interesting). The whole point of the flag is to surface edge-of-range
+    contacts, so a one-sample track is exactly what we want to preserve.
+
+### Changed
+
+- **Stats page top-card redesign** — added a third mini-stat (Anonymous)
+  next to Military and Interesting. To keep all summary cards at the same
+  height, the flagged card now lays its three sub-stats out horizontally
+  inside one card that spans two grid cells, with thin vertical separators
+  between sub-cells. The standalone "Furthest detected" card is removed
+  from the top strip (it remains in the Records section below).
+- **`stats.js` adopts the shared `flagBadge()`** — two ad-hoc inline badge
+  renderers in the "New aircraft" and "Frequent aircraft" sections were
+  replaced with a single `flagBadge(flags, "short")` call so the new
+  Anonymous badge propagates without three more copy-paste edits.
+
+### Fixed
+
+- **`icao_ranges._RAW` was missing Qatar (0x06A000–0x06A3FF) and South
+  Sudan (0x06A400–0x06A7FF)** — the `FLAG_ANONYMOUS` audit on the live
+  35 k-flight DB flagged 60+ Qatar Airways (A7-Bxx) aircraft as anonymous,
+  which is a table-gap bug rather than a real anon contact. Added both
+  allocations; the anon-flight count on the same DB dropped 181 → 46
+  (97 unique → 33 unique aircraft) after the fix. Added a regression
+  test pinning the new ranges.
+
+### Operations
+
+- **Perf, measured on the live 35 k-flight DB:** `/api/flights` page-1 with
+  `_FLIGHT_COLS` = 22 ms; full-table stats scan with the anon CASE
+  = 379 ms (cached 120 s); `_load_notified` startup scan = 133 ms. The
+  CASE expression embeds ~10 KB of state-range conditions into every
+  flag-projecting query, but SQLite's prepared-statement cache amortises
+  parsing across calls because every call site uses the same string literal.
+- **Audit the table when this feature surfaces a clean operator.** If
+  the gallery shows a familiar callsign (e.g. `OMS681` SalamAir,
+  `T7-WHK` San Marino) as anonymous, look up the hex on
+  `https://hexdb.io/api/v1/aircraft/<hex>` first to decide whether it's a
+  real anonymous contact or a missing state allocation worth adding to
+  `_RAW`. The Qatar miss was the canonical example.
+
+### Tests
+
+- +44 Python tests and +7 JS tests. New Python classes / cases:
+  `TestIsAnonymousIcao` (10), `TestAnonymousFlagSql` (4 — SQL/Python
+  parity), `TestQatar*` (2 regression pins), `TestAnonymousFlagInResponse`
+  (4 end-to-end via `/api/flights`),
+  `TestApiFlaggedAircraft::test_filter_anonymous_only` +
+  `test_all_filter_includes_anonymous`,
+  `TestApiStats::test_anonymous_flights_counted_separately` and
+  `test_stats_shape` extended,
+  `test_close_flight_keeps_anonymous_hex_with_few_positions` +
+  `test_enrich_sets_anonymous_flag_for_non_state_hex`,
+  `TestLoadNotified::test_loads_anonymous_icao_without_aircraft_db_row` +
+  `test_does_not_load_state_allocated_icao_without_flags`,
+  `TestDispatchOne` (2 routing cases),
+  `TestNotifyAnonymous` (5). JS: 7 `flagBadge` precedence cases in
+  `tests/js/test_table_utils.mjs`. Total suite:
+  **1152 Python + 69 JS + 35 Playwright UI**, all passing.
+
 ## 1.7.1 — 2026-05-12
 
 ### Fixed

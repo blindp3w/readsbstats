@@ -202,13 +202,23 @@ class TestBuildFlightFilter:
 
     def test_flags_military(self):
         where, _ = web._build_flight_filter(None, None, None, None, None, None, "military")
-        assert "((COALESCE(adb.flags, 0) | COALESCE(axo.flags, 0)) & 1) = 1" in where
+        # The flag expression now OR-merges aircraft_db.flags, adsbx_overrides.flags,
+        # and the runtime FLAG_ANONYMOUS bit — match on the bitmask test, not the exact SQL.
+        assert "COALESCE(adb.flags, 0)" in where
+        assert "COALESCE(axo.flags, 0)" in where
+        assert "& 1) = 1" in where
 
     def test_flags_interesting(self):
         where, _ = web._build_flight_filter(None, None, None, None, None, None, "interesting")
-        assert "((COALESCE(adb.flags, 0) | COALESCE(axo.flags, 0)) & 2) = 2" in where
+        assert "& 2) = 2" in where
         # must exclude aircraft that are also military (flags & 1)
-        assert "((COALESCE(adb.flags, 0) | COALESCE(axo.flags, 0)) & 1) = 0" in where
+        assert "& 1) = 0" in where
+
+    def test_flags_anonymous(self):
+        where, _ = web._build_flight_filter(None, None, None, None, None, None, "anonymous")
+        # FLAG_ANONYMOUS=16 set, military/interesting bits cleared
+        assert "& 16) = 16" in where
+        assert "& 3) = 0" in where
 
     def test_squawk_filter(self):
         where, params = web._build_flight_filter(None, None, None, None, None, None, None, squawk="7700")
@@ -219,6 +229,64 @@ class TestBuildFlightFilter:
         where, params = web._build_flight_filter(None, "aabbcc", "LOT", None, None, None, None)
         assert " AND " in where
         assert len(params) == 2
+
+
+class TestAnonymousFlagInResponse:
+    """The non-ICAO hex bit (FLAG_ANONYMOUS=16) is computed at query time
+    against the ICAO state-allocation table — these tests pin the surface
+    behaviour end-to-end via /api/flights so a regression in icao_ranges
+    or _FLAGS_EXPR_* won't silently break the gallery / Telegram path."""
+
+    def test_dd85cb_surfaces_anonymous_flag(self, client, db_conn):
+        # Reproduces the real-world sighting that motivated this feature.
+        insert_flight(db_conn, icao="dd85cb", callsign=None,
+                      registration=None, aircraft_type=None)
+        r = client.get("/api/flights?icao=dd85cb")
+        flights = r.json()["flights"]
+        assert len(flights) == 1
+        assert flights[0]["flags"] & config.FLAG_ANONYMOUS
+
+    def test_state_allocated_hex_has_no_anon_bit(self, client, db_conn):
+        # Polish-allocated hex (488001) must not pick up the anon bit.
+        insert_flight(db_conn, icao="488001")
+        r = client.get("/api/flights?icao=488001")
+        flights = r.json()["flights"]
+        assert len(flights) == 1
+        assert not (flights[0]["flags"] & config.FLAG_ANONYMOUS)
+
+    def test_anonymous_filter_includes_only_anon_only(self, client, db_conn):
+        # Three cases: anonymous-only / military-but-state / state civilian.
+        # The "anonymous" filter must return only the first.
+        insert_flight(db_conn, icao="dd85cb", callsign=None)
+        insert_flight(db_conn, icao="aabbcc", callsign="MIL01")
+        db_conn.execute(
+            "INSERT INTO aircraft_db (icao_hex, registration, type_code, type_desc, flags) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ("aabbcc", "MIL-1", "F18", "F/A-18", config.FLAG_MILITARY),
+        )
+        insert_flight(db_conn, icao="488001", callsign="LOT001")
+        db_conn.commit()
+        r = client.get("/api/flights?flags=anonymous")
+        flights = r.json()["flights"]
+        assert {f["icao_hex"] for f in flights} == {"dd85cb"}
+
+    def test_military_filter_unaffected_by_anon_bit(self, client, db_conn):
+        # An aircraft that's BOTH military and anonymous (non-state hex) must
+        # still show up under the Military filter — bits are independent.
+        insert_flight(db_conn, icao="dd0001", callsign="OPS01")
+        db_conn.execute(
+            "INSERT INTO aircraft_db (icao_hex, registration, type_code, type_desc, flags) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ("dd0001", "SECRET", "C17", "C-17", config.FLAG_MILITARY),
+        )
+        db_conn.commit()
+        r = client.get("/api/flights?flags=military")
+        flights = r.json()["flights"]
+        assert any(f["icao_hex"] == "dd0001" for f in flights)
+        # And the response carries BOTH bits so the UI can render two badges.
+        target = next(f for f in flights if f["icao_hex"] == "dd0001")
+        assert target["flags"] & config.FLAG_MILITARY
+        assert target["flags"] & config.FLAG_ANONYMOUS
 
 
 # ---------------------------------------------------------------------------
@@ -1215,7 +1283,8 @@ class TestApiStats:
         data = r.json()
         for key in ("total_flights", "unique_aircraft", "unique_airlines",
                     "flights_last_24h", "source_breakdown",
-                    "top_countries", "frequent_aircraft"):
+                    "top_countries", "frequent_aircraft",
+                    "military_flights", "interesting_flights", "anonymous_flights"):
             assert key in data, f"missing key: {key}"
 
     def test_military_interesting_counts_no_overlap(self, client, db_conn, clear_web_cache):
@@ -1242,6 +1311,24 @@ class TestApiStats:
         data = r.json()
         assert data["military_flights"] == 0
         assert data["interesting_flights"] == 1
+
+    def test_anonymous_flights_counted_separately(self, client, db_conn, clear_web_cache):
+        """Anonymous-only (non-ICAO hex, no mil/int) shows up under anonymous_flights;
+        a military+anonymous aircraft stays under military_flights (precedence)."""
+        # dd85cb: anon-only (no aircraft_db row, falls outside state allocation)
+        insert_flight(db_conn, icao="dd85cb")
+        # dd0001: anon hex AND aircraft_db.flags=1 — counted under military, not anonymous
+        insert_flight(db_conn, icao="dd0001")
+        db_conn.execute(
+            "INSERT INTO aircraft_db (icao_hex, flags) VALUES ('dd0001', 1)"
+        )
+        db_conn.commit()
+        r = client.get("/api/stats")
+        data = r.json()
+        assert "anonymous_flights" in data, "stats endpoint must expose the new counter"
+        assert data["anonymous_flights"] == 1
+        assert data["military_flights"] == 1
+        assert data["interesting_flights"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -1972,6 +2059,29 @@ class TestApiFlaggedAircraft:
         r = client.get("/api/aircraft/flagged?flags=interesting")
         assert r.json()["total"] == 1
         assert r.json()["aircraft"][0]["icao_hex"] == "112233"
+
+    def test_filter_anonymous_only(self, client, db_conn):
+        # dd85cb: anon-only (no DB row, non-state hex)
+        # aabbcc: military, state-allocated — must not appear
+        # dd0001: military AND anon (military takes precedence — excluded from anon)
+        insert_flight(db_conn, icao="dd85cb")
+        _insert_aircraft_db(db_conn, "aabbcc", flags=1)
+        insert_flight(db_conn, icao="aabbcc")
+        _insert_aircraft_db(db_conn, "dd0001", flags=1)
+        insert_flight(db_conn, icao="dd0001")
+        r = client.get("/api/aircraft/flagged?flags=anonymous")
+        assert {a["icao_hex"] for a in r.json()["aircraft"]} == {"dd85cb"}
+
+    def test_all_filter_includes_anonymous(self, client, db_conn):
+        # Default "all" tab (no flags param) must now return anonymous hits
+        # alongside military/interesting — the gallery should not hide them.
+        insert_flight(db_conn, icao="dd85cb")
+        _insert_aircraft_db(db_conn, "aabbcc", flags=1)
+        insert_flight(db_conn, icao="aabbcc")
+        r = client.get("/api/aircraft/flagged")
+        icaos = {a["icao_hex"] for a in r.json()["aircraft"]}
+        assert "dd85cb" in icaos
+        assert "aabbcc" in icaos
 
     def test_aggregates_flight_counts(self, client, db_conn):
         _insert_aircraft_db(db_conn, "aabbcc", flags=1)

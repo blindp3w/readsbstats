@@ -22,7 +22,7 @@ import sys
 import threading
 import time
 
-from . import adsbx_enricher, config, database, enrichment, geo, metrics_collector, notifier
+from . import adsbx_enricher, config, database, enrichment, geo, icao_ranges, metrics_collector, notifier
 
 logging.basicConfig(
     level=logging.INFO,
@@ -187,6 +187,12 @@ def _enrich(conn: sqlite3.Connection, icao: str, registration, aircraft_type):
         type_desc     = type_desc     or adsbx_row.get("type_desc")
         found_in_db   = True
 
+    # Computed anonymous bit: address falls outside any state-allocated block.
+    # Mirrors the SQL CASE in web._FLAGS_EXPR_F so retention and notification
+    # logic in this module see the same bitmask the UI / API surface.
+    if icao_ranges.is_anonymous_icao(icao):
+        flags |= config.FLAG_ANONYMOUS
+
     return registration, aircraft_type, type_desc, flags, found_in_db
 
 
@@ -259,10 +265,11 @@ def _close_flight(conn: sqlite3.Connection, icao: str) -> None:
 
     total = row["total_positions"]
     if total < config.MIN_POSITIONS_KEEP:
-        # Keep flagged aircraft (military/interesting) even with few positions —
-        # a single-position sighting at the edge of range is still valuable.
+        # Keep flagged aircraft (military/interesting/anonymous) even with few
+        # positions — single-position sightings at the edge of range are still
+        # valuable, and a non-ICAO hex is the whole point of FLAG_ANONYMOUS.
         _, _, _, flags, _ = _enrich(conn, icao, None, None)
-        if not (flags & (config.FLAG_MILITARY | config.FLAG_INTERESTING)):
+        if not (flags & (config.FLAG_MILITARY | config.FLAG_INTERESTING | config.FLAG_ANONYMOUS)):
             conn.execute("DELETE FROM flights WHERE id = ?", (flight_id,))
             return
 
@@ -443,6 +450,8 @@ def _dispatch_one(item: tuple) -> None:
         notifier.notify_military(item[1], item[2], item[3], item[4], item[5], item[6])
     elif kind == "int":
         notifier.notify_interesting(item[1], item[2], item[3], item[4], item[5], item[6])
+    elif kind == "anon":
+        notifier.notify_anonymous(item[1], item[2], item[3], item[4], item[5], item[6])
     elif kind == "sqk":
         notifier.notify_squawk(item[1], item[2], item[3], item[4], item[5])
     elif kind == "wl":
@@ -654,16 +663,26 @@ def _poll(conn: sqlite3.Connection) -> None:
             # Queue notifications (sent after transaction commits)
             # ----------------------------------------------------------------
             if _tg:
-                # Military / interesting: only on first-ever sighting of this ICAO.
+                # Military / interesting / anonymous: only on first-ever sighting of this ICAO.
                 # Also fires mid-flight when ADSBx enricher confirms military status
                 # (late-discovery: ADSBx polls every ~60s, may arrive after flight opens).
-                if (flags & (config.FLAG_MILITARY | config.FLAG_INTERESTING)) and icao not in _notified_icao:
+                # Precedence (highest first): military > interesting > anonymous. A
+                # single ICAO gets at most one alert kind per first sighting.
+                interest_mask = config.FLAG_MILITARY | config.FLAG_INTERESTING
+                if config.TELEGRAM_ANONYMOUS_ALERT:
+                    interest_mask |= config.FLAG_ANONYMOUS
+                if (flags & interest_mask) and icao not in _notified_icao:
                     prev = conn.execute(
                         "SELECT COUNT(*) FROM flights WHERE icao_hex = ? AND id != ?",
                         (icao, flight_id),
                     ).fetchone()[0]
                     if prev == 0:
-                        kind = "mil" if (flags & config.FLAG_MILITARY) else "int"
+                        if flags & config.FLAG_MILITARY:
+                            kind = "mil"
+                        elif flags & config.FLAG_INTERESTING:
+                            kind = "int"
+                        else:
+                            kind = "anon"
                         _pending.append(
                             (kind, icao, registration, callsign, type_desc, aircraft_type, distance_nm)
                         )
@@ -821,13 +840,19 @@ def _purge(conn: sqlite3.Connection) -> None:
 # ---------------------------------------------------------------------------
 
 def _load_notified(conn: sqlite3.Connection) -> None:
-    """Pre-fill _notified_icao from DB so restarts don't re-alert for known aircraft."""
+    """Pre-fill _notified_icao from DB so restarts don't re-alert for known
+    aircraft.  Includes military/interesting (via aircraft_db.flags) AND
+    non-ICAO anonymous addresses (computed at query time, no DB column), so
+    toggling RSBS_TELEGRAM_ANONYMOUS_ALERT after a restart doesn't trigger a
+    flood of historical first-sighting alerts."""
+    anon_sql = icao_ranges.anonymous_flag_sql("f.icao_hex", 1)
     for row in conn.execute(
-        """
+        f"""
         SELECT DISTINCT f.icao_hex
         FROM flights f
-        JOIN aircraft_db adb ON adb.icao_hex = f.icao_hex
-        WHERE COALESCE(adb.flags, 0) & 3 != 0
+        LEFT JOIN aircraft_db adb ON adb.icao_hex = f.icao_hex
+        WHERE (COALESCE(adb.flags, 0) & 3) != 0
+           OR ({anon_sql}) != 0
         """
     ):
         _notified_icao.add(row["icao_hex"])

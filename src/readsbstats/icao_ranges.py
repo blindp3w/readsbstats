@@ -45,6 +45,8 @@ _RAW: list[tuple[int, int, str, str]] = [
     (0x062000, 0x062FFF, "Niger",                      "NE"),
     (0x064000, 0x064FFF, "Nigeria",                    "NG"),
     (0x068000, 0x068FFF, "Uganda",                     "UG"),
+    (0x06A000, 0x06A3FF, "Qatar",                      "QA"),
+    (0x06A400, 0x06A7FF, "South Sudan",                "SS"),
     (0x06C000, 0x06CFFF, "Central African Republic",   "CF"),
     (0x06E000, 0x06EFFF, "Rwanda",                     "RW"),
     (0x070000, 0x070FFF, "Senegal",                    "SN"),
@@ -231,3 +233,47 @@ def country_sql_case(col: str = "icao_hex") -> str:
 
 # Pre-built at import time — embed in SQL queries that need country aggregation.
 COUNTRY_SQL_CASE = country_sql_case()
+
+
+@lru_cache(maxsize=None)
+def is_anonymous_icao(icao_hex: str | None) -> bool:
+    """True if *icao_hex* falls outside every ICAO state-allocated block.
+
+    Such addresses (commonly in the 0xDDxxxx / 0xF0xxxx ranges, plus gaps
+    between national blocks) are usually broadcast by military aircraft on
+    OPSEC, TIS-B / ADS-R rebroadcasts, or test / non-state operations.  A
+    sighting of one is interesting on a civilian ADS-B receiver.
+
+    Returns False on malformed input — invalid hex is not the same as
+    intentionally anonymous, and we don't want to noise-flag parser errors.
+    """
+    if not icao_hex:
+        return False
+    try:
+        addr = int(icao_hex, 16)
+    except (ValueError, TypeError):
+        return False
+    if not (0 <= addr <= 0xFFFFFF):
+        return False
+    for start, end, _country, _iso in _RANGES:
+        if start <= addr <= end:
+            return False
+    return True
+
+
+def anonymous_flag_sql(col: str = "icao_hex", flag_value: int = 16) -> str:
+    """Return a SQL CASE expression that evaluates to *flag_value* when *col*
+    is outside every state-allocated block, else 0.  Mirrors
+    :func:`is_anonymous_icao` for SQLite — embed inside an OR-merged flags
+    expression to surface the anon bit without a stored column.
+
+    *flag_value* defaults to 16 to match ``config.FLAG_ANONYMOUS``.  Callers
+    that want a different bit value pass it explicitly so the constant stays
+    in one place (``config.py``).
+    """
+    whens = []
+    for start, end, _country, _iso in _RANGES:
+        s = format(start, "06x")
+        e = format(end, "06x")
+        whens.append(f"WHEN {col} >= '{s}' AND {col} <= '{e}' THEN 0")
+    return f"CASE {' '.join(whens)} ELSE {int(flag_value)} END"

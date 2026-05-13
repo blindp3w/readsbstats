@@ -184,25 +184,6 @@ function altChart(dist) {
   }).join("");
 }
 
-function renderFurthest(flight) {
-  const card = document.getElementById("furthest-card");
-  if (!flight || flight.max_distance_nm == null) {
-    card.classList.add("hidden");
-    return;
-  }
-  card.classList.remove("hidden");
-  card.innerHTML = `
-    <div class="card-value" id="s-dist">${fmtDist(flight.max_distance_nm)}</div>
-    <div class="card-label">Furthest detected</div>
-    <div class="furthest-detail">
-      <a href="${ROOT}/flight/${parseInt(flight.id)}">
-        ${[flight.callsign, flight.registration, flight.aircraft_type].filter(Boolean).map(escHtml).join(" / ") || escHtml(flight.icao_hex)}
-      </a>
-      <span class="furthest-ts">${fmtTs(flight.first_seen)}</span>
-    </div>
-  `;
-}
-
 function squawkStats(counts) {
   const container = document.getElementById("squawk-chart");
   const codes = [
@@ -237,8 +218,7 @@ function newAircraftList(data) {
   subhead.textContent = `(last 24h — ${data.total.toLocaleString()} total)`;
 
   const rows = data.items.map(aircraft => {
-    const badge = (aircraft.flags & 1) ? ' <span class="badge badge-mil" title="Military">MIL</span>'
-                : (aircraft.flags & 2) ? ' <span class="badge badge-int" title="Interesting">★</span>' : "";
+    const badge = flagBadge(aircraft.flags, "short");
     const typeStr = aircraft.aircraft_type
       ? (aircraft.type_desc ? `${escHtml(aircraft.aircraft_type)} ${escHtml(aircraft.type_desc)}` : escHtml(aircraft.aircraft_type))
       : "—";
@@ -322,8 +302,7 @@ function frequentAircraftList(data) {
   if (!data || data.length === 0) { container.textContent = "No data yet."; return; }
   const max = data[0].flights;
   container.innerHTML = data.map(aircraft => {
-    const badge = (aircraft.flags & 1) ? ' <span class="badge badge-mil">MIL</span>'
-                : (aircraft.flags & 2) ? ' <span class="badge badge-int">★</span>' : "";
+    const badge = flagBadge(aircraft.flags, "short");
     const reg  = escHtml(aircraft.registration || aircraft.icao_hex);
     const type = aircraft.aircraft_type
       ? (aircraft.type_desc ? `${escHtml(aircraft.aircraft_type)} · ${escHtml(aircraft.type_desc)}` : escHtml(aircraft.aircraft_type))
@@ -385,7 +364,7 @@ function renderAll(data) {
   document.getElementById("s-db").textContent       = fmtBytes(data.db_size_bytes);
   document.getElementById("s-mil").textContent      = (data.military_flights     || 0).toLocaleString();
   document.getElementById("s-int").textContent      = (data.interesting_flights  || 0).toLocaleString();
-  renderFurthest(data.furthest_aircraft);
+  document.getElementById("s-anon").textContent     = (data.anonymous_flights    || 0).toLocaleString();
 
   // Trend deltas
   if (data.trends) {
@@ -576,7 +555,6 @@ async function load() {
 
 // Re-render distance/unit-dependent parts on units change
 window.addEventListener("unitschange", () => {
-  if (statsData)    renderFurthest(statsData.furthest_aircraft);
   if (polarBuckets) polarChart(polarBuckets);
   if (recordsData)  renderRecords(recordsData);
 });

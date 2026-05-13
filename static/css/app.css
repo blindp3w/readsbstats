@@ -390,6 +390,7 @@ tbody tr.clickable { cursor: pointer; }
 .badge-other { background: var(--surface2); color: var(--text-dim); }
 .badge-mil   { background: #2d3e12; color: #b8d96a; }
 .badge-int   { background: #2d1a4a; color: #c4b5fd; }
+.badge-anon  { background: #3a2a1a; color: #f0a878; }
 
 /* ----- Feeder status dots --------------------------------------------- */
 .feeder-dot     { display: inline-block; width: .6rem; height: .6rem; border-radius: 50%; margin-right: .4rem; vertical-align: middle; }
@@ -444,11 +445,6 @@ tbody tr.clickable { cursor: pointer; }
   margin-top: .2rem;
   font-style: italic;
 }
-
-/* ----- Furthest card -------------------------------------------------- */
-.furthest-detail { margin-top: .4rem; font-size: .82rem; }
-.furthest-detail a { color: var(--accent); text-decoration: none; }
-.furthest-detail a:hover { text-decoration: underline; }
 
 /* ----- Airspace legend ------------------------------------------------ */
 .airspace-legend { font-size: .72rem; color: var(--text-dim); padding: .35rem .1rem .1rem; }
@@ -552,6 +548,10 @@ tbody tr.clickable { cursor: pointer; }
   .summary-cards { gap: .5rem; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); }
   .card { padding: .6rem .75rem; }
   .card-value { font-size: 1.3rem; }
+  .card-flagged { padding: .6rem .25rem; }
+  .card-flagged-cell { padding: 0 .35rem; }
+  .card-flagged-value { font-size: 1.2rem; }
+  .card-flagged-label { font-size: .62rem; }
   .range-picker { gap: .35rem; padding: .5rem .6rem; }
   .range-btn { padding: .55rem .65rem; font-size: .85rem; }
   .range-custom { flex-wrap: wrap; width: 100%; }
@@ -581,6 +581,9 @@ tbody tr.clickable { cursor: pointer; }
   .records-grid  { grid-template-columns: repeat(2, 1fr); }
   .card-value { font-size: 1.15rem; }
   .card-label { font-size: .7rem; letter-spacing: .02em; }
+  /* Flagged card spans the full 2-column grid on phones — still 3 cells side by side */
+  .card-flagged { grid-column: span 2; }
+  .card-flagged-value { font-size: 1.05rem; }
   .range-picker { flex-wrap: wrap; }
   .range-btn { flex: 1 1 auto; text-align: center; }
   .page-header h1 { font-size: 1.05rem; }
@@ -720,6 +723,41 @@ tbody tr.clickable { cursor: pointer; }
 .card-value-sub { font-size: 1.1rem; font-weight: 600; color: var(--accent); margin-top: .5rem; }
 .card-label { font-size: .72rem; color: var(--text-dim); margin-top: .15rem; text-transform: uppercase; letter-spacing: .04em; }
 .card-delta { font-size: .72rem; margin-top: .2rem; min-height: .9rem; }
+
+/* ----- Flagged-flights card: 3 mini-stats side by side -------------------
+   Spans 2 grid cells so each sub-cell has roughly the width of a regular
+   card.  Keeps the same height as other summary cards by laying out
+   horizontally instead of stacking. */
+.card-flagged {
+  display: flex;
+  grid-column: span 2;
+  padding: .9rem .5rem;
+  gap: 0;
+}
+.card-flagged-cell {
+  flex: 1;
+  text-align: center;
+  padding: 0 .5rem;
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+.card-flagged-cell:last-child { border-right: none; }
+.card-flagged-value {
+  font-size: 1.45rem;
+  font-weight: 700;
+  color: var(--accent);
+  letter-spacing: -.02em;
+  font-variant-numeric: tabular-nums;
+}
+.card-flagged-label {
+  font-size: .68rem;
+  color: var(--text-dim);
+  margin-top: .15rem;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
 
 .stats-grid {
   display: grid;
@@ -973,7 +1011,6 @@ tbody tr.clickable { cursor: pointer; }
 .squawk-active    { font-weight: 600; }
 .squawk-link      { text-decoration: none; }
 .rssi-help        { cursor: help; border-bottom: 1px dotted var(--text-dim); }
-.furthest-ts      { color: var(--text-dim); font-size: .78rem; display: block; }
 .delta-neutral    { color: var(--text-dim); }
 
 /* ----- Receiver metrics page --------------------------------------------- */

@@ -451,6 +451,31 @@ def notify_interesting(
     _dispatch_with_photo(caption, icao, aircraft_type, type_desc)
 
 
+def notify_anonymous(
+    icao:          str,
+    registration:  str | None,
+    callsign:      str | None,
+    type_desc:     str | None,
+    aircraft_type: str | None,
+    distance_nm:   float | None,
+) -> None:
+    """First-sighting alert for an aircraft whose Mode-S address falls outside
+    every ICAO state-allocated block (FLAG_ANONYMOUS / "non-ICAO hex").  These
+    are often military/OPSEC contacts or TIS-B rebroadcasts — interesting on a
+    civilian receiver.  Country lookup intentionally won't resolve (the hex is
+    non-state by definition), so we drop that line and label it explicitly."""
+    reg, cs, ac = _fmt_aircraft_line(icao, registration, callsign, type_desc, aircraft_type)
+    url = f"{config.BASE_URL}/aircraft/{icao}"
+    caption = (
+        f"❓ <b>Anonymous aircraft — first sighting</b>\n"
+        f"<b>{reg}</b>{cs} — {ac}\n"
+        f"Non-ICAO Mode-S address (no state allocation)\n"
+        f"Distance: {_fmt_dist(distance_nm)}\n"
+        f'<a href="{url}">View profile</a>'
+    )
+    _dispatch_with_photo(caption, icao, aircraft_type, type_desc)
+
+
 def notify_watchlist(
     icao:          str,
     registration:  str | None,

@@ -30,11 +30,20 @@
   <div class="card"><div class="card-value" id="s-24h">—</div><div class="card-label">Last 24 h</div><div class="card-delta" id="d-24h"></div></div>
   <div class="card"><div class="card-value" id="s-7d">—</div><div class="card-label">Last 7 days</div><div class="card-delta" id="d-7d"></div></div>
   <div class="card"><div class="card-value" id="s-db">—</div><div class="card-label">DB Size</div></div>
-  <div class="card">
-    <div class="card-value" id="s-mil">—</div><div class="card-label" title="Armed forces aircraft of any country">Military flights</div>
-    <div class="card-value card-value-sub" id="s-int">—</div><div class="card-label" title="Noteworthy civilian aircraft: government, VIP, special mission, air ambulance">Interesting</div>
+  <div class="card card-flagged">
+    <div class="card-flagged-cell">
+      <div class="card-flagged-value" id="s-mil">—</div>
+      <div class="card-flagged-label" title="Armed forces aircraft of any country">Military</div>
+    </div>
+    <div class="card-flagged-cell">
+      <div class="card-flagged-value" id="s-int">—</div>
+      <div class="card-flagged-label" title="Noteworthy civilian aircraft: government, VIP, special mission, air ambulance">Interesting</div>
+    </div>
+    <div class="card-flagged-cell">
+      <div class="card-flagged-value" id="s-anon">—</div>
+      <div class="card-flagged-label" title="Non-ICAO Mode-S address — hex falls outside every state-allocated block (military OPSEC, TIS-B, MLAT-synthetic)">Anonymous</div>
+    </div>
   </div>
-  <div class="card hidden" id="furthest-card"></div>
 </div>
 
 <div class="stats-grid">

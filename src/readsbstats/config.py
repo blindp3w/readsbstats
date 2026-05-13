@@ -48,6 +48,7 @@ FLAG_MILITARY    = 1
 FLAG_INTERESTING = 2
 FLAG_PIA         = 4
 FLAG_LADD        = 8
+FLAG_ANONYMOUS   = 16    # icao_hex falls outside every ICAO state-allocated block
 
 # ---------------------------------------------------------------------------
 # Data source
@@ -159,6 +160,7 @@ TELEGRAM_CHAT_ID      = os.getenv("RSBS_TELEGRAM_CHAT_ID",  "")
 TELEGRAM_SUMMARY_TIME = os.getenv("RSBS_SUMMARY_TIME",      "21:00")  # local HH:MM; "" or "off" to disable
 TELEGRAM_UNITS        = os.getenv("RSBS_TELEGRAM_UNITS",    "metric") # metric|imperial|aeronautical
 TELEGRAM_PHOTOS       = _int("RSBS_TELEGRAM_PHOTOS",         "1")     # 0 to disable photo enrichment
+TELEGRAM_ANONYMOUS_ALERT = _int("RSBS_TELEGRAM_ANONYMOUS_ALERT", "1")  # 0 to mute first-sighting alerts for non-ICAO hex addresses
 BASE_URL              = os.getenv("RSBS_BASE_URL", "http://homepi.local/stats")
 
 # ---------------------------------------------------------------------------
