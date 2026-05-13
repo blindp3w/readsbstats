@@ -29,9 +29,7 @@ Options:
 """
 
 import argparse
-import math
 import sqlite3
-import sys
 
 from readsbstats import config, database, geo
 

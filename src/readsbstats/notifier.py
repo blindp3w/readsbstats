@@ -29,7 +29,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from . import config, icao_ranges, photo_sources
+from . import config, http_safe, icao_ranges, photo_sources
 
 log = logging.getLogger("notifier")
 
@@ -142,7 +142,12 @@ def _describe_exc(exc: BaseException) -> str:
 
 
 def _send(text: str) -> bool:
-    """POST a message to the configured Telegram bot. Returns True on success."""
+    """POST a message to the configured Telegram bot. Returns True on success.
+
+    Routes through :func:`http_safe.safe_urlopen` so the policy is consistent
+    with every other outbound call (HTTPS-only, no-redirect, size cap).
+    See improvements.md #124.
+    """
     if not telegram_enabled():
         return False
     try:
@@ -152,13 +157,13 @@ def _send(text: str) -> bool:
             "parse_mode":               "HTML",
             "disable_web_page_preview": True,
         }).encode()
-        req = urllib.request.Request(
+        http_safe.safe_urlopen(
             f"https://api.telegram.org/bot{config.TELEGRAM_TOKEN}/sendMessage",
+            timeout=10,
+            max_bytes=65_536,  # sendMessage response is {"ok":true,"result":{...}} — small
+            extra_headers={"Content-Type": "application/json"},
             data=payload,
-            headers={"Content-Type": "application/json"},
         )
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            resp.read()
         return True
     except Exception as exc:
         log.warning("Telegram send failed: %s", _describe_exc(exc))
@@ -310,13 +315,13 @@ def _send_photo(photo_url: str, caption: str) -> bool:
         config.TELEGRAM_CHAT_ID, image_bytes, caption, content_type,
     )
     try:
-        req = urllib.request.Request(
+        http_safe.safe_urlopen(
             f"https://api.telegram.org/bot{config.TELEGRAM_TOKEN}/sendPhoto",
+            timeout=15,
+            max_bytes=65_536,  # sendPhoto response is {"ok":true,"result":{...}} — small
+            extra_headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
             data=body,
-            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
         )
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            resp.read()
         return True
     except Exception as exc:
         log.warning("Telegram sendPhoto failed: %s — falling back to text",
@@ -661,11 +666,14 @@ def _get_updates(offset: int, timeout: int = 30) -> list[dict]:
         "timeout":         timeout,
         "allowed_updates": '["message"]',
     })
-    req = urllib.request.Request(
-        f"https://api.telegram.org/bot{config.TELEGRAM_TOKEN}/getUpdates?{params}"
+    body, _ = http_safe.safe_urlopen(
+        f"https://api.telegram.org/bot{config.TELEGRAM_TOKEN}/getUpdates?{params}",
+        timeout=timeout + 10,
+        # 100 updates × ~10 KB each is the realistic worst case for the
+        # long-poll response; cap at 4 MB for headroom.
+        max_bytes=4 * 1024 * 1024,
     )
-    with urllib.request.urlopen(req, timeout=timeout + 10) as resp:
-        return json.loads(resp.read()).get("result", [])
+    return json.loads(body).get("result", [])
 
 
 def _send_status(conn: sqlite3.Connection) -> None:
@@ -767,7 +775,15 @@ def _watch_remove(conn: sqlite3.Connection, value_raw: str) -> None:
     if not value:
         _send("Usage: /unwatch &lt;icao_hex|registration|callsign_prefix&gt;")
         return
-    cur = conn.execute("DELETE FROM watchlist WHERE value = ?", (value,))
+    # Infer match_type from value shape, mirroring _watch_add.  Without this
+    # filter, /unwatch <hex> would also remove a registration-typed row with
+    # the same literal value (see improvements.md #116).  Authoritative
+    # removal by id is still available via the HTTP DELETE endpoint.
+    match_type = "icao" if re.fullmatch(r"[0-9a-f]{6}", value) else "registration"
+    cur = conn.execute(
+        "DELETE FROM watchlist WHERE match_type = ? AND value = ?",
+        (match_type, value),
+    )
     conn.commit()
     if cur.rowcount:
         _send(f"Removed from watchlist: <b>{value.upper()}</b>")

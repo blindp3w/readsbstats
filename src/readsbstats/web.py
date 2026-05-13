@@ -391,6 +391,13 @@ def _csrf_check(x_requested_with: str | None = Header(None)) -> None:
     # Browsers cannot set custom headers cross-origin without a CORS preflight,
     # which this app rejects (no CORS allowlist). Requiring X-Requested-With on
     # state-changing endpoints blocks simple-form CSRF without needing tokens.
+    #
+    # CRITICAL: this protection assumes there is **no** CORS middleware that
+    # whitelists `X-Requested-With` (or `*`) in `allow_headers`.  Adding one
+    # would silently disable CSRF protection for every mutating endpoint that
+    # uses this dependency.  If you ever introduce `CORSMiddleware`, audit
+    # `allow_headers` first and add a token-based CSRF scheme before
+    # weakening it.  See improvements.md #122.
     if not x_requested_with:
         raise HTTPException(403, "X-Requested-With header is required")
 
@@ -1938,7 +1945,8 @@ def api_type_flights(
 
 @app.get("/api/metrics")
 def api_metrics(
-    request: Request,
+    from_ts: int | None = Query(None, alias="from"),
+    to_ts:   int | None = Query(None, alias="to"),
     metrics: str = "signal,noise",
 ) -> dict:
     """
@@ -1948,10 +1956,16 @@ def api_metrics(
         from   — start epoch (default: 24 h ago)
         to     — end epoch (default: now)
         metrics — comma-separated column names from _METRICS_COLS
+
+    Non-integer `from` / `to` are rejected at the FastAPI layer with HTTP 422
+    rather than the 500 the old `int(request.query_params.get(...))` path
+    produced.  See improvements.md #115.
     """
     now = int(time.time())
-    from_ts = int(request.query_params.get("from", now - 86400))
-    to_ts = int(request.query_params.get("to", now))
+    if from_ts is None:
+        from_ts = now - 86400
+    if to_ts is None:
+        to_ts = now
 
     # Validate requested columns against allowlist
     requested = [c.strip() for c in metrics.split(",") if c.strip()]

@@ -147,6 +147,47 @@ class TestSafeUrlopen:
         assert headers_lower["user-agent"].startswith("readsbstats/")
         assert headers_lower["x-custom"] == "abc"
 
+    def test_post_data_attached_to_request(self, monkeypatch):
+        """When `data=` is supplied, the urllib Request must carry it as the
+        POST body so safe_urlopen can be used for the Telegram bot API
+        (sendMessage / sendPhoto) — improvements.md #124."""
+        _patch_validate(monkeypatch)
+        captured = []
+        def fake_open(req, timeout=None):
+            captured.append(req.data)
+            return _mock_urllib_resp(b'{"ok":true}')
+        monkeypatch.setattr(http_safe._no_redirect_opener, "open", fake_open)
+        body, _ = http_safe.safe_urlopen(
+            "https://example.com/", timeout=2, max_bytes=1024,
+            data=b'{"hello":"world"}',
+            extra_headers={"Content-Type": "application/json"},
+        )
+        assert captured == [b'{"hello":"world"}']
+        assert body == b'{"ok":true}'
+
+    def test_omitting_data_keeps_get_semantics(self, monkeypatch):
+        """No `data=` → urllib Request.data is None → GET."""
+        _patch_validate(monkeypatch)
+        captured = []
+        def fake_open(req, timeout=None):
+            captured.append(req.data)
+            return _mock_urllib_resp(b"x")
+        monkeypatch.setattr(http_safe._no_redirect_opener, "open", fake_open)
+        http_safe.safe_urlopen(
+            "https://example.com/", timeout=2, max_bytes=1024,
+        )
+        assert captured == [None]
+
+    def test_post_still_rejects_http(self, monkeypatch):
+        """POST policy must not weaken HTTPS enforcement."""
+        monkeypatch.setattr(socket, "getaddrinfo",
+                            lambda h, p, **kw: _fake_addrinfo("1.1.1.1"))
+        with pytest.raises(ValueError, match="non-https"):
+            http_safe.safe_urlopen(
+                "http://example.com/", timeout=2, max_bytes=1024,
+                data=b"payload",
+            )
+
 
 # ---------------------------------------------------------------------------
 # safe_httpx_get — redirect blocking + size cap

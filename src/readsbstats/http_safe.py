@@ -102,11 +102,17 @@ def safe_urlopen(
     timeout: float,
     max_bytes: int,
     extra_headers: dict | None = None,
+    data: bytes | None = None,
 ) -> tuple[bytes, object]:
     """HTTPS-only urllib fetch with size cap and SSRF guards.
 
     Returns ``(body_bytes, headers)`` — headers is the raw
     ``http.client.HTTPMessage`` (supports ``.get(name)`` lookups).
+
+    When ``data`` is supplied the request is a POST with that body; the
+    caller is responsible for setting any required Content-Type via
+    ``extra_headers``.  All other policies (HTTPS-only, public-IP-only,
+    no-redirect, size cap) apply to POSTs identically.
 
     Raises ``ValueError`` on policy violations (non-https, private IP,
     response too large), ``urllib.error.HTTPError`` on redirects or other
@@ -116,19 +122,19 @@ def safe_urlopen(
     headers = dict(_USER_AGENT)
     if extra_headers:
         headers.update(extra_headers)
-    req = urllib.request.Request(url, headers=headers)
+    req = urllib.request.Request(url, data=data, headers=headers)
     with _no_redirect_opener.open(req, timeout=timeout) as resp:
         # If a future change ever permitted redirects, re-check the response URL.
         final = getattr(resp, "url", None)
         if final and final != url:
             validate_url(final)
-        data = resp.read(max_bytes + 1)
-        if len(data) > max_bytes:
+        body = resp.read(max_bytes + 1)
+        if len(body) > max_bytes:
             raise ValueError(
                 f"response from {url} exceeded max_bytes={max_bytes}"
             )
         out_headers = resp.headers
-    return data, out_headers
+    return body, out_headers
 
 
 # ---------------------------------------------------------------------------

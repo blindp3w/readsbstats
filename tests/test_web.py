@@ -592,6 +592,42 @@ class TestApiMetricsHealth:
 
 
 # ---------------------------------------------------------------------------
+# API: /api/metrics (time-series data, not /health)
+# ---------------------------------------------------------------------------
+
+class TestApiMetricsQueryValidation:
+    """`from`/`to` must be validated by FastAPI as integers — earlier
+    implementation read from request.query_params and called int() manually,
+    raising ValueError → HTTP 500 on garbage input.  See improvements.md #115."""
+
+    def test_invalid_from_returns_4xx_not_500(self, client):
+        r = client.get("/api/metrics?from=foo&metrics=signal")
+        assert r.status_code in (400, 422), (
+            f"expected 4xx for non-int from, got {r.status_code}: {r.text}"
+        )
+
+    def test_invalid_to_returns_4xx_not_500(self, client):
+        r = client.get("/api/metrics?to=bar&metrics=signal")
+        assert r.status_code in (400, 422)
+
+    def test_valid_int_from_and_to_works(self, client):
+        r = client.get("/api/metrics?from=1000000&to=1000100&metrics=signal")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["metrics"] == ["signal"]
+
+    def test_omitted_from_and_to_uses_defaults(self, client):
+        r = client.get("/api/metrics?metrics=signal")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["metrics"] == ["signal"]
+
+    def test_unknown_metric_returns_400(self, client):
+        r = client.get("/api/metrics?from=1000000&to=1000100&metrics=not_a_real_col")
+        assert r.status_code == 400
+
+
+# ---------------------------------------------------------------------------
 # Helper: _fmt_ts
 # ---------------------------------------------------------------------------
 

@@ -24,7 +24,6 @@ Options:
 import argparse
 import sqlite3
 import statistics
-import sys
 
 from readsbstats import config, database
 

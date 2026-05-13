@@ -53,11 +53,34 @@ def insert_flight(conn, *, icao="aabbcc", callsign=None, registration=None,
 
 
 def _mock_urlopen(response_bytes=b'{"ok":true}', content_type="image/jpeg"):
+    """Legacy context-manager-style mock — used by the photo-download path
+    (still routed through `urllib.request.urlopen` patches at the photo_sources
+    layer, before #124's notifier-side refactor)."""
     mock_resp = MagicMock()
     mock_resp.__enter__.return_value = mock_resp
     mock_resp.read.return_value = response_bytes
     mock_resp.headers = {"Content-Type": content_type}
     return mock_resp
+
+
+def _make_safe_urlopen(response_bytes=b'{"ok":true}',
+                       content_type="application/json",
+                       calls=None):
+    """Build a fake replacement for `http_safe.safe_urlopen`.
+
+    `calls` (if provided) is appended one dict per invocation capturing
+    `url`, `data`, `extra_headers`, etc. — matching the keyword-only signature
+    of the real function.  Returns `(body_bytes, headers_dict)`.
+    """
+    def _fake(url, *, timeout, max_bytes,
+              extra_headers=None, data=None):
+        if calls is not None:
+            calls.append({
+                "url": url, "timeout": timeout, "max_bytes": max_bytes,
+                "extra_headers": dict(extra_headers or {}), "data": data,
+            })
+        return response_bytes, {"Content-Type": content_type}
+    return _fake
 
 
 # ---------------------------------------------------------------------------
@@ -280,16 +303,33 @@ class TestSend:
     def test_success(self, monkeypatch):
         monkeypatch.setattr(config, "TELEGRAM_TOKEN", "tok")
         monkeypatch.setattr(config, "TELEGRAM_CHAT_ID", "123")
-        with patch("urllib.request.urlopen", return_value=_mock_urlopen()):
-            result = notifier._send("hello")
-        assert result is True
+        monkeypatch.setattr(notifier.http_safe, "safe_urlopen",
+                            _make_safe_urlopen())
+        assert notifier._send("hello") is True
+
+    def test_routes_through_http_safe(self, monkeypatch):
+        """_send must call http_safe.safe_urlopen — improvements.md #124."""
+        monkeypatch.setattr(config, "TELEGRAM_TOKEN", "tok")
+        monkeypatch.setattr(config, "TELEGRAM_CHAT_ID", "123")
+        calls = []
+        monkeypatch.setattr(notifier.http_safe, "safe_urlopen",
+                            _make_safe_urlopen(calls=calls))
+        notifier._send("hello")
+        assert len(calls) == 1
+        assert calls[0]["url"].endswith("/sendMessage")
+        # POST body must be JSON-encoded
+        body = json.loads(calls[0]["data"])
+        assert body["text"] == "hello"
+        assert body["parse_mode"] == "HTML"
+        assert body["chat_id"] == "123"
+        assert calls[0]["extra_headers"]["Content-Type"] == "application/json"
 
     def test_network_exception_returns_false(self, monkeypatch):
         monkeypatch.setattr(config, "TELEGRAM_TOKEN", "tok")
         monkeypatch.setattr(config, "TELEGRAM_CHAT_ID", "123")
-        with patch("urllib.request.urlopen", side_effect=OSError("timeout")):
-            result = notifier._send("hello")
-        assert result is False
+        def _raise(*a, **kw): raise OSError("timeout")
+        monkeypatch.setattr(notifier.http_safe, "safe_urlopen", _raise)
+        assert notifier._send("hello") is False
 
     def test_token_not_logged_on_http_error(self, monkeypatch, caplog):
         """A 401 from Telegram must not echo the bot token into the log.
@@ -303,8 +343,9 @@ class TestSend:
             url=f"https://api.telegram.org/bot{secret}/sendMessage",
             code=401, msg="Unauthorized", hdrs={}, fp=None,
         )
-        with patch("urllib.request.urlopen", side_effect=err), \
-             caplog.at_level("WARNING", logger="notifier"):
+        def _raise(*a, **kw): raise err
+        monkeypatch.setattr(notifier.http_safe, "safe_urlopen", _raise)
+        with caplog.at_level("WARNING", logger="notifier"):
             notifier._send("hello")
         joined = "\n".join(r.getMessage() for r in caplog.records)
         assert secret not in joined
@@ -319,8 +360,9 @@ class TestSend:
             reason="connection refused",
             filename=f"https://api.telegram.org/bot{secret}/sendMessage",
         )
-        with patch("urllib.request.urlopen", side_effect=err), \
-             caplog.at_level("WARNING", logger="notifier"):
+        def _raise(*a, **kw): raise err
+        monkeypatch.setattr(notifier.http_safe, "safe_urlopen", _raise)
+        with caplog.at_level("WARNING", logger="notifier"):
             notifier._send("hello")
         joined = "\n".join(r.getMessage() for r in caplog.records)
         assert secret not in joined
@@ -909,28 +951,29 @@ class TestGetUpdates:
     def test_parses_result_list(self, monkeypatch):
         payload = json.dumps({"result": [{"update_id": 1}]}).encode()
         monkeypatch.setattr(config, "TELEGRAM_TOKEN", "tok")
-        with patch("urllib.request.urlopen", return_value=_mock_urlopen(payload)) as mock_open:
-            result = notifier._get_updates(0)
+        calls = []
+        monkeypatch.setattr(notifier.http_safe, "safe_urlopen",
+                            _make_safe_urlopen(payload, calls=calls))
+        result = notifier._get_updates(0)
         assert result == [{"update_id": 1}]
-        assert mock_open.called
+        assert len(calls) == 1
 
     def test_empty_result(self, monkeypatch):
         payload = json.dumps({"result": []}).encode()
         monkeypatch.setattr(config, "TELEGRAM_TOKEN", "tok")
-        with patch("urllib.request.urlopen", return_value=_mock_urlopen(payload)):
-            result = notifier._get_updates(5)
-        assert result == []
+        monkeypatch.setattr(notifier.http_safe, "safe_urlopen",
+                            _make_safe_urlopen(payload))
+        assert notifier._get_updates(5) == []
 
     def test_offset_included_in_url(self, monkeypatch):
         payload = json.dumps({"result": []}).encode()
         monkeypatch.setattr(config, "TELEGRAM_TOKEN", "tok")
-        captured = []
-        def fake_urlopen(req, timeout=None):
-            captured.append(req.full_url)
-            return _mock_urlopen(payload)
-        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
-            notifier._get_updates(42)
-        assert "offset=42" in captured[0]
+        calls = []
+        monkeypatch.setattr(notifier.http_safe, "safe_urlopen",
+                            _make_safe_urlopen(payload, calls=calls))
+        notifier._get_updates(42)
+        assert "offset=42" in calls[0]["url"]
+        assert "/getUpdates?" in calls[0]["url"]
 
 
 # ---------------------------------------------------------------------------
@@ -1189,6 +1232,63 @@ class TestWatchlistBotCommands:
         sent = []
         monkeypatch.setattr(notifier, "_send", lambda txt: sent.append(txt))
         notifier._watch_remove(db_conn, "aabbcc")
+        assert "Not in watchlist" in sent[0]
+
+    def test_watch_remove_does_not_cross_match_types(self, db_conn, monkeypatch):
+        """A 6-hex value should only remove the icao-typed row, even if a
+        registration-typed row happens to share the same literal value.
+        See improvements.md #116."""
+        sent = []
+        monkeypatch.setattr(notifier, "_send", lambda txt: sent.append(txt))
+        db_conn.execute(
+            "INSERT INTO watchlist (match_type, value, label, created_at) VALUES (?,?,NULL,?)",
+            ("icao", "abcdef", int(time.time())),
+        )
+        db_conn.execute(
+            "INSERT INTO watchlist (match_type, value, label, created_at) VALUES (?,?,NULL,?)",
+            ("registration", "abcdef", int(time.time())),
+        )
+        db_conn.commit()
+        notifier._watch_remove(db_conn, "abcdef")
+        # The icao row should be gone; the registration row should remain.
+        rows = db_conn.execute(
+            "SELECT match_type FROM watchlist WHERE value='abcdef'"
+        ).fetchall()
+        match_types = sorted(r["match_type"] for r in rows)
+        assert match_types == ["registration"], (
+            f"expected only registration row to survive, got {match_types}"
+        )
+        assert "Removed" in sent[0]
+
+    def test_watch_remove_non_hex_value_targets_registration(self, db_conn, monkeypatch):
+        """Non-hex value: infer match_type='registration' (mirror _watch_add)."""
+        sent = []
+        monkeypatch.setattr(notifier, "_send", lambda txt: sent.append(txt))
+        db_conn.execute(
+            "INSERT INTO watchlist (match_type, value, label, created_at) VALUES (?,?,NULL,?)",
+            ("registration", "sp-lrf", int(time.time())),
+        )
+        db_conn.commit()
+        notifier._watch_remove(db_conn, "sp-lrf")
+        assert db_conn.execute("SELECT COUNT(*) FROM watchlist").fetchone()[0] == 0
+        assert "Removed" in sent[0]
+
+    def test_watch_remove_not_found_when_only_other_match_type_has_value(self, db_conn, monkeypatch):
+        """If only the registration row exists, `/unwatch <6-hex>` must say
+        not-found rather than deleting the registration row.  This pins the
+        match_type filter, not just the inference."""
+        sent = []
+        monkeypatch.setattr(notifier, "_send", lambda txt: sent.append(txt))
+        db_conn.execute(
+            "INSERT INTO watchlist (match_type, value, label, created_at) VALUES (?,?,NULL,?)",
+            ("registration", "abcdef", int(time.time())),
+        )
+        db_conn.commit()
+        notifier._watch_remove(db_conn, "abcdef")
+        # registration row must still be there
+        assert db_conn.execute(
+            "SELECT COUNT(*) FROM watchlist WHERE match_type='registration' AND value='abcdef'"
+        ).fetchone()[0] == 1
         assert "Not in watchlist" in sent[0]
 
     def test_handle_update_watchlist_command(self, db_conn, monkeypatch):
@@ -1554,17 +1654,17 @@ class TestSendPhoto:
         )
 
     def test_calls_send_photo_api(self, monkeypatch):
-        """_send_photo: download via _safe_open, upload via urlopen — exactly one urlopen call."""
+        """_send_photo: download via _safe_open, upload via http_safe.safe_urlopen —
+        exactly one upload call."""
         self._patch_safe_open(monkeypatch, b"\xff\xd8jpeg", "image/jpeg")
-        calls = []
-        mock_resp = _mock_urlopen(b"ok")
-        monkeypatch.setattr("urllib.request.urlopen",
-                            lambda req, timeout=None: (calls.append(req) or mock_resp))
+        upload_calls = []
+        monkeypatch.setattr(notifier.http_safe, "safe_urlopen",
+                            _make_safe_urlopen(b'{"ok":true}', calls=upload_calls))
         assert notifier._send_photo("https://example.com/photo.jpg", "caption") is True
-        assert len(calls) == 1, "exactly one outbound urlopen (the Telegram upload)"
-        assert "sendPhoto" in calls[0].full_url
-        body = calls[0].data
-        ct = calls[0].get_header("Content-type")
+        assert len(upload_calls) == 1, "exactly one outbound upload (the Telegram POST)"
+        assert "sendPhoto" in upload_calls[0]["url"]
+        body = upload_calls[0]["data"]
+        ct = upload_calls[0]["extra_headers"]["Content-Type"]
         assert "multipart/form-data; boundary=----RSBS" in ct
         assert b"caption" in body
         assert b"HTML" in body
@@ -1573,21 +1673,19 @@ class TestSendPhoto:
 
     def test_png_url_uses_png_filename_in_multipart(self, monkeypatch):
         self._patch_safe_open(monkeypatch, b"\x89PNG", "image/png")
-        calls = []
-        mock_resp = _mock_urlopen(b"ok")
-        monkeypatch.setattr("urllib.request.urlopen",
-                            lambda req, timeout=None: (calls.append(req) or mock_resp))
+        upload_calls = []
+        monkeypatch.setattr(notifier.http_safe, "safe_urlopen",
+                            _make_safe_urlopen(b'{"ok":true}', calls=upload_calls))
         notifier._send_photo("https://example.com/photo.png", "caption")
-        body = calls[0].data
+        body = upload_calls[0]["data"]
         assert b'filename="photo.png"' in body
         assert b"Content-Type: image/png" in body
 
     def test_api_failure_falls_back_to_send_message(self, monkeypatch):
         """sendPhoto upload error → text fallback via _send (no URL-payload retry)."""
         self._patch_safe_open(monkeypatch, b"\xff\xd8jpeg", "image/jpeg")
-        def raise_error(req, timeout=None):
-            raise OSError("network")
-        monkeypatch.setattr("urllib.request.urlopen", raise_error)
+        def raise_error(*a, **kw): raise OSError("network")
+        monkeypatch.setattr(notifier.http_safe, "safe_urlopen", raise_error)
         sent = []
         monkeypatch.setattr(notifier, "_send", lambda txt: sent.append(txt) or True)
         assert notifier._send_photo("https://example.com/photo.jpg", "caption text") is True
@@ -1597,8 +1695,8 @@ class TestSendPhoto:
         """If _download_photo returns None, go straight to text — no URL-payload retry."""
         monkeypatch.setattr(notifier, "_download_photo", lambda url: None)
         upload_calls = []
-        monkeypatch.setattr("urllib.request.urlopen",
-                            lambda req, timeout=None: upload_calls.append(req))
+        monkeypatch.setattr(notifier.http_safe, "safe_urlopen",
+                            _make_safe_urlopen(b'{"ok":true}', calls=upload_calls))
         sent = []
         monkeypatch.setattr(notifier, "_send", lambda txt: sent.append(txt) or True)
         notifier._send_photo("https://example.com/photo.jpg", "cap")
@@ -1607,23 +1705,23 @@ class TestSendPhoto:
 
     def test_http_url_falls_back_without_api_call(self, monkeypatch):
         """HTTP (non-https) URL is rejected before any network call."""
-        calls = []
-        monkeypatch.setattr("urllib.request.urlopen",
-                            lambda req, timeout=None: calls.append(req))
+        upload_calls = []
+        monkeypatch.setattr(notifier.http_safe, "safe_urlopen",
+                            _make_safe_urlopen(b'{"ok":true}', calls=upload_calls))
         sent = []
         monkeypatch.setattr(notifier, "_send", lambda txt: sent.append(txt) or True)
         notifier._send_photo("http://example.com/photo.jpg", "caption")
-        assert calls == []
+        assert upload_calls == []
         assert sent == ["caption"]
 
     def test_non_http_url_falls_back_without_api_call(self, monkeypatch):
-        calls = []
-        monkeypatch.setattr("urllib.request.urlopen",
-                            lambda req, timeout=None: calls.append(req))
+        upload_calls = []
+        monkeypatch.setattr(notifier.http_safe, "safe_urlopen",
+                            _make_safe_urlopen(b'{"ok":true}', calls=upload_calls))
         sent = []
         monkeypatch.setattr(notifier, "_send", lambda txt: sent.append(txt) or True)
         notifier._send_photo("ftp://bad.url/photo.jpg", "caption")
-        assert calls == []
+        assert upload_calls == []
         assert sent == ["caption"]
 
     def test_telegram_disabled_returns_false(self, monkeypatch):

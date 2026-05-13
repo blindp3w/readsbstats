@@ -24,7 +24,7 @@
       <a href="{{ root_path }}/metrics">Metrics</a>
       <a href="{{ root_path }}/settings">Settings</a>
       <select id="units-select" title="Measurement units">
-        <option value="aero">Aeronautical</option>
+        <option value="aeronautical">Aeronautical</option>
         <option value="metric">Metric</option>
         <option value="imperial">Imperial</option>
       </select>
@@ -56,12 +56,14 @@
       this.textContent = open ? "✕" : "☰";
     });
 
-    // Highlight active nav link
+    // Highlight active nav link.  Require a segment boundary on the
+    // prefix match so /history doesn't light up on a future /history-archive
+    // path (improvements.md #120).
     (function() {
       const path = location.pathname.replace(ROOT, "") || "/";
       document.querySelectorAll("nav a:not(.brand)").forEach(a => {
         const href = a.getAttribute("href").replace(ROOT, "") || "/";
-        if (path === href || (href !== "/" && path.startsWith(href))) a.classList.add("active");
+        if (path === href || (href !== "/" && path.startsWith(href + "/"))) a.classList.add("active");
       });
     })();
 

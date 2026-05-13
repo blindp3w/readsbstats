@@ -18,9 +18,7 @@ Pass --apply to commit the changes.
 """
 
 import argparse
-import math
 import sqlite3
-import sys
 
 from readsbstats import config, database, geo
 

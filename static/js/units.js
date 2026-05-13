@@ -66,6 +66,17 @@ function climbLabel() { return getUnits() === "metric" ? "V/S (m/min)" : "V/S (f
 function initUnitSelector() {
   const sel = document.getElementById("units-select");
   if (!sel) return;
-  sel.value = getUnits();
+  // One-time migration: rsbs_units used to be "aero" to match the old HTML
+  // option value; renamed to "aeronautical" so the JS storage value, the
+  // HTML option value, and config.TELEGRAM_UNITS all line up
+  // (improvements.md #121).  Old behaviour was correct (the if/else chain
+  // treats anything not "metric"/"imperial" as aeronautical), but with the
+  // option renamed the <select> wouldn't reflect the user's saved choice.
+  let current = getUnits();
+  if (current === "aero") {
+    localStorage.setItem(_UNITS_KEY, "aeronautical");
+    current = "aeronautical";
+  }
+  sel.value = current;
   sel.addEventListener("change", e => setUnits(e.target.value));
 }

@@ -2,6 +2,105 @@
 
 ## Unreleased
 
+## 1.8.1 — 2026-05-13
+
+Follow-up from the eleventh audit pass — bug fixes, a defensive refactor on
+the Telegram path, test coverage for the in-process enrichment caches, and
+five small cleanups. No new features; deploy is in-place.
+
+### Fixed
+
+- **`/api/metrics` returned HTTP 500 on non-integer `from` / `to`** — the
+  handler called `int(request.query_params.get("from", ...))` directly, so
+  garbage input bubbled up as `ValueError` and FastAPI mapped it to 500
+  instead of 400. Switched to typed `Query(None, alias="from")` parameters
+  so the validation layer rejects them at the boundary with 422. Five new
+  tests in `tests/test_web.py::TestApiMetricsQueryValidation`.
+- **Telegram `/unwatch <hex>` could delete a registration-typed watchlist
+  entry with the same literal value** — `_watch_remove` ran `DELETE FROM
+  watchlist WHERE value = ?` with no `match_type` filter. Now mirrors the
+  `_watch_add` inference (`re.fullmatch(r"[0-9a-f]{6}", value)` → `icao`,
+  else `registration`) and adds `AND match_type = ?` to the DELETE. The
+  HTTP `DELETE /api/watchlist/{id}` endpoint remains the authoritative
+  cross-type removal path. Three new tests pin the behaviour.
+- **`scripts/notify-telegram-failure.sh` silently dropped alerts when the
+  failing unit's journal contained `<`, `>`, or `&`** — Telegram's
+  `parse_mode=HTML` returns 400 on those characters even inside text
+  nodes, so a single weird-looking traceback would suppress the very
+  alert you most needed. The shell script now pipes `systemctl status`
+  output through `sed` to HTML-escape `&`/`<`/`>` (in that order — `&`
+  first so it doesn't eat the entities the later substitutions emit)
+  before interpolation into the `<pre>...</pre>` block.
+
+### Changed
+
+- **All Telegram outbound calls now route through `http_safe.safe_urlopen`**
+  — `notifier._send`, `_send_photo`, and `_get_updates` previously used raw
+  `urllib.request.urlopen`, bypassing the central SSRF guard's redirect
+  blocker and response-size cap. To make this work for the POSTs,
+  `safe_urlopen` gained an optional `data: bytes | None = None` parameter
+  that flows into `urllib.request.Request`. All four policies (HTTPS-only,
+  public-IP-only, no-redirect, size cap) now apply uniformly to every
+  outbound call in the codebase, including `api.telegram.org`. If Telegram
+  ever 302s during a region migration, the notifier will surface the
+  redirect as a `ValueError` instead of following blindly. Four new tests
+  in `test_http_safe.py` cover the POST capability; the existing 13 mock
+  sites in `test_notifier.py` were rewritten to patch the new symbol.
+- **`templates/base.html` active-nav match now requires a segment boundary**
+  — `path.startsWith(href)` would have lit up `/history` on a future
+  `/history-archive` path. Tightened to `path === href || (href !== "/"
+  && path.startsWith(href + "/"))`. Cosmetic only — none of the current
+  nav routes have this collision.
+- **`<select>` option value `aero` renamed to `aeronautical`** — matches
+  the existing `config.TELEGRAM_UNITS == "aeronautical"` literal in the
+  Python notifier. `initUnitSelector()` carries a one-time migration that
+  rewrites a stored `"aero"` in `localStorage` to `"aeronautical"` so
+  existing users see the correct option highlighted in the dropdown after
+  the rename. Frontend behaviour is unchanged in every other respect.
+- **`_csrf_check` gained a load-bearing `# CRITICAL` comment** explaining
+  that the X-Requested-With header check works *because* this app has no
+  CORS middleware that whitelists custom headers. A future engineer
+  adding `CORSMiddleware(allow_headers=["*"])` will now hit the warning
+  at the diff level.
+
+### Removed
+
+- **Deleted dead code: `static/js/live.js` (116 lines) and
+  `templates/live.html` (34 lines)** — the `/live` route has been a
+  301-redirect to `/map` since v1.4.0 and never actually rendered the
+  template. Pre-flight grep confirmed nothing else referenced them. The
+  `/api/live` JSON endpoint (used by the nav live-badge) is independent
+  and stays. Tests that probe the `/live` redirect (`test_web.py:750`,
+  `test_map.py:228`, `tests/ui/test_mobile_smoke.py:148`) still pass.
+
+### Tests
+
+- **New `tests/test_enrichment.py` (20 tests)** — direct coverage for
+  `_LRUDict` (basic put/get, None-as-value vs. miss, eviction at maxsize,
+  LRU touch-to-end) and its thread safety (8-thread concurrent put + get
+  with 1000 ops each + a concurrent-clear test). Plus negative-cache and
+  positive-cache behaviour of `lookup_aircraft`, `lookup_airline`, and
+  `lookup_adsbx`, the `invalidate_adsbx` busting path, and `clear_cache`
+  resetting all three module-level caches. Closes the longest-standing
+  test-coverage hole (the enrichment module was previously covered only
+  transitively via collector / web tests).
+
+### Internal cleanups
+
+- Dropped unused `import math` / `import sys` from `scripts/purge_ghosts.py`,
+  `scripts/purge_bad_gs.py`, and `scripts/purge_mlat_gs_spikes.py`.
+- Tightened the "Background migrations — single owner" paragraph in
+  `CLAUDE.md` to spell out which indexes belong in `_migrate()` (small
+  `flights` table, e.g. `idx_flights_max_gs` / `idx_flights_max_alt`) vs
+  in `run_background_migrations()` (heavy composite/partial indexes on
+  the millions-row `positions` table).
+
+### Test counts
+
+- Python: **1184 passing** (was 1152) — +32 from this release.
+- JS: 69 passing (unchanged).
+- Playwright UI: 35 (unchanged).
+
 ## 1.8.0 — 2026-05-13
 
 ### Added
