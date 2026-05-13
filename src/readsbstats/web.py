@@ -356,7 +356,7 @@ def page_settings(request: Request) -> HTMLResponse:
         "telegram_chat_id":     cid_masked,
         "telegram_summary_time": config.TELEGRAM_SUMMARY_TIME,
         "telegram_units":       config.TELEGRAM_UNITS,
-        "base_url":             config.BASE_URL,
+        "base_url":             config.TELEGRAM_BASE_URL,
     })
 
 

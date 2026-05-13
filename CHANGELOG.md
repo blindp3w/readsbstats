@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Changed (breaking — env var rename, no back-compat shim)
+
+- **`RSBS_BASE_URL` renamed to `RSBS_TELEGRAM_BASE_URL`** — and the
+  corresponding `config.BASE_URL` attribute renamed to
+  `config.TELEGRAM_BASE_URL`. The variable is only used to build profile /
+  flight links in Telegram alerts, so the new name matches the rest of
+  the Telegram-scoped namespace (`RSBS_TELEGRAM_TOKEN`,
+  `RSBS_TELEGRAM_CHAT_ID`, `RSBS_TELEGRAM_UNITS`, `RSBS_TELEGRAM_PHOTOS`,
+  `RSBS_TELEGRAM_ANONYMOUS_ALERT`). Deployments must update their systemd
+  environment file at upgrade time — there is no fallback to the old name.
+  README env-var table and the example systemd snippet both updated; the
+  `/settings` page now displays the new env var name. No version bump
+  required (release this with the next non-trivial change).
+
 ## 1.8.2 — 2026-05-13
 
 Closes a small daily-summary coverage gap noted while back-filling the

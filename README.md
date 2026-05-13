@@ -338,7 +338,7 @@ Environment="RSBS_FLIGHT_GAP=1200"
 | `RSBS_TELEGRAM_UNITS` | `metric` | Units in notification messages: `metric`, `imperial`, or `aeronautical` |
 | `RSBS_TELEGRAM_PHOTOS` | `1` | Send aircraft photo with military/interesting/anonymous/watchlist Telegram alerts (`0` to disable) |
 | `RSBS_TELEGRAM_ANONYMOUS_ALERT` | `1` | Fire first-sighting Telegram alerts for anonymous (non-ICAO hex) aircraft (`0` to mute — military/interesting/watchlist alerts unaffected) |
-| `RSBS_BASE_URL` | `http://homepi.local/stats` | Base URL used for profile links in Telegram messages |
+| `RSBS_TELEGRAM_BASE_URL` | `http://homepi.local/stats` | Base URL used for profile links in Telegram messages. Set this to the Pi's LAN IP if you read Telegram on a phone where the `homepi.local` mDNS name won't resolve |
 | `RSBS_MAP_HISTORY_HOURS` | `24` | How many hours back the live map's rewind slider can reach (1–168) |
 | `RSBS_HEALTH_*` | _(see /settings)_ | Health-dashboard thresholds — heartbeat warn/critical, noise floor, CPU, baseline lookback, drop percentages, gain saturation, range-trend ratio. All effective values are listed on the `/settings` page; defaults are tuned for a stock readsb + Pi 4 setup |
 
@@ -381,7 +381,7 @@ Environment="RSBS_TELEGRAM_TOKEN=123456:ABCdef..."
 Environment="RSBS_TELEGRAM_CHAT_ID=987654321"
 Environment="RSBS_SUMMARY_TIME=21:00"
 Environment="RSBS_TELEGRAM_UNITS=metric"
-Environment="RSBS_BASE_URL=http://homepi.local/stats"
+Environment="RSBS_TELEGRAM_BASE_URL=http://homepi.local/stats"
 ```
 
 Notifications are disabled when the token or chat ID is not set, so this is fully opt-in. If only one of the two is set (or the chat ID is not numeric), the collector logs a warning at startup explaining what's wrong. When Telegram is disabled, all notification-related logic is skipped entirely — no watchlist queries, no flag checks, no daily summary timer, no background listener thread.

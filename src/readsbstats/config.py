@@ -161,7 +161,7 @@ TELEGRAM_SUMMARY_TIME = os.getenv("RSBS_SUMMARY_TIME",      "21:00")  # local HH
 TELEGRAM_UNITS        = os.getenv("RSBS_TELEGRAM_UNITS",    "metric") # metric|imperial|aeronautical
 TELEGRAM_PHOTOS       = _int("RSBS_TELEGRAM_PHOTOS",         "1")     # 0 to disable photo enrichment
 TELEGRAM_ANONYMOUS_ALERT = _int("RSBS_TELEGRAM_ANONYMOUS_ALERT", "1")  # 0 to mute first-sighting alerts for non-ICAO hex addresses
-BASE_URL              = os.getenv("RSBS_BASE_URL", "http://homepi.local/stats")
+TELEGRAM_BASE_URL     = os.getenv("RSBS_TELEGRAM_BASE_URL", "http://homepi.local/stats")
 
 # ---------------------------------------------------------------------------
 # Feeders health monitoring
@@ -265,9 +265,9 @@ if DEFAULT_PAGE_SIZE > MAX_PAGE_SIZE:
 # ---------------------------------------------------------------------------
 # String normalization — strip trailing slashes to prevent double-slash URLs
 # ---------------------------------------------------------------------------
-ROOT_PATH     = ROOT_PATH.rstrip("/")    if ROOT_PATH     else ROOT_PATH
-BASE_URL      = BASE_URL.rstrip("/")     if BASE_URL      else BASE_URL
-ADSBX_API_URL = ADSBX_API_URL.rstrip("/") if ADSBX_API_URL else ADSBX_API_URL
+ROOT_PATH         = ROOT_PATH.rstrip("/")         if ROOT_PATH         else ROOT_PATH
+TELEGRAM_BASE_URL = TELEGRAM_BASE_URL.rstrip("/") if TELEGRAM_BASE_URL else TELEGRAM_BASE_URL
+ADSBX_API_URL     = ADSBX_API_URL.rstrip("/")     if ADSBX_API_URL     else ADSBX_API_URL
 
 # DB_PATH — empty string causes sqlite3.connect("") which is an in-memory DB
 # that silently loses all data on restart

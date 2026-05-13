@@ -447,7 +447,7 @@ class TestNotifyMilitary:
         """Verify message has correct HTML structure, not just substrings."""
         sent = []
         monkeypatch.setattr(notifier, "_send", lambda txt: sent.append(txt))
-        monkeypatch.setattr(config, "BASE_URL", "http://test/stats")
+        monkeypatch.setattr(config, "TELEGRAM_BASE_URL","http://test/stats")
         notifier.notify_military("abc123", "SP-LRA", "LOT100", "Boeing 737", None, 50.0)
         msg = sent[0]
         lines = msg.split("\n")
@@ -565,7 +565,7 @@ class TestNotifyAnonymous:
     def test_message_includes_view_profile_link(self, monkeypatch):
         sent = []
         monkeypatch.setattr(notifier, "_send", lambda txt: sent.append(txt))
-        monkeypatch.setattr(config, "BASE_URL", "http://test/stats")
+        monkeypatch.setattr(config, "TELEGRAM_BASE_URL","http://test/stats")
         notifier.notify_anonymous("dd85cb", None, None, None, None, 100.0)
         assert '<a href="http://test/stats/aircraft/dd85cb">' in sent[0]
 
@@ -1207,7 +1207,7 @@ class TestNotifyWatchlist:
     def test_flight_link_included(self, monkeypatch):
         sent = []
         monkeypatch.setattr(notifier, "_send", lambda txt: sent.append(txt))
-        monkeypatch.setattr(config, "BASE_URL", "http://homepi.local/stats")
+        monkeypatch.setattr(config, "TELEGRAM_BASE_URL","http://homepi.local/stats")
         notifier.notify_watchlist("abc123", "SP-X", None, None, None, 5.0, None, 42)
         assert "/flight/42" in sent[0]
         assert "/aircraft/abc123" in sent[0]

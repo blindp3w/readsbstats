@@ -424,7 +424,7 @@ def notify_military(
 ) -> None:
     reg, cs, ac = _fmt_aircraft_line(icao, registration, callsign, type_desc, aircraft_type)
     country = _h(icao_ranges.icao_to_country(icao))
-    url = f"{config.BASE_URL}/aircraft/{icao}"
+    url = f"{config.TELEGRAM_BASE_URL}/aircraft/{icao}"
     caption = (
         f"✈️ <b>Military aircraft — first sighting</b>\n"
         f"<b>{reg}</b>{cs} — {ac}\n"
@@ -445,7 +445,7 @@ def notify_interesting(
 ) -> None:
     reg, cs, ac = _fmt_aircraft_line(icao, registration, callsign, type_desc, aircraft_type)
     country = _h(icao_ranges.icao_to_country(icao))
-    url = f"{config.BASE_URL}/aircraft/{icao}"
+    url = f"{config.TELEGRAM_BASE_URL}/aircraft/{icao}"
     caption = (
         f"⭐ <b>Interesting aircraft — first sighting</b>\n"
         f"<b>{reg}</b>{cs} — {ac}\n"
@@ -470,7 +470,7 @@ def notify_anonymous(
     civilian receiver.  Country lookup intentionally won't resolve (the hex is
     non-state by definition), so we drop that line and label it explicitly."""
     reg, cs, ac = _fmt_aircraft_line(icao, registration, callsign, type_desc, aircraft_type)
-    url = f"{config.BASE_URL}/aircraft/{icao}"
+    url = f"{config.TELEGRAM_BASE_URL}/aircraft/{icao}"
     caption = (
         f"❓ <b>Anonymous aircraft — first sighting</b>\n"
         f"<b>{reg}</b>{cs} — {ac}\n"
@@ -493,8 +493,8 @@ def notify_watchlist(
 ) -> None:
     reg, cs, ac  = _fmt_aircraft_line(icao, registration, callsign, type_desc, aircraft_type)
     label_line   = f"Label: {_h(label)}\n" if label else ""
-    aircraft_url = f"{config.BASE_URL}/aircraft/{icao}"
-    flight_url   = f"{config.BASE_URL}/flight/{flight_id}"
+    aircraft_url = f"{config.TELEGRAM_BASE_URL}/aircraft/{icao}"
+    flight_url   = f"{config.TELEGRAM_BASE_URL}/flight/{flight_id}"
     caption = (
         f"👁 <b>Watchlist — {reg}</b>\n"
         f"<b>{reg}</b>{cs} — {ac}\n"
@@ -517,7 +517,7 @@ def notify_squawk(
     # comes from readsb output; escape both for defence-in-depth.
     label = _h(_SQUAWK_LABELS.get(squawk, squawk))
     reg, cs, _ = _fmt_aircraft_line(icao, registration, callsign)
-    url = f"{config.BASE_URL}/aircraft/{icao}"
+    url = f"{config.TELEGRAM_BASE_URL}/aircraft/{icao}"
     _send(
         f"🚨 <b>Squawk {_h(squawk)} — {label}</b>\n"
         f"<b>{reg}</b>{cs}\n"

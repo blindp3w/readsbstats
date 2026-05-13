@@ -205,11 +205,11 @@ class TestStringNormalization:
         importlib.reload(readsbstats.config)
         assert readsbstats.config.ROOT_PATH == ""
 
-    def test_base_url_trailing_slash_stripped(self, monkeypatch):
-        monkeypatch.setenv("RSBS_BASE_URL", "http://example.com/stats/")
+    def test_telegram_base_url_trailing_slash_stripped(self, monkeypatch):
+        monkeypatch.setenv("RSBS_TELEGRAM_BASE_URL", "http://example.com/stats/")
         import readsbstats.config
         importlib.reload(readsbstats.config)
-        assert readsbstats.config.BASE_URL == "http://example.com/stats"
+        assert readsbstats.config.TELEGRAM_BASE_URL == "http://example.com/stats"
 
     def test_adsbx_url_trailing_slash_stripped(self, monkeypatch):
         monkeypatch.setenv("RSBS_ADSBX_URL", "https://api.airplanes.live/v2/")
