@@ -535,16 +535,26 @@ def send_daily_summary(conn: sqlite3.Connection) -> None:
     day_start = int(datetime.datetime.combine(today, datetime.time.min).timestamp())
     day_end   = int(datetime.datetime.combine(today, datetime.time.max).timestamp())
 
+    # OR-merge stored flags (tar1090-db + airplanes.live overrides) with the
+    # computed anonymous bit so the same precedence rule as the badges / web
+    # UI / first-sighting alerts (military > interesting > anonymous) applies
+    # to the daily summary too.
+    anon_sql = icao_ranges.anonymous_flag_sql("f.icao_hex", config.FLAG_ANONYMOUS)
+    merged_flags = f"(COALESCE(adb.flags,0) | COALESCE(axo.flags,0) | {anon_sql})"
+
     agg = conn.execute(
-        """
+        f"""
         SELECT COUNT(*)                                                              AS flights,
-               COUNT(DISTINCT f.icao_hex)                                           AS aircraft,
-               SUM(CASE WHEN (COALESCE(adb.flags,0) | COALESCE(axo.flags,0)) & 1 != 0
-                        THEN 1 ELSE 0 END)                                         AS military,
-               SUM(CASE WHEN (COALESCE(adb.flags,0) | COALESCE(axo.flags,0)) & 2 != 0
-                         AND (COALESCE(adb.flags,0) | COALESCE(axo.flags,0)) & 1  = 0
-                        THEN 1 ELSE 0 END)                                         AS interesting,
-               SUM(CASE WHEN f.squawk IN ('7500','7600','7700') THEN 1 ELSE 0 END) AS squawks
+               COUNT(DISTINCT f.icao_hex)                                            AS aircraft,
+               SUM(CASE WHEN ({merged_flags}) & 1 != 0
+                        THEN 1 ELSE 0 END)                                          AS military,
+               SUM(CASE WHEN ({merged_flags}) & 2 != 0
+                         AND ({merged_flags}) & 1 = 0
+                        THEN 1 ELSE 0 END)                                          AS interesting,
+               SUM(CASE WHEN ({merged_flags}) & {config.FLAG_ANONYMOUS} != 0
+                         AND ({merged_flags}) & 3 = 0
+                        THEN 1 ELSE 0 END)                                          AS anonymous,
+               SUM(CASE WHEN f.squawk IN ('7500','7600','7700') THEN 1 ELSE 0 END)  AS squawks
         FROM flights f
         LEFT JOIN aircraft_db     adb ON adb.icao_hex = f.icao_hex
         LEFT JOIN adsbx_overrides axo ON axo.icao_hex = f.icao_hex
@@ -591,6 +601,7 @@ def send_daily_summary(conn: sqlite3.Connection) -> None:
     badges = []
     if agg["military"]:    badges.append(f"Military: {agg['military']}")
     if agg["interesting"]: badges.append(f"Interesting: {agg['interesting']}")
+    if agg["anonymous"]:   badges.append(f"Anonymous: {agg['anonymous']}")
     if agg["squawks"]:     badges.append(f"⚠️ Emergency squawks: {agg['squawks']}")
     if badges:
         lines.append("  ".join(badges))

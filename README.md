@@ -392,7 +392,7 @@ Notifications are disabled when the token or chat ID is not set, so this is full
 - **Anonymous aircraft (non-ICAO hex)** — once per ICAO hex, the first time it's ever detected. Fires when the 24-bit Mode-S address falls outside every ICAO state-allocated block — typically military / OPSEC contacts, TIS-B / ADS-R rebroadcasts, or MLAT-synthetic identifiers. Includes photo enrichment via the type-level fallback (specific-aircraft photos aren't available for anonymous addresses by definition). The Country line is omitted since the address has no state by definition. Precedence: military > interesting > anonymous — an aircraft surfaces under one kind, never multiple. Mute with `RSBS_TELEGRAM_ANONYMOUS_ALERT=0`.
 - **Watchlist hits** — once per flight for each watched aircraft (ICAO/reg/callsign prefix match); also includes photo enrichment
 - **Emergency squawk** — once per flight when squawk 7500, 7600, or 7700 is detected (no photo enrichment for emergency alerts)
-- **Daily summary** — sent at `RSBS_SUMMARY_TIME` local time: total flights, unique aircraft, military/interesting counts, emergency squawks, furthest/fastest/highest/longest aircraft, busiest hour
+- **Daily summary** — sent at `RSBS_SUMMARY_TIME` local time: total flights, unique aircraft, military/interesting/anonymous counts (same military > interesting > anonymous precedence as the badges and first-sighting alerts — each flight counts under exactly one kind), emergency squawks, furthest/fastest/highest/longest aircraft, busiest hour
 
 **Interactive commands** (text the bot directly):
 - `/summary` — on-demand daily summary

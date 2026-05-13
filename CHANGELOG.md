@@ -2,6 +2,42 @@
 
 ## Unreleased
 
+## 1.8.2 — 2026-05-13
+
+Closes a small daily-summary coverage gap noted while back-filling the
+FLAG_ANONYMOUS README documentation in v1.8.1: `send_daily_summary`
+emitted Military and Interesting counts but never carried over the
+**Anonymous** count, despite the rest of the codebase (badges, web UI,
+`/api/stats`, first-sighting Telegram alerts) all treating anonymous
+as a peer flag.
+
+### Added
+
+- **Anonymous count in the daily Telegram summary** — the summary's
+  aggregate query now OR-merges `aircraft_db.flags` + `adsbx_overrides.flags`
+  with the computed anonymous bit (via `icao_ranges.anonymous_flag_sql`),
+  applies the same military > interesting > anonymous precedence used
+  everywhere else (each flight counts under exactly one kind), and emits
+  a new "Anonymous: N" badge alongside "Military: N" / "Interesting: N"
+  when N > 0. Zero-suppression matches the existing badges. Four new
+  tests in `TestSendDailySummary`: bare anonymous-badge presence, both
+  precedence-exclusion directions (military and interesting suppress
+  the anon count), and zero-suppression when no anon flights exist.
+  Resolves a documentation-vs-behaviour drift surfaced during the v1.8.1
+  README anonymous-aircraft pass.
+
+### Changed
+
+- README's daily-summary description (Telegram section) now lists
+  `military/interesting/anonymous counts` with an explicit note about
+  the shared precedence rule.
+
+### Test counts
+
+- Python: **1188 passing** (was 1184) — +4 from this release.
+- JS: 69 passing (unchanged).
+- Playwright UI: 35 (unchanged).
+
 ## 1.8.1 — 2026-05-13
 
 Follow-up from the eleventh audit pass — bug fixes, a defensive refactor on

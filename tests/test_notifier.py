@@ -678,6 +678,66 @@ class TestSendDailySummary:
         notifier.send_daily_summary(db_conn)
         assert "Interesting: 1" in sent[0]
 
+    def test_anonymous_badge(self, db_conn, monkeypatch):
+        """Daily summary counts anonymous (non-ICAO hex) flights via the
+        icao_ranges anon CASE — no DB column required.  See improvements.md
+        line under 1.8.2 — closing the daily-summary coverage gap noted
+        when the FLAG_ANONYMOUS README was retrofitted."""
+        sent = []
+        monkeypatch.setattr(notifier, "_send", lambda txt: sent.append(txt))
+        now = int(time.time())
+        # ff0000 falls outside every entry in icao_ranges._RAW
+        insert_flight(db_conn, icao="ff0000", first_seen=now)
+        notifier.send_daily_summary(db_conn)
+        assert "Anonymous: 1" in sent[0]
+
+    def test_anonymous_excluded_when_also_military(self, db_conn, monkeypatch):
+        """Precedence in the daily summary mirrors the badges / Telegram
+        alerts: military > interesting > anonymous.  An anon hex carrying
+        the military flag via airplanes.live override counts only under
+        Military."""
+        sent = []
+        monkeypatch.setattr(notifier, "_send", lambda txt: sent.append(txt))
+        now = int(time.time())
+        insert_flight(db_conn, icao="ff0001", first_seen=now)  # anon hex
+        db_conn.execute(
+            "INSERT INTO adsbx_overrides (icao_hex, flags, first_seen, last_seen) "
+            "VALUES (?, ?, ?, ?)",
+            ("ff0001", 1, now, now),  # military bit set on the same hex
+        )
+        db_conn.commit()
+        notifier.send_daily_summary(db_conn)
+        msg = sent[0]
+        assert "Military: 1" in msg
+        assert "Anonymous" not in msg
+
+    def test_anonymous_excluded_when_also_interesting(self, db_conn, monkeypatch):
+        """Same precedence — interesting takes precedence over anonymous."""
+        sent = []
+        monkeypatch.setattr(notifier, "_send", lambda txt: sent.append(txt))
+        now = int(time.time())
+        insert_flight(db_conn, icao="ff0002", first_seen=now)  # anon hex
+        db_conn.execute(
+            "INSERT INTO adsbx_overrides (icao_hex, flags, first_seen, last_seen) "
+            "VALUES (?, ?, ?, ?)",
+            ("ff0002", 2, now, now),  # interesting bit set
+        )
+        db_conn.commit()
+        notifier.send_daily_summary(db_conn)
+        msg = sent[0]
+        assert "Interesting: 1" in msg
+        assert "Anonymous" not in msg
+
+    def test_anonymous_badge_absent_when_zero(self, db_conn, monkeypatch):
+        """No "Anonymous: 0" line when there are no anon flights — matches
+        the existing zero-suppression on Military / Interesting badges."""
+        sent = []
+        monkeypatch.setattr(notifier, "_send", lambda txt: sent.append(txt))
+        now = int(time.time())
+        insert_flight(db_conn, icao="aabbcc", first_seen=now)  # US — not anon
+        notifier.send_daily_summary(db_conn)
+        assert "Anonymous" not in sent[0]
+
     def test_squawk_badge(self, db_conn, monkeypatch):
         sent = []
         monkeypatch.setattr(notifier, "_send", lambda txt: sent.append(txt))
