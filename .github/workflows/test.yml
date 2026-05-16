@@ -40,20 +40,18 @@ jobs:
         run: pytest --cov=readsbstats --cov-report=term-missing --cov-fail-under=90
 
       - name: Set up Node.js
+        # Node 20 LTS, not 22: Node 22's hosted-runner image ships a
+        # broken npm 10.9.4 (`Cannot find module 'promise-retry'`) and
+        # `npm ci` of our optional-deps-heavy lockfile also trips the
+        # "Exit handler never called!" race in older npm versions.
+        # Node 20 LTS ships npm 10.8.x which has neither problem and
+        # tracks the same package-lock format.
         if: matrix.python-version == '3.12'
         uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: '20'
           cache: 'npm'
           cache-dependency-path: frontend/package-lock.json
-
-      - name: Upgrade npm
-        # Node 22's bundled npm 10.9 has the "Exit handler never called!"
-        # race-condition bug (npm/cli#4828) that fires on `npm ci` with
-        # many optional native binaries (esbuild + rollup + tailwind oxide
-        # + lightningcss — ~70 platform-specific packages). npm 11 fixes it.
-        if: matrix.python-version == '3.12'
-        run: npm install -g npm@11
 
       - name: Install frontend dependencies
         if: matrix.python-version == '3.12'
