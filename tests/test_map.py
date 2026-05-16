@@ -207,8 +207,9 @@ class TestMapSnapshot:
         assert "dest_icao" in ac
         assert ac["seconds_ago"] >= 0
 
-    def test_live_redirects_to_v2_map(self, client):
-        # Compat redirect after Jinja UI deletion — /live → /v2/map (302).
+    def test_live_redirects_to_map(self, client):
+        # /live is a historical alias kept as a 302 after the Jinja UI was
+        # deleted; the SPA's catch-all serves /map natively.
         r = client.get("/live", follow_redirects=False)
         assert r.status_code == 302
-        assert r.headers["location"].endswith("/v2/map")
+        assert r.headers["location"].endswith("/map")

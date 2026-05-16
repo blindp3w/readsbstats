@@ -26,7 +26,10 @@ export default defineConfig(({ command }) => ({
       ? visualizer({ filename: 'dist/stats.html', gzipSize: true, brotliSize: true })
       : null,
   ].filter(Boolean),
-  base: command === 'build' ? '/stats/v2/' : '/',
+  // Production base = '/stats/' (nginx subpath). Dev base = '/' (root).
+  // Was '/stats/v2/' during the v1 coexistence period; flipped to '/stats/'
+  // at v2.0.0 cutover when the Jinja UI was deleted.
+  base: command === 'build' ? '/stats/' : '/',
   resolve: {
     alias: { '@': path.resolve(__dirname, './src') },
   },

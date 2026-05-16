@@ -144,7 +144,6 @@ MAP_HISTORY_HOURS  = _int("RSBS_MAP_HISTORY_HOURS", "24")    # slider reach (hou
 WEB_HOST           = os.getenv("RSBS_WEB_HOST",  "0.0.0.0")
 WEB_PORT           = _int("RSBS_WEB_PORT", "8080")
 ROOT_PATH          = os.getenv("RSBS_ROOT_PATH", "/stats")          # reverse-proxy subpath
-ENABLE_V2          = os.getenv("RSBS_ENABLE_V2", "1") not in ("0", "false", "no", "")  # mount React SPA at /v2/
 
 # ---------------------------------------------------------------------------
 # UI

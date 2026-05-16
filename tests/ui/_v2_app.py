@@ -3,11 +3,12 @@
 In production, nginx terminates the /stats/ subpath and proxies the bare
 path to uvicorn (which has --root-path /stats set as metadata). The
 Playwright test fixture has no nginx — so we wrap the app with a small
-ASGI middleware that does the same prefix strip. This lets the v2 dist's
-baked-in asset URLs (/stats/v2/assets/*.js) resolve correctly against the
-test server.
+ASGI middleware that does the same prefix strip. This lets the SPA dist's
+baked-in asset URLs (/stats/assets/*.js after the v2.0.0 cutover) resolve
+correctly against the test server.
 
-Only used by tests/ui/test_v2_smoke.py. Not part of the production code path.
+Only used by the Playwright fixture in tests/ui/conftest.py. Not part of
+the production code path.
 """
 from readsbstats.web import app as _app
 
@@ -27,9 +28,9 @@ async def app(scope, receive, send):  # type: ignore[no-untyped-def]
         else:
             new_path = path
             new_raw = raw_path
-        # Don't set root_path here — Starlette mounts re-apply root_path during
-        # match, so leaving it empty after the strip is what makes /v2/assets
-        # resolve. (FastAPI was already constructed with root_path metadata
-        # via the RSBS_ROOT_PATH env var; the Jinja URL helpers still work.)
+        # Don't set root_path here — Starlette mounts re-apply root_path
+        # during match, so leaving it empty after the strip is what makes
+        # /assets resolve. FastAPI was already constructed with root_path
+        # metadata via the RSBS_ROOT_PATH env var.
         scope = {**scope, "path": new_path, "raw_path": new_raw, "root_path": ""}
     return await _app(scope, receive, send)

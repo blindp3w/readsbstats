@@ -116,6 +116,20 @@ cp "$APP_DIR/systemd/readsbstats-updater.timer"     /etc/systemd/system/
 cp "$APP_DIR/systemd/notify-telegram@.service"      /etc/systemd/system/
 systemctl daemon-reload
 
+# ---- Reload nginx if the proxy config shipped in this sync ------------------
+# The repo carries nginx-readsbstats.conf — if you keep it included from your
+# site config (recommended), this picks up changes (asset cache, security
+# headers) without manual intervention. `nginx -t` validates syntax first;
+# only on success does the reload run.
+if [[ -f "$APP_DIR/nginx-readsbstats.conf" ]] && command -v nginx >/dev/null 2>&1; then
+  echo "==> Reloading nginx (validate then reload)"
+  if nginx -t 2>/dev/null; then
+    systemctl reload nginx
+  else
+    echo "WARNING: nginx config failed validation; not reloading. Run 'sudo nginx -t' to diagnose." >&2
+  fi
+fi
+
 # ---- Restart services (code + full mode) -------------------------------------
 if [[ "$MODE" == "code" || "$MODE" == "full" ]]; then
   echo "==> Restarting services"

@@ -69,49 +69,42 @@ app.add_middleware(GZipMiddleware, minimum_size=1000)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 
 # ---------------------------------------------------------------------------
-# v2 SPA coexistence mount.  Serves the React build from frontend/dist/ at /v2/
-# alongside the Jinja2 UI at /.  Gated by config.ENABLE_V2 AND presence of the
-# built artefacts so a missing dist (e.g. fresh clone, mid-rsync) downgrades
-# gracefully to "old UI only" instead of crashing the worker.
+# React SPA mount.  Serves the Vite build from frontend/dist/ at the root of
+# the nginx prefix (/stats/ externally; / internally because of root_path).
+# Gated by presence of the built artefacts so a missing dist (e.g. fresh
+# clone, mid-rsync) doesn't crash the worker — the API surface keeps working
+# but every UI path returns 404.
 #
 # index.html is served per-request (not cached at import) so atomic-swap
 # deploys take effect without restart; assets are mounted via StaticFiles and
 # can be long-cached because their URLs are content-hashed.
+#
+# /v2/* paths from the v2.0.0-rc.1 era 301-redirect to / so RC bookmarks
+# keep working.
 # ---------------------------------------------------------------------------
 SPA_DIR = BASE_DIR / "frontend" / "dist"
 SPA_ASSETS = SPA_DIR / "assets"
 SPA_INDEX = SPA_DIR / "index.html"
 
-if config.ENABLE_V2 and SPA_INDEX.is_file() and SPA_ASSETS.is_dir():
-    app.mount("/v2/assets", StaticFiles(directory=SPA_ASSETS), name="v2-assets")
+_SPA_AVAILABLE = SPA_INDEX.is_file() and SPA_ASSETS.is_dir()
 
-    _SPA_ASSET_EXTS = {
-        ".js", ".mjs", ".css", ".png", ".jpg", ".jpeg", ".svg",
-        ".gif", ".webp", ".ico", ".woff", ".woff2", ".ttf",
-        ".map", ".json", ".txt",
-    }
+if _SPA_AVAILABLE:
+    app.mount("/assets", StaticFiles(directory=SPA_ASSETS), name="spa-assets")
 
+    # Compat: /v2/* -> 301 -> /<path>. Anyone with a bookmarked RC URL or a
+    # browser tab open after the cutover lands on the same page. Registered
+    # at the top of the route table because /v2 is a literal prefix — it
+    # won't shadow anything.
     @app.get("/v2", include_in_schema=False)
-    @app.get("/v2/{spa_path:path}", include_in_schema=False)
-    def _spa(spa_path: str = "") -> Response:
-        # If the path looks like a static asset (has a known extension) and
-        # wasn't matched by the /v2/assets mount above, surface the 404 instead
-        # of returning the SPA shell — masking it as HTML hides missing-asset
-        # bugs and produces blank pages.
-        last = spa_path.rsplit("/", 1)[-1]
-        if "." in last:
-            ext = "." + last.rsplit(".", 1)[-1].lower()
-            if ext in _SPA_ASSET_EXTS:
-                raise HTTPException(status_code=404)
-        try:
-            body = SPA_INDEX.read_bytes()
-        except FileNotFoundError:  # pragma: no cover — disappears mid-flight
-            raise HTTPException(status_code=503, detail="SPA dist missing")
-        return Response(
-            content=body,
-            media_type="text/html; charset=utf-8",
-            headers={"Cache-Control": "no-store"},
-        )
+    @app.get("/v2/{rest:path}", include_in_schema=False)
+    def _v2_compat(request: Request, rest: str = "") -> RedirectResponse:
+        root = request.scope.get("root_path", "").rstrip("/")
+        target = f"{root}/{rest}" if rest else f"{root}/"
+        return RedirectResponse(url=target, status_code=301)
+
+# Note: the SPA root catch-all (`@app.get("/{spa_path:path}")`) is registered
+# at the END of this module — see the bottom of the file. It has to come
+# after every literal /api/* and named route so it doesn't shadow them.
 
 # ---------------------------------------------------------------------------
 # DB connection — per-thread.  Python's sqlite3 module holds a per-connection
@@ -291,35 +284,17 @@ def _metrics_agg(col: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Compat redirects — the Jinja UI is gone, but Telegram chat history
-# contains links to `/flight/{id}` and `/aircraft/{icao}`. Redirect those
-# into the React SPA at `/v2/...` so old messages keep working. `/live`
-# is similarly redirected (preserves the old behaviour where it pointed
-# at the live map).
-#
-# In commit B (SPA mounts at /), these redirects go away — the SPA's
-# catch-all serves /flight/{id} et al. directly.
+# The Jinja UI is gone and the SPA owns the root URL space — /flight/{id},
+# /aircraft/{icao} et al. are served by the SPA catch-all at the bottom of
+# this module. /live is the one exception: it's not a real SPA page, just a
+# historical alias for /map, so we keep a server-side 302.
 # ---------------------------------------------------------------------------
-
-
-def _redirect_to_v2(request: Request, path: str) -> RedirectResponse:
-    root = request.scope.get("root_path", "").rstrip("/")
-    return RedirectResponse(url=f"{root}/v2{path}", status_code=302)
-
-
-@app.get("/flight/{flight_id}", include_in_schema=False)
-def redirect_flight(request: Request, flight_id: int) -> RedirectResponse:
-    return _redirect_to_v2(request, f"/flight/{flight_id}")
-
-
-@app.get("/aircraft/{icao_hex}", include_in_schema=False)
-def redirect_aircraft(request: Request, icao_hex: str) -> RedirectResponse:
-    return _redirect_to_v2(request, f"/aircraft/{icao_hex.lower().lstrip('~')}")
 
 
 @app.get("/live", include_in_schema=False)
 def redirect_live(request: Request) -> RedirectResponse:
-    return _redirect_to_v2(request, "/map")
+    root = request.scope.get("root_path", "").rstrip("/")
+    return RedirectResponse(url=f"{root}/map", status_code=302)
 
 
 def _settings_payload() -> dict:
@@ -2360,5 +2335,41 @@ async def api_feeders() -> dict:
     """
     feeders = list(await _check_all_feeders()) if config.FEEDERS else []
     return {"feeders": feeders, "has_feeders": bool(config.FEEDERS)}
+
+
+# ---------------------------------------------------------------------------
+# SPA root catch-all — MUST be registered last so it doesn't shadow literal
+# /api/* routes, the compat redirects, or /static. FastAPI's router tries
+# routes in registration order; this `path:path` parameter matches anything,
+# so it's the final fallback.
+# ---------------------------------------------------------------------------
+
+if _SPA_AVAILABLE:
+    _SPA_ASSET_EXTS = {
+        ".js", ".mjs", ".css", ".png", ".jpg", ".jpeg", ".svg",
+        ".gif", ".webp", ".ico", ".woff", ".woff2", ".ttf",
+        ".map", ".json", ".txt",
+    }
+
+    @app.get("/", include_in_schema=False)
+    @app.get("/{spa_path:path}", include_in_schema=False)
+    def _spa(spa_path: str = "") -> Response:
+        # Surface missing-asset 404s instead of returning the SPA shell —
+        # masking them as HTML hides deploy mistakes (blank page in browser
+        # tries to execute HTML as JS/CSS).
+        last = spa_path.rsplit("/", 1)[-1]
+        if "." in last:
+            ext = "." + last.rsplit(".", 1)[-1].lower()
+            if ext in _SPA_ASSET_EXTS:
+                raise HTTPException(status_code=404)
+        try:
+            body = SPA_INDEX.read_bytes()
+        except FileNotFoundError:  # pragma: no cover — disappears mid-flight
+            raise HTTPException(status_code=503, detail="SPA dist missing")
+        return Response(
+            content=body,
+            media_type="text/html; charset=utf-8",
+            headers={"Cache-Control": "no-store"},
+        )
 
 

@@ -1,7 +1,7 @@
 """Playwright smoke tests for the v2 React SPA.
 
 Runs against `v2_server` (RSBS_ROOT_PATH=/stats, port 18081, separate from the
-v1 fixture). Targets /stats/v2/* URLs. Uses data-testid selectors — keep
+v1 fixture). Targets /stats/* URLs. Uses data-testid selectors — keep
 those stable across UI refactors.
 
 Coverage strategy: smaller per-page surface than test_mobile_smoke.py because
@@ -9,8 +9,8 @@ the v2 surface is incomplete during the migration. As pages land in Phases
 1–4 we extend coverage here.
 
 Phase 1 scope:
-  - /stats/v2/settings — sections render, sensitive values masked
-  - /stats/v2/watchlist — list + add + delete flow
+  - /stats/settings — sections render, sensitive values masked
+  - /stats/watchlist — list + add + delete flow
   - CSRF regression: POST /api/watchlist without X-Requested-With → 403
   - Per-device axe-core scan (if @axe-core/playwright reachable)
 """
@@ -49,7 +49,7 @@ def test_v2_settings_page_renders(request, v2_server, device_name):
     ctx = request.getfixturevalue(f"ctx_{device_name}")
     base_url, page = _new_page(ctx, v2_server)
     try:
-        page.goto(f"{base_url}/v2/settings", wait_until="networkidle")
+        page.goto(f"{base_url}/settings", wait_until="networkidle")
         # Page chrome
         expect(page.locator('[data-testid="page-settings"]')).to_be_visible()
         expect(page.locator('[data-testid="settings-section-receiver"]')).to_be_visible()
@@ -72,7 +72,7 @@ def test_v2_settings_does_not_leak_secrets(request, v2_server, device_name):
     ctx = request.getfixturevalue(f"ctx_{device_name}")
     base_url, page = _new_page(ctx, v2_server)
     try:
-        page.goto(f"{base_url}/v2/settings", wait_until="networkidle")
+        page.goto(f"{base_url}/settings", wait_until="networkidle")
         body = page.content()
         # Sentinel values that the test env never sets; included for
         # regression — if a future change accidentally rendered config raw,
@@ -90,7 +90,7 @@ def test_v2_watchlist_add_and_delete_flow(request, v2_server, device_name):
     ctx = request.getfixturevalue(f"ctx_{device_name}")
     base_url, page = _new_page(ctx, v2_server)
     try:
-        page.goto(f"{base_url}/v2/watchlist", wait_until="networkidle")
+        page.goto(f"{base_url}/watchlist", wait_until="networkidle")
         expect(page.locator('[data-testid="page-watchlist"]')).to_be_visible()
         expect(page.locator('[data-testid="watchlist-add-form"]')).to_be_visible()
 
@@ -131,7 +131,7 @@ def test_v2_feeders_page_renders(request, v2_server, device_name):
     ctx = request.getfixturevalue(f"ctx_{device_name}")
     base_url, page = _new_page(ctx, v2_server)
     try:
-        page.goto(f"{base_url}/v2/feeders", wait_until="networkidle")
+        page.goto(f"{base_url}/feeders", wait_until="networkidle")
         expect(page.locator('[data-testid="page-feeders"]')).to_be_visible()
         expect(page.locator("h1", has_text="Feeders")).to_be_visible()
         expect(page.locator('[data-testid="feeders-refresh"]')).to_be_visible()
@@ -144,7 +144,7 @@ def test_v2_history_page_renders_with_filters(request, v2_server, device_name):
     ctx = request.getfixturevalue(f"ctx_{device_name}")
     base_url, page = _new_page(ctx, v2_server)
     try:
-        page.goto(f"{base_url}/v2/history", wait_until="networkidle")
+        page.goto(f"{base_url}/history", wait_until="networkidle")
         expect(page.locator('[data-testid="page-history"]')).to_be_visible()
         expect(page.locator('[data-testid="history-filters-form"]')).to_be_visible()
         # Table or empty-state appears (test DB has 1 seeded flight)
@@ -161,7 +161,7 @@ def test_v2_history_filter_persists_in_url(request, v2_server):
     ctx = request.getfixturevalue("ctx_iphone_15")
     base_url, page = _new_page(ctx, v2_server)
     try:
-        page.goto(f"{base_url}/v2/history", wait_until="networkidle")
+        page.goto(f"{base_url}/history", wait_until="networkidle")
         page.locator('[data-testid="history-filter-callsign"]').fill("LOT")
         page.locator('[data-testid="history-filter-callsign"]').press("Enter")
         expect(page).to_have_url(re.compile(r"callsign=LOT"))
@@ -179,7 +179,7 @@ def test_v2_nav_live_badge_polls_api_live(request, v2_server):
             lambda req: req.url.endswith("/api/live") or "/api/live?" in req.url,
             timeout=5000,
         ):
-            page.goto(f"{base_url}/v2/", wait_until="networkidle")
+            page.goto(f"{base_url}/", wait_until="networkidle")
         # Badge is visible regardless of count (it shows "—" when 0).
         expect(page.locator('[data-testid="nav-live-badge"]')).to_be_visible()
     finally:
@@ -193,7 +193,7 @@ def test_v2_aircraft_watch_button_round_trip(request, v2_server):
     page = ctx.new_page()
     try:
         # The seeded fixture has icao=aabbcc. Make sure it's NOT already watched.
-        page.goto(f"{base_url}/v2/aircraft/aabbcc", wait_until="networkidle")
+        page.goto(f"{base_url}/aircraft/aabbcc", wait_until="networkidle")
         btn = page.locator('[data-testid="aircraft-watch-toggle"]')
         expect(btn).to_be_visible()
         expect(btn).to_contain_text("Watch")
@@ -214,7 +214,7 @@ def test_v2_flight_other_flights_section(request, v2_server):
     base_url, flight_id = v2_server
     page = ctx.new_page()
     try:
-        page.goto(f"{base_url}/v2/flight/{flight_id}", wait_until="networkidle")
+        page.goto(f"{base_url}/flight/{flight_id}", wait_until="networkidle")
         # With only one flight in the seed, other_flights is empty → card hidden.
         expect(page.locator('[data-testid="page-flight"]')).to_be_visible()
     finally:
@@ -227,7 +227,7 @@ def test_v2_stats_emergency_squawks_link(request, v2_server):
     base_url, _ = v2_server
     page = ctx.new_page()
     try:
-        page.goto(f"{base_url}/v2/", wait_until="networkidle")
+        page.goto(f"{base_url}/", wait_until="networkidle")
         link = page.locator('[data-testid="stats-squawk-7700"]')
         expect(link).to_be_visible()
         href = link.get_attribute("href")
@@ -245,7 +245,7 @@ def test_v2_gallery_filter_click_drives_api_call(request, v2_server):
     base_url, _ = v2_server
     page = ctx.new_page()
     try:
-        page.goto(f"{base_url}/v2/gallery", wait_until="networkidle")
+        page.goto(f"{base_url}/gallery", wait_until="networkidle")
         # Capture the network request triggered by the click.
         with page.expect_request(
             lambda req: "/api/aircraft/flagged" in req.url and "flags=military" in req.url,
@@ -262,7 +262,7 @@ def test_v2_gallery_sort_change_drives_api_call(request, v2_server):
     base_url, _ = v2_server
     page = ctx.new_page()
     try:
-        page.goto(f"{base_url}/v2/gallery", wait_until="networkidle")
+        page.goto(f"{base_url}/gallery", wait_until="networkidle")
         page.locator('[data-testid="gallery-sort"]').click()
         expect(page.locator('[data-testid="gallery-sort-panel"]')).to_be_visible()
         with page.expect_request(
@@ -279,7 +279,7 @@ def test_v2_gallery_page_renders(request, v2_server, device_name):
     ctx = request.getfixturevalue(f"ctx_{device_name}")
     base_url, page = _new_page(ctx, v2_server)
     try:
-        page.goto(f"{base_url}/v2/gallery", wait_until="networkidle")
+        page.goto(f"{base_url}/gallery", wait_until="networkidle")
         expect(page.locator('[data-testid="page-gallery"]')).to_be_visible()
         expect(page.locator('[data-testid="gallery-filter-group"]')).to_be_visible()
         # Either the grid or the empty-state alert is visible.
@@ -295,7 +295,7 @@ def test_v2_stats_page_renders(request, v2_server, device_name):
     ctx = request.getfixturevalue(f"ctx_{device_name}")
     base_url, page = _new_page(ctx, v2_server)
     try:
-        page.goto(f"{base_url}/v2/", wait_until="networkidle")
+        page.goto(f"{base_url}/", wait_until="networkidle")
         expect(page.locator('[data-testid="page-stats"]')).to_be_visible()
         expect(page.locator("h1", has_text="Statistics")).to_be_visible()
         expect(page.locator('[data-testid="stats-summary-cards"]')).to_be_visible()
@@ -310,7 +310,7 @@ def test_v2_stats_custom_range_popover_apply(request, v2_server):
     ctx = request.getfixturevalue("ctx_iphone_15")
     base_url, page = _new_page(ctx, v2_server)
     try:
-        page.goto(f"{base_url}/v2/", wait_until="networkidle")
+        page.goto(f"{base_url}/", wait_until="networkidle")
         # Popover initially closed.
         expect(page.locator('[data-testid="range-custom-panel"]')).not_to_be_visible()
         page.locator('[data-testid="range-custom-toggle"]').click()
@@ -333,7 +333,7 @@ def test_v2_metrics_page_renders(request, v2_server, device_name):
     ctx = request.getfixturevalue(f"ctx_{device_name}")
     base_url, page = _new_page(ctx, v2_server)
     try:
-        page.goto(f"{base_url}/v2/metrics", wait_until="networkidle")
+        page.goto(f"{base_url}/metrics", wait_until="networkidle")
         expect(page.locator('[data-testid="page-metrics"]')).to_be_visible()
         # The seeded DB has no receiver_stats rows → no-data alert should
         # appear (proves the panels mount + the empty-state path works).
@@ -348,7 +348,7 @@ def test_v2_flight_page_renders(request, v2_server, device_name):
     base_url, page = _new_page(ctx, v2_server)
     flight_id = v2_server[1]
     try:
-        page.goto(f"{base_url}/v2/flight/{flight_id}", wait_until="networkidle")
+        page.goto(f"{base_url}/flight/{flight_id}", wait_until="networkidle")
         expect(page.locator('[data-testid="page-flight"]')).to_be_visible()
         expect(page.locator('[data-testid="flight-header-card"]')).to_be_visible()
         # Map + profile + positions table all render.
@@ -364,7 +364,7 @@ def test_v2_map_page_renders(request, v2_server, device_name):
     ctx = request.getfixturevalue(f"ctx_{device_name}")
     base_url, page = _new_page(ctx, v2_server)
     try:
-        page.goto(f"{base_url}/v2/map", wait_until="networkidle")
+        page.goto(f"{base_url}/map", wait_until="networkidle")
         expect(page.locator('[data-testid="page-map"]')).to_be_visible()
         # Controls always visible
         expect(page.locator('[data-testid="map-controls-overlay"]')).to_be_visible()
@@ -383,7 +383,7 @@ def test_v2_map_heatmap_toggle_fires_api_call(request, v2_server):
     base_url, _ = v2_server
     page = ctx.new_page()
     try:
-        page.goto(f"{base_url}/v2/map", wait_until="networkidle")
+        page.goto(f"{base_url}/map", wait_until="networkidle")
         # Window selector hidden when both layers are off
         expect(page.locator('[data-testid="map-window-selector"]')).not_to_be_visible()
         with page.expect_request(
@@ -403,7 +403,7 @@ def test_v2_map_coverage_toggle_fires_api_call(request, v2_server):
     base_url, _ = v2_server
     page = ctx.new_page()
     try:
-        page.goto(f"{base_url}/v2/map", wait_until="networkidle")
+        page.goto(f"{base_url}/map", wait_until="networkidle")
         with page.expect_request(
             lambda req: "/api/map/coverage" in req.url and "window=" in req.url,
             timeout=5000,
@@ -419,7 +419,7 @@ def test_v2_map_sidebar_list_opens(request, v2_server):
     base_url, _ = v2_server
     page = ctx.new_page()
     try:
-        page.goto(f"{base_url}/v2/map", wait_until="networkidle")
+        page.goto(f"{base_url}/map", wait_until="networkidle")
         expect(page.locator('[data-testid="map-sidebar-list"]')).not_to_be_visible()
         page.locator('[data-testid="map-toggle-list"]').click()
         expect(page.locator('[data-testid="map-sidebar-list"]')).to_be_visible()
@@ -437,7 +437,7 @@ def test_v2_map_playback_play_advances_time(request, v2_server):
     base_url, _ = v2_server
     page = ctx.new_page()
     try:
-        page.goto(f"{base_url}/v2/map", wait_until="networkidle")
+        page.goto(f"{base_url}/map", wait_until="networkidle")
         # Switch to rewind, dial back ~1 hour so there's lots of headroom.
         page.locator('[data-testid="map-mode-rewind"]').click()
         page.locator('[data-testid="map-jump-back-1h"]').click()
@@ -459,7 +459,7 @@ def test_v2_map_rewind_toggle_reveals_slider(request, v2_server):
     ctx = request.getfixturevalue("ctx_iphone_15")
     base_url, page = _new_page(ctx, v2_server)
     try:
-        page.goto(f"{base_url}/v2/map", wait_until="networkidle")
+        page.goto(f"{base_url}/map", wait_until="networkidle")
         # Initially no rewind slider — Live is the default mode.
         expect(page.locator('[data-testid="map-rewind-controls"]')).not_to_be_visible()
         # Switch to Rewind
@@ -476,7 +476,7 @@ def test_v2_aircraft_page_renders(request, v2_server, device_name):
     base_url, page = _new_page(ctx, v2_server)
     try:
         # The seeded fixture has icao=aabbcc with 1 flight.
-        page.goto(f"{base_url}/v2/aircraft/aabbcc", wait_until="networkidle")
+        page.goto(f"{base_url}/aircraft/aabbcc", wait_until="networkidle")
         expect(page.locator('[data-testid="page-aircraft"]')).to_be_visible()
         expect(page.locator('[data-testid="aircraft-info-card"]')).to_be_visible()
         # The flights table should render (seeded fixture has one flight).

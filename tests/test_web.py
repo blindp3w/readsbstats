@@ -756,32 +756,18 @@ class TestDbConnection:
 
 
 # ---------------------------------------------------------------------------
-# Compat redirects + JSON API for settings / feeders
-# (Jinja2 UI deleted at v2.0.0 cutover; only Telegram-pointed routes survive
-# as 302 redirects into the React SPA.)
+# /live compat redirect + JSON API for settings / feeders
+# (Jinja2 UI deleted at v2.0.0 cutover; SPA owns the root URL space so
+# /flight/{id} and /aircraft/{icao} are served by the SPA's catch-all
+# directly — no redirect. /live is the one alias that survives as a 302
+# because it's not a real SPA route, just a historical pointer at /map.)
 # ---------------------------------------------------------------------------
 
 class TestCompatRedirects:
-    def test_flight_redirects_to_v2(self, client):
-        r = client.get("/flight/42", follow_redirects=False)
-        assert r.status_code == 302
-        assert r.headers["location"].endswith("/v2/flight/42")
-
-    def test_aircraft_redirects_to_v2_lowercased(self, client):
-        r = client.get("/aircraft/AABBCC", follow_redirects=False)
-        assert r.status_code == 302
-        # ICAO hex normalised to lowercase + stripped of ~ prefix.
-        assert r.headers["location"].endswith("/v2/aircraft/aabbcc")
-
-    def test_aircraft_redirect_strips_tilde(self, client):
-        r = client.get("/aircraft/~deadbe", follow_redirects=False)
-        assert r.status_code == 302
-        assert r.headers["location"].endswith("/v2/aircraft/deadbe")
-
-    def test_live_redirects_to_v2_map(self, client):
+    def test_live_redirects_to_map(self, client):
         r = client.get("/live", follow_redirects=False)
         assert r.status_code == 302
-        assert r.headers["location"].endswith("/v2/map")
+        assert r.headers["location"].endswith("/map")
 
 
 class TestApiSettings:
@@ -839,97 +825,91 @@ class TestApiFeeders:
 
 
 class TestSpaMount:
-    """v2 React SPA coexistence mount.
+    """React SPA mount at root (post-v2.0.0 cutover).
 
-    The mount is registered at module-import time and gated by:
-      (1) config.ENABLE_V2 truthy
-      (2) frontend/dist/index.html exists
-      (3) frontend/dist/assets/ exists
-
-    Two test paths: one for when dist is absent (mount silently no-ops, every
-    /v2/* URL 404s), and one for when dist is built (shell + assets served,
-    catch-all returns shell for deep refresh).
+    The mount is registered at module-import time and gated by presence of
+    `frontend/dist/index.html` + `frontend/dist/assets/`. Missing dist →
+    mount silently doesn't register; every UI path 404s but /api/* keeps
+    working. /v2/* paths from the RC era 301-redirect to / for back-compat.
     """
 
-    def test_v2_root_404_when_dist_missing(self, client):
+    def test_root_404_when_dist_missing(self, client):
         if web.SPA_INDEX.is_file():
             pytest.skip("frontend/dist present — covered by dist-present tests")
-        r = client.get("/v2/", follow_redirects=False)
-        assert r.status_code == 404
-
-    def test_v2_deep_path_404_when_dist_missing(self, client):
-        if web.SPA_INDEX.is_file():
-            pytest.skip("frontend/dist present — covered by dist-present tests")
-        r = client.get("/v2/flight/123", follow_redirects=False)
-        assert r.status_code == 404
-
-    def test_root_404s_after_cutover(self, client):
-        # Jinja `/` was deleted at cutover; the SPA at /v2/ owns the UI now.
-        # Root path returns 404 unless the SPA later mounts there (commit B).
         r = client.get("/", follow_redirects=False)
         assert r.status_code == 404
 
-    def test_v2_root_returns_shell_when_dist_present(self, client):
+    def test_deep_path_404_when_dist_missing(self, client):
+        if web.SPA_INDEX.is_file():
+            pytest.skip("frontend/dist present — covered by dist-present tests")
+        r = client.get("/flight/123", follow_redirects=False)
+        assert r.status_code == 404
+
+    def test_root_returns_shell_when_dist_present(self, client):
         if not web.SPA_INDEX.is_file():
             pytest.skip("frontend/dist not built")
-        r = client.get("/v2/")
+        r = client.get("/")
         assert r.status_code == 200
         assert "text/html" in r.headers["content-type"]
-        # Critical: index.html must NEVER be cached — hashed asset URLs inside
-        # change every deploy. A cached HTML points at non-existent files.
+        # index.html must NEVER be cached — hashed asset URLs inside change
+        # every deploy. A cached shell points at non-existent files.
         assert r.headers.get("cache-control") == "no-store"
         # The shell should reference the prod base path.
-        assert b"/stats/v2/" in r.content
+        assert b"/stats/" in r.content
 
-    def test_v2_deep_refresh_returns_shell(self, client):
+    def test_deep_refresh_returns_shell(self, client):
         if not web.SPA_INDEX.is_file():
             pytest.skip("frontend/dist not built")
-        # React Router deep-refresh (e.g., user reloads /stats/v2/flight/123)
+        # React Router deep-refresh (e.g., user reloads /stats/flight/123)
         # must get the SPA shell so client-side routing can take over.
-        r = client.get("/v2/flight/123")
+        r = client.get("/flight/123")
         assert r.status_code == 200
         assert "text/html" in r.headers["content-type"]
 
-    def test_v2_missing_asset_404s_not_shell(self, client):
+    def test_missing_asset_404s_not_shell(self, client):
         if not web.SPA_INDEX.is_file():
             pytest.skip("frontend/dist not built")
         # If we returned the SPA shell here, missing-asset bugs would
         # masquerade as a blank page (browser tries to execute HTML as JS).
-        r = client.get("/v2/assets/does-not-exist.js", follow_redirects=False)
+        r = client.get("/assets/does-not-exist.js", follow_redirects=False)
         assert r.status_code == 404
 
-    def test_v2_dotted_path_with_known_ext_404s(self, client):
+    def test_dotted_path_with_known_ext_404s(self, client):
         if not web.SPA_INDEX.is_file():
             pytest.skip("frontend/dist not built")
-        # Any path that looks like an asset (known extension) but wasn't
-        # matched by /v2/assets/ should 404, not return the shell.
-        r = client.get("/v2/anywhere/foo.css", follow_redirects=False)
+        r = client.get("/anywhere/foo.css", follow_redirects=False)
         assert r.status_code == 404
 
-    def test_v2_built_asset_served(self, client):
+    def test_built_asset_served(self, client):
         if not web.SPA_INDEX.is_file():
             pytest.skip("frontend/dist not built")
-        # Find an actual built asset by reading the shell, then fetch it.
-        # NOTE: Starlette mounts match the literal mount path including
-        # root_path prefix. The TestClient doesn't strip root_path the way
-        # nginx does in production, so we hit the full /stats/v2/assets/...
-        # URL — same pattern as the existing /static mount.
-        shell = client.get("/v2/").text
+        shell = client.get("/").text
         import re
-        m = re.search(r'(/stats/v2/assets/[^"\s>]+)', shell)
+        m = re.search(r'(/stats/assets/[^"\s>]+)', shell)
         if not m:
             pytest.skip("no asset URL discovered in shell")
         r = client.get(m.group(1))
         assert r.status_code == 200, f"asset {m.group(1)} not served"
 
-    def test_v2_index_html_no_cache_control(self, client):
+    def test_index_html_no_cache_control(self, client):
         if not web.SPA_INDEX.is_file():
             pytest.skip("frontend/dist not built")
-        # Pinned in TestSpaMount.test_v2_root_returns_shell_when_dist_present,
-        # repeated here at deep-refresh too because the same header path is
-        # used and a regression could let one branch drift.
-        r = client.get("/v2/some/deep/path")
+        r = client.get("/some/deep/path")
         assert r.headers.get("cache-control") == "no-store"
+
+    def test_v2_path_redirects_to_root(self, client):
+        if not web.SPA_INDEX.is_file():
+            pytest.skip("frontend/dist not built")
+        r = client.get("/v2/flight/123", follow_redirects=False)
+        assert r.status_code == 301
+        assert r.headers["location"].endswith("/flight/123")
+
+    def test_v2_bare_redirects_to_root(self, client):
+        if not web.SPA_INDEX.is_file():
+            pytest.skip("frontend/dist not built")
+        r = client.get("/v2", follow_redirects=False)
+        assert r.status_code == 301
+        assert r.headers["location"].endswith("/")
 
 
 # ---------------------------------------------------------------------------
