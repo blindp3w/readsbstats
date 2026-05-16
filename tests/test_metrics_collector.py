@@ -406,22 +406,10 @@ def _insert_metric_row(conn, ts, signal=-15.0, noise=-35.0, messages=5000,
     conn.commit()
 
 
-class TestMetricsPage:
-    def test_metrics_page_returns_200(self, client):
-        resp = client.get("/metrics")
-        assert resp.status_code == 200
-        assert "Receiver Metrics" in resp.text
-
-    def test_metrics_page_no_data_message(self, client):
-        resp = client.get("/metrics")
-        assert resp.status_code == 200
-        assert "RSBS_METRICS_ENABLED" in resp.text  # hint shown when empty
-
-    def test_metrics_page_hides_message_with_data(self, client, db_conn):
-        _insert_metric_row(db_conn, int(time.time()), signal=-15.0)
-        resp = client.get("/metrics")
-        assert resp.status_code == 200
-        assert "RSBS_METRICS_ENABLED" not in resp.text
+# The Jinja /metrics page was deleted at v2.0.0 cutover; the React SPA at
+# /v2/metrics owns the UI. /api/metrics endpoint tests live in TestMetricsApi
+# below; the "no data" hint is now rendered client-side from the empty
+# /api/metrics response, so server-side rendering tests no longer apply.
 
 
 class TestMetricsApi:

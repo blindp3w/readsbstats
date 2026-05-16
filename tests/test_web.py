@@ -756,72 +756,46 @@ class TestDbConnection:
 
 
 # ---------------------------------------------------------------------------
-# HTML page routes
+# Compat redirects + JSON API for settings / feeders
+# (Jinja2 UI deleted at v2.0.0 cutover; only Telegram-pointed routes survive
+# as 302 redirects into the React SPA.)
 # ---------------------------------------------------------------------------
 
-class TestPageRoutes:
-    def test_stats_page_returns_html(self, client):
-        r = client.get("/")
-        assert r.status_code == 200
-        assert "text/html" in r.headers["content-type"]
+class TestCompatRedirects:
+    def test_flight_redirects_to_v2(self, client):
+        r = client.get("/flight/42", follow_redirects=False)
+        assert r.status_code == 302
+        assert r.headers["location"].endswith("/v2/flight/42")
 
-    def test_history_page_returns_html(self, client):
-        r = client.get("/history")
-        assert r.status_code == 200
-        assert "text/html" in r.headers["content-type"]
+    def test_aircraft_redirects_to_v2_lowercased(self, client):
+        r = client.get("/aircraft/AABBCC", follow_redirects=False)
+        assert r.status_code == 302
+        # ICAO hex normalised to lowercase + stripped of ~ prefix.
+        assert r.headers["location"].endswith("/v2/aircraft/aabbcc")
 
-    def test_flight_page_returns_html(self, client, db_conn):
-        fid = insert_flight(db_conn)
-        r = client.get(f"/flight/{fid}")
-        assert r.status_code == 200
-        assert "text/html" in r.headers["content-type"]
+    def test_aircraft_redirect_strips_tilde(self, client):
+        r = client.get("/aircraft/~deadbe", follow_redirects=False)
+        assert r.status_code == 302
+        assert r.headers["location"].endswith("/v2/aircraft/deadbe")
 
-    def test_aircraft_page_returns_html(self, client):
-        r = client.get("/aircraft/aabbcc")
-        assert r.status_code == 200
-        assert "text/html" in r.headers["content-type"]
-
-    def test_live_page_redirects_to_map(self, client):
+    def test_live_redirects_to_v2_map(self, client):
         r = client.get("/live", follow_redirects=False)
-        assert r.status_code == 301
-        assert r.headers["location"].endswith("/map")
+        assert r.status_code == 302
+        assert r.headers["location"].endswith("/v2/map")
 
-    def test_settings_page_returns_html(self, client):
-        r = client.get("/settings")
-        assert r.status_code == 200
-        assert "text/html" in r.headers["content-type"]
 
-    def test_settings_page_masks_telegram_token(self, client):
-        r = client.get("/settings")
-        from readsbstats import config
-        if config.TELEGRAM_TOKEN:
-            assert config.TELEGRAM_TOKEN not in r.text
-
-    def test_settings_page_does_not_leak_db_directory(self, client):
-        # The full DB path leaks filesystem layout (e.g. /mnt/ext/...).
-        # The settings page should display only the basename, not the parent dir.
-        from readsbstats import config
-        import os
-        r = client.get("/settings")
-        parent = os.path.dirname(os.path.abspath(config.DB_PATH))
-        # An empty parent means DB_PATH was a bare filename — nothing to leak.
-        if parent and parent != "/":
-            assert parent not in r.text, f"settings page leaks DB parent dir {parent}"
-
+class TestApiSettings:
     def test_api_settings_returns_masked_payload(self, client, monkeypatch):
         from readsbstats import config
-        # Force a value so we can assert it's NOT returned raw.
         monkeypatch.setattr(config, "TELEGRAM_TOKEN", "test-token-secret-xyz")
         monkeypatch.setattr(config, "TELEGRAM_CHAT_ID", "12345678")
         r = client.get("/api/settings")
         assert r.status_code == 200
         payload = r.json()
-        # Sensitive fields are masked, not leaked.
         assert payload["telegram_token"] == "configured"
         assert payload["telegram_chat_id"] == "configured"
         assert "test-token-secret-xyz" not in r.text
         assert "12345678" not in r.text
-        # Shape sanity — confirms key sections present.
         for key in ("lat", "lon", "poll_interval", "db_path", "page_size", "base_url"):
             assert key in payload, f"missing key {key}"
 
@@ -842,29 +816,26 @@ class TestPageRoutes:
         assert payload["telegram_token"] == "not set"
         assert payload["telegram_chat_id"] == "not set"
 
-    def test_watchlist_page_returns_html(self, client):
-        r = client.get("/watchlist")
-        assert r.status_code == 200
-        assert "text/html" in r.headers["content-type"]
 
-    def test_feeders_page_returns_html(self, client, monkeypatch):
-        import asyncio
-
+class TestApiFeeders:
+    def test_api_feeders_returns_json(self, client, monkeypatch):
         async def mock_feeders():
             return [{"name": "readsb", "unit": "readsb.service",
                      "systemd": "active", "overall": "ok"}]
-
         monkeypatch.setattr(web, "_check_all_feeders", mock_feeders)
-        r = client.get("/feeders")
+        r = client.get("/api/feeders")
         assert r.status_code == 200
-        assert "text/html" in r.headers["content-type"]
-        assert "readsb" in r.text
+        body = r.json()
+        assert body["has_feeders"] is True
+        assert any(f["name"] == "readsb" for f in body["feeders"])
 
-    def test_feeders_page_no_feeders(self, client, monkeypatch):
+    def test_api_feeders_empty_when_no_feeders_configured(self, client, monkeypatch):
         monkeypatch.setattr(config, "FEEDERS", [])
-        r = client.get("/feeders")
+        r = client.get("/api/feeders")
         assert r.status_code == 200
-        assert "No feeders configured" in r.text
+        body = r.json()
+        assert body["has_feeders"] is False
+        assert body["feeders"] == []
 
 
 class TestSpaMount:
@@ -892,10 +863,11 @@ class TestSpaMount:
         r = client.get("/v2/flight/123", follow_redirects=False)
         assert r.status_code == 404
 
-    def test_old_ui_unaffected_by_v2_mount(self, client):
-        r = client.get("/")
-        assert r.status_code == 200
-        assert "text/html" in r.headers["content-type"]
+    def test_root_404s_after_cutover(self, client):
+        # Jinja `/` was deleted at cutover; the SPA at /v2/ owns the UI now.
+        # Root path returns 404 unless the SPA later mounts there (commit B).
+        r = client.get("/", follow_redirects=False)
+        assert r.status_code == 404
 
     def test_v2_root_returns_shell_when_dist_present(self, client):
         if not web.SPA_INDEX.is_file():
@@ -2342,11 +2314,6 @@ class TestApiFlaggedAircraft:
         ac = r.json()["aircraft"][0]
         assert ac["thumbnail_url"] == "https://t.jpg"
         assert ac["photographer"] == "Bob"
-
-    def test_gallery_page_returns_html(self, client):
-        r = client.get("/gallery")
-        assert r.status_code == 200
-        assert "text/html" in r.headers["content-type"]
 
 
 # ---------------------------------------------------------------------------

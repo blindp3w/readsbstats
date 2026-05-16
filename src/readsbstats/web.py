@@ -24,9 +24,8 @@ from urllib.parse import urlparse
 import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse, Response
+from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
 from . import config, database, enrichment, geo, health, icao_ranges, photo_sources, route_enricher
@@ -65,9 +64,9 @@ async def _lifespan(app_: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(root_path=config.ROOT_PATH, docs_url=None, redoc_url=None, lifespan=_lifespan)
 app.add_middleware(GZipMiddleware, minimum_size=1000)
+# `/static` still serves /api/airspace's bundled GeoJSON and the favicon
+# fallback. The old Jinja JS/CSS subtrees were removed at v2.0.0 cutover.
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
-templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
-templates.env.globals["root_path"] = config.ROOT_PATH
 
 # ---------------------------------------------------------------------------
 # v2 SPA coexistence mount.  Serves the React build from frontend/dist/ at /v2/
@@ -171,17 +170,12 @@ def _set_cache(key: str, value: object) -> None:
     _cache[key] = (time.time(), value)
 
 
-# ---------------------------------------------------------------------------
-# Template helpers
-# ---------------------------------------------------------------------------
-
 def _fmt_ts(epoch: int | None) -> str:
+    """Format a Unix timestamp as 'YYYY-MM-DD HH:MM' UTC. Used by the CSV
+    export endpoint; empty string for None."""
     if epoch is None:
         return ""
     return datetime.fromtimestamp(epoch, tz=timezone.utc).strftime("%Y-%m-%d %H:%M")
-
-
-templates.env.filters["fmt_ts"] = _fmt_ts
 
 
 # ---------------------------------------------------------------------------
@@ -297,44 +291,35 @@ def _metrics_agg(col: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Page routes
+# Compat redirects — the Jinja UI is gone, but Telegram chat history
+# contains links to `/flight/{id}` and `/aircraft/{icao}`. Redirect those
+# into the React SPA at `/v2/...` so old messages keep working. `/live`
+# is similarly redirected (preserves the old behaviour where it pointed
+# at the live map).
+#
+# In commit B (SPA mounts at /), these redirects go away — the SPA's
+# catch-all serves /flight/{id} et al. directly.
 # ---------------------------------------------------------------------------
 
-@app.get("/", response_class=HTMLResponse)
-def page_stats(request: Request) -> HTMLResponse:
-    return templates.TemplateResponse(request, "stats.html")
 
-
-@app.get("/history", response_class=HTMLResponse)
-def page_index(request: Request) -> HTMLResponse:
-    return templates.TemplateResponse(request, "index.html")
-
-
-@app.get("/flight/{flight_id}", response_class=HTMLResponse)
-def page_flight(request: Request, flight_id: int) -> HTMLResponse:
-    return templates.TemplateResponse(request, "flight.html", {"flight_id": flight_id})
-
-
-@app.get("/aircraft/{icao_hex}", response_class=HTMLResponse)
-def page_aircraft(request: Request, icao_hex: str) -> HTMLResponse:
-    return templates.TemplateResponse(request, "aircraft.html",
-        {"icao_hex": icao_hex.lower().lstrip("~")})
-
-
-@app.get("/live", response_class=HTMLResponse)
-def page_live(request: Request) -> HTMLResponse:
-    from fastapi.responses import RedirectResponse
+def _redirect_to_v2(request: Request, path: str) -> RedirectResponse:
     root = request.scope.get("root_path", "").rstrip("/")
-    return RedirectResponse(url=root + "/map", status_code=301)
+    return RedirectResponse(url=f"{root}/v2{path}", status_code=302)
 
 
-@app.get("/map", response_class=HTMLResponse)
-def page_map(request: Request) -> HTMLResponse:
-    return templates.TemplateResponse(request, "map.html", {
-        "history_hours": config.MAP_HISTORY_HOURS,
-        "receiver_lat":  config.RECEIVER_LAT,
-        "receiver_lon":  config.RECEIVER_LON,
-    })
+@app.get("/flight/{flight_id}", include_in_schema=False)
+def redirect_flight(request: Request, flight_id: int) -> RedirectResponse:
+    return _redirect_to_v2(request, f"/flight/{flight_id}")
+
+
+@app.get("/aircraft/{icao_hex}", include_in_schema=False)
+def redirect_aircraft(request: Request, icao_hex: str) -> RedirectResponse:
+    return _redirect_to_v2(request, f"/aircraft/{icao_hex.lower().lstrip('~')}")
+
+
+@app.get("/live", include_in_schema=False)
+def redirect_live(request: Request) -> RedirectResponse:
+    return _redirect_to_v2(request, "/map")
 
 
 def _settings_payload() -> dict:
@@ -417,94 +402,6 @@ def _settings_payload() -> dict:
 @app.get("/api/settings")
 def api_settings() -> dict:
     return _settings_payload()
-
-
-@app.get("/settings", response_class=HTMLResponse)
-def page_settings(request: Request) -> HTMLResponse:
-    tok_masked = "configured" if config.TELEGRAM_TOKEN else "not set"
-    cid_masked = "configured" if config.TELEGRAM_CHAT_ID else "not set"
-    return templates.TemplateResponse(request, "settings.html", {
-        # Receiver
-        "lat":              config.RECEIVER_LAT,
-        "lon":              config.RECEIVER_LON,
-        "max_range":        config.RECEIVER_MAX_RANGE,
-        # Collector
-        "poll_interval":    config.POLL_INTERVAL_SEC,
-        "flight_gap":       config.FLIGHT_GAP_SEC,
-        "min_positions":    config.MIN_POSITIONS_KEEP,
-        "max_seen_pos":     config.MAX_SEEN_POS_SEC,
-        "max_speed_kts":    config.MAX_SPEED_KTS,
-        # Database — show only the basename to avoid leaking the parent dir
-        "db_path":          os.path.basename(config.DB_PATH) or "(default)",
-        "retention_days":   config.RETENTION_DAYS,
-        "purge_interval":   config.PURGE_INTERVAL_SEC,
-        # Enrichment
-        "photo_cache_days":    config.PHOTO_CACHE_DAYS,
-        "airspace_geojson":    config.AIRSPACE_GEOJSON or "(bundled poland.geojson)",
-        "route_cache_days":    config.ROUTE_CACHE_DAYS,
-        "route_interval":      config.ROUTE_ENRICH_INTERVAL,
-        "route_batch":         config.ROUTE_BATCH_SIZE,
-        "route_rate_limit":    config.ROUTE_RATE_LIMIT_SEC,
-        # External ADS-B enrichment
-        "adsbx_enabled":       config.ADSBX_ENABLED,
-        "adsbx_interval":      config.ADSBX_POLL_INTERVAL,
-        "adsbx_range":         config.ADSBX_RANGE_NM,
-        "adsbx_url":           config.ADSBX_API_URL,
-        # Receiver metrics
-        "metrics_enabled":     config.METRICS_ENABLED,
-        "metrics_interval":    config.METRICS_INTERVAL,
-        "stats_json":          config.STATS_JSON,
-        # Receiver health
-        "health_heartbeat_warn_s": config.HEALTH_HEARTBEAT_WARN_S,
-        "health_heartbeat_crit_s": config.HEALTH_HEARTBEAT_CRIT_S,
-        "health_aircraft_gap_s":   config.HEALTH_AIRCRAFT_GAP_S,
-        "health_noise_warn_db":    config.HEALTH_NOISE_WARN_DB,
-        "health_noise_crit_db":    config.HEALTH_NOISE_CRIT_DB,
-        "health_cpu_warn_pct":     config.HEALTH_CPU_WARN_PCT,
-        "health_cpu_crit_pct":     config.HEALTH_CPU_CRIT_PCT,
-        "health_baseline_weeks":   config.HEALTH_BASELINE_WEEKS,
-        "health_baseline_min_samples": config.HEALTH_BASELINE_MIN_SAMPLES,
-        "health_msg_drop_pct":     config.HEALTH_MSG_DROP_PCT,
-        "health_aircraft_drop_pct": config.HEALTH_AIRCRAFT_DROP_PCT,
-        "health_signal_drop_db":   config.HEALTH_SIGNAL_DROP_DB,
-        "health_gain_strong_pct":  config.HEALTH_GAIN_STRONG_PCT,
-        "health_range_short_days": config.HEALTH_RANGE_SHORT_DAYS,
-        "health_range_long_days":  config.HEALTH_RANGE_LONG_DAYS,
-        "health_range_ratio":      config.HEALTH_RANGE_RATIO,
-        # Web server
-        "web_host":         config.WEB_HOST,
-        "web_port":         config.WEB_PORT,
-        "root_path":        config.ROOT_PATH,
-        # UI
-        "page_size":        config.DEFAULT_PAGE_SIZE,
-        "max_page_size":    config.MAX_PAGE_SIZE,
-        # Telegram
-        "telegram_token":       tok_masked,
-        "telegram_chat_id":     cid_masked,
-        "telegram_summary_time": config.TELEGRAM_SUMMARY_TIME,
-        "telegram_units":       config.TELEGRAM_UNITS,
-        "base_url":             config.TELEGRAM_BASE_URL,
-    })
-
-
-@app.get("/watchlist", response_class=HTMLResponse)
-def page_watchlist(request: Request) -> HTMLResponse:
-    return templates.TemplateResponse(request, "watchlist.html")
-
-
-@app.get("/gallery", response_class=HTMLResponse)
-def page_gallery(request: Request) -> HTMLResponse:
-    return templates.TemplateResponse(request, "gallery.html")
-
-
-@app.get("/metrics", response_class=HTMLResponse)
-def page_metrics(request: Request) -> HTMLResponse:
-    has_data = db().execute(
-        "SELECT 1 FROM receiver_stats LIMIT 1"
-    ).fetchone() is not None
-    return templates.TemplateResponse(request, "metrics.html", {
-        "has_data": has_data,
-    })
 
 
 # ---------------------------------------------------------------------------
@@ -2465,10 +2362,3 @@ async def api_feeders() -> dict:
     return {"feeders": feeders, "has_feeders": bool(config.FEEDERS)}
 
 
-@app.get("/feeders", response_class=HTMLResponse)
-async def page_feeders(request: Request) -> HTMLResponse:
-    feeders = list(await _check_all_feeders()) if config.FEEDERS else []
-    return templates.TemplateResponse(request, "feeders.html", {
-        "feeders": feeders,
-        "has_feeders": bool(config.FEEDERS),
-    })

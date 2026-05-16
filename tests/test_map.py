@@ -85,27 +85,10 @@ class TestIndex:
 
 
 # ---------------------------------------------------------------------------
-# Tests: /map page
-# ---------------------------------------------------------------------------
-
-class TestMapPage:
-    def test_returns_html(self, client):
-        resp = client.get("/map")
-        assert resp.status_code == 200
-        assert b"map-full" in resp.content
-        assert b"map-slider" in resp.content
-
-    def test_contains_history_hours(self, client):
-        resp = client.get("/map")
-        assert str(config.MAP_HISTORY_HOURS).encode() in resp.content
-
-    def test_map_link_in_nav(self, client):
-        resp = client.get("/map")
-        assert b"/map" in resp.content
-
-
-# ---------------------------------------------------------------------------
 # Tests: /api/map/snapshot
+# (The /map Jinja page was deleted at v2.0.0 cutover; the React SPA at
+#  /v2/map owns the live-map UI. The /live compat redirect → /v2/map is
+#  tested in test_web.py::TestCompatRedirects.)
 # ---------------------------------------------------------------------------
 
 class TestMapSnapshot:
@@ -224,7 +207,8 @@ class TestMapSnapshot:
         assert "dest_icao" in ac
         assert ac["seconds_ago"] >= 0
 
-    def test_live_redirects_to_map(self, client):
+    def test_live_redirects_to_v2_map(self, client):
+        # Compat redirect after Jinja UI deletion — /live → /v2/map (302).
         r = client.get("/live", follow_redirects=False)
-        assert r.status_code == 301
-        assert r.headers["location"].endswith("/map")
+        assert r.status_code == 302
+        assert r.headers["location"].endswith("/v2/map")
