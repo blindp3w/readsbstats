@@ -63,7 +63,7 @@ jobs:
       - name: Install frontend dependencies
         if: matrix.python-version == '3.12'
         working-directory: frontend
-        run: npm ci --no-audit --no-fund --verbose 2>&1 | tail -200
+        run: npm ci --no-audit --no-fund
 
       - name: Build frontend (tsc + Vite)
         if: matrix.python-version == '3.12'
