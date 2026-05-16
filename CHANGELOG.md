@@ -2,6 +2,74 @@
 
 ## Unreleased
 
+### Changed — CI workflow swapped vanilla-JS tests for frontend build + Vitest
+
+`.github/workflows/test.yml` previously ran `node --check static/js/*.js`
+and `node --test tests/js/test_*.mjs` — both directories were deleted at
+v2.0.0 cutover, so every CI run on `main` failed. Replaced with
+`corepack enable && corepack prepare npm@11 --activate` +
+`npm ci --no-audit --no-fund` + `npm run build` (tsc -b + vite build) +
+`npm test` (Vitest, 43 tests), all inside `frontend/`. Gated to the
+Python 3.12 matrix slot. corepack used to swap Node 22's broken bundled
+npm 10.9.4 (`Cannot find module 'promise-retry'` on `-g install`).
+
+### Added — `frontend/.npmrc` registry pin
+
+Pins `registry=https://registry.npmjs.org/` so lockfile regenerations on
+the maintainer's dev machine (where `~/.npmrc` points at a company
+artifactory) produce clean output that GitHub runners can actually fetch.
+Without this pin, `npm ci` on CI hangs ~72 s and exits with the
+misleading `Exit handler never called!` error.
+
+### Fixed — `frontend/package-lock.json` regenerated, history rewritten
+
+The lockfile that originally shipped with v2.0.0-rc.1 / v2.0.0 contained
+507 `resolved` URLs pointing to an internal company artifactory (a
+side-effect of the maintainer's `~/.npmrc` default). Lockfile regenerated
+against the public registry; git history rewritten with `git filter-repo`
+to strip the same URLs from every historical blob in two prior commits;
+force-pushed to `origin/main`. `v2.0.0` and `v2.0.0-rc.1` tags also
+force-pushed to the rewritten SHAs; stale `feat/react-ui` branch deleted
+from remote. No code or feature change.
+
+A local `.git/hooks/pre-commit` (not tracked) now greps staged diffs for
+the offending hostnames and rejects the commit, as a backstop.
+
+## 2.0.0 — 2026-05-16
+
+### Removed — Jinja2 UI
+
+The Jinja2 templates, vanilla JS, vendored uPlot/Leaflet assets, the v1
+Playwright smoke file, and the `RSBS_ENABLE_V2` env-var kill-switch are
+all deleted. The React SPA from v2.0.0-rc.1 is now the only UI, mounted
+directly at `/stats/`. `static/airspace/` is the only surviving subdir
+of `static/`.
+
+### Changed — SPA mount moved from `/stats/v2/` to `/stats/`
+
+Vite `base: '/stats/'`; React Router `basename: '/stats'`. The
+`/stats/v2/*` URL space remains as a **301 redirect** to `/stats/*` so
+v2.0.0-rc.1-era bookmarks keep working. `/live` is still a 302 to
+`/map` (historical alias). The SPA catch-all is registered at the END
+of `web.py` so it never shadows the `/api/*` routes.
+
+### Added — nginx asset-cache + auto-reload in update.sh
+
+`nginx-readsbstats.conf` gained a `/stats/assets/` nested location that
+adds `expires 1y` + `Cache-Control: public, immutable` for the hashed
+asset URLs. `index.html` continues to serve with `Cache-Control:
+no-store` (every deploy rewrites the asset hashes inside it).
+`scripts/update.sh` now runs `nginx -t && systemctl reload nginx` after
+systemd daemon-reload, so deploys pick up nginx changes automatically.
+
+### Tests
+
+- **1190 Python + 43 Vitest + 81 Playwright = 1314** passing.
+- The 69 vanilla-JS tests (`tests/js/`) and 35 v1 Playwright tests are
+  deleted alongside the v1 surface they covered.
+
+## 2.0.0-rc.1 — 2026-05-16
+
 ### Changed — web service memory cap raised (384M → 1024M)
 
 `systemd/readsbstats-web.service` `MemoryMax` bumped from 384M to 1024M.
@@ -18,7 +86,7 @@ subsequent toggles cost nothing.
 ### Added — v2 React SPA (coexists with the Jinja2 UI)
 
 A complete React + Vite + TypeScript single-page app rebuild of the v1
-Jinja2 UI now ships alongside the original. Mounted at `/stats/v2/` whenever
+Jinja2 UI ships alongside the original. Mounted at `/stats/v2/` whenever
 `RSBS_ENABLE_V2=1` (default) AND `frontend/dist/` is built; otherwise the
 mount silently doesn't register and the Jinja2 UI at `/stats/` is unaffected.
 The Jinja2 UI is unchanged — no routes deleted, no behaviour modified.

@@ -162,7 +162,7 @@ For development and testing (includes pytest, coverage):
 bash scripts/dev.sh
 ```
 
-Opens at **`http://127.0.0.1:8080/`** against the local database. `--reload` is enabled, so saving any `.py` or template file restarts the server automatically.
+Opens at **`http://127.0.0.1:8080/`** against the local database. `--reload` is enabled, so saving any `.py` file restarts the server automatically. To iterate on the React SPA, run `( cd frontend && npm run dev )` in a second terminal — Vite's dev server proxies API calls to uvicorn.
 
 ### Test the collector
 
@@ -183,10 +183,8 @@ The simulator writes 8 aircraft orbiting Warsaw every 5 seconds in readsb's airc
 ### Running tests
 
 ```bash
-.venv/bin/pytest                                              # 1202 Python tests
-node --test tests/js/test_*.mjs                               # 69 JS tests (Node 22+)
+.venv/bin/pytest                                              # 1190 Python tests
 ( cd frontend && npm test )                                   # 43 Vitest tests (React unit, jsdom)
-for f in static/js/*.js; do node --check "$f"; done           # JS syntax check
 ```
 
 To see coverage:
@@ -209,16 +207,11 @@ playwright install chromium webkit
 Run:
 
 ```bash
-pytest tests/ui/ -v -m ui          # all 35 tests (7 devices × 5 pages)
-pytest tests/ui/ -v -m ui -k "lenovo_portrait"   # single device
-pytest tests/ui/ -v -m ui -k "statistics"        # single page across all devices
+pytest tests/ui/ -v -m ui          # all 81 React SPA tests
+pytest tests/ui/ -v -m ui -k "settings"          # single page across the suite
 ```
 
-Devices: iPhone 15 (393 px, WebKit), iPhone 15 Pro Max (430 px, WebKit), iPad Pro 11 (834 px, WebKit), Pixel 7 (412 px, Chromium), Galaxy S24 (360 px, Chromium), Lenovo IdeaTab 11 landscape (1180 px, Chromium), Lenovo IdeaTab 11 portrait (800 px, Chromium).
-
-Pages: `/` (statistics), `/map`, `/live` (redirect check), `/history`, `/flight/{id}`.
-
-Screenshots are saved to `tests/ui/screenshots/{device}/{page}.png` (gitignored, for visual inspection after a run).
+Screenshots are saved to `tests/ui/screenshots/` (gitignored, for visual inspection after a run).
 
 | Test file | What it covers |
 |---|---|
@@ -240,13 +233,9 @@ Screenshots are saved to `tests/ui/screenshots/{device}/{page}.png` (gitignored,
 | `tests/test_import_rrd.py` | RRD fetch parsing, DERIVE conversion, multi-tier merge |
 | `tests/test_health.py` | Receiver health: hard rules, hour-of-week baselines, gain hints, severity aggregation |
 | `tests/test_map.py` | `/map` page route, `/api/map/snapshot` live and historical snapshots, trail, sidebar fields, `/live` redirect |
-| `tests/js/test_units.mjs` | JS formatters: `fmtAlt`/`fmtSpd`/`fmtDist`/`fmtClimb`, labels, `getUnits`/`setUnits` |
-| `tests/js/test_table_utils.mjs` | JS `flagBadge` bitmask interpretation (military precedence, all flag combinations) |
-| `tests/js/test_flight_detail.mjs` | `airspacePopup` HTML escaping — XSS rejection across all interpolated fields |
-| `tests/ui/test_mobile_smoke.py` | Playwright (Jinja2 UI): layout, element visibility, no horizontal overflow at 7 mobile/tablet viewports across 5 pages |
 | `tests/ui/test_v2_smoke.py` | Playwright (React SPA): 81 tests covering settings, watchlist (with CSRF regression), feeders, history (incl. URL state persistence), gallery (filter + sort drive the API), aircraft + watch toggle, stats + emergency-squawk links + custom range popover, metrics, flight detail, map (live/rewind, mode toggle, heatmap + coverage API toggles, sidebar list, playback advances time), nav live badge |
 
-Python tests use an in-memory SQLite database — no Pi required. JS tests use Node 22's built-in `node --test` runner with `vm`-sandboxed loading; no npm/package.json/node_modules. Vitest tests run inside `frontend/` against jsdom (units store, format helpers, CSRF wrapper, safe URL allowlist). Playwright UI tests are excluded from the default `pytest` run and CI — they require a one-time local browser install, plus a built `frontend/dist/` for the v2 suite.
+Python tests use an in-memory SQLite database — no Pi required. Vitest tests run inside `frontend/` against jsdom (units store, format helpers, CSRF wrapper, safe URL allowlist). Playwright UI tests are excluded from the default `pytest` run and CI — they require a one-time local browser install and a built `frontend/dist/`.
 
 ### Deploy to the Pi
 
@@ -352,7 +341,6 @@ Environment="RSBS_FLIGHT_GAP=1200"
 | `RSBS_TELEGRAM_BASE_URL` | `http://homepi.local/stats` | Base URL used for profile links in Telegram messages. Set this to the Pi's LAN IP if you read Telegram on a phone where the `homepi.local` mDNS name won't resolve |
 | `RSBS_MAP_HISTORY_HOURS` | `24` | How many hours back the live map's rewind slider can reach (1–168) |
 | `RSBS_HEALTH_*` | _(see /settings)_ | Health-dashboard thresholds — heartbeat warn/critical, noise floor, CPU, baseline lookback, drop percentages, gain saturation, range-trend ratio. All effective values are listed on the `/settings` page; defaults are tuned for a stock readsb + Pi 4 setup |
-| `RSBS_ENABLE_V2` | `1` | Mount the React SPA at `/stats/v2/` alongside the Jinja2 UI at `/stats/`. Set to `0` to disable the SPA entirely (e.g. as an instant rollback if a v2 deploy breaks anything). The Jinja UI is unaffected either way. |
 
 ### Logging
 
@@ -506,7 +494,7 @@ Both services are configured to be polite to the Pi:
 | Service | CPU quota | Memory limit |
 |---|---|---|
 | collector | 15% | 192 MB |
-| web server | 20% | 384 MB |
+| web server | 20% | 1024 MB |
 
 Database growth is roughly **50–150 MB/month** depending on local air traffic, at 5-second polling and 90-day retention.
 
@@ -560,31 +548,12 @@ readsbstats/
 │   ├── purge_ghosts.py         # One-shot cleanup: removes ghost positions
 │   ├── purge_bad_gs.py         # One-shot cleanup: nulls implausible gs values
 │   └── purge_mlat_gs_spikes.py # One-shot cleanup: nulls MLAT gs acceleration spikes
-├── tests/                      # pytest suite (1202 tests) + JS tests (tests/js/, 69 tests) + Playwright UI tests (tests/ui/, 35 v1 + 81 v2)
-├── frontend/                   # React 19 + Vite 8 SPA mounted at /stats/v2/ (43 Vitest unit tests)
-├── templates/
-│   ├── base.html               # Shared layout, nav bar with unit selector
-│   ├── index.html              # Flight list
-│   ├── flight.html             # Flight detail
-│   ├── map.html                # Full-screen live map with rewind and aircraft sidebar
-│   ├── aircraft.html           # Per-aircraft history
-│   ├── stats.html              # Statistics
-│   ├── gallery.html            # Flagged aircraft card gallery
-│   ├── watchlist.html          # Aircraft watchlist management
-│   └── settings.html           # Runtime settings (read-only display)
+├── tests/                      # pytest suite (1190 tests) + Playwright UI tests (tests/ui/, 81 tests)
+├── frontend/                   # React 19 + Vite 7 SPA mounted at /stats/ (43 Vitest unit tests)
 ├── static/
 │   ├── favicon.svg             # App favicon (SVG — modern browsers)
 │   ├── favicon.png             # App favicon (PNG 512×512 — fallback)
-│   ├── css/app.css
-│   └── js/
-│       ├── units.js            # Unit conversion helpers (aeronautical/metric/imperial)
-│       ├── flights.js          # Flight list page
-│       ├── flight_detail.js    # Per-flight map, photo, and detail page
-│       ├── map.js              # Full-screen live map: aircraft icons, rewind, sidebar
-│       ├── stats.js            # Statistics charts
-│       ├── aircraft.js         # Per-aircraft history + Watch button
-│       ├── gallery.js          # Flagged aircraft card gallery
-│       └── watchlist.js        # Watchlist management page
+│   └── airspace/               # Bundled airspace GeoJSON (Warsaw-area zones)
 ├── systemd/
 │   ├── readsbstats-collector.service
 │   ├── readsbstats-web.service
@@ -647,32 +616,41 @@ The web server exposes a JSON API alongside the HTML pages:
 | GET | `/api/watchlist` | List all watchlist entries (with airborne flag) |
 | POST | `/api/watchlist` | Add a watchlist entry (`match_type`, `value`, optional `label`) |
 | DELETE | `/api/watchlist/{id}` | Remove a watchlist entry |
-| GET | `/api/settings` | Read-only runtime settings dict (masked secrets); shared by the Jinja `/settings` page and `/stats/v2/settings` |
-| GET | `/api/feeders` | Feeder service status + log/Mode-S details; same shape as the Jinja `/feeders` template uses |
+| GET | `/api/settings` | Read-only runtime settings dict (masked secrets); consumed by the SPA `/settings` page |
+| GET | `/api/feeders` | Feeder service status + log/Mode-S details; consumed by the SPA `/feeders` page |
 
-## React SPA (v2 coexistence)
+## React SPA
 
-Alongside the Jinja2 UI at `/stats/`, a React + Vite single-page app is mounted
-at `/stats/v2/` whenever `RSBS_ENABLE_V2=1` (default) **and** `frontend/dist/`
-is built. Either condition false → the SPA silently doesn't register; the
-Jinja UI is completely unaffected.
+As of **v2.0.0 (2026-05-16)** the React + Vite single-page app is mounted
+directly at `/stats/`. The prior Jinja2 UI has been removed in full —
+`templates/`, the vanilla `static/js/`, `static/css/app.css`, the vendored
+Leaflet/uPlot assets, and the `tests/js/` JS suite are all gone (only
+`static/airspace/` survives under `static/`). The SPA mount is unconditional;
+it registers whenever `frontend/dist/index.html` exists. There is no
+`RSBS_ENABLE_V2` kill-switch any more — rollback is `git revert` the cutover
+commits and redeploy.
+
+For back-compat with old bookmarks and Telegram message history:
+
+- `/stats/v2/*` returns a **301 redirect** to the corresponding `/stats/*` URL.
+- `/live` returns a **302 redirect** to `/map` (unchanged from v1).
 
 | External URL | Page |
 |---|---|
-| `/stats/v2/` | Statistics (summary cards, hourly/daily bar charts, polar range plot, activity heatmap, top types/airlines/countries/routes/airports, frequent aircraft, new aircraft, emergency squawks, personal records) |
-| `/stats/v2/history` | Flight history table with filters (date range, ICAO, callsign, registration, type, source, flag, squawk), sort, pagination, CSV export |
-| `/stats/v2/flight/{id}` | Flight detail — Leaflet route map, altitude+speed Recharts profile, position log, "Other flights by this aircraft" |
-| `/stats/v2/aircraft/{icao}` | Per-aircraft history — info card, flights table, **+ Watch** / **✓ Watching** toggle |
-| `/stats/v2/gallery` | Flagged aircraft gallery with filter pills + sort popover |
-| `/stats/v2/watchlist` | Watchlist CRUD with Radix Dialog confirm |
-| `/stats/v2/feeders` | Feeder status table |
-| `/stats/v2/metrics` | 11 Recharts time-series panels + clickable health banner |
-| `/stats/v2/settings` | Runtime settings (read-only, same source as Jinja `/settings`) |
-| `/stats/v2/map` | Live aircraft map (react-leaflet) — Live/Rewind toggle, rewind slider, per-aircraft side panel, heatmap layer + 24h/7d/30d/all window selector, coverage range overlay, playback (play/pause + ±10 m / ±1 h jump + 1×/2×/5×/10× speed), aircraft list panel |
+| `/stats/` | Statistics (summary cards, hourly/daily bar charts, polar range plot, activity heatmap, top types/airlines/countries/routes/airports, frequent aircraft, new aircraft, emergency squawks, personal records) |
+| `/stats/history` | Flight history table with filters (date range, ICAO, callsign, registration, type, source, flag, squawk), sort, pagination, CSV export |
+| `/stats/flight/{id}` | Flight detail — Leaflet route map, altitude+speed Recharts profile, position log, "Other flights by this aircraft" |
+| `/stats/aircraft/{icao}` | Per-aircraft history — info card, flights table, **+ Watch** / **✓ Watching** toggle |
+| `/stats/gallery` | Flagged aircraft gallery with filter pills + sort popover |
+| `/stats/watchlist` | Watchlist CRUD with Radix Dialog confirm |
+| `/stats/feeders` | Feeder status table |
+| `/stats/metrics` | 11 Recharts time-series panels + clickable health banner |
+| `/stats/settings` | Runtime settings (read-only) |
+| `/stats/map` | Live aircraft map (react-leaflet) — Live/Rewind toggle, rewind slider, per-aircraft side panel, heatmap layer + 24h/7d/30d/all window selector, coverage range overlay, playback (play/pause + ±10 m / ±1 h jump + 1×/2×/5×/10× speed), aircraft list panel |
 
 The nav shows a **live aircraft count badge** that polls `/api/live` every 15 s
-and a units selector (Aeronautical / Metric / Imperial) — same `rsbs_units`
-localStorage key as the Jinja UI so preferences carry over.
+and a units selector (Aeronautical / Metric / Imperial), persisted to the
+`rsbs_units` localStorage key.
 
 **Build & deploy:**
 
@@ -683,40 +661,28 @@ npm run build   # → frontend/dist/
 # then your usual rsync + `sudo bash /opt/readsbstats/scripts/update.sh`
 ```
 
+`frontend/.npmrc` pins `registry=https://registry.npmjs.org/` so that a dev
+machine's `~/.npmrc` pointing at a company artifactory can't bake internal
+URLs into the lockfile (which would hang CI on `npm ci`).
+
 `scripts/update.sh` aborts with "rebuild first" if `frontend/dist/index.html`
-is older than anything under `frontend/src/`, and atomic-swaps `dist.new/`
-into place on the Pi so a half-finished rsync never serves a broken page.
+is older than anything under `frontend/src/`, atomic-swaps `dist.new/`
+into place on the Pi so a half-finished rsync never serves a broken page,
+and runs `nginx -t && systemctl reload nginx` after the systemd
+daemon-reload. The nginx config includes a `/stats/assets/` block that
+serves the hashed Vite asset bundles with `Cache-Control: public, immutable,
+max-age=31536000`.
 
-**Instant rollback:** `sudo systemctl edit readsbstats-web` →
-`Environment=RSBS_ENABLE_V2=0` → `sudo systemctl restart readsbstats-web`.
-`/stats/v2/*` returns 404; `/stats/*` keeps working.
+**Known caveats:**
 
-**Known v2 caveats during coexistence:**
-
-- `/stats/v2/map`'s **heatmap window selector** has working `24h` (fast,
-  cached 5 min) and `7d` (~10–20 s on first hit, cached 30 min) options.
-  `30d` and `all` currently return 504 from nginx — SQLite's
-  single-threaded `GROUP BY` over millions of positions exceeds the 60 s
-  proxy timeout. The SPA defaults to `24h` for that reason. Fix planned
-  post-cutover via DuckDB's `sqlite_scanner` extension (same SQLite file,
-  vectorised multi-core aggregation).
-- **Dark mode only.** Light mode is on the post-cutover backlog.
-- **Telegram alert URLs still point at `/stats/`** (the Jinja UI) for
-  back-compat. Cutover commit 1 will turn those Jinja routes into 302
-  redirects so old chat history keeps working when the SPA owns the URL
-  space.
-
-**Roadmap to v2.0.0 final** (each step independently revertable):
-
-1. **Cutover commit 1** — Jinja `/flight/{id}` + `/aircraft/{icao}` flip
-   to 302 redirects to `/v2/...`. Telegram links keep working.
-2. **Grace period** of ≥ 1 week of real-world v2 use.
-3. **Cutover commit 2** — Remove the Jinja UI: delete `templates/`,
-   `static/js/*.js`, `static/css/app.css`, `static/vendor/uPlot.*`,
-   `tests/js/`, and the v1 Playwright file. Strip Jinja imports + every
-   `TemplateResponse` from `web.py`.
-4. **Cutover commit 3** — Swap the React mount from `/v2/` to `/`. Drop
-   `RSBS_ENABLE_V2`. Update the nginx asset-cache block path.
+- The map's **heatmap window selector** has working `24h` (fast, cached
+  5 min) and `7d` (~10–20 s on first hit, cached 30 min) options. `30d` and
+  `all` currently return 504 from nginx — SQLite's single-threaded
+  `GROUP BY` over millions of positions exceeds the 60 s proxy timeout. The
+  SPA defaults to `24h` for that reason. Fix planned via DuckDB's
+  `sqlite_scanner` extension (same SQLite file, vectorised multi-core
+  aggregation).
+- **Dark mode only** for now. Light mode is on the backlog.
 
 ## License
 
