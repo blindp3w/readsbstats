@@ -44,14 +44,20 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
 
-      - name: Syntax-check JS files
+      - name: Install frontend dependencies
         if: matrix.python-version == '3.12'
-        run: |
-          for f in static/js/*.js; do
-            node --check "$f" || { echo "Syntax error in $f"; exit 1; }
-          done
+        working-directory: frontend
+        run: npm ci
 
-      - name: Run JS unit tests
+      - name: Build frontend (tsc + Vite)
         if: matrix.python-version == '3.12'
-        run: node --test tests/js/test_*.mjs
+        working-directory: frontend
+        run: npm run build
+
+      - name: Run frontend unit tests (Vitest)
+        if: matrix.python-version == '3.12'
+        working-directory: frontend
+        run: npm test
