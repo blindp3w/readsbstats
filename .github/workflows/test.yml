@@ -61,14 +61,9 @@ jobs:
           npm --version
 
       - name: Install frontend dependencies
-        # --maxsockets=1 serialises HTTP fetches. Our lockfile has 70+
-        # platform-specific optional packages; parallel resolution
-        # trips npm/cli#4828 ("Exit handler never called!") on hosted
-        # runners regardless of npm version. Slower (~2 min vs 30 s)
-        # but deterministic.
         if: matrix.python-version == '3.12'
         working-directory: frontend
-        run: npm ci --no-audit --no-fund --maxsockets=1
+        run: npm ci --no-audit --no-fund --verbose 2>&1 | tail -200
 
       - name: Build frontend (tsc + Vite)
         if: matrix.python-version == '3.12'
