@@ -1,0 +1,104 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="50%" r="50%">
+      <stop offset="0%"   stop-color="#0d2318"/>
+      <stop offset="70%"  stop-color="#071510"/>
+      <stop offset="100%" stop-color="#030a07"/>
+    </radialGradient>
+    <filter id="glow">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="3.5" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="softglow">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="2" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <clipPath id="clip">
+      <circle cx="256" cy="256" r="248"/>
+    </clipPath>
+  </defs>
+
+  <!-- Background -->
+  <circle cx="256" cy="256" r="256" fill="url(#bg)"/>
+
+  <!-- Grid: crosshairs + diagonals + concentric rings -->
+  <g clip-path="url(#clip)" stroke="#00dd66" fill="none" opacity="0.28">
+    <line x1="8"   y1="256" x2="504" y2="256" stroke-width="0.8"/>
+    <line x1="256" y1="8"   x2="256" y2="504" stroke-width="0.8"/>
+    <line x1="81"  y1="81"  x2="431" y2="431" stroke-width="0.5"/>
+    <line x1="431" y1="81"  x2="81"  y2="431" stroke-width="0.5"/>
+    <circle cx="256" cy="256" r="58"  stroke-width="0.8"/>
+    <circle cx="256" cy="256" r="113" stroke-width="0.8"/>
+    <circle cx="256" cy="256" r="168" stroke-width="0.8"/>
+    <circle cx="256" cy="256" r="223" stroke-width="0.8"/>
+  </g>
+
+  <!-- Radar sweep sector: 60° arc clockwise from top
+       top (270°): (256, 56)
+       330°:       (256+200·sin60°, 256−200·cos60°) = (429, 156) -->
+  <path d="M256,256 L256,56 A200,200 0 0,1 429,156 Z"
+        fill="#00ff88" fill-opacity="0.07" clip-path="url(#clip)"/>
+
+  <!-- Sweep trailing glow gradient via stacked translucent sectors -->
+  <path d="M256,256 L256,56 A200,200 0 0,1 363,88 Z"
+        fill="#00ff88" fill-opacity="0.04" clip-path="url(#clip)"/>
+
+  <!-- Sweep line -->
+  <line x1="256" y1="256" x2="429" y2="156"
+        stroke="#00ff88" stroke-width="2.5" stroke-linecap="round"
+        opacity="0.85" filter="url(#glow)"/>
+
+  <!-- Outer border -->
+  <circle cx="256" cy="256" r="248"
+          fill="none" stroke="#00dd66" stroke-width="3" opacity="0.55"/>
+
+  <!-- Aircraft blips -->
+  <!-- A — near sweep line, freshly lit -->
+  <g filter="url(#softglow)">
+    <circle cx="358" cy="146" r="7"  fill="#00ff88"/>
+    <circle cx="358" cy="146" r="16" fill="none" stroke="#00ff88" stroke-width="1.5" opacity="0.5"/>
+    <circle cx="358" cy="146" r="27" fill="none" stroke="#00ff88" stroke-width="0.8" opacity="0.22"/>
+  </g>
+  <!-- B -->
+  <g opacity="0.72">
+    <circle cx="172" cy="318" r="5"  fill="#00cc55"/>
+    <circle cx="172" cy="318" r="13" fill="none" stroke="#00cc55" stroke-width="1.2" opacity="0.38"/>
+  </g>
+  <!-- C -->
+  <circle cx="382" cy="338" r="4"   fill="#009944" opacity="0.62"/>
+  <!-- D -->
+  <circle cx="143" cy="188" r="3.5" fill="#00aa44" opacity="0.55"/>
+  <!-- E — far ring -->
+  <circle cx="310" cy="96"  r="3"   fill="#007733" opacity="0.45"/>
+
+  <!-- Airplane — top-down silhouette, rotated 30° CW, pointing upper-right -->
+  <g transform="translate(256,256) rotate(30)" filter="url(#glow)">
+    <!-- Fuselage -->
+    <path d="M0,-40
+             C 3.5,-32  4.5,-20  4.5,-8
+             L 4.5, 30
+             C 4.5, 32  2.5, 34  0, 34
+             C-2.5, 34 -4.5, 32 -4.5, 30
+             L-4.5,-8
+             C-4.5,-20 -3.5,-32  0,-40 Z"
+          fill="white"/>
+    <!-- Right wing -->
+    <path d="M 4,-4  L 42,18 C 44,19 44,22 42,23
+             L 30,26 C 28,26 26,25 25,23
+             L  4, 8 Z"
+          fill="white"/>
+    <!-- Left wing -->
+    <path d="M-4,-4  L-42,18 C-44,19 -44,22 -42,23
+             L-30,26 C-28,26 -26,25 -25,23
+             L -4, 8 Z"
+          fill="white"/>
+    <!-- Right tail fin -->
+    <path d="M 3.5,22  L 20,35 C 21,36 21,38 20,38.5
+             L 13,40  L  4.5,29 Z"
+          fill="white"/>
+    <!-- Left tail fin -->
+    <path d="M-3.5,22  L-20,35 C-21,36 -21,38 -20,38.5
+             L-13,40  L -4.5,29 Z"
+          fill="white"/>
+  </g>
+</svg>

@@ -29,6 +29,31 @@ if [[ ! -f "$SRC_DIR/src/readsbstats/collector.py" || ! -f "$SRC_DIR/src/readsbs
   exit 1
 fi
 
+# ---- Validate frontend build freshness (if frontend/ exists) ----------------
+# The React SPA is built on the dev machine; the Pi never installs Node. We
+# ship the dist/ tree via rsync. Without a freshness check, "git pull && bash
+# update.sh" silently ships yesterday's dist whenever the developer forgot to
+# rebuild. Compare mtimes of frontend/src + package-lock.json against
+# frontend/dist/index.html and abort if anything's newer.
+FRONTEND_DIR="$SRC_DIR/frontend"
+if [[ -d "$FRONTEND_DIR/src" ]]; then
+  if [[ ! -f "$FRONTEND_DIR/dist/index.html" ]]; then
+    echo "ERROR: $FRONTEND_DIR/dist not built — run 'cd frontend && npm run build' first" >&2
+    exit 1
+  fi
+  if [[ -n "$(find "$FRONTEND_DIR/src" -newer "$FRONTEND_DIR/dist/index.html" -print -quit 2>/dev/null)" ]]; then
+    echo "ERROR: frontend/src has changes newer than frontend/dist — rebuild first:" >&2
+    echo "       cd frontend && npm run build" >&2
+    exit 1
+  fi
+  if [[ -f "$FRONTEND_DIR/package-lock.json" \
+     && "$FRONTEND_DIR/package-lock.json" -nt "$FRONTEND_DIR/dist/index.html" ]]; then
+    echo "ERROR: frontend/package-lock.json is newer than frontend/dist — reinstall + rebuild:" >&2
+    echo "       cd frontend && npm ci && npm run build" >&2
+    exit 1
+  fi
+fi
+
 DB_FILE="/mnt/ext/readsbstats/history.db"
 
 # ---- Backup database before any changes --------------------------------------
@@ -41,6 +66,9 @@ if [[ -f "$DB_FILE" ]]; then
 fi
 
 # ---- Always sync code --------------------------------------------------------
+# The frontend dist/ is excluded from the main rsync and deployed via an
+# atomic swap below: rsync to dist.new/, then mv into place. This avoids
+# a window where index.html references hashed assets that haven't synced yet.
 echo "==> Syncing code: $SRC_DIR → $APP_DIR"
 rsync -a --delete \
   --exclude='.git' \
@@ -51,7 +79,28 @@ rsync -a --delete \
   --exclude='*.db' \
   --exclude='*.db-wal' \
   --exclude='*.db-shm' \
+  --exclude='frontend/node_modules' \
+  --exclude='frontend/.vite' \
+  --exclude='frontend/coverage' \
+  --exclude='frontend/dist' \
   "$SRC_DIR/" "$APP_DIR/"
+
+# Atomic frontend dist deploy (only when frontend/dist exists on the source).
+if [[ -d "$FRONTEND_DIR/dist" ]]; then
+  echo "==> Syncing frontend/dist → $APP_DIR/frontend/dist (atomic swap)"
+  mkdir -p "$APP_DIR/frontend"
+  rsync -a --delete "$FRONTEND_DIR/dist/" "$APP_DIR/frontend/dist.new/"
+  # Atomic swap: rename old → .old, rename new → dist, remove .old. The
+  # window where dist is missing is bounded by two renames (microseconds);
+  # the web mount falls back to 503 not crash if a request hits inside it.
+  if [[ -d "$APP_DIR/frontend/dist" ]]; then
+    rm -rf "$APP_DIR/frontend/dist.old"
+    mv "$APP_DIR/frontend/dist" "$APP_DIR/frontend/dist.old"
+  fi
+  mv "$APP_DIR/frontend/dist.new" "$APP_DIR/frontend/dist"
+  rm -rf "$APP_DIR/frontend/dist.old"
+fi
+
 chown -R root:"$SERVICE_USER" "$APP_DIR"
 chmod -R u=rwX,g=rX,o= "$APP_DIR"
 

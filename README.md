@@ -70,6 +70,8 @@ rsync -avz --delete \
   --exclude='.venv' --exclude='*.egg-info' \
   --exclude='docs' --exclude='db' --exclude='.DS_Store' \
   --exclude='*.db' --exclude='*.db-wal' --exclude='*.db-shm' \
+  --exclude='frontend/node_modules' --exclude='frontend/.vite' --exclude='frontend/coverage' \
+  --exclude='internal_docs' --exclude='.claude' --exclude='CLAUDE.md' \
   /path/to/readsbstats/ pi@your-pi:/tmp/readsbstats/
 
 # 2. SSH into the Pi and run the installer as root
@@ -181,8 +183,9 @@ The simulator writes 8 aircraft orbiting Warsaw every 5 seconds in readsb's airc
 ### Running tests
 
 ```bash
-.venv/bin/pytest                                              # 972 Python tests
-node --test tests/js/test_*.mjs                               # 54 JS tests (Node 22+)
+.venv/bin/pytest                                              # 1202 Python tests
+node --test tests/js/test_*.mjs                               # 69 JS tests (Node 22+)
+( cd frontend && npm test )                                   # 43 Vitest tests (React unit, jsdom)
 for f in static/js/*.js; do node --check "$f"; done           # JS syntax check
 ```
 
@@ -240,21 +243,29 @@ Screenshots are saved to `tests/ui/screenshots/{device}/{page}.png` (gitignored,
 | `tests/js/test_units.mjs` | JS formatters: `fmtAlt`/`fmtSpd`/`fmtDist`/`fmtClimb`, labels, `getUnits`/`setUnits` |
 | `tests/js/test_table_utils.mjs` | JS `flagBadge` bitmask interpretation (military precedence, all flag combinations) |
 | `tests/js/test_flight_detail.mjs` | `airspacePopup` HTML escaping — XSS rejection across all interpolated fields |
-| `tests/ui/test_mobile_smoke.py` | Playwright: layout, element visibility, no horizontal overflow at 7 mobile/tablet viewports across 5 pages |
+| `tests/ui/test_mobile_smoke.py` | Playwright (Jinja2 UI): layout, element visibility, no horizontal overflow at 7 mobile/tablet viewports across 5 pages |
+| `tests/ui/test_v2_smoke.py` | Playwright (React SPA): 81 tests covering settings, watchlist (with CSRF regression), feeders, history (incl. URL state persistence), gallery (filter + sort drive the API), aircraft + watch toggle, stats + emergency-squawk links + custom range popover, metrics, flight detail, map (live/rewind, mode toggle, heatmap + coverage API toggles, sidebar list, playback advances time), nav live badge |
 
-Python tests use an in-memory SQLite database — no Pi required. JS tests use Node 22's built-in `node --test` runner with `vm`-sandboxed loading; no npm/package.json/node_modules. Playwright UI tests are excluded from the default `pytest` run and CI — they require a one-time local browser install.
+Python tests use an in-memory SQLite database — no Pi required. JS tests use Node 22's built-in `node --test` runner with `vm`-sandboxed loading; no npm/package.json/node_modules. Vitest tests run inside `frontend/` against jsdom (units store, format helpers, CSRF wrapper, safe URL allowlist). Playwright UI tests are excluded from the default `pytest` run and CI — they require a one-time local browser install, plus a built `frontend/dist/` for the v2 suite.
 
 ### Deploy to the Pi
 
 ```bash
+# Build the frontend first if you touched anything under frontend/src
+( cd frontend && npm ci && npm run build )
+
 rsync -avz --delete \
   --exclude='.git' --exclude='__pycache__' --exclude='*.pyc' \
   --exclude='.venv' --exclude='*.egg-info' \
   --exclude='docs' --exclude='db' --exclude='.DS_Store' \
   --exclude='*.db' --exclude='*.db-wal' --exclude='*.db-shm' \
+  --exclude='frontend/node_modules' --exclude='frontend/.vite' --exclude='frontend/coverage' \
+  --exclude='internal_docs' --exclude='.claude' --exclude='CLAUDE.md' \
   ~/projects/readsbstats/ homepi.local:/tmp/readsbstats/
 ssh homepi.local sudo bash /tmp/readsbstats/scripts/update.sh
 ```
+
+`update.sh` will refuse to run if `frontend/dist/` is missing or stale relative to `frontend/src/` — rebuild before re-syncing.
 
 ## Updating code
 
@@ -341,6 +352,7 @@ Environment="RSBS_FLIGHT_GAP=1200"
 | `RSBS_TELEGRAM_BASE_URL` | `http://homepi.local/stats` | Base URL used for profile links in Telegram messages. Set this to the Pi's LAN IP if you read Telegram on a phone where the `homepi.local` mDNS name won't resolve |
 | `RSBS_MAP_HISTORY_HOURS` | `24` | How many hours back the live map's rewind slider can reach (1–168) |
 | `RSBS_HEALTH_*` | _(see /settings)_ | Health-dashboard thresholds — heartbeat warn/critical, noise floor, CPU, baseline lookback, drop percentages, gain saturation, range-trend ratio. All effective values are listed on the `/settings` page; defaults are tuned for a stock readsb + Pi 4 setup |
+| `RSBS_ENABLE_V2` | `1` | Mount the React SPA at `/stats/v2/` alongside the Jinja2 UI at `/stats/`. Set to `0` to disable the SPA entirely (e.g. as an instant rollback if a v2 deploy breaks anything). The Jinja UI is unaffected either way. |
 
 ### Logging
 
@@ -548,7 +560,8 @@ readsbstats/
 │   ├── purge_ghosts.py         # One-shot cleanup: removes ghost positions
 │   ├── purge_bad_gs.py         # One-shot cleanup: nulls implausible gs values
 │   └── purge_mlat_gs_spikes.py # One-shot cleanup: nulls MLAT gs acceleration spikes
-├── tests/                      # pytest suite (1188 tests) + JS tests (tests/js/, 69 tests) + Playwright UI tests (tests/ui/, 35 tests)
+├── tests/                      # pytest suite (1202 tests) + JS tests (tests/js/, 69 tests) + Playwright UI tests (tests/ui/, 35 v1 + 81 v2)
+├── frontend/                   # React 19 + Vite 8 SPA mounted at /stats/v2/ (43 Vitest unit tests)
 ├── templates/
 │   ├── base.html               # Shared layout, nav bar with unit selector
 │   ├── index.html              # Flight list
@@ -634,6 +647,76 @@ The web server exposes a JSON API alongside the HTML pages:
 | GET | `/api/watchlist` | List all watchlist entries (with airborne flag) |
 | POST | `/api/watchlist` | Add a watchlist entry (`match_type`, `value`, optional `label`) |
 | DELETE | `/api/watchlist/{id}` | Remove a watchlist entry |
+| GET | `/api/settings` | Read-only runtime settings dict (masked secrets); shared by the Jinja `/settings` page and `/stats/v2/settings` |
+| GET | `/api/feeders` | Feeder service status + log/Mode-S details; same shape as the Jinja `/feeders` template uses |
+
+## React SPA (v2 coexistence)
+
+Alongside the Jinja2 UI at `/stats/`, a React + Vite single-page app is mounted
+at `/stats/v2/` whenever `RSBS_ENABLE_V2=1` (default) **and** `frontend/dist/`
+is built. Either condition false → the SPA silently doesn't register; the
+Jinja UI is completely unaffected.
+
+| External URL | Page |
+|---|---|
+| `/stats/v2/` | Statistics (summary cards, hourly/daily bar charts, polar range plot, activity heatmap, top types/airlines/countries/routes/airports, frequent aircraft, new aircraft, emergency squawks, personal records) |
+| `/stats/v2/history` | Flight history table with filters (date range, ICAO, callsign, registration, type, source, flag, squawk), sort, pagination, CSV export |
+| `/stats/v2/flight/{id}` | Flight detail — Leaflet route map, altitude+speed Recharts profile, position log, "Other flights by this aircraft" |
+| `/stats/v2/aircraft/{icao}` | Per-aircraft history — info card, flights table, **+ Watch** / **✓ Watching** toggle |
+| `/stats/v2/gallery` | Flagged aircraft gallery with filter pills + sort popover |
+| `/stats/v2/watchlist` | Watchlist CRUD with Radix Dialog confirm |
+| `/stats/v2/feeders` | Feeder status table |
+| `/stats/v2/metrics` | 11 Recharts time-series panels + clickable health banner |
+| `/stats/v2/settings` | Runtime settings (read-only, same source as Jinja `/settings`) |
+| `/stats/v2/map` | Live aircraft map (react-leaflet) — Live/Rewind toggle, rewind slider, per-aircraft side panel, heatmap layer + 24h/7d/30d/all window selector, coverage range overlay, playback (play/pause + ±10 m / ±1 h jump + 1×/2×/5×/10× speed), aircraft list panel |
+
+The nav shows a **live aircraft count badge** that polls `/api/live` every 15 s
+and a units selector (Aeronautical / Metric / Imperial) — same `rsbs_units`
+localStorage key as the Jinja UI so preferences carry over.
+
+**Build & deploy:**
+
+```bash
+cd frontend
+npm ci          # first time only
+npm run build   # → frontend/dist/
+# then your usual rsync + `sudo bash /opt/readsbstats/scripts/update.sh`
+```
+
+`scripts/update.sh` aborts with "rebuild first" if `frontend/dist/index.html`
+is older than anything under `frontend/src/`, and atomic-swaps `dist.new/`
+into place on the Pi so a half-finished rsync never serves a broken page.
+
+**Instant rollback:** `sudo systemctl edit readsbstats-web` →
+`Environment=RSBS_ENABLE_V2=0` → `sudo systemctl restart readsbstats-web`.
+`/stats/v2/*` returns 404; `/stats/*` keeps working.
+
+**Known v2 caveats during coexistence:**
+
+- `/stats/v2/map`'s **heatmap window selector** has working `24h` (fast,
+  cached 5 min) and `7d` (~10–20 s on first hit, cached 30 min) options.
+  `30d` and `all` currently return 504 from nginx — SQLite's
+  single-threaded `GROUP BY` over millions of positions exceeds the 60 s
+  proxy timeout. The SPA defaults to `24h` for that reason. Fix planned
+  post-cutover via DuckDB's `sqlite_scanner` extension (same SQLite file,
+  vectorised multi-core aggregation).
+- **Dark mode only.** Light mode is on the post-cutover backlog.
+- **Telegram alert URLs still point at `/stats/`** (the Jinja UI) for
+  back-compat. Cutover commit 1 will turn those Jinja routes into 302
+  redirects so old chat history keeps working when the SPA owns the URL
+  space.
+
+**Roadmap to v2.0.0 final** (each step independently revertable):
+
+1. **Cutover commit 1** — Jinja `/flight/{id}` + `/aircraft/{icao}` flip
+   to 302 redirects to `/v2/...`. Telegram links keep working.
+2. **Grace period** of ≥ 1 week of real-world v2 use.
+3. **Cutover commit 2** — Remove the Jinja UI: delete `templates/`,
+   `static/js/*.js`, `static/css/app.css`, `static/vendor/uPlot.*`,
+   `tests/js/`, and the v1 Playwright file. Strip Jinja imports + every
+   `TemplateResponse` from `web.py`.
+4. **Cutover commit 3** — Swap the React mount from `/v2/` to `/`. Drop
+   `RSBS_ENABLE_V2`. Update the nginx asset-cache block path.
 
 ## License
 

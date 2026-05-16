@@ -2,6 +2,137 @@
 
 ## Unreleased
 
+### Changed — web service memory cap raised (384M → 1024M)
+
+`systemd/readsbstats-web.service` `MemoryMax` bumped from 384M to 1024M.
+Driven by the v2 SPA's discoverable Heatmap toggle: `/api/map/heatmap` runs a
+`GROUP BY round(lat, p), round(lon, p)` over the positions table, and the
+SQLite in-memory sort/hash can spike to several hundred MB on a busy
+receiver. The previous 384M cap got the worker OOM-killed mid-request.
+Pi 4 has 8GB and steady-state utilisation around 1.7GB across all services,
+so 1GB for the web worker is well within budget. Coverage and snapshot
+endpoints unaffected. After the first hit per window the heatmap result is
+cached (5 min for 24h, 30 min for 7d, 2h for 30d, 6h for all), so
+subsequent toggles cost nothing.
+
+### Added — v2 React SPA (coexists with the Jinja2 UI)
+
+A complete React + Vite + TypeScript single-page app rebuild of the v1
+Jinja2 UI now ships alongside the original. Mounted at `/stats/v2/` whenever
+`RSBS_ENABLE_V2=1` (default) AND `frontend/dist/` is built; otherwise the
+mount silently doesn't register and the Jinja2 UI at `/stats/` is unaffected.
+The Jinja2 UI is unchanged — no routes deleted, no behaviour modified.
+
+**Stack:** React 19 + Compiler 1.0, Vite 7 (Rolldown), Tailwind CSS v4,
+Radix UI primitives (Select, Dialog, Sheet, Popover, ToggleGroup, DropdownMenu,
+Tooltip), TanStack Query v5, Zustand, React Router v7, Recharts,
+react-leaflet 5 (Leaflet 1.9), Sonner toasts. React Compiler 1.0 enabled via
+Babel plugin. Bundle: shell ~80 KB gz, vendor 34 KB, radix 30 KB, charts 112
+KB lazy, leaflet 45 KB lazy; per-route chunks ≤ 8 KB.
+
+**Pages shipped** (all at `/stats/v2/*` — same URL shape as v1):
+
+- `/v2/` Statistics — summary cards, 24h/7d trend cards with delta arrows,
+  flagged-flight counts, hourly + daily bar charts, DOW × hour heatmap, polar
+  range plot, top types/airlines/countries/routes/airports, frequent + new
+  aircraft, emergency squawks (clickable → history filter), personal records.
+  Range picker with 24h/7d/30d/90d/All presets + Custom popover with
+  datetime-local hour-precision pickers.
+- `/v2/history` — filters (date range from/to, ICAO, callsign, registration,
+  type, source, flag, squawk), sort headers, pagination, CSV export, URL
+  state preservation, mobile-collapsing columns.
+- `/v2/flight/{id}` — info card with photo + flag + source + squawk + airline,
+  Leaflet route map with ADS-B / MLAT segment colouring + dark tile filter,
+  Recharts altitude+speed ComposedChart, sampled positions log with RSSI
+  colour bands, "Other flights by this aircraft" linked list.
+- `/v2/aircraft/{icao}` — info card with photo, flag, country, first/last/
+  duration, ✓ Watching / + Watch toggle (POST/DELETE `/api/watchlist`),
+  full per-aircraft flights table.
+- `/v2/gallery` — 1-row header (filter pills + sort icon Popover, both
+  aligned right), card grid (60 per page), lazy photo loading, type-photo
+  badge.
+- `/v2/watchlist` — Add form, entries table, Radix Dialog delete confirmation,
+  Sonner toast feedback, length-cap validation matching `database.WATCHLIST_*_MAX`.
+- `/v2/feeders` — status table with manual refresh, "all-unavailable" notice,
+  "not configured" empty state.
+- `/v2/metrics` — 11 Recharts AreaChart panels (signal, aircraft, messages,
+  range, positions, CPU, network out, network in, tracks, decoder, CPR),
+  range picker matching `/v2/`, clickable health banner with per-check rows
+  using a coloured left border for status (green/yellow/red/grey).
+- `/v2/settings` — read-only display of all 39 runtime settings, secrets
+  masked server-side via `_settings_payload()`.
+- `/v2/map` — full-screen react-leaflet, Live + Rewind toggle, 10 s
+  refetchInterval in Live mode, rewind slider with themed thumb,
+  per-aircraft Sheet detail panel, **heatmap layer** (`leaflet.heat` on
+  `/api/map/heatmap`) + 24h/7d/30d/all window selector, **coverage range
+  overlay** (Leaflet `<Polygon>` on `/api/map/coverage`), **playback
+  controls** (play/pause + ±10 m / ±1 h jump + 1×/2×/5×/10× speed
+  buttons), **aircraft sidebar list** (left-side Sheet with 8-column
+  sortable table — coexists with the right-side per-aircraft detail
+  Sheet).
+
+**Shared infrastructure:** Nav with brand, 8 links, units selector (Radix
+Select), live aircraft count badge polling `/api/live` every 15 s (green dot
+when active, click → `/map`), mobile hamburger.
+
+**Backend additions (additive only, no v1 changes):**
+
+- `GET /api/settings` — JSON mirror of `/settings` (single
+  `_settings_payload()` source of truth).
+- `GET /api/feeders` — JSON mirror of `/feeders`.
+- `GET /api/flights` accepts `date_from` / `date_to` (YYYY-MM-DD, end-exclusive
+  by adding 86400 to `date_to`) alongside the original single-`date` param.
+  `date=` wins if both are set so v1 bookmarks keep working. Same params
+  added to `/api/flights/export.csv`. Four pinning tests in
+  `TestApiFlightsDateRange`.
+- `RSBS_ENABLE_V2` env var (default `1`) — set to `0` for instant rollback;
+  `web.py` SPA mount becomes a no-op and `/stats/v2/*` returns 404.
+
+**Build & deploy:** `scripts/update.sh` aborts if `frontend/dist/index.html`
+is older than anything under `frontend/src/` or if `package-lock.json` is
+newer (unbuilt). Atomic-swap rsync: ship to `dist.new/`, mv server-side.
+SPA `index.html` is served with `Cache-Control: no-store` (hashed asset URLs
+inside change every deploy); assets get `public, immutable` via the optional
+nginx asset-cache block.
+
+**Tests:** 4 new Python tests (date range), 43 Vitest frontend unit tests
+(format helpers, units store, CSRF wrapper, safe URL allowlist), 81 v2
+Playwright tests across 6 device profiles covering every page (filter +
+sort actually fire API calls, CSRF rejected without header, popover apply
+writes URL params, live badge mounts, watch toggle round-trips, emergency
+squawk links resolve, map rewind reveals slider, heatmap + coverage
+toggles fire their API endpoints, sidebar list opens, playback advances
+the slider, etc.). All v1 tests unchanged (1198 Python + 69 vanilla JS +
+35 Playwright still pass).
+
+**Plumbing notes for future cutover:**
+
+- `tests/ui/_v2_app.py` — ASGI wrapper that strips `/stats/` from incoming
+  paths for the v2 Playwright fixture (no nginx in tests).
+- `useSearchParamBatch()` — multi-param URL updates must go through this,
+  because React Router v7's `setSearchParams` reads stale `prev` when
+  called twice in a row from the same handler. Single setters in onChange
+  handlers stay fine.
+- Telegram URLs stay pointed at `/stats/` (Jinja) throughout coexistence;
+  flip at cutover commit 3.
+
+**All 10 v2 pages reached full v1 parity** on 2026-05-16. No remaining
+feature gaps before cutover. The four `/map` features (heatmap, coverage,
+playback, sidebar) landed in the same session that hit parity.
+
+**Post-cutover follow-ups** (tracked in
+`internal_docs/uiux/v2-implementation-status.md` and
+`internal_docs/internal/duckdb-analytics-plan.md`):
+- DuckDB sqlite_scanner for analytical endpoints —
+  `/api/map/heatmap?window=30d` currently times out at nginx (60 s) on
+  busy receivers; DuckDB's vectorised multi-core GROUP BY over the same
+  SQLite file should drop that to a few seconds. Deferred to post-cutover.
+- v2.1 — `/metrics` to ECharts canvas + LTTB.
+- v2.2 — stats heatmap + polar to ECharts native.
+- v2.3 — `/map` to MapLibre GL v5.
+- Mobile filter pane on `/v2/history`; scroll-fade mask on overflowing
+  tables.
+
 ### Changed (breaking — env var rename, no back-compat shim)
 
 - **`RSBS_BASE_URL` renamed to `RSBS_TELEGRAM_BASE_URL`** — and the

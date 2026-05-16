@@ -19,7 +19,13 @@ Restart=on-failure
 RestartSec=5
 
 CPUQuota=50%
-MemoryMax=384M
+# Bumped from 384M → 1024M on 2026-05-16: the /api/map/heatmap endpoint
+# scans + GROUPs over millions of positions on a busy receiver, and the
+# in-memory sort/hash for the aggregate easily exceeds 384M during the
+# first uncached request — OOM-killing the worker. Pi 4 has 8GB and a
+# steady-state utilisation around 1.7GB, so 1GB for this service is well
+# within budget and leaves room for occasional 30d/all-window peaks.
+MemoryMax=1024M
 Nice=10
 
 # Security hardening

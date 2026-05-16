@@ -455,6 +455,41 @@ class TestApiFlights:
         assert r.status_code == 422
 
 
+class TestApiFlightsDateRange:
+    """date_from / date_to filters — date= still works for single day."""
+
+    def test_date_from_only_includes_later_flights(self, client, db_conn):
+        insert_flight(db_conn, icao="aa1111", first_seen=1_000_000, last_seen=1_001_000)
+        insert_flight(db_conn, icao="aa2222", first_seen=2_000_000, last_seen=2_001_000)
+        # date_from = 1970-01-19 12:00 UTC → 1_512_000-ish; safely past flight 1
+        r = client.get("/api/flights?date_from=1970-01-19")
+        assert r.status_code == 200
+        icaos = {f["icao_hex"] for f in r.json()["flights"]}
+        assert "aa2222" in icaos
+        assert "aa1111" not in icaos
+
+    def test_date_to_only_includes_earlier_flights(self, client, db_conn):
+        insert_flight(db_conn, icao="aa1111", first_seen=1_000_000, last_seen=1_001_000)
+        insert_flight(db_conn, icao="aa2222", first_seen=2_000_000, last_seen=2_001_000)
+        r = client.get("/api/flights?date_to=1970-01-19")
+        assert r.status_code == 200
+        icaos = {f["icao_hex"] for f in r.json()["flights"]}
+        assert "aa1111" in icaos
+        assert "aa2222" not in icaos
+
+    def test_date_overrides_range(self, client, db_conn):
+        # When `date` is set, the range params are ignored.
+        insert_flight(db_conn, icao="aa1111", first_seen=1_000_000, last_seen=1_001_000)
+        r = client.get("/api/flights?date=1970-01-12&date_from=2999-01-01")
+        assert r.status_code == 200
+        icaos = {f["icao_hex"] for f in r.json()["flights"]}
+        assert "aa1111" in icaos
+
+    def test_date_range_validation_400_on_malformed(self, client):
+        r = client.get("/api/flights?date_from=not-a-date")
+        assert r.status_code == 400
+
+
 # ---------------------------------------------------------------------------
 # API: /api/flights/export.csv
 # ---------------------------------------------------------------------------
@@ -773,6 +808,40 @@ class TestPageRoutes:
         if parent and parent != "/":
             assert parent not in r.text, f"settings page leaks DB parent dir {parent}"
 
+    def test_api_settings_returns_masked_payload(self, client, monkeypatch):
+        from readsbstats import config
+        # Force a value so we can assert it's NOT returned raw.
+        monkeypatch.setattr(config, "TELEGRAM_TOKEN", "test-token-secret-xyz")
+        monkeypatch.setattr(config, "TELEGRAM_CHAT_ID", "12345678")
+        r = client.get("/api/settings")
+        assert r.status_code == 200
+        payload = r.json()
+        # Sensitive fields are masked, not leaked.
+        assert payload["telegram_token"] == "configured"
+        assert payload["telegram_chat_id"] == "configured"
+        assert "test-token-secret-xyz" not in r.text
+        assert "12345678" not in r.text
+        # Shape sanity — confirms key sections present.
+        for key in ("lat", "lon", "poll_interval", "db_path", "page_size", "base_url"):
+            assert key in payload, f"missing key {key}"
+
+    def test_api_settings_db_path_basename_only(self, client):
+        import os
+        from readsbstats import config
+        r = client.get("/api/settings")
+        parent = os.path.dirname(os.path.abspath(config.DB_PATH))
+        if parent and parent != "/":
+            assert parent not in r.text, "/api/settings leaks DB parent dir"
+
+    def test_api_settings_when_telegram_not_set(self, client, monkeypatch):
+        from readsbstats import config
+        monkeypatch.setattr(config, "TELEGRAM_TOKEN", "")
+        monkeypatch.setattr(config, "TELEGRAM_CHAT_ID", "")
+        r = client.get("/api/settings")
+        payload = r.json()
+        assert payload["telegram_token"] == "not set"
+        assert payload["telegram_chat_id"] == "not set"
+
     def test_watchlist_page_returns_html(self, client):
         r = client.get("/watchlist")
         assert r.status_code == 200
@@ -796,6 +865,99 @@ class TestPageRoutes:
         r = client.get("/feeders")
         assert r.status_code == 200
         assert "No feeders configured" in r.text
+
+
+class TestSpaMount:
+    """v2 React SPA coexistence mount.
+
+    The mount is registered at module-import time and gated by:
+      (1) config.ENABLE_V2 truthy
+      (2) frontend/dist/index.html exists
+      (3) frontend/dist/assets/ exists
+
+    Two test paths: one for when dist is absent (mount silently no-ops, every
+    /v2/* URL 404s), and one for when dist is built (shell + assets served,
+    catch-all returns shell for deep refresh).
+    """
+
+    def test_v2_root_404_when_dist_missing(self, client):
+        if web.SPA_INDEX.is_file():
+            pytest.skip("frontend/dist present — covered by dist-present tests")
+        r = client.get("/v2/", follow_redirects=False)
+        assert r.status_code == 404
+
+    def test_v2_deep_path_404_when_dist_missing(self, client):
+        if web.SPA_INDEX.is_file():
+            pytest.skip("frontend/dist present — covered by dist-present tests")
+        r = client.get("/v2/flight/123", follow_redirects=False)
+        assert r.status_code == 404
+
+    def test_old_ui_unaffected_by_v2_mount(self, client):
+        r = client.get("/")
+        assert r.status_code == 200
+        assert "text/html" in r.headers["content-type"]
+
+    def test_v2_root_returns_shell_when_dist_present(self, client):
+        if not web.SPA_INDEX.is_file():
+            pytest.skip("frontend/dist not built")
+        r = client.get("/v2/")
+        assert r.status_code == 200
+        assert "text/html" in r.headers["content-type"]
+        # Critical: index.html must NEVER be cached — hashed asset URLs inside
+        # change every deploy. A cached HTML points at non-existent files.
+        assert r.headers.get("cache-control") == "no-store"
+        # The shell should reference the prod base path.
+        assert b"/stats/v2/" in r.content
+
+    def test_v2_deep_refresh_returns_shell(self, client):
+        if not web.SPA_INDEX.is_file():
+            pytest.skip("frontend/dist not built")
+        # React Router deep-refresh (e.g., user reloads /stats/v2/flight/123)
+        # must get the SPA shell so client-side routing can take over.
+        r = client.get("/v2/flight/123")
+        assert r.status_code == 200
+        assert "text/html" in r.headers["content-type"]
+
+    def test_v2_missing_asset_404s_not_shell(self, client):
+        if not web.SPA_INDEX.is_file():
+            pytest.skip("frontend/dist not built")
+        # If we returned the SPA shell here, missing-asset bugs would
+        # masquerade as a blank page (browser tries to execute HTML as JS).
+        r = client.get("/v2/assets/does-not-exist.js", follow_redirects=False)
+        assert r.status_code == 404
+
+    def test_v2_dotted_path_with_known_ext_404s(self, client):
+        if not web.SPA_INDEX.is_file():
+            pytest.skip("frontend/dist not built")
+        # Any path that looks like an asset (known extension) but wasn't
+        # matched by /v2/assets/ should 404, not return the shell.
+        r = client.get("/v2/anywhere/foo.css", follow_redirects=False)
+        assert r.status_code == 404
+
+    def test_v2_built_asset_served(self, client):
+        if not web.SPA_INDEX.is_file():
+            pytest.skip("frontend/dist not built")
+        # Find an actual built asset by reading the shell, then fetch it.
+        # NOTE: Starlette mounts match the literal mount path including
+        # root_path prefix. The TestClient doesn't strip root_path the way
+        # nginx does in production, so we hit the full /stats/v2/assets/...
+        # URL — same pattern as the existing /static mount.
+        shell = client.get("/v2/").text
+        import re
+        m = re.search(r'(/stats/v2/assets/[^"\s>]+)', shell)
+        if not m:
+            pytest.skip("no asset URL discovered in shell")
+        r = client.get(m.group(1))
+        assert r.status_code == 200, f"asset {m.group(1)} not served"
+
+    def test_v2_index_html_no_cache_control(self, client):
+        if not web.SPA_INDEX.is_file():
+            pytest.skip("frontend/dist not built")
+        # Pinned in TestSpaMount.test_v2_root_returns_shell_when_dist_present,
+        # repeated here at deep-refresh too because the same header path is
+        # used and a regression could let one branch drift.
+        r = client.get("/v2/some/deep/path")
+        assert r.headers.get("cache-control") == "no-store"
 
 
 # ---------------------------------------------------------------------------

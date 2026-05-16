@@ -1,0 +1,88 @@
+import { describe, it, expect } from 'vitest';
+import { fmtAlt, fmtSpd, fmtDist, fmtDur, fmtBytes, fmtAgo, fmtTs } from '@/lib/format';
+
+describe('fmtAlt', () => {
+  it('returns — for null/undefined', () => {
+    expect(fmtAlt(null, 'metric')).toBe('—');
+    expect(fmtAlt(undefined, 'aeronautical')).toBe('—');
+  });
+  it('metric — ft to m, rounded', () => {
+    // 1000 ft = 304.8 m → 305
+    expect(fmtAlt(1000, 'metric')).toBe('305 m');
+  });
+  it('aeronautical — keeps feet', () => {
+    expect(fmtAlt(1000, 'aeronautical')).toBe('1,000 ft');
+  });
+  it('imperial — also feet', () => {
+    expect(fmtAlt(1000, 'imperial')).toBe('1,000 ft');
+  });
+});
+
+describe('fmtSpd', () => {
+  it('metric → km/h', () => {
+    expect(fmtSpd(100, 'metric')).toBe('185 km/h');
+  });
+  it('imperial → mph', () => {
+    expect(fmtSpd(100, 'imperial')).toBe('115 mph');
+  });
+  it('aeronautical → kts', () => {
+    expect(fmtSpd(100, 'aeronautical')).toBe('100 kts');
+  });
+});
+
+describe('fmtDist', () => {
+  it('metric km', () => {
+    expect(fmtDist(100, 'metric')).toBe('185.2 km');
+  });
+  it('imperial mi', () => {
+    expect(fmtDist(100, 'imperial')).toBe('115.1 mi');
+  });
+  it('aeronautical nm', () => {
+    expect(fmtDist(100, 'aeronautical')).toBe('100.0 nm');
+  });
+});
+
+describe('fmtDur', () => {
+  it.each([
+    [30, '30s'],
+    [60, '1m'],
+    [90, '1m 30s'],
+    [3600, '1h'],
+    [3660, '1h 1m'],
+    [7320, '2h 2m'],
+  ])('%i sec → %s', (n, expected) => {
+    expect(fmtDur(n)).toBe(expected);
+  });
+  it('returns — for null', () => {
+    expect(fmtDur(null)).toBe('—');
+  });
+});
+
+describe('fmtBytes', () => {
+  it('B / KB / MB tiers', () => {
+    expect(fmtBytes(512)).toBe('512 B');
+    expect(fmtBytes(2048)).toBe('2.0 KB');
+    expect(fmtBytes(2 * 1024 * 1024)).toBe('2.0 MB');
+  });
+});
+
+describe('fmtAgo', () => {
+  it('produces relative-time strings', () => {
+    const now = 1_700_000_000;
+    expect(fmtAgo(now, now)).toBe('0s ago');
+    expect(fmtAgo(now - 30, now)).toBe('30s ago');
+    expect(fmtAgo(now - 600, now)).toBe('10m ago');
+    expect(fmtAgo(now - 7200, now)).toBe('2h ago');
+    expect(fmtAgo(now - 86400 * 3, now)).toBe('3d ago');
+  });
+});
+
+describe('fmtTs', () => {
+  it('locale string for non-zero', () => {
+    expect(fmtTs(1_700_000_000)).not.toBe('—');
+  });
+  it('— for zero/null', () => {
+    expect(fmtTs(0)).toBe('—');
+    expect(fmtTs(null)).toBe('—');
+  });
+});

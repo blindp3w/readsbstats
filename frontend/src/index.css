@@ -1,0 +1,158 @@
+@import 'tailwindcss';
+
+/* Design tokens lifted from static/css/app.css, with a few refinements:
+   - elevated surface (surface-3) for hover/active states
+   - sharper accent for primary actions
+   - subtle shadow tokens for cards / popovers */
+
+@theme {
+  --color-bg: #0d1018;
+  --color-surface: #161a26;
+  --color-surface-2: #1f2436;
+  --color-surface-3: #2a3149;
+  --color-border-default: #2e3350;
+  --color-border-strong: #3a405f;
+
+  --color-text: #e6ebf5;
+  --color-text-dim: #8891aa;
+
+  --color-accent: #5b9af9;
+  --color-accent-hover: #74a9fb;
+  --color-success: #22c55e;
+  --color-warn: #eab308;
+  --color-orange: #f97316;
+  --color-purple: #a855f7;
+  --color-danger: #ef4444;
+
+  --radius: 8px;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.25);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.35);
+  --shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.45);
+
+  --font-sans:
+    'Inter', 'Segoe UI', system-ui, -apple-system, BlinkMacSystemFont, 'Helvetica Neue',
+    sans-serif;
+  --font-mono:
+    ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+}
+
+@layer base {
+  html {
+    font-size: 15px;
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+  }
+  body {
+    background: var(--color-bg);
+    color: var(--color-text);
+    font-family: var(--font-sans);
+    line-height: 1.5;
+    min-height: 100vh;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+  /* Tighter letter-spacing on big numbers feels denser without sacrificing
+     legibility. Used by stats cards and pagination. */
+  .tabnum {
+    font-variant-numeric: tabular-nums;
+  }
+  .font-mono {
+    font-family: var(--font-mono);
+  }
+
+  /* Scrollbar (dark) — webkit only, gracefully degrades elsewhere. */
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: var(--color-bg);
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--color-surface-2);
+    border-radius: 999px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--color-surface-3);
+  }
+
+  /* Form input dark-mode hint for browsers that respect color-scheme. */
+  :root {
+    color-scheme: dark;
+  }
+
+  /* Selection accent — improves visual cohesion. */
+  ::selection {
+    background: color-mix(in srgb, var(--color-accent) 35%, transparent);
+    color: var(--color-text);
+  }
+}
+
+@layer components {
+  /* Soft-darken OSM tiles to match the rest of the dark UI. */
+  .map-tiles-dark {
+    filter: brightness(0.7) saturate(0.85) invert(0.92) hue-rotate(180deg);
+  }
+
+  /* Map rewind slider — visible thumb + branded track. WebKit and Firefox
+     use different pseudo-elements so both have to be styled. */
+  .map-rewind-range {
+    -webkit-appearance: none;
+    appearance: none;
+    height: 4px;
+    background: var(--color-surface-3);
+    border-radius: 999px;
+    outline: none;
+  }
+  .map-rewind-range::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 16px;
+    height: 16px;
+    border-radius: 999px;
+    background: var(--color-accent);
+    border: 2px solid var(--color-surface);
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+    cursor: pointer;
+  }
+  .map-rewind-range::-webkit-slider-thumb:hover {
+    background: var(--color-accent-hover);
+  }
+  .map-rewind-range::-moz-range-thumb {
+    width: 16px;
+    height: 16px;
+    border-radius: 999px;
+    background: var(--color-accent);
+    border: 2px solid var(--color-surface);
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+    cursor: pointer;
+  }
+  .map-rewind-range::-moz-range-track {
+    height: 4px;
+    background: var(--color-surface-3);
+    border-radius: 999px;
+  }
+}
+
+@layer utilities {
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    border: 0;
+  }
+
+  /* Subtle "card lifts on hover" — applied per element where appropriate. */
+  .card-hover {
+    transition: transform 120ms ease, box-shadow 120ms ease, border-color 120ms ease;
+  }
+  .card-hover:hover {
+    transform: translateY(-1px);
+    box-shadow: var(--shadow-md);
+    border-color: var(--color-border-strong);
+  }
+}

@@ -29,10 +29,26 @@ tests/ui/screenshots/
 
 # Logs
 *.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
 
 # Secrets / local config
 .env
 *.env.local
+
+# Frontend (Vite + npm) — dist/ is rsync'd to the Pi but never committed
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/coverage/
+frontend/.eslintcache
+# TypeScript incremental-build caches; one per tsconfig.*.json
+*.tsbuildinfo
+
+# Playwright (HTML report + intermediate per-run artefacts)
+playwright-report/
+test-results/
 
 # Internal / private project material (not for public repo)
 internal_docs/

@@ -70,6 +70,51 @@ templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 templates.env.globals["root_path"] = config.ROOT_PATH
 
 # ---------------------------------------------------------------------------
+# v2 SPA coexistence mount.  Serves the React build from frontend/dist/ at /v2/
+# alongside the Jinja2 UI at /.  Gated by config.ENABLE_V2 AND presence of the
+# built artefacts so a missing dist (e.g. fresh clone, mid-rsync) downgrades
+# gracefully to "old UI only" instead of crashing the worker.
+#
+# index.html is served per-request (not cached at import) so atomic-swap
+# deploys take effect without restart; assets are mounted via StaticFiles and
+# can be long-cached because their URLs are content-hashed.
+# ---------------------------------------------------------------------------
+SPA_DIR = BASE_DIR / "frontend" / "dist"
+SPA_ASSETS = SPA_DIR / "assets"
+SPA_INDEX = SPA_DIR / "index.html"
+
+if config.ENABLE_V2 and SPA_INDEX.is_file() and SPA_ASSETS.is_dir():
+    app.mount("/v2/assets", StaticFiles(directory=SPA_ASSETS), name="v2-assets")
+
+    _SPA_ASSET_EXTS = {
+        ".js", ".mjs", ".css", ".png", ".jpg", ".jpeg", ".svg",
+        ".gif", ".webp", ".ico", ".woff", ".woff2", ".ttf",
+        ".map", ".json", ".txt",
+    }
+
+    @app.get("/v2", include_in_schema=False)
+    @app.get("/v2/{spa_path:path}", include_in_schema=False)
+    def _spa(spa_path: str = "") -> Response:
+        # If the path looks like a static asset (has a known extension) and
+        # wasn't matched by the /v2/assets mount above, surface the 404 instead
+        # of returning the SPA shell — masking it as HTML hides missing-asset
+        # bugs and produces blank pages.
+        last = spa_path.rsplit("/", 1)[-1]
+        if "." in last:
+            ext = "." + last.rsplit(".", 1)[-1].lower()
+            if ext in _SPA_ASSET_EXTS:
+                raise HTTPException(status_code=404)
+        try:
+            body = SPA_INDEX.read_bytes()
+        except FileNotFoundError:  # pragma: no cover — disappears mid-flight
+            raise HTTPException(status_code=503, detail="SPA dist missing")
+        return Response(
+            content=body,
+            media_type="text/html; charset=utf-8",
+            headers={"Cache-Control": "no-store"},
+        )
+
+# ---------------------------------------------------------------------------
 # DB connection — per-thread.  Python's sqlite3 module holds a per-connection
 # mutex, so sharing a single connection across uvicorn's threadpool would
 # serialize every request — destroying WAL's reader concurrency.  Each thread
@@ -292,6 +337,88 @@ def page_map(request: Request) -> HTMLResponse:
     })
 
 
+def _settings_payload() -> dict:
+    """Return the runtime-settings dict shown on both the Jinja /settings page
+    and the React /v2/settings page.  Single source of truth — keep this in
+    sync with templates/settings.html.
+
+    Security audit (#H8): all sensitive values are masked here; the consumer
+    never sees raw secrets:
+      - Telegram token / chat id → "configured" or "not set"
+      - DB path → basename only (no parent dir leak)
+      - Airspace GeoJSON path → label or "(bundled poland.geojson)"
+    """
+    tok_masked = "configured" if config.TELEGRAM_TOKEN else "not set"
+    cid_masked = "configured" if config.TELEGRAM_CHAT_ID else "not set"
+    return {
+        # Receiver
+        "lat":              config.RECEIVER_LAT,
+        "lon":              config.RECEIVER_LON,
+        "max_range":        config.RECEIVER_MAX_RANGE,
+        # Collector
+        "poll_interval":    config.POLL_INTERVAL_SEC,
+        "flight_gap":       config.FLIGHT_GAP_SEC,
+        "min_positions":    config.MIN_POSITIONS_KEEP,
+        "max_seen_pos":     config.MAX_SEEN_POS_SEC,
+        "max_speed_kts":    config.MAX_SPEED_KTS,
+        # Database
+        "db_path":          os.path.basename(config.DB_PATH) or "(default)",
+        "retention_days":   config.RETENTION_DAYS,
+        "purge_interval":   config.PURGE_INTERVAL_SEC,
+        # Enrichment
+        "photo_cache_days":    config.PHOTO_CACHE_DAYS,
+        "airspace_geojson":    config.AIRSPACE_GEOJSON or "(bundled poland.geojson)",
+        "route_cache_days":    config.ROUTE_CACHE_DAYS,
+        "route_interval":      config.ROUTE_ENRICH_INTERVAL,
+        "route_batch":         config.ROUTE_BATCH_SIZE,
+        "route_rate_limit":    config.ROUTE_RATE_LIMIT_SEC,
+        # External ADS-B enrichment
+        "adsbx_enabled":       config.ADSBX_ENABLED,
+        "adsbx_interval":      config.ADSBX_POLL_INTERVAL,
+        "adsbx_range":         config.ADSBX_RANGE_NM,
+        "adsbx_url":           config.ADSBX_API_URL,
+        # Receiver metrics
+        "metrics_enabled":     config.METRICS_ENABLED,
+        "metrics_interval":    config.METRICS_INTERVAL,
+        "stats_json":          config.STATS_JSON,
+        # Receiver health
+        "health_heartbeat_warn_s":     config.HEALTH_HEARTBEAT_WARN_S,
+        "health_heartbeat_crit_s":     config.HEALTH_HEARTBEAT_CRIT_S,
+        "health_aircraft_gap_s":       config.HEALTH_AIRCRAFT_GAP_S,
+        "health_noise_warn_db":        config.HEALTH_NOISE_WARN_DB,
+        "health_noise_crit_db":        config.HEALTH_NOISE_CRIT_DB,
+        "health_cpu_warn_pct":         config.HEALTH_CPU_WARN_PCT,
+        "health_cpu_crit_pct":         config.HEALTH_CPU_CRIT_PCT,
+        "health_baseline_weeks":       config.HEALTH_BASELINE_WEEKS,
+        "health_baseline_min_samples": config.HEALTH_BASELINE_MIN_SAMPLES,
+        "health_msg_drop_pct":         config.HEALTH_MSG_DROP_PCT,
+        "health_aircraft_drop_pct":    config.HEALTH_AIRCRAFT_DROP_PCT,
+        "health_signal_drop_db":       config.HEALTH_SIGNAL_DROP_DB,
+        "health_gain_strong_pct":      config.HEALTH_GAIN_STRONG_PCT,
+        "health_range_short_days":     config.HEALTH_RANGE_SHORT_DAYS,
+        "health_range_long_days":      config.HEALTH_RANGE_LONG_DAYS,
+        "health_range_ratio":          config.HEALTH_RANGE_RATIO,
+        # Web server
+        "web_host":         config.WEB_HOST,
+        "web_port":         config.WEB_PORT,
+        "root_path":        config.ROOT_PATH,
+        # UI
+        "page_size":        config.DEFAULT_PAGE_SIZE,
+        "max_page_size":    config.MAX_PAGE_SIZE,
+        # Telegram
+        "telegram_token":        tok_masked,
+        "telegram_chat_id":      cid_masked,
+        "telegram_summary_time": config.TELEGRAM_SUMMARY_TIME,
+        "telegram_units":        config.TELEGRAM_UNITS,
+        "base_url":              config.TELEGRAM_BASE_URL,
+    }
+
+
+@app.get("/api/settings")
+def api_settings() -> dict:
+    return _settings_payload()
+
+
 @app.get("/settings", response_class=HTMLResponse)
 def page_settings(request: Request) -> HTMLResponse:
     tok_masked = "configured" if config.TELEGRAM_TOKEN else "not set"
@@ -467,8 +594,20 @@ def _build_flight_filter(
     source: str | None,
     flags: str | None,
     squawk: str | None = None,
+    date_from: str | None = None,
+    date_to:   str | None = None,
 ) -> tuple[str, list]:
-    """Return (WHERE clause, params list) for the shared flight filter params."""
+    """Return (WHERE clause, params list) for the shared flight filter params.
+
+    Date filtering supports either:
+      - `date=YYYY-MM-DD`           — single calendar day
+      - `date_from=YYYY-MM-DD` and/or `date_to=YYYY-MM-DD` — inclusive range
+        (either bound may be omitted for an open-ended range)
+
+    If `date` is set, the range params are ignored — single-day takes priority
+    because that's what the old single-`date` UI sent, and we don't want to
+    break bookmarked URLs.
+    """
     conditions: list[str] = []
     params: list = []
 
@@ -481,6 +620,23 @@ def _build_flight_filter(
         day_end = day_start + 86400
         conditions.append("f.first_seen >= ? AND f.first_seen < ?")
         params += [day_start, day_end]
+    elif date_from or date_to:
+        if date_from:
+            try:
+                lo_day = datetime.strptime(date_from, "%Y-%m-%d")
+            except ValueError:
+                raise HTTPException(400, "date_from must be YYYY-MM-DD")
+            conditions.append("f.first_seen >= ?")
+            params.append(int(lo_day.timestamp()))
+        if date_to:
+            try:
+                hi_day = datetime.strptime(date_to, "%Y-%m-%d")
+            except ValueError:
+                raise HTTPException(400, "date_to must be YYYY-MM-DD")
+            # End of day inclusive: + 86400 so date_to=YYYY-MM-DD captures
+            # everything up to (but not including) the next midnight.
+            conditions.append("f.first_seen < ?")
+            params.append(int(hi_day.timestamp()) + 86400)
 
     if icao:
         conditions.append("f.icao_hex = ?")
@@ -526,6 +682,8 @@ def _build_flight_filter(
 @app.get("/api/flights")
 def api_flights(
     date: str | None = Query(None, description="YYYY-MM-DD (UTC)"),
+    date_from: str | None = Query(None, description="YYYY-MM-DD inclusive range start"),
+    date_to:   str | None = Query(None, description="YYYY-MM-DD inclusive range end"),
     icao: str | None = Query(None),
     callsign: str | None = Query(None),
     registration: str | None = Query(None),
@@ -538,7 +696,10 @@ def api_flights(
     limit: int = Query(config.DEFAULT_PAGE_SIZE, ge=1, le=config.MAX_PAGE_SIZE),
     offset: int = Query(0, ge=0, le=500_000),
 ) -> dict:
-    where, params = _build_flight_filter(date, icao, callsign, registration, aircraft_type, source, flags, squawk)
+    where, params = _build_flight_filter(
+        date, icao, callsign, registration, aircraft_type, source, flags, squawk,
+        date_from=date_from, date_to=date_to,
+    )
     conn = db()
 
     # Only JOIN extra tables for COUNT when filters need them
@@ -584,6 +745,8 @@ _CSV_COLS = [
 @app.get("/api/flights/export.csv")
 def api_flights_export(
     date: str | None = Query(None, description="YYYY-MM-DD (UTC)"),
+    date_from: str | None = Query(None, description="YYYY-MM-DD inclusive range start"),
+    date_to:   str | None = Query(None, description="YYYY-MM-DD inclusive range end"),
     icao: str | None = Query(None),
     callsign: str | None = Query(None),
     registration: str | None = Query(None),
@@ -594,7 +757,10 @@ def api_flights_export(
     sort_by: str | None = Query(None),
     sort_dir: str | None = Query(None, description="asc | desc"),
 ) -> Response:
-    where, params = _build_flight_filter(date, icao, callsign, registration, aircraft_type, source, flags, squawk)
+    where, params = _build_flight_filter(
+        date, icao, callsign, registration, aircraft_type, source, flags, squawk,
+        date_from=date_from, date_to=date_to,
+    )
     sort_col = _SORT_COLS.get(sort_by or "", "f.first_seen")
     sort_order = "ASC" if sort_dir == "asc" else "DESC"
 
@@ -2288,6 +2454,15 @@ async def _check_single_feeder(feeder: dict) -> dict:
 
 async def _check_all_feeders() -> list[dict]:
     return await asyncio.gather(*[_check_single_feeder(f) for f in config.FEEDERS])
+
+
+@app.get("/api/feeders")
+async def api_feeders() -> dict:
+    """Same shape as the Jinja /feeders template uses — list of feeder
+    status dicts plus a has_feeders flag for the empty-state notice.
+    """
+    feeders = list(await _check_all_feeders()) if config.FEEDERS else []
+    return {"feeders": feeders, "has_feeders": bool(config.FEEDERS)}
 
 
 @app.get("/feeders", response_class=HTMLResponse)

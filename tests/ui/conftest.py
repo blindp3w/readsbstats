@@ -21,6 +21,7 @@ import pytest
 from playwright.sync_api import Browser, Playwright
 
 UI_TEST_PORT = 18080
+V2_TEST_PORT = 18081  # parallel server with root_path=/stats for v2 SPA tests
 SERVER_STARTUP_TIMEOUT = 15
 
 
@@ -111,6 +112,61 @@ def live_server():
             [sys.executable, "-m", "uvicorn", "readsbstats.web:app",
              "--host", "127.0.0.1", "--port", str(UI_TEST_PORT)],
             env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        try:
+            _wait_for_server(proc, base_url, timeout=SERVER_STARTUP_TIMEOUT)
+            yield base_url, flight_id
+        finally:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+
+
+# ---------------------------------------------------------------------------
+# v2 SPA live server (RSBS_ROOT_PATH=/stats so the prod-baked dist asset URLs
+# /stats/v2/assets/... resolve correctly). Runs on a separate port so it
+# coexists with the v1 fixture during the migration.
+#
+# Skips if frontend/dist isn't built — tests are skipped, not failed, when the
+# SPA is missing (e.g., fresh clone before npm run build).
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(scope="session")
+def v2_server():
+    repo_root = Path(__file__).resolve().parents[2]
+    spa_index = repo_root / "frontend" / "dist" / "index.html"
+    if not spa_index.is_file():
+        pytest.skip("frontend/dist not built — run `cd frontend && npm run build`")
+
+    with tempfile.TemporaryDirectory(prefix="rsbs_v2_ui_") as tmpdir:
+        db_path = os.path.join(tmpdir, "test.db")
+        flight_id = _seed_db(db_path)
+
+        # External-facing base URL — what the browser sees. The dist's
+        # baked-in asset URLs are /stats/v2/assets/...; the wrapper
+        # (tests/ui/_v2_app.py) strips that prefix before passing to FastAPI,
+        # which itself runs with root_path='' so its mounts match bare paths.
+        # Net effect: the test environment behaves like nginx + uvicorn would
+        # in production, without needing nginx.
+        base_url = f"http://127.0.0.1:{V2_TEST_PORT}/stats"
+        env = {
+            **os.environ,
+            "RSBS_DB_PATH":   db_path,
+            "RSBS_ROOT_PATH": "",
+            "RSBS_LAT":       "52.24199",
+            "RSBS_LON":       "21.02872",
+            "RSBS_ENABLE_V2": "1",
+        }
+
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "uvicorn", "tests.ui._v2_app:app",
+             "--host", "127.0.0.1", "--port", str(V2_TEST_PORT)],
+            env=env,
+            cwd=str(repo_root),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
