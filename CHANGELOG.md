@@ -1,5 +1,33 @@
 # Changelog
 
+## 2.1.9 — 2026-05-17
+
+### Audit 12 Phase 7 — documentation hygiene
+
+Doc-only. No source-code behavior change. Fixes stale references to
+files/paths/identifiers that didn't survive v2.0.0 or the audit work.
+
+- `src/readsbstats/http_safe.py` module docstring referenced
+  `static/js/table-utils.js` — replaced with the current
+  `frontend/src/lib/safeUrl.ts` path.
+- `frontend/src/lib/safeUrl.ts` opening comment said "Ported from
+  static/js/table-utils.js:safeHttpUrl" with no acknowledgement that
+  the file is deleted — clarified.
+- `frontend/src/main.tsx` basename comment described the
+  v2.0.0-rc.1 transitional `/stats/v2/` prefix instead of the
+  current canonical `/stats/`.
+- `frontend/CLAUDE.md` claimed "Vitest + jsdom (43 tests)" — updated
+  to the post-audit count.
+
+No tests change.
+
+This is the final phase of Audit 12. Across six shipped phases
+(v2.1.3 → v2.1.8) plus this doc cleanup, **~60 of ~75 numbered
+audit findings** are closed. Remaining items are three large
+deferred refactors (#193 web.py split, #194 _migrate() split,
+#195 page extractions) plus a handful of Low-severity cosmetic
+items, all tracked in `internal_docs/security/audit-12-2026-05-17-post-v2.md`.
+
 ## 2.1.8 — 2026-05-17
 
 ### Audit 12 Phase 6 — style + dead-code cleanup

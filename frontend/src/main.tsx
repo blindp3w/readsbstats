@@ -36,9 +36,11 @@ const queryClient = new QueryClient({
 });
 
 // Router basename:
-//   prod: BASE_URL='/stats/v2/' → basename='/stats/v2'
-//   dev:  BASE_URL='/'           → basename=''
-// React Router expects no trailing slash.
+//   prod: BASE_URL='/stats/' → basename='/stats'
+//   dev:  BASE_URL='/'        → basename=''
+// React Router expects no trailing slash. The v2.0.0-rc.1 coexistence build
+// used `/stats/v2/` as a transitional basename; the v2.0.0 cutover moved
+// the SPA to the canonical `/stats/` mount.
 const basename = import.meta.env.BASE_URL.replace(/\/$/, '');
 
 const router = createBrowserRouter(

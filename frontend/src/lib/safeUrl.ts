@@ -1,4 +1,6 @@
-// Ported from static/js/table-utils.js:safeHttpUrl.
+// Originally ported from v1's `static/js/table-utils.js:safeHttpUrl()`
+// (since deleted in the v2.0.0 SPA cutover). This module is the active
+// allowlist; the backend twin lives in `http_safe.py`.
 //
 // Defence-in-depth allowlist for URLs we render from third-party API data
 // (photo URLs from Planespotters / airport-data.com / hexdb.io / Wikipedia).

@@ -17,8 +17,8 @@ Both helpers enforce:
     onto an internal endpoint such as the cloud metadata service.
   * Response body is capped at ``max_bytes``.
 
-These properties match the frontend ``safeHttpUrl()`` policy in
-``static/js/table-utils.js``.
+These properties match the frontend ``safeUrl()`` policy in
+``frontend/src/lib/safeUrl.ts``.
 """
 from __future__ import annotations
 
