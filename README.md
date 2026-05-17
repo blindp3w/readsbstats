@@ -341,6 +341,12 @@ Environment="RSBS_FLIGHT_GAP=1200"
 | `RSBS_TELEGRAM_BASE_URL` | `http://homepi.local/stats` | Base URL used for profile links in Telegram messages. Set this to the Pi's LAN IP if you read Telegram on a phone where the `homepi.local` mDNS name won't resolve |
 | `RSBS_MAP_HISTORY_HOURS` | `24` | How many hours back the live map's rewind slider can reach (1–168) |
 | `RSBS_HEALTH_*` | _(see /settings)_ | Health-dashboard thresholds — heartbeat warn/critical, noise floor, CPU, baseline lookback, drop percentages, gain saturation, range-trend ratio. All effective values are listed on the `/settings` page; defaults are tuned for a stock readsb + Pi 4 setup |
+| `RSBS_USE_DUCKDB` | `0` | Master flag for the **DuckDB analytical accelerator**. When on, `/api/map/heatmap` and `/api/map/coverage` route their full-table scans through DuckDB's `sqlite_scanner` extension (read-only attach to the live SQLite file); SQLite remains the only write path. Drops `?window=30d` and `?window=all` from 60 s+ to ~5–15 s on the Pi 4. SQLite fallback engages automatically on any DuckDB error so endpoints can't regress |
+| `RSBS_DUCKDB_MEMORY_MB` | `256` | DuckDB working-set cap (MB); query intermediates spill to `RSBS_DUCKDB_TEMP_DIR` if exceeded |
+| `RSBS_DUCKDB_THREADS` | `2` | DuckDB worker threads — matches the web service's `CPUQuota=50%` on a 4-core Pi; raise only if you've raised the quota too |
+| `RSBS_DUCKDB_HOME_DIR` | `/mnt/ext/readsbstats/duckdb-home` | DuckDB home (extension cache lives here). The `readsbstats` system user has no `/home`, so this is set explicitly |
+| `RSBS_DUCKDB_TEMP_DIR` | `/mnt/ext/readsbstats/duckdb-tmp` | DuckDB spill directory — files clean up on graceful close + on every service start |
+| `RSBS_PREWARM_MAP_CACHE` | `1` | Background prewarmer thread that keeps all 8 (heatmap × coverage × {24h, 7d, 30d, all}) cache entries hot at half-TTL. Self-disables if DuckDB isn't available. `0` to leave the caches cold |
 
 ### Logging
 
@@ -677,11 +683,12 @@ max-age=31536000`.
 
 - The map's **heatmap window selector** has working `24h` (fast, cached
   5 min) and `7d` (~10–20 s on first hit, cached 30 min) options. `30d` and
-  `all` currently return 504 from nginx — SQLite's single-threaded
-  `GROUP BY` over millions of positions exceeds the 60 s proxy timeout. The
-  SPA defaults to `24h` for that reason. Fix planned via DuckDB's
-  `sqlite_scanner` extension (same SQLite file, vectorised multi-core
-  aggregation).
+  `all` previously returned 504 from nginx; resolved as of 2026-05-17 by
+  the optional **DuckDB accelerator** (`RSBS_USE_DUCKDB=1`) — same on-disk
+  SQLite file, vectorised multi-core scans via the `sqlite_scanner`
+  extension. The background prewarmer (`RSBS_PREWARM_MAP_CACHE=1`, on by
+  default with DuckDB) keeps all windows cache-warm so users hit ~40 ms
+  responses regardless of window size.
 - **Dark mode only** for now. Light mode is on the backlog.
 
 ## License

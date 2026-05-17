@@ -2604,6 +2604,37 @@ class TestApiMapCoverage:
         assert r_all.json()["max_range_nm"]  == pytest.approx(200.0, rel=0.01)
 
 
+class TestMapPrewarmer:
+    """Functional test for _prewarm_one — the actual thread lifecycle is
+    exercised by deploy verification, not unit tests."""
+
+    def test_prewarm_one_populates_cache(self, client, db_conn):
+        now = int(time.time())
+        fid = db_conn.execute(
+            "INSERT INTO flights (icao_hex,callsign,first_seen,last_seen,total_positions,"
+            "primary_source,lat_min,lat_max,lon_min,lon_max) VALUES "
+            "('aabbcc','TEST',1000,2000,0,'adsb',0,0,0,0)"
+        ).lastrowid
+        db_conn.execute(
+            "INSERT INTO positions (flight_id,ts,lat,lon,source_type) VALUES (?,?,?,?,?)",
+            (fid, now, 52.13, 21.04, "adsb_icao"),
+        )
+        db_conn.commit()
+
+        web._cache.clear()
+        assert web._get_cache("heatmap:24h") is None
+        web._prewarm_one("heatmap", "24h")
+        cached = web._get_cache("heatmap:24h")
+        assert cached is not None
+        assert cached["count"] == 1
+
+        assert web._get_cache("coverage:24h") is None
+        web._prewarm_one("coverage", "24h")
+        cached = web._get_cache("coverage:24h")
+        assert cached is not None
+        assert len(cached["polygon"]) == 36
+
+
 class TestApiAircraftPhoto:
     def test_cached_photo_returned(self, client, db_conn):
         db_conn.execute(

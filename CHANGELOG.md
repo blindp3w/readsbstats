@@ -1,6 +1,108 @@
 # Changelog
 
-## Unreleased
+## 2.1.0 — 2026-05-17
+
+### Fixed — SPA favicon 404 + nginx-direct static serving
+
+`/stats/favicon.svg` was returning 404. The Vite build emits
+`frontend/dist/favicon.svg` at the root of `dist/`, but FastAPI's
+`/assets` mount only covered `dist/assets/*`, and the SPA catch-all at
+`/{spa_path:path}` (web.py:2491) **deliberately** 404s requests ending
+in known asset extensions to surface deploy bugs instead of returning
+HTML for them. So the file existed on disk and nothing served it.
+
+Two changes:
+
+1. **FastAPI fallback** — added an explicit `GET /favicon.svg` route in
+   `web.py` that returns the dist file via `FileResponse` with
+   `Cache-Control: public, max-age=86400`. Works on first deploy with
+   no nginx changes required.
+
+2. **nginx-direct static serving** — `nginx-readsbstats.conf` now
+   serves `/stats/assets/` and `/stats/favicon.svg` from
+   `/opt/readsbstats/frontend/dist/` via `alias` instead of proxying to
+   FastAPI. One fewer hop per static request, lighter on uvicorn. The
+   FastAPI mounts stay registered as a fallback for direct `:8080`
+   access (tests, dev), so the nginx alias is a pure perf
+   optimisation — not load-bearing.
+
+The nginx-direct path requires `www-data` to be able to read
+`/opt/readsbstats/frontend/dist/`. `scripts/update.sh`'s recursive
+`chown root:readsbstats; chmod u=rwX,g=rX,o=` locks "other" out, so
+`update.sh` now also runs `usermod -aG readsbstats www-data`
+(idempotent) and restarts nginx on the first add — group membership
+only applies at process start, not on `systemctl reload`. After that
+one-time restart, subsequent deploys are silent (the `if !
+id -nG | grep -qx readsbstats` guard short-circuits).
+
+### Added — DuckDB analytical accelerator for /api/map/heatmap and /api/map/coverage
+
+`/api/map/heatmap?window=30d` and `?window=all` previously returned 504
+from nginx (single-threaded SQLite GROUP BY over millions of `positions`
+rows exceeded the 60 s `proxy_read_timeout`). Both endpoints now route
+heavy aggregates through DuckDB's `sqlite_scanner` extension attached
+read-only to the live SQLite file. Same on-disk DB, no migration, no
+write path changes — DuckDB is a query-time accelerator only.
+Vectorised multi-core scans drop the worst case from 60 s+ to ~5–15 s
+on a Pi 4 with 3.3 M positions.
+
+New module: `src/readsbstats/analytics.py`. Lazy singleton DuckDB
+connection, double-checked init under a lock, per-call cursors so
+concurrent endpoints don't serialise on the connection's internal
+mutex, path validator for `ATTACH` / `SET temp_directory` (DuckDB has
+no parameter binding for either, so paths become SQL text), three-layer
+failure handling (import / first-connection / per-query), all with
+fall-through to the original SQLite query so the endpoints can't
+regress if the engine is unavailable.
+
+Web-side additions:
+
+- Per-window `asyncio.Lock` single-flight wrappers on both endpoints so
+  two concurrent cold-cache misses don't both spawn a full-table scan.
+- Background **prewarmer thread** (`map-prewarm`, daemon) that refreshes
+  all 8 (heatmap × coverage × {24h, 7d, 30d, all}) cache entries at
+  half-TTL. Users always hit warm cache; refreshes run one at a time
+  with a 10 s cool-off between heavy queries so the warmup doesn't
+  starve the collector. Gated on `RSBS_PREWARM_MAP_CACHE` (default on
+  when DuckDB is on).
+- Eager init in the FastAPI lifespan: the ~1–2 s extension-load + ATTACH
+  cost is paid during service startup rather than the first user hit.
+
+Configuration knobs (all opt-in, defaults safe):
+
+| Var | Default | Purpose |
+|---|---|---|
+| `RSBS_USE_DUCKDB` | `0` (off) | Master flag; flip to `1` after deploy soak |
+| `RSBS_DUCKDB_MEMORY_MB` | `256` | DuckDB working-set cap |
+| `RSBS_DUCKDB_THREADS` | `2` | Worker threads (matches web's `CPUQuota=50%`) |
+| `RSBS_DUCKDB_HOME_DIR` | `/mnt/ext/readsbstats/duckdb-home` | Extension cache + DuckDB state (the `readsbstats` system user has no `/home`) |
+| `RSBS_DUCKDB_TEMP_DIR` | `/mnt/ext/readsbstats/duckdb-tmp` | Spill directory for queries exceeding the memory cap |
+| `RSBS_PREWARM_MAP_CACHE` | `1` | Background prewarmer enable |
+
+`scripts/update.sh` now pre-fetches the `sqlite_scanner` extension
+binary at deploy time so the first user hit after a service restart
+doesn't pay the ~5 s HTTPS download to `extensions.duckdb.org`. The
+binary is cached in `$RSBS_DUCKDB_HOME_DIR/.duckdb/extensions/`.
+
+Dependency: `duckdb==1.5.2` added to `requirements.txt` and
+`pyproject.toml` (pinned, required, ~25 MB aarch64 wheel).
+
+Tests: 9 new (`tests/test_analytics.py`: 8 parity + behaviour tests
+including `cutoff_ts=None` / boundary-safe coords / fallback when
+analytics is unavailable / per-query exception doesn't poison the
+engine / env-flag flip without restart / path-validator rejects
+injection; `tests/test_web.py::TestMapPrewarmer::test_prewarm_one_populates_cache`).
+1197 Python passing, 0 regressions.
+
+Two SQLite ↔ DuckDB math divergences caught during testing and
+documented inline in `analytics.py`:
+
+1. `CAST(double AS INTEGER)` rounds (banker's) in DuckDB; truncates in
+   SQLite. The coverage SQL uses `FLOOR()::INTEGER` explicitly so
+   bucket assignment matches.
+2. `round(x, n)` uses banker's rounding in DuckDB; SQLite is half-up.
+   Tests use boundary-safe coordinates to avoid the ≤0.01 % of
+   cell-boundary points where the two engines disagree.
 
 ### Changed — CI workflow swapped vanilla-JS tests for frontend build + Vitest
 

@@ -28,7 +28,7 @@ from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import config, database, enrichment, geo, health, icao_ranges, photo_sources, route_enricher
+from . import analytics, config, database, enrichment, geo, health, icao_ranges, photo_sources, route_enricher
 
 logging.basicConfig(
     level=logging.INFO,
@@ -58,7 +58,17 @@ async def _lifespan(app_: FastAPI) -> AsyncIterator[None]:
     # Background migrations (positions indexes, bearing backfill) are owned by
     # the collector so two processes don't fight on the SQLite write lock.
     route_enricher.start_background_enricher()
+    # Eager-init DuckDB so the first user hit doesn't pay extension+ATTACH
+    # cost (~1–2 s). If the engine is up, also kick off the prewarmer so
+    # users land on warm cache instead of triggering the cold-scan path.
+    if analytics.is_available():
+        log.info("analytics: DuckDB engine ready")
+        if config.PREWARM_MAP_CACHE:
+            log.info("starting map-cache prewarmer (8 targets, half-TTL refresh)")
+            _start_prewarmer()
     yield
+    _stop_prewarmer()
+    analytics.close()
     log.info("Web server stopped")
 
 
@@ -90,6 +100,20 @@ _SPA_AVAILABLE = SPA_INDEX.is_file() and SPA_ASSETS.is_dir()
 
 if _SPA_AVAILABLE:
     app.mount("/assets", StaticFiles(directory=SPA_ASSETS), name="spa-assets")
+
+    # Top-level static files emitted by Vite from `frontend/public/` — they
+    # land at the root of `dist/`, NOT under `dist/assets/`, so the /assets
+    # mount above doesn't catch them. Add explicit routes for each one
+    # (rather than a StaticFiles mount at "/" which would shadow /api/*).
+    from fastapi.responses import FileResponse  # local import to keep top of file tidy
+
+    @app.get("/favicon.svg", include_in_schema=False)
+    def _favicon_svg() -> FileResponse:
+        return FileResponse(
+            SPA_DIR / "favicon.svg",
+            media_type="image/svg+xml",
+            headers={"Cache-Control": "public, max-age=86400"},
+        )
 
     # Compat: /v2/* -> 301 -> /<path>. Anyone with a bookmarked RC URL or a
     # browser tab open after the cutover lands on the same page. Registered
@@ -1583,35 +1607,57 @@ _HEATMAP_PRECISION: dict[str, int] = {
 
 
 def _compute_heatmap_sync(window: str) -> dict:
-    """Run the heavy aggregation query — call via run_in_executor to avoid blocking the event loop."""
+    """Run the heavy aggregation query — call via run_in_executor to avoid blocking the event loop.
+
+    Tries the DuckDB engine first (gated by `analytics.is_available()`);
+    falls through to a SQLite query on unavailable or per-query failure.
+    Both paths feed into shared post-processing so the response shape is
+    identical."""
     precision = _HEATMAP_PRECISION[window]
     secs = _HEATMAP_WINDOWS[window]
-    params: list = []
-    extra = ""
-    if secs is not None:
-        extra = "AND ts > ?"
-        params.append(int(time.time()) - secs)
+    cutoff = (int(time.time()) - secs) if secs is not None else None
 
-    rows = db().execute(
-        f"""
-        SELECT round(lat, {precision}) AS rlat, round(lon, {precision}) AS rlon, COUNT(*) AS w
-        FROM positions
-        WHERE lat IS NOT NULL AND lon IS NOT NULL
-          {extra}
-        GROUP BY rlat, rlon
-        """,
-        params,
-    ).fetchall()
+    try:
+        rows: list[tuple[float, float, int]] | None = analytics.heatmap(cutoff, precision)
+    except Exception:  # noqa: BLE001 — belt-and-suspenders: SQLite path must still answer
+        log.warning("analytics.heatmap raised; falling back to SQLite", exc_info=True)
+        rows = None
+    if rows is None:
+        params: list = []
+        extra = ""
+        if cutoff is not None:
+            extra = "AND ts > ?"
+            params.append(cutoff)
+        sqlite_rows = db().execute(
+            f"""
+            SELECT round(lat, {precision}) AS rlat, round(lon, {precision}) AS rlon, COUNT(*) AS w
+            FROM positions
+            WHERE lat IS NOT NULL AND lon IS NOT NULL
+              {extra}
+            GROUP BY rlat, rlon
+            """,
+            params,
+        ).fetchall()
+        rows = [(r["rlat"], r["rlon"], r["w"]) for r in sqlite_rows]
 
     if not rows:
         return {"points": [], "window": window, "count": 0}
 
-    max_w = max(r["w"] for r in rows)
+    max_w = max(r[2] for r in rows)
     return {
-        "points": [[r["rlat"], r["rlon"], r["w"] / max_w] for r in rows],
+        "points": [[r[0], r[1], r[2] / max_w] for r in rows],
         "window": window,
-        "count": sum(r["w"] for r in rows),
+        "count": sum(r[2] for r in rows),
     }
+
+
+_heatmap_locks: dict[str, asyncio.Lock] = {}
+
+
+def _heatmap_lock(window: str) -> asyncio.Lock:
+    if window not in _heatmap_locks:
+        _heatmap_locks[window] = asyncio.Lock()
+    return _heatmap_locks[window]
 
 
 @app.get("/api/map/heatmap")
@@ -1631,11 +1677,15 @@ async def api_map_heatmap(window: str = Query("7d")) -> dict:
     if cached is not None:
         return cached
 
-    result = await asyncio.get_running_loop().run_in_executor(
-        None, _compute_heatmap_sync, window
-    )
-    _set_cache(cache_key, result)
-    return result
+    async with _heatmap_lock(window):
+        cached = _get_cache(cache_key)
+        if cached is not None:
+            return cached
+        result = await asyncio.get_running_loop().run_in_executor(
+            None, _compute_heatmap_sync, window
+        )
+        _set_cache(cache_key, result)
+        return result
 
 
 # ---------------------------------------------------------------------------
@@ -1651,43 +1701,52 @@ def _compute_coverage_sync(window: str) -> dict:
 
     Bearing and haversine distance are computed per-position in SQL so each 10° bucket
     reflects the actual farthest position recorded in that direction, not just the single
-    furthest-point bearing stored on the flight row.
+    furthest-point bearing stored on the flight row.  DuckDB engine first (when available);
+    SQLite fallback on unavailable or per-query failure.
     """
     secs = _HEATMAP_WINDOWS[window]
-    params: dict = {"rlat": config.RECEIVER_LAT, "rlon": config.RECEIVER_LON}
-    extra = ""
-    if secs is not None:
-        extra = "AND ts > :cutoff"
-        params["cutoff"] = int(time.time()) - secs
+    cutoff = (int(time.time()) - secs) if secs is not None else None
 
-    rows = db().execute(
-        f"""
-        WITH pos_bearing AS (
+    try:
+        by_bucket = analytics.coverage(cutoff, config.RECEIVER_LAT, config.RECEIVER_LON, _BUCKET_DEG)
+    except Exception:  # noqa: BLE001
+        log.warning("analytics.coverage raised; falling back to SQLite", exc_info=True)
+        by_bucket = None
+    if by_bucket is None:
+        params: dict = {"rlat": config.RECEIVER_LAT, "rlon": config.RECEIVER_LON}
+        extra = ""
+        if cutoff is not None:
+            extra = "AND ts > :cutoff"
+            params["cutoff"] = cutoff
+
+        rows = db().execute(
+            f"""
+            WITH pos_bearing AS (
+                SELECT
+                    (degrees(atan2(
+                        sin(radians(lon - :rlon)) * cos(radians(lat)),
+                        cos(radians(:rlat)) * sin(radians(lat))
+                        - sin(radians(:rlat)) * cos(radians(lat)) * cos(radians(lon - :rlon))
+                    )) + 360.0) % 360.0 AS bearing_deg,
+                    2.0 * 3440.065 * asin(sqrt(
+                        sin(radians((lat - :rlat) / 2.0)) * sin(radians((lat - :rlat) / 2.0)) +
+                        cos(radians(:rlat)) * cos(radians(lat)) *
+                        sin(radians((lon - :rlon) / 2.0)) * sin(radians((lon - :rlon) / 2.0))
+                    )) AS dist_nm
+                FROM positions
+                WHERE lat IS NOT NULL AND lon IS NOT NULL
+                  {extra}
+            )
             SELECT
-                (degrees(atan2(
-                    sin(radians(lon - :rlon)) * cos(radians(lat)),
-                    cos(radians(:rlat)) * sin(radians(lat))
-                    - sin(radians(:rlat)) * cos(radians(lat)) * cos(radians(lon - :rlon))
-                )) + 360.0) % 360.0 AS bearing_deg,
-                2.0 * 3440.065 * asin(sqrt(
-                    sin(radians((lat - :rlat) / 2.0)) * sin(radians((lat - :rlat) / 2.0)) +
-                    cos(radians(:rlat)) * cos(radians(lat)) *
-                    sin(radians((lon - :rlon) / 2.0)) * sin(radians((lon - :rlon) / 2.0))
-                )) AS dist_nm
-            FROM positions
-            WHERE lat IS NOT NULL AND lon IS NOT NULL
-              {extra}
-        )
-        SELECT
-            CAST(bearing_deg / {_BUCKET_DEG}.0 AS INT) % {_NUM_BUCKETS} AS bucket,
-            MAX(dist_nm) AS max_dist
-        FROM pos_bearing
-        GROUP BY bucket
-        """,
-        params,
-    ).fetchall()
+                CAST(bearing_deg / {_BUCKET_DEG}.0 AS INT) % {_NUM_BUCKETS} AS bucket,
+                MAX(dist_nm) AS max_dist
+            FROM pos_bearing
+            GROUP BY bucket
+            """,
+            params,
+        ).fetchall()
+        by_bucket = {r["bucket"]: r["max_dist"] for r in rows}
 
-    by_bucket: dict[int, float] = {r["bucket"]: r["max_dist"] for r in rows}
     polygon: list[list[float]] = []
     for i in range(_NUM_BUCKETS):
         dist = by_bucket.get(i, 0.0)
@@ -1701,6 +1760,15 @@ def _compute_coverage_sync(window: str) -> dict:
 
     max_range = max(by_bucket.values(), default=0.0)
     return {"polygon": polygon, "max_range_nm": max_range, "window": window}
+
+
+_coverage_locks: dict[str, asyncio.Lock] = {}
+
+
+def _coverage_lock(window: str) -> asyncio.Lock:
+    if window not in _coverage_locks:
+        _coverage_locks[window] = asyncio.Lock()
+    return _coverage_locks[window]
 
 
 @app.get("/api/map/coverage")
@@ -1721,11 +1789,92 @@ async def api_map_coverage(window: str = Query("7d")) -> dict:
     if cached is not None:
         return cached
 
-    result = await asyncio.get_running_loop().run_in_executor(
-        None, _compute_coverage_sync, window
+    async with _coverage_lock(window):
+        cached = _get_cache(cache_key)
+        if cached is not None:
+            return cached
+        result = await asyncio.get_running_loop().run_in_executor(
+            None, _compute_coverage_sync, window
+        )
+        _set_cache(cache_key, result)
+        return result
+
+
+# ---------------------------------------------------------------------------
+# Background prewarmer — keep heatmap+coverage caches hot so users never pay
+# the cold-scan latency. Each entry is refreshed at half its TTL so the
+# cache is renewed well before users could see an expiry.
+# ---------------------------------------------------------------------------
+
+_PREWARM_TARGETS: list[tuple[str, str]] = [
+    ("heatmap", "24h"), ("heatmap", "7d"),  ("heatmap", "30d"),  ("heatmap", "all"),
+    ("coverage", "24h"), ("coverage", "7d"), ("coverage", "30d"), ("coverage", "all"),
+]
+_prewarmer_stop = threading.Event()
+_prewarmer_thread: threading.Thread | None = None
+
+
+def _prewarm_one(kind: str, window: str) -> None:
+    """Run the heavy compute for one (kind, window) and populate the cache.
+    Cheap to call from any thread — the compute helpers open per-thread DB
+    connections via `db()` and the cache dict is set-only (no race risk
+    beyond a last-writer-wins value swap)."""
+    result = _compute_heatmap_sync(window) if kind == "heatmap" else _compute_coverage_sync(window)
+    _set_cache(f"{kind}:{window}", result)
+
+
+def _prewarm_loop() -> None:
+    """Refresh one target per pass with a cool-off between heavy queries.
+
+    The cool-off prevents 8 back-to-back full-table scans from saturating
+    the web service for 60+ s on startup — the collector and incoming user
+    requests both need a slice of CPU. Steady-state refreshes are sparse
+    (half-TTL: 150 s for 24h, 10800 s for `all`) so the thread spends most
+    of its life sleeping.
+    """
+    next_at: dict[tuple[str, str], float] = {(k, w): 0.0 for k, w in _PREWARM_TARGETS}
+    if _prewarmer_stop.wait(5):
+        return
+
+    while not _prewarmer_stop.is_set():
+        target = min(_PREWARM_TARGETS, key=lambda kw: next_at[kw])
+        kind, window = target
+        wait_for = next_at[target] - time.time()
+        if wait_for > 0:
+            if _prewarmer_stop.wait(min(wait_for, 60)):
+                return
+            continue
+
+        try:
+            _prewarm_one(kind, window)
+            ttl = _CACHE_TTLS.get(f"{kind}:{window}", _DEFAULT_TTL)
+            next_at[target] = time.time() + max(ttl // 2, 60)
+            log.debug("prewarm: refreshed %s:%s (next in %ds)",
+                      kind, window, max(ttl // 2, 60))
+        except Exception:  # noqa: BLE001 — must not kill the thread
+            log.warning("prewarm: %s:%s failed; retry in 5 min",
+                        kind, window, exc_info=True)
+            next_at[target] = time.time() + 300
+
+        if _prewarmer_stop.wait(10):
+            return
+
+
+def _start_prewarmer() -> None:
+    global _prewarmer_thread
+    if _prewarmer_thread is not None and _prewarmer_thread.is_alive():
+        return
+    _prewarmer_stop.clear()
+    _prewarmer_thread = threading.Thread(
+        target=_prewarm_loop, name="map-prewarm", daemon=True
     )
-    _set_cache(cache_key, result)
-    return result
+    _prewarmer_thread.start()
+
+
+def _stop_prewarmer() -> None:
+    global _prewarmer_thread
+    _prewarmer_stop.set()
+    _prewarmer_thread = None
 
 
 # ---------------------------------------------------------------------------

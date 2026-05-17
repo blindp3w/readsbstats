@@ -104,9 +104,59 @@ fi
 chown -R root:"$SERVICE_USER" "$APP_DIR"
 chmod -R u=rwX,g=rX,o= "$APP_DIR"
 
+# ---- Ensure nginx can read frontend/dist/ directly --------------------------
+# nginx-readsbstats.conf serves /stats/assets/ and /stats/favicon.svg via
+# `alias` instead of proxying to FastAPI (one fewer hop per request). nginx
+# runs as www-data on Debian/Ubuntu packages or as `nginx` on upstream
+# / RHEL-style packages — some systems even have both users present, so
+# loop over both candidates and add whichever exist. Without group
+# membership, nginx hits 403 on the chmod -R u=rwX,g=rX,o= tree above.
+# Idempotent — usermod -aG is a no-op if the user is already a member.
+# Group membership applies at process start, so nginx is restarted (not
+# reloaded) the FIRST time membership changes; later deploys skip silently.
+if getent group "$SERVICE_USER" >/dev/null 2>&1; then
+    NGINX_GROUP_CHANGED=0
+    for NGINX_USER in www-data nginx; do
+        if id -u "$NGINX_USER" >/dev/null 2>&1; then
+            if ! id -nG "$NGINX_USER" | tr ' ' '\n' | grep -qx "$SERVICE_USER"; then
+                echo "==> Adding $NGINX_USER to $SERVICE_USER group (one-time, for nginx-direct static)"
+                usermod -aG "$SERVICE_USER" "$NGINX_USER"
+                NGINX_GROUP_CHANGED=1
+            fi
+        fi
+    done
+    if [[ $NGINX_GROUP_CHANGED -eq 1 ]]; then
+        echo "==> Restarting nginx so the new group membership takes effect"
+        systemctl restart nginx \
+            || echo "WARNING: nginx restart failed; run 'systemctl restart nginx' manually" >&2
+    fi
+fi
+
 echo "==> Installing Python dependencies"
 "$APP_DIR/venv/bin/pip" install -q -r "$APP_DIR/requirements.txt"
 "$APP_DIR/venv/bin/pip" install -q -e "$APP_DIR"
+
+# ---- Pre-flight DuckDB sqlite_scanner extension cache -----------------------
+# The first `INSTALL sqlite_scanner` triggers a ~5 s HTTPS download from
+# extensions.duckdb.org. If that lands on the first user request to a
+# heavy endpoint (heatmap?window=all), the request can blow the 60 s nginx
+# timeout we're trying to fix. Run it once here so the extension binary
+# is cached for subsequent loads.
+#
+# The `readsbstats` user is a system user with no /home, so we point DuckDB
+# at an explicit home directory on /mnt/ext (already writable for this user
+# and survives across deploys). Same path the web service uses at runtime
+# via `config.DUCKDB_HOME_DIR`.
+DUCKDB_HOME_DIR="${RSBS_DUCKDB_HOME_DIR:-/mnt/ext/readsbstats/duckdb-home}"
+echo "==> Pre-caching DuckDB sqlite_scanner extension at $DUCKDB_HOME_DIR"
+install -d -o "$SERVICE_USER" -g "$SERVICE_USER" -m 0750 "$DUCKDB_HOME_DIR"
+runuser -u "$SERVICE_USER" -- "$APP_DIR/venv/bin/python" -c "
+import duckdb
+c = duckdb.connect()
+c.execute(\"SET home_directory='$DUCKDB_HOME_DIR'\")
+c.execute('INSTALL sqlite_scanner')
+c.execute('LOAD sqlite_scanner')
+" || echo "WARNING: DuckDB extension pre-cache failed; will be downloaded on first use" >&2
 
 echo "==> Reloading systemd"
 cp "$APP_DIR/systemd/readsbstats-collector.service" /etc/systemd/system/

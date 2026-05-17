@@ -1,0 +1,260 @@
+"""DuckDB-backed accelerator for full-table analytical scans.
+
+Read-only ATTACH against the live SQLite history.db via `sqlite_scanner`.
+SQLite remains the only write path; this module is invoked from the web
+process exclusively (the collector has no analytical workload — see
+the plan doc and `What NOT to do` section there).
+
+Public surface:
+- `is_available()` — gated by infra check (memoised) + config.USE_DUCKDB
+  (re-read each call so the env flag can flip without restart in tests).
+- `heatmap()` and `coverage()` — the two ported aggregates; return
+  shapes match what the SQLite branch in web.py produces. Return `None`
+  on per-query failure so the caller can fall through to SQLite.
+- `close()` — called from FastAPI lifespan shutdown.
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import threading
+from pathlib import Path
+
+from . import config
+
+try:
+    import duckdb
+    _DUCKDB_IMPORT_OK = True
+except ImportError:
+    duckdb = None
+    _DUCKDB_IMPORT_OK = False
+
+log = logging.getLogger(__name__)
+
+_CONN = None
+_INIT_LOCK = threading.Lock()
+_INFRA_OK: bool | None = None
+_LOGGED_INIT = False
+
+
+def _is_safe_sql_path(p: str) -> bool:
+    """DuckDB's ATTACH and SET temp_directory take string literals with no
+    parameter binding, so the path becomes part of the SQL text. Reject
+    any character that could break out of the surrounding single quotes."""
+    if not p:
+        return False
+    return not any(c in p for c in ("'", '"', ";", "\x00", "\n", "\r"))
+
+
+def _quote_sql_string(s: str) -> str:
+    """Wrap *s* as a single-quoted SQL string literal. Only safe to call
+    after `_is_safe_sql_path` has accepted the value."""
+    return "'" + s + "'"
+
+
+def _init_connection() -> None:
+    """Single-shot connection setup. Caller must hold `_INIT_LOCK`."""
+    global _CONN, _INFRA_OK, _LOGGED_INIT
+
+    if not _DUCKDB_IMPORT_OK:
+        _INFRA_OK = False
+        if not _LOGGED_INIT:
+            log.info("duckdb not installed, falling back to SQLite for analytics")
+            _LOGGED_INIT = True
+        return
+
+    db_path = config.DB_PATH
+    temp_dir = config.DUCKDB_TEMP_DIR
+    home_dir = config.DUCKDB_HOME_DIR
+
+    if (not _is_safe_sql_path(db_path)
+            or not _is_safe_sql_path(temp_dir)
+            or not _is_safe_sql_path(home_dir)):
+        _INFRA_OK = False
+        log.warning(
+            "analytics: rejecting DuckDB init — DB_PATH / DUCKDB_TEMP_DIR / "
+            "DUCKDB_HOME_DIR contains characters unsafe to embed in SQL"
+        )
+        return
+
+    try:
+        Path(home_dir).mkdir(parents=True, exist_ok=True, mode=0o750)
+        Path(temp_dir).mkdir(parents=True, exist_ok=True, mode=0o700)
+        for entry in os.scandir(temp_dir):
+            if entry.is_file():
+                try:
+                    os.unlink(entry.path)
+                except OSError:
+                    pass
+    except OSError as exc:
+        _INFRA_OK = False
+        log.warning("analytics: cannot prepare DuckDB dirs: %s", exc)
+        return
+
+    try:
+        conn = duckdb.connect(":memory:")
+        # Home directory MUST be set before INSTALL — DuckDB resolves it on
+        # first use and the readsbstats system user has no /home.
+        conn.execute(f"SET home_directory={_quote_sql_string(home_dir)}")
+        conn.execute("INSTALL sqlite_scanner")
+        conn.execute("LOAD sqlite_scanner")
+        conn.execute(f"SET memory_limit='{int(config.DUCKDB_MEMORY_MB)}MB'")
+        conn.execute(f"SET threads={int(config.DUCKDB_THREADS)}")
+        conn.execute(f"SET temp_directory={_quote_sql_string(temp_dir)}")
+        conn.execute(
+            f"ATTACH {_quote_sql_string(db_path)} AS hist (TYPE SQLITE, READ_ONLY)"
+        )
+    except Exception as exc:  # noqa: BLE001 — engine-wide failure, log and disable
+        _INFRA_OK = False
+        log.warning("analytics: DuckDB init failed (%s), falling back to SQLite",
+                    type(exc).__name__)
+        return
+
+    _CONN = conn
+    _INFRA_OK = True
+    if not _LOGGED_INIT:
+        log.info(
+            "analytics: duckdb attached, threads=%d, memory_limit=%dMB",
+            config.DUCKDB_THREADS, config.DUCKDB_MEMORY_MB,
+        )
+        _LOGGED_INIT = True
+
+
+def _ensure_initialised() -> bool:
+    """Lazily run `_init_connection` exactly once per process. Returns
+    True iff `_CONN` is now attached."""
+    if _INFRA_OK is not None:
+        return _INFRA_OK is True
+    with _INIT_LOCK:
+        if _INFRA_OK is None:
+            _init_connection()
+        return _INFRA_OK is True
+
+
+def is_available() -> bool:
+    """True iff the DuckDB engine is wired up AND `config.USE_DUCKDB` is on.
+
+    Re-reads `config.USE_DUCKDB` on every call so tests can flip the
+    flag without restarting the process. The expensive infra check
+    (extension + ATTACH) only runs once per process.
+    """
+    if not config.USE_DUCKDB:
+        return False
+    return _ensure_initialised()
+
+
+def heatmap(cutoff_ts: int | None, precision: int) -> list[tuple[float, float, int]] | None:
+    """Return `(rlat, rlon, count)` cells from `hist.positions`. Mirrors
+    the SQLite query in web._compute_heatmap_sync. Returns `None` on
+    per-query failure so the caller can fall back to SQLite."""
+    if not is_available() or _CONN is None:
+        return None
+    try:
+        cur = _CONN.cursor()
+        if cutoff_ts is None:
+            rows = cur.execute(
+                "SELECT round(lat, ?) AS rlat, round(lon, ?) AS rlon, COUNT(*) AS w "
+                "FROM hist.positions "
+                "WHERE lat IS NOT NULL AND lon IS NOT NULL "
+                "GROUP BY rlat, rlon",
+                [precision, precision],
+            ).fetchall()
+        else:
+            rows = cur.execute(
+                "SELECT round(lat, ?) AS rlat, round(lon, ?) AS rlon, COUNT(*) AS w "
+                "FROM hist.positions "
+                "WHERE lat IS NOT NULL AND lon IS NOT NULL AND ts > ? "
+                "GROUP BY rlat, rlon",
+                [precision, precision, int(cutoff_ts)],
+            ).fetchall()
+        return [(float(r[0]), float(r[1]), int(r[2])) for r in rows]
+    except Exception:  # noqa: BLE001 — one bad query must not poison infra
+        log.warning("analytics.heatmap failed; falling back to SQLite", exc_info=True)
+        return None
+
+
+def coverage(cutoff_ts: int | None, rlat: float, rlon: float,
+             bucket_deg: int) -> dict[int, float] | None:
+    """Return `{bucket_index: max_dist_nm}` from `hist.positions`.
+    `bucket_deg` must divide 360 (the existing 10° in web.py gives 36
+    buckets). `rlat` / `rlon` are receiver coordinates and come from
+    config (not user input)."""
+    if not is_available() or _CONN is None:
+        return None
+    num_buckets = 360 // int(bucket_deg)
+    try:
+        cur = _CONN.cursor()
+        params: list = [rlon, rlat, rlat, rlon, rlat, rlat, rlat, rlon, rlon]
+        time_filter = ""
+        if cutoff_ts is not None:
+            time_filter = "AND ts > ? "
+            params.append(int(cutoff_ts))
+        sql = (
+            "WITH pos_bearing AS ("
+            " SELECT "
+            "  (degrees(atan2("
+            "    sin(radians(lon - ?)) * cos(radians(lat)),"
+            "    cos(radians(?)) * sin(radians(lat))"
+            "      - sin(radians(?)) * cos(radians(lat)) * cos(radians(lon - ?))"
+            "  )) + 360.0) % 360.0 AS bearing_deg,"
+            "  2.0 * 3440.065 * asin(sqrt("
+            "    sin(radians((lat - ?) / 2.0)) * sin(radians((lat - ?) / 2.0))"
+            "    + cos(radians(?)) * cos(radians(lat))"
+            "    * sin(radians((lon - ?) / 2.0)) * sin(radians((lon - ?) / 2.0))"
+            "  )) AS dist_nm"
+            " FROM hist.positions"
+            f" WHERE lat IS NOT NULL AND lon IS NOT NULL {time_filter}"
+            ") "
+            # NB: DuckDB's `CAST(double AS INTEGER)` uses banker's rounding;
+            # SQLite truncates toward zero. We explicitly `FLOOR()` so both
+            # engines yield the same bucket for non-integer bearings/buckets.
+            f"SELECT (CAST(FLOOR(bearing_deg / {float(bucket_deg)}) AS INTEGER)) % {int(num_buckets)} AS bucket, "
+            "MAX(dist_nm) AS max_dist "
+            "FROM pos_bearing "
+            "GROUP BY bucket"
+        )
+        rows = cur.execute(sql, params).fetchall()
+        return {int(r[0]): float(r[1]) for r in rows}
+    except Exception:  # noqa: BLE001
+        log.warning("analytics.coverage failed; falling back to SQLite", exc_info=True)
+        return None
+
+
+def close() -> None:
+    """Close the DuckDB connection and sweep the temp dir. Called from
+    FastAPI lifespan shutdown — also safe to call from tests."""
+    global _CONN
+    with _INIT_LOCK:
+        if _CONN is not None:
+            try:
+                _CONN.close()
+            except Exception:  # noqa: BLE001
+                log.debug("analytics: error closing DuckDB connection", exc_info=True)
+            _CONN = None
+        try:
+            temp_dir = config.DUCKDB_TEMP_DIR
+            if temp_dir and Path(temp_dir).is_dir():
+                for entry in os.scandir(temp_dir):
+                    if entry.is_file():
+                        try:
+                            os.unlink(entry.path)
+                        except OSError:
+                            pass
+        except OSError:
+            pass
+
+
+def _reset_for_tests() -> None:
+    """Drop all module state so the next call rebuilds from scratch.
+    Tests use this between cases; production code never calls it."""
+    global _CONN, _INFRA_OK, _LOGGED_INIT
+    with _INIT_LOCK:
+        if _CONN is not None:
+            try:
+                _CONN.close()
+            except Exception:  # noqa: BLE001
+                pass
+        _CONN = None
+        _INFRA_OK = None
+        _LOGGED_INIT = False

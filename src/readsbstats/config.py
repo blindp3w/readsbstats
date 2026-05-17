@@ -112,6 +112,27 @@ METRICS_INTERVAL = _int("RSBS_METRICS_INTERVAL", "60")
 STATS_JSON       = os.getenv("RSBS_STATS_JSON", "/run/readsb/stats.json")
 
 # ---------------------------------------------------------------------------
+# DuckDB analytical accelerator (web process only) — disabled by default
+# ---------------------------------------------------------------------------
+USE_DUCKDB        = os.getenv("RSBS_USE_DUCKDB", "0") not in ("", "0", "false", "no")
+DUCKDB_MEMORY_MB  = _clamp_int("RSBS_DUCKDB_MEMORY_MB",
+                               _int("RSBS_DUCKDB_MEMORY_MB", "256"), 64, 256)
+DUCKDB_THREADS    = _clamp_int("RSBS_DUCKDB_THREADS",
+                               _int("RSBS_DUCKDB_THREADS", "2"), 1, 2)
+DUCKDB_TEMP_DIR   = os.getenv("RSBS_DUCKDB_TEMP_DIR",
+                              "/mnt/ext/readsbstats/duckdb-tmp")
+# `readsbstats` is a system user with no /home — DuckDB needs an explicit
+# home for its extension cache. Lives next to the DB on /mnt/ext (already
+# writable for this user, survives across deploys, doesn't clutter /opt).
+DUCKDB_HOME_DIR   = os.getenv("RSBS_DUCKDB_HOME_DIR",
+                              "/mnt/ext/readsbstats/duckdb-home")
+# Background prewarmer for map heatmap/coverage caches. On when DuckDB is
+# on; harmless to leave on with DuckDB off (the prewarmer self-disables if
+# the analytics engine isn't available — running the heavy SQLite query
+# unsolicited would hammer the collector).
+PREWARM_MAP_CACHE = os.getenv("RSBS_PREWARM_MAP_CACHE", "1") not in ("0", "false", "no", "")
+
+# ---------------------------------------------------------------------------
 # Receiver health dashboard (rule-based checks over receiver_stats)
 # ---------------------------------------------------------------------------
 HEALTH_HEARTBEAT_CRIT_S = _int("RSBS_HEALTH_HEARTBEAT_CRIT_S", "300")  # no metrics row in 5 min
