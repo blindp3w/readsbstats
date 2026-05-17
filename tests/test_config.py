@@ -3,6 +3,8 @@
 import importlib
 import os
 
+import pytest
+
 
 class TestIntHelper:
     def test_valid_value(self, monkeypatch):
@@ -60,6 +62,36 @@ class TestFloatHelper:
         assert _float("RSBS_TEST_FLOAT", "9.9") == 9.9
 
 
+class TestBoolHelper:
+    """Audit-12 #197 — `_bool` replaced five drifted patterns
+    (`os.getenv(...) not in (...)`). The tests pin its single contract."""
+
+    def test_unset_returns_default(self, monkeypatch):
+        from readsbstats.config import _bool
+        monkeypatch.delenv("RSBS_TEST_BOOL", raising=False)
+        assert _bool("RSBS_TEST_BOOL", default=True) is True
+        assert _bool("RSBS_TEST_BOOL", default=False) is False
+
+    @pytest.mark.parametrize("val", ["", "0", "false", "FALSE", "no", "NO", "off", "OFF"])
+    def test_falsy_values(self, monkeypatch, val):
+        from readsbstats.config import _bool
+        monkeypatch.setenv("RSBS_TEST_BOOL", val)
+        assert _bool("RSBS_TEST_BOOL", default=True) is False
+
+    @pytest.mark.parametrize("val", ["1", "true", "TRUE", "yes", "on", "anything-else"])
+    def test_truthy_values(self, monkeypatch, val):
+        from readsbstats.config import _bool
+        monkeypatch.setenv("RSBS_TEST_BOOL", val)
+        assert _bool("RSBS_TEST_BOOL", default=False) is True
+
+    def test_whitespace_around_value_handled(self, monkeypatch):
+        from readsbstats.config import _bool
+        monkeypatch.setenv("RSBS_TEST_BOOL", "  0  ")
+        assert _bool("RSBS_TEST_BOOL", default=True) is False
+        monkeypatch.setenv("RSBS_TEST_BOOL", "  1  ")
+        assert _bool("RSBS_TEST_BOOL", default=False) is True
+
+
 class TestParseFeeders:
     def test_empty_string_returns_defaults(self):
         from readsbstats.config import _parse_feeders
@@ -94,46 +126,46 @@ class TestParseFeeders:
         assert "name" in capsys.readouterr().err
 
 
-class TestClampInt:
+class TestMinOrDefaultInt:
     def test_value_above_minimum_unchanged(self):
-        from readsbstats.config import _clamp_int
-        assert _clamp_int("TEST", 10, 1, 5) == 10
+        from readsbstats.config import _min_or_default_int
+        assert _min_or_default_int("TEST", 10, 1, 5) == 10
 
     def test_value_at_minimum_unchanged(self):
-        from readsbstats.config import _clamp_int
-        assert _clamp_int("TEST", 1, 1, 5) == 1
+        from readsbstats.config import _min_or_default_int
+        assert _min_or_default_int("TEST", 1, 1, 5) == 1
 
     def test_zero_below_minimum_returns_default(self, capsys):
-        from readsbstats.config import _clamp_int
-        assert _clamp_int("TEST", 0, 1, 5) == 5
+        from readsbstats.config import _min_or_default_int
+        assert _min_or_default_int("TEST", 0, 1, 5) == 5
         err = capsys.readouterr().err
         assert "TEST" in err
         assert "0" in err
 
     def test_negative_returns_default(self, capsys):
-        from readsbstats.config import _clamp_int
-        assert _clamp_int("TEST", -3, 1, 5) == 5
+        from readsbstats.config import _min_or_default_int
+        assert _min_or_default_int("TEST", -3, 1, 5) == 5
         assert "TEST" in capsys.readouterr().err
 
 
-class TestClampFloat:
+class TestMinOrDefaultFloat:
     def test_value_above_minimum_unchanged(self):
-        from readsbstats.config import _clamp_float
-        assert _clamp_float("TEST", 3.14, 0.1, 1.0) == 3.14
+        from readsbstats.config import _min_or_default_float
+        assert _min_or_default_float("TEST", 3.14, 0.1, 1.0) == 3.14
 
     def test_value_at_minimum_unchanged(self):
-        from readsbstats.config import _clamp_float
-        assert _clamp_float("TEST", 0.1, 0.1, 1.0) == 0.1
+        from readsbstats.config import _min_or_default_float
+        assert _min_or_default_float("TEST", 0.1, 0.1, 1.0) == 0.1
 
     def test_zero_below_minimum_returns_default(self, capsys):
-        from readsbstats.config import _clamp_float
-        assert _clamp_float("TEST", 0.0, 0.1, 1.0) == 1.0
+        from readsbstats.config import _min_or_default_float
+        assert _min_or_default_float("TEST", 0.0, 0.1, 1.0) == 1.0
         err = capsys.readouterr().err
         assert "TEST" in err
 
     def test_negative_returns_default(self, capsys):
-        from readsbstats.config import _clamp_float
-        assert _clamp_float("TEST", -1.5, 0.1, 1.0) == 1.0
+        from readsbstats.config import _min_or_default_float
+        assert _min_or_default_float("TEST", -1.5, 0.1, 1.0) == 1.0
         assert "TEST" in capsys.readouterr().err
 
 

@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useParams } from 'react-router-dom';
 import { toast } from 'sonner';
 import { apiFetch, apiJson } from '@/lib/api';
+import type { WatchlistEntry } from '@/lib/types';
 import { useSearchParam, useSearchParamBatch } from '@/hooks/useSearchParam';
 import { safeUrl } from '@/lib/safeUrl';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
@@ -170,11 +171,7 @@ export default function AircraftPage() {
 // Watchlist add/remove for the current aircraft. Resolves "am I watching this
 // already?" by reading the existing /api/watchlist query (shared with the
 // Watchlist page), then offers Add or Remove accordingly.
-interface WatchlistEntry {
-  id: number;
-  match_type: string;
-  value: string;
-}
+// `WatchlistEntry` is declared once in @/lib/types and shared with Watchlist.tsx.
 
 function WatchButton({ icao }: { icao: string }) {
   const qc = useQueryClient();

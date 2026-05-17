@@ -20,6 +20,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+from datetime import datetime, timezone
 
 # Allow imports from src/ when run from project root
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
@@ -291,7 +292,6 @@ def main() -> None:
 
         if merged:
             timestamps = sorted(merged)
-            from datetime import datetime, timezone
             t_min = datetime.fromtimestamp(timestamps[0], tz=timezone.utc)
             t_max = datetime.fromtimestamp(timestamps[-1], tz=timezone.utc)
             print(f"  Range: {t_min:%Y-%m-%d %H:%M} → {t_max:%Y-%m-%d %H:%M} UTC")

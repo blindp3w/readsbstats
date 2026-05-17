@@ -12,6 +12,7 @@ import json
 import logging
 import math
 import os
+import re
 import sqlite3
 import sys
 import threading
@@ -2464,7 +2465,6 @@ async def _feeder_details_mlat(unit: str) -> list[tuple[str, str]]:
         return details
     except Exception:
         return details
-    import re
     for line in reversed(lines):
         if not details or len(details) < 4:
             m = re.search(r"Results:\s+([\d.]+)\s+positions/minute", line)

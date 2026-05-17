@@ -1,5 +1,63 @@
 # Changelog
 
+## 2.1.8 — 2026-05-17
+
+### Audit 12 Phase 6 — style + dead-code cleanup
+
+Refactor-only phase. No behavior change. Closes the "smaller" audit
+items: dead code deletions, duplicated definitions consolidated,
+inconsistent env parsing unified, and a few stale names corrected.
+
+**Dead code removed**
+
+- `frontend/src/pages/Hello.tsx` — Phase 0 PoC, never routed.
+- `metrics_collector._g` — helper defined but never called.
+- `route_enricher._is_confirmed_unknown` + its 3 tests — only used in
+  tests, no production caller.
+
+**Module-top imports**
+
+- `web.py` `import re` was inside `_feeder_details_mlat` — moved to top.
+- `db_updater.py` `from . import http_safe` was inside `_fetch` —
+  promoted to the module-level import block.
+- `scripts/import_rrd.py` `from datetime import ...` was inside a loop
+  — moved to module top.
+
+**De-duplication**
+
+- **#197** Centralised boolean env parsing in `config._bool(name, default)`.
+  Replaced five inconsistent `os.getenv(...) not in (...)` patterns
+  (`WIKIPEDIA_PHOTO`, `ADSBX_ENABLED`, `METRICS_ENABLED`, `USE_DUCKDB`,
+  `PREWARM_MAP_CACHE`) that had drifted in their tuple ordering and
+  empty-string handling. 13 new tests pin the contract.
+- **#198** `_TransientError` was declared identically in 3 modules
+  (`route_enricher`, `adsbx_enricher`, `metrics_collector`). Now a
+  single `http_safe.TransientError` aliased into each consumer; tests
+  still resolve `<module>._TransientError` so no test churn.
+- **#199** `_new_max_gs` was duplicated in `purge_bad_gs` and
+  `purge_mlat_gs_spikes`. Extracted to new `scripts/_purge_helpers.py`
+  with both scripts importing the canonical version.
+
+**Renames for clarity**
+
+- **#196** `_clamp_int` / `_clamp_float` → `_min_or_default_int` /
+  `_min_or_default_float`. The helpers only enforce a lower bound;
+  "clamp" implied two-sided clamping. Docstrings updated to be
+  explicit.
+- **#P6.6** `components/ui/Input.tsx::Select` → `NativeSelect`.
+  Disambiguates from the Radix `Select` in `@/components/ui/Select`
+  (the styled-dropdown primitive).
+- **#P6.7** `WatchlistEntry` type unified in new
+  `frontend/src/lib/types.ts`. Was declared in two places
+  (`Aircraft.tsx`, `Watchlist.tsx`) with divergent shapes.
+
+**Test suite**: Python 1299 → 1312 (+13). Vitest 90 (unchanged).
+
+**Deferred to a later release** (too large for a single phase):
+- `web.py` 2535-line file split into `routes/` + `prewarm.py` + etc. (#193)
+- `database._migrate()` 170-line monolith split into focused helpers (#194)
+- Page extractions (Stats/Map/Flight/Metrics over 300 lines) (#195)
+
 ## 2.1.7 — 2026-05-17
 
 ### Audit 12 Phase 5 — test coverage hardening

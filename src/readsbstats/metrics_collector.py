@@ -14,7 +14,7 @@ import sqlite3
 import threading
 import time
 
-from . import config, database
+from . import config, database, http_safe
 
 log = logging.getLogger("metrics_collector")
 
@@ -45,15 +45,6 @@ _INSERT_SQL = (
 # ---------------------------------------------------------------------------
 # Helpers to safely dig into nested dicts / arrays
 # ---------------------------------------------------------------------------
-
-def _g(d: dict | None, *keys):
-    """Traverse nested dicts returning None on any missing key."""
-    for k in keys:
-        if d is None or not isinstance(d, dict):
-            return None
-        d = d.get(k)
-    return d
-
 
 def _ga(d: dict | None, key: str, index: int):
     """Get an element from an array inside a dict, or None."""
@@ -180,8 +171,8 @@ def _insert_row(conn: sqlite3.Connection, ts: int, row: dict) -> None:
 # Poll cycle
 # ---------------------------------------------------------------------------
 
-class _TransientError(Exception):
-    """Raised on file-read failures; caller retries next cycle."""
+# Alias to the shared exception in http_safe (audit-12 #198).
+_TransientError = http_safe.TransientError
 
 
 def _poll_stats(conn: sqlite3.Connection, path: str) -> bool:

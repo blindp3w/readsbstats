@@ -7,16 +7,23 @@ import os
 import sys
 
 
-def _clamp_int(name: str, value: int, minimum: int, default: int) -> int:
-    """Return *value* if >= *minimum*, else warn and return *default*."""
+def _min_or_default_int(name: str, value: int, minimum: int, default: int) -> int:
+    """Return *value* unchanged when >= *minimum*; else warn and return *default*.
+
+    Audit-12 #196 renamed this from `_clamp_int` because "clamp" implied a
+    two-sided range. It only enforces the lower bound — values larger than
+    *default* pass through untouched.
+    """
     if value < minimum:
         print(f"ERROR: {name}={value} is below minimum {minimum}, using default {default}", file=sys.stderr)
         return default
     return value
 
 
-def _clamp_float(name: str, value: float, minimum: float, default: float) -> float:
-    """Return *value* if >= *minimum*, else warn and return *default*."""
+def _min_or_default_float(name: str, value: float, minimum: float, default: float) -> float:
+    """Float twin of :func:`_min_or_default_int`. See its docstring for the
+    "min-or-default" semantics — *value* is returned unchanged when above
+    the lower bound regardless of how it compares to *default*."""
     if value < minimum:
         print(f"ERROR: {name}={value} is below minimum {minimum}, using default {default}", file=sys.stderr)
         return default
@@ -39,6 +46,26 @@ def _float(name: str, default: str) -> float:
     except ValueError:
         print(f"ERROR: {name}={val!r} is not a valid number, using default {default}", file=sys.stderr)
         return float(default)
+
+
+# Falsy values for a boolean env var. Empty string is included so that
+# `RSBS_FOO=` (assigned but blank) means "off", matching most operators'
+# mental model that unsetting and blanking are equivalent.
+_BOOL_FALSY = frozenset({"", "0", "false", "no", "off"})
+
+
+def _bool(name: str, default: bool) -> bool:
+    """Parse a boolean env var. Returns `default` when the var is unset
+    and the operator hasn't provided any value at all.
+
+    Audit-12 #197 — replaces five copies of
+    `os.getenv(...).lower() not in ("0", "false", "no", "")` that had
+    drifted in their tuple ordering and empty-string handling.
+    """
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() not in _BOOL_FALSY
 
 
 # ---------------------------------------------------------------------------
@@ -88,7 +115,7 @@ RECEIVER_MAX_RANGE = _int("RSBS_MAX_RANGE",    "450")      # nmi
 # Enrichment / photo cache
 # ---------------------------------------------------------------------------
 PHOTO_CACHE_DAYS      = _int("RSBS_PHOTO_CACHE_DAYS",    "30")
-WIKIPEDIA_PHOTO       = os.getenv("RSBS_WIKIPEDIA_PHOTO", "1").strip().lower() not in ("0", "false", "no", "")  # type-photo fallback via Wikipedia REST API
+WIKIPEDIA_PHOTO       = _bool("RSBS_WIKIPEDIA_PHOTO", default=True)   # type-photo fallback via Wikipedia REST API
 AIRSPACE_GEOJSON      = os.getenv("RSBS_AIRSPACE_GEOJSON",        "")      # empty = use bundled poland.geojson
 ROUTE_CACHE_DAYS      = _int("RSBS_ROUTE_CACHE_DAYS",    "30")
 ROUTE_ENRICH_INTERVAL = _int("RSBS_ROUTE_INTERVAL",      "60")    # seconds between batch runs
@@ -98,7 +125,7 @@ ROUTE_RATE_LIMIT_SEC  = _float("RSBS_ROUTE_RATE_LIMIT",  "1.0")  # seconds betwe
 # ---------------------------------------------------------------------------
 # External ADS-B enrichment (airplanes.live — free, no auth)
 # ---------------------------------------------------------------------------
-ADSBX_ENABLED       = os.getenv("RSBS_ADSBX_ENABLED", "1") not in ("0", "false", "no", "")
+ADSBX_ENABLED       = _bool("RSBS_ADSBX_ENABLED", default=True)
 ADSBX_POLL_INTERVAL = _int("RSBS_ADSBX_INTERVAL", "60")       # seconds between area polls
 ADSBX_RANGE_NM      = _int("RSBS_ADSBX_RANGE",    "250")      # radius in nautical miles
 ADSBX_API_URL       = os.getenv("RSBS_ADSBX_URL",
@@ -107,17 +134,17 @@ ADSBX_API_URL       = os.getenv("RSBS_ADSBX_URL",
 # ---------------------------------------------------------------------------
 # Receiver metrics (metrics_collector) — disabled by default
 # ---------------------------------------------------------------------------
-METRICS_ENABLED  = os.getenv("RSBS_METRICS_ENABLED", "") not in ("", "0", "false", "no")
+METRICS_ENABLED  = _bool("RSBS_METRICS_ENABLED", default=False)
 METRICS_INTERVAL = _int("RSBS_METRICS_INTERVAL", "60")
 STATS_JSON       = os.getenv("RSBS_STATS_JSON", "/run/readsb/stats.json")
 
 # ---------------------------------------------------------------------------
 # DuckDB analytical accelerator (web process only) — disabled by default
 # ---------------------------------------------------------------------------
-USE_DUCKDB        = os.getenv("RSBS_USE_DUCKDB", "0") not in ("", "0", "false", "no")
-DUCKDB_MEMORY_MB  = _clamp_int("RSBS_DUCKDB_MEMORY_MB",
+USE_DUCKDB        = _bool("RSBS_USE_DUCKDB", default=False)
+DUCKDB_MEMORY_MB  = _min_or_default_int("RSBS_DUCKDB_MEMORY_MB",
                                _int("RSBS_DUCKDB_MEMORY_MB", "256"), 64, 256)
-DUCKDB_THREADS    = _clamp_int("RSBS_DUCKDB_THREADS",
+DUCKDB_THREADS    = _min_or_default_int("RSBS_DUCKDB_THREADS",
                                _int("RSBS_DUCKDB_THREADS", "2"), 1, 2)
 DUCKDB_TEMP_DIR   = os.getenv("RSBS_DUCKDB_TEMP_DIR",
                               "/mnt/ext/readsbstats/duckdb-tmp")
@@ -130,7 +157,7 @@ DUCKDB_HOME_DIR   = os.getenv("RSBS_DUCKDB_HOME_DIR",
 # on; harmless to leave on with DuckDB off (the prewarmer self-disables if
 # the analytics engine isn't available — running the heavy SQLite query
 # unsolicited would hammer the collector).
-PREWARM_MAP_CACHE = os.getenv("RSBS_PREWARM_MAP_CACHE", "1") not in ("0", "false", "no", "")
+PREWARM_MAP_CACHE = _bool("RSBS_PREWARM_MAP_CACHE", default=True)
 
 # ---------------------------------------------------------------------------
 # Receiver health dashboard (rule-based checks over receiver_stats)
@@ -231,48 +258,48 @@ FEEDERS = _parse_feeders(os.getenv("RSBS_FEEDERS", ""))
 # ---------------------------------------------------------------------------
 
 # Intervals used in sleep() — zero causes infinite busy loops
-POLL_INTERVAL_SEC    = _clamp_int("RSBS_POLL_INTERVAL",  POLL_INTERVAL_SEC,    1, 5)
-FLIGHT_GAP_SEC       = _clamp_int("RSBS_FLIGHT_GAP",     FLIGHT_GAP_SEC,       1, 1800)
-PURGE_INTERVAL_SEC   = _clamp_int("RSBS_PURGE_INTERVAL", PURGE_INTERVAL_SEC,   1, 3600)
-ROUTE_ENRICH_INTERVAL = _clamp_int("RSBS_ROUTE_INTERVAL", ROUTE_ENRICH_INTERVAL, 1, 60)
-ADSBX_POLL_INTERVAL  = _clamp_int("RSBS_ADSBX_INTERVAL", ADSBX_POLL_INTERVAL,  1, 60)
-METRICS_INTERVAL     = _clamp_int("RSBS_METRICS_INTERVAL", METRICS_INTERVAL, 10, 60)
-HEALTH_HEARTBEAT_CRIT_S = _clamp_int("RSBS_HEALTH_HEARTBEAT_CRIT_S", HEALTH_HEARTBEAT_CRIT_S, 30, 300)
-HEALTH_HEARTBEAT_WARN_S = _clamp_int("RSBS_HEALTH_HEARTBEAT_WARN_S", HEALTH_HEARTBEAT_WARN_S, 30, 120)
-HEALTH_AIRCRAFT_GAP_S   = _clamp_int("RSBS_HEALTH_AIRCRAFT_GAP_S",   HEALTH_AIRCRAFT_GAP_S,   60, 600)
-HEALTH_CPU_CRIT_PCT     = _clamp_float("RSBS_HEALTH_CPU_CRIT_PCT",   HEALTH_CPU_CRIT_PCT,    1.0, 90.0)
-HEALTH_CPU_WARN_PCT     = _clamp_float("RSBS_HEALTH_CPU_WARN_PCT",   HEALTH_CPU_WARN_PCT,    1.0, 80.0)
-HEALTH_BASELINE_WEEKS       = _clamp_int("RSBS_HEALTH_BASELINE_WEEKS",       HEALTH_BASELINE_WEEKS,       1, 4)
-HEALTH_BASELINE_MIN_SAMPLES = _clamp_int("RSBS_HEALTH_BASELINE_MIN_SAMPLES", HEALTH_BASELINE_MIN_SAMPLES, 1, 3)
-HEALTH_MSG_DROP_PCT         = _clamp_float("RSBS_HEALTH_MSG_DROP_PCT",      HEALTH_MSG_DROP_PCT,      1.0, 50.0)
-HEALTH_AIRCRAFT_DROP_PCT    = _clamp_float("RSBS_HEALTH_AIRCRAFT_DROP_PCT", HEALTH_AIRCRAFT_DROP_PCT, 1.0, 25.0)
-HEALTH_SIGNAL_DROP_DB       = _clamp_float("RSBS_HEALTH_SIGNAL_DROP_DB",    HEALTH_SIGNAL_DROP_DB,    0.1, 3.0)
-HEALTH_GAIN_STRONG_PCT      = _clamp_float("RSBS_HEALTH_GAIN_STRONG_PCT",   HEALTH_GAIN_STRONG_PCT,   0.1, 5.0)
-HEALTH_RANGE_SHORT_DAYS     = _clamp_int("RSBS_HEALTH_RANGE_SHORT_DAYS",    HEALTH_RANGE_SHORT_DAYS,  1, 7)
-HEALTH_RANGE_LONG_DAYS      = _clamp_int("RSBS_HEALTH_RANGE_LONG_DAYS",     HEALTH_RANGE_LONG_DAYS,   1, 30)
-HEALTH_RANGE_RATIO          = _clamp_float("RSBS_HEALTH_RANGE_RATIO",       HEALTH_RANGE_RATIO,       0.1, 0.85)
+POLL_INTERVAL_SEC    = _min_or_default_int("RSBS_POLL_INTERVAL",  POLL_INTERVAL_SEC,    1, 5)
+FLIGHT_GAP_SEC       = _min_or_default_int("RSBS_FLIGHT_GAP",     FLIGHT_GAP_SEC,       1, 1800)
+PURGE_INTERVAL_SEC   = _min_or_default_int("RSBS_PURGE_INTERVAL", PURGE_INTERVAL_SEC,   1, 3600)
+ROUTE_ENRICH_INTERVAL = _min_or_default_int("RSBS_ROUTE_INTERVAL", ROUTE_ENRICH_INTERVAL, 1, 60)
+ADSBX_POLL_INTERVAL  = _min_or_default_int("RSBS_ADSBX_INTERVAL", ADSBX_POLL_INTERVAL,  1, 60)
+METRICS_INTERVAL     = _min_or_default_int("RSBS_METRICS_INTERVAL", METRICS_INTERVAL, 10, 60)
+HEALTH_HEARTBEAT_CRIT_S = _min_or_default_int("RSBS_HEALTH_HEARTBEAT_CRIT_S", HEALTH_HEARTBEAT_CRIT_S, 30, 300)
+HEALTH_HEARTBEAT_WARN_S = _min_or_default_int("RSBS_HEALTH_HEARTBEAT_WARN_S", HEALTH_HEARTBEAT_WARN_S, 30, 120)
+HEALTH_AIRCRAFT_GAP_S   = _min_or_default_int("RSBS_HEALTH_AIRCRAFT_GAP_S",   HEALTH_AIRCRAFT_GAP_S,   60, 600)
+HEALTH_CPU_CRIT_PCT     = _min_or_default_float("RSBS_HEALTH_CPU_CRIT_PCT",   HEALTH_CPU_CRIT_PCT,    1.0, 90.0)
+HEALTH_CPU_WARN_PCT     = _min_or_default_float("RSBS_HEALTH_CPU_WARN_PCT",   HEALTH_CPU_WARN_PCT,    1.0, 80.0)
+HEALTH_BASELINE_WEEKS       = _min_or_default_int("RSBS_HEALTH_BASELINE_WEEKS",       HEALTH_BASELINE_WEEKS,       1, 4)
+HEALTH_BASELINE_MIN_SAMPLES = _min_or_default_int("RSBS_HEALTH_BASELINE_MIN_SAMPLES", HEALTH_BASELINE_MIN_SAMPLES, 1, 3)
+HEALTH_MSG_DROP_PCT         = _min_or_default_float("RSBS_HEALTH_MSG_DROP_PCT",      HEALTH_MSG_DROP_PCT,      1.0, 50.0)
+HEALTH_AIRCRAFT_DROP_PCT    = _min_or_default_float("RSBS_HEALTH_AIRCRAFT_DROP_PCT", HEALTH_AIRCRAFT_DROP_PCT, 1.0, 25.0)
+HEALTH_SIGNAL_DROP_DB       = _min_or_default_float("RSBS_HEALTH_SIGNAL_DROP_DB",    HEALTH_SIGNAL_DROP_DB,    0.1, 3.0)
+HEALTH_GAIN_STRONG_PCT      = _min_or_default_float("RSBS_HEALTH_GAIN_STRONG_PCT",   HEALTH_GAIN_STRONG_PCT,   0.1, 5.0)
+HEALTH_RANGE_SHORT_DAYS     = _min_or_default_int("RSBS_HEALTH_RANGE_SHORT_DAYS",    HEALTH_RANGE_SHORT_DAYS,  1, 7)
+HEALTH_RANGE_LONG_DAYS      = _min_or_default_int("RSBS_HEALTH_RANGE_LONG_DAYS",     HEALTH_RANGE_LONG_DAYS,   1, 30)
+HEALTH_RANGE_RATIO          = _min_or_default_float("RSBS_HEALTH_RANGE_RATIO",       HEALTH_RANGE_RATIO,       0.1, 0.85)
 
 # Thresholds — zero would reject all positions or delete valid flights
-MIN_POSITIONS_KEEP   = _clamp_int("RSBS_MIN_POSITIONS",  MIN_POSITIONS_KEEP,   1, 2)
-MAX_SEEN_POS_SEC     = _clamp_int("RSBS_MAX_SEEN_POS",   MAX_SEEN_POS_SEC,     1, 60)
-RECEIVER_MAX_RANGE   = _clamp_int("RSBS_MAX_RANGE",      RECEIVER_MAX_RANGE,   1, 450)
-MAX_SPEED_KTS        = _clamp_int("RSBS_MAX_SPEED_KTS",  MAX_SPEED_KTS,        1, 2000)
-MAX_GS_CIVIL_KTS     = _clamp_int("RSBS_MAX_GS_CIVIL",   MAX_GS_CIVIL_KTS,    1, 750)
-MAX_GS_MILITARY_KTS  = _clamp_int("RSBS_MAX_GS_MILITARY", MAX_GS_MILITARY_KTS, 1, 1800)
-MAX_GS_DEVIATION_KTS = _clamp_int("RSBS_MAX_GS_DEVIATION", MAX_GS_DEVIATION_KTS, 1, 100)
-MAX_GS_ACCEL_KTS_S        = _clamp_float("RSBS_MAX_GS_ACCEL",          MAX_GS_ACCEL_KTS_S,        0.1, 8.0)
-MLAT_OUTLIER_FACTOR       = _clamp_float("RSBS_MLAT_OUTLIER_FACTOR",   MLAT_OUTLIER_FACTOR,       2.0, 20.0)
-MLAT_OUTLIER_MIN_READINGS = _clamp_int(  "RSBS_MLAT_OUTLIER_MIN",      MLAT_OUTLIER_MIN_READINGS, 3,   50)
-ADSBX_RANGE_NM       = _clamp_int("RSBS_ADSBX_RANGE",   ADSBX_RANGE_NM,      1, 250)
-ROUTE_BATCH_SIZE     = _clamp_int("RSBS_ROUTE_BATCH",   ROUTE_BATCH_SIZE,     1, 20)
+MIN_POSITIONS_KEEP   = _min_or_default_int("RSBS_MIN_POSITIONS",  MIN_POSITIONS_KEEP,   1, 2)
+MAX_SEEN_POS_SEC     = _min_or_default_int("RSBS_MAX_SEEN_POS",   MAX_SEEN_POS_SEC,     1, 60)
+RECEIVER_MAX_RANGE   = _min_or_default_int("RSBS_MAX_RANGE",      RECEIVER_MAX_RANGE,   1, 450)
+MAX_SPEED_KTS        = _min_or_default_int("RSBS_MAX_SPEED_KTS",  MAX_SPEED_KTS,        1, 2000)
+MAX_GS_CIVIL_KTS     = _min_or_default_int("RSBS_MAX_GS_CIVIL",   MAX_GS_CIVIL_KTS,    1, 750)
+MAX_GS_MILITARY_KTS  = _min_or_default_int("RSBS_MAX_GS_MILITARY", MAX_GS_MILITARY_KTS, 1, 1800)
+MAX_GS_DEVIATION_KTS = _min_or_default_int("RSBS_MAX_GS_DEVIATION", MAX_GS_DEVIATION_KTS, 1, 100)
+MAX_GS_ACCEL_KTS_S        = _min_or_default_float("RSBS_MAX_GS_ACCEL",          MAX_GS_ACCEL_KTS_S,        0.1, 8.0)
+MLAT_OUTLIER_FACTOR       = _min_or_default_float("RSBS_MLAT_OUTLIER_FACTOR",   MLAT_OUTLIER_FACTOR,       2.0, 20.0)
+MLAT_OUTLIER_MIN_READINGS = _min_or_default_int(  "RSBS_MLAT_OUTLIER_MIN",      MLAT_OUTLIER_MIN_READINGS, 3,   50)
+ADSBX_RANGE_NM       = _min_or_default_int("RSBS_ADSBX_RANGE",   ADSBX_RANGE_NM,      1, 250)
+ROUTE_BATCH_SIZE     = _min_or_default_int("RSBS_ROUTE_BATCH",   ROUTE_BATCH_SIZE,     1, 20)
 
 # Map history — zero would make the slider useless
-MAP_HISTORY_HOURS    = _clamp_int("RSBS_MAP_HISTORY_HOURS", MAP_HISTORY_HOURS, 1, 24)
+MAP_HISTORY_HOURS    = _min_or_default_int("RSBS_MAP_HISTORY_HOURS", MAP_HISTORY_HOURS, 1, 24)
 
 # Pagination — zero causes FastAPI validation conflicts (ge=1, le=0)
-MAX_PAGE_SIZE        = _clamp_int("RSBS_MAX_PAGE_SIZE",  MAX_PAGE_SIZE,        1, 500)
-DEFAULT_PAGE_SIZE    = _clamp_int("RSBS_PAGE_SIZE",      DEFAULT_PAGE_SIZE,    1, 100)
-MAX_EXPORT_ROWS      = _clamp_int("RSBS_MAX_EXPORT",    MAX_EXPORT_ROWS,      1, 50000)
+MAX_PAGE_SIZE        = _min_or_default_int("RSBS_MAX_PAGE_SIZE",  MAX_PAGE_SIZE,        1, 500)
+DEFAULT_PAGE_SIZE    = _min_or_default_int("RSBS_PAGE_SIZE",      DEFAULT_PAGE_SIZE,    1, 100)
+MAX_EXPORT_ROWS      = _min_or_default_int("RSBS_MAX_EXPORT",    MAX_EXPORT_ROWS,      1, 50000)
 
 # DEFAULT_PAGE_SIZE must not exceed MAX_PAGE_SIZE
 if DEFAULT_PAGE_SIZE > MAX_PAGE_SIZE:

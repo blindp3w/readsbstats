@@ -83,24 +83,6 @@ def _parse_response(data) -> dict | None:
 # DB helpers
 # ---------------------------------------------------------------------------
 
-def _is_confirmed_unknown(conn: sqlite3.Connection, callsign: str) -> bool:
-    """
-    Return True if callsign_routes has a NULL-result entry that is still
-    fresh (within ROUTE_CACHE_DAYS).  A resolved entry (with origin_icao
-    set) is NOT a confirmed unknown.
-    """
-    cutoff = int(time.time()) - config.ROUTE_CACHE_DAYS * 86400
-    row = conn.execute(
-        "SELECT origin_icao, dest_icao FROM callsign_routes "
-        "WHERE callsign = ? AND fetched_at > ?",
-        (callsign, cutoff),
-    ).fetchone()
-    if row is None:
-        return False
-    # A row with both columns NULL is the "confirmed unknown" sentinel
-    return row["origin_icao"] is None and row["dest_icao"] is None
-
-
 def _store_route(conn: sqlite3.Connection, callsign: str, route: dict | None) -> None:
     """Upsert into callsign_routes and (for resolved routes) airports tables."""
     now = int(time.time())
@@ -153,10 +135,10 @@ def _apply_to_flights(conn: sqlite3.Connection, callsign: str, route: dict | Non
 # HTTP fetch — synchronous, called from background thread
 # ---------------------------------------------------------------------------
 
-class _TransientError(Exception):
-    """Raised by _fetch_route when the failure is transient (network, timeout,
-    unexpected HTTP error).  Callers must NOT store a confirmed-unknown sentinel
-    for these — the callsign should be retried on the next batch."""
+# Alias to the shared exception in http_safe (audit-12 #198). Kept under the
+# leading-underscore name so existing tests (`self.re._TransientError`) keep
+# matching without import churn.
+_TransientError = http_safe.TransientError
 
 
 def _fetch_route(callsign: str) -> dict | None:

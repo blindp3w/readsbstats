@@ -2,6 +2,11 @@ import { useState, type FormEvent } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { apiFetch, apiJson } from '@/lib/api';
+import type {
+  WatchlistEntry,
+  WatchlistMatchType as MatchType,
+  WatchlistResponse,
+} from '@/lib/types';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Table, THead, TBody, TR, TH, TD } from '@/components/ui/Table';
 import { Input } from '@/components/ui/Input';
@@ -34,26 +39,11 @@ import {
 const VALUE_MAX = 64; // database.WATCHLIST_VALUE_MAX
 const LABEL_MAX = 255; // database.WATCHLIST_LABEL_MAX
 
-type MatchType = 'icao' | 'registration' | 'callsign_prefix';
-
 const MATCH_TYPE_LABEL: Record<MatchType, string> = {
   icao: 'ICAO hex',
   registration: 'Registration',
   callsign_prefix: 'Callsign prefix',
 };
-
-interface WatchlistEntry {
-  id: number;
-  match_type: MatchType;
-  value: string;
-  label: string | null;
-  created_at: number;
-  airborne: 0 | 1;
-}
-
-interface WatchlistResponse {
-  entries: WatchlistEntry[];
-}
 
 function fmtDate(epoch: number): string {
   if (!epoch) return '';

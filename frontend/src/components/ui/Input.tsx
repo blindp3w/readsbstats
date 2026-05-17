@@ -12,6 +12,9 @@ export function Input({ className, ...props }: InputHTMLAttributes<HTMLInputElem
   return <input className={cn(fieldClass, className)} {...props} />;
 }
 
-export function Select({ className, ...props }: SelectHTMLAttributes<HTMLSelectElement>) {
+// Audit-12 — renamed from `Select` to `NativeSelect` to disambiguate from
+// the Radix `Select` primitive in `@/components/ui/Select`. Same DOM shape
+// (plain <select>); the Radix variant is the styled-dropdown one.
+export function NativeSelect({ className, ...props }: SelectHTMLAttributes<HTMLSelectElement>) {
   return <select className={cn(fieldClass, className)} {...props} />;
 }

@@ -2,7 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import { apiJson, apiUrl } from '@/lib/api';
 import { useSearchParam, useSearchParamBatch } from '@/hooks/useSearchParam';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
-import { Input, Select } from '@/components/ui/Input';
+import { Input, NativeSelect } from '@/components/ui/Input';
 import { Label } from '@/components/ui/Label';
 import { Button, buttonClass } from '@/components/ui/Button';
 import {
@@ -193,7 +193,7 @@ export default function HistoryPage() {
               />
             </Field>
             <Field label="Source" htmlFor="f-source">
-              <Select
+              <NativeSelect
                 id="f-source"
                 value={source}
                 onChange={(e) => setSource(e.target.value)}
@@ -204,10 +204,10 @@ export default function HistoryPage() {
                 <option value="mlat">MLAT</option>
                 <option value="mixed">mixed</option>
                 <option value="other">other</option>
-              </Select>
+              </NativeSelect>
             </Field>
             <Field label="Flag" htmlFor="f-flags">
-              <Select
+              <NativeSelect
                 id="f-flags"
                 value={flags}
                 onChange={(e) => setFlags(e.target.value)}
@@ -217,7 +217,7 @@ export default function HistoryPage() {
                 <option value="military">military</option>
                 <option value="interesting">interesting</option>
                 <option value="anonymous">anonymous</option>
-              </Select>
+              </NativeSelect>
             </Field>
             <Field label="Squawk" htmlFor="f-squawk">
               <Input

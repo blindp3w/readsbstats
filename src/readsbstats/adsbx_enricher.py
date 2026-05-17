@@ -127,8 +127,8 @@ def _upsert_overrides(conn: sqlite3.Connection, entries: list[dict]) -> int:
 # HTTP fetch — synchronous, called from background thread
 # ---------------------------------------------------------------------------
 
-class _TransientError(Exception):
-    """Raised on network / HTTP failures; caller retries next cycle."""
+# Alias to the shared exception in http_safe (audit-12 #198).
+_TransientError = http_safe.TransientError
 
 
 def _fetch_area() -> dict:

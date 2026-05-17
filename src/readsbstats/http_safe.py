@@ -38,6 +38,18 @@ except ImportError:  # pragma: no cover — httpx is a runtime dep
 _USER_AGENT = {"User-Agent": "readsbstats/1.0"}
 
 
+class TransientError(Exception):
+    """Raised by callers on retry-able failures (network timeout, 5xx,
+    file-read errors). The caller's outer loop catches this and applies
+    backoff before retrying.
+
+    Audit-12 #198 — three modules (route_enricher, adsbx_enricher,
+    metrics_collector) used to declare their own identical
+    `_TransientError` classes. They now alias this single definition
+    via `_TransientError = http_safe.TransientError`.
+    """
+
+
 # ---------------------------------------------------------------------------
 # DNS-rebinding TOCTOU guard
 # ---------------------------------------------------------------------------

@@ -102,7 +102,7 @@ class TestParseResponse:
 
 
 # ---------------------------------------------------------------------------
-# DB helpers: _store_route, _is_confirmed_unknown
+# DB helpers: _store_route
 # ---------------------------------------------------------------------------
 
 class TestStoreRoute:
@@ -164,33 +164,6 @@ class TestStoreRoute:
         assert row is not None
         assert row["origin_icao"] is None
         assert row["dest_icao"] is None
-
-    def test_is_confirmed_unknown_fresh(self, monkeypatch):
-        monkeypatch.setattr(config, "ROUTE_CACHE_DAYS", 30)
-        self.re._store_route(self.conn, "UNKN123", None)
-        assert self.re._is_confirmed_unknown(self.conn, "UNKN123") is True
-
-    def test_is_confirmed_unknown_expired(self, monkeypatch):
-        monkeypatch.setattr(config, "ROUTE_CACHE_DAYS", 1)
-        old_ts = int(time.time()) - 2 * 86400  # 2 days ago
-        self.conn.execute(
-            "INSERT INTO callsign_routes (callsign, origin_icao, dest_icao, fetched_at) VALUES (?,NULL,NULL,?)",
-            ("OLD123", old_ts),
-        )
-        self.conn.commit()
-        assert self.re._is_confirmed_unknown(self.conn, "OLD123") is False
-
-    def test_is_confirmed_unknown_for_resolved_route_returns_false(self):
-        route = {
-            "origin_icao": "WAW", "origin_iata": "WAW",
-            "origin_name": "Warsaw", "origin_country": "Poland",
-            "origin_lat": 52.0, "origin_lon": 21.0,
-            "dest_icao": "LHR", "dest_iata": "LHR",
-            "dest_name": "Heathrow", "dest_country": "UK",
-            "dest_lat": 51.0, "dest_lon": -0.5,
-        }
-        self.re._store_route(self.conn, "LOT123", route)
-        assert self.re._is_confirmed_unknown(self.conn, "LOT123") is False
 
     def test_store_upserts_on_duplicate(self):
         self.re._store_route(self.conn, "LOT123", None)

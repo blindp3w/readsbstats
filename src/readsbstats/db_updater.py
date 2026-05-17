@@ -22,7 +22,7 @@ import sys
 import time
 import urllib.request
 
-from . import config, database, enrichment
+from . import config, database, enrichment, http_safe
 
 logging.basicConfig(
     level=logging.INFO,
@@ -55,7 +55,6 @@ _MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024
 
 def _fetch(url: str) -> bytes:
     """Download *url* through the shared SSRF-safe fetcher."""
-    from . import http_safe
     body, _ = http_safe.safe_urlopen(
         url, timeout=60, max_bytes=_MAX_DOWNLOAD_BYTES, extra_headers=HEADERS,
     )
