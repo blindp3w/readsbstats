@@ -38,9 +38,16 @@ log = logging.getLogger("collector")
 # { icao_hex: {"flight_id": int, "last_seen": int, "last_pos_ts": int} }
 _active: dict[str, dict] = {}
 
-# ICAOs already notified for mil/interesting (first-sighting); pre-loaded from DB on startup
+# ICAOs already notified for mil/interesting (first-sighting); pre-loaded from DB on startup.
+# Intentionally unbounded (audit-12 #186): a bounded LRU would re-alert for the
+# oldest ICAOs after wraparound, which is the wrong behaviour for "first-ever
+# sighting" semantics. The set is bounded in practice by the number of distinct
+# flagged/anonymous ICAOs we've ever seen (~tens of thousands over years; <50MB
+# of resident memory). Pre-load happens via `_load_notified()` on startup.
 _notified_icao: set[str] = set()
-# flight_ids already notified for an emergency squawk
+# flight_ids already notified for an emergency squawk. Bounded by
+# max-concurrent-active-flights: `_close_flight` calls `discard(flight_id)`
+# when the flight finalises (audit-12 #186).
 _squawk_notified: set[int] = set()
 # date on which the last daily summary was sent
 _last_summary_date: datetime.date | None = None
@@ -254,6 +261,8 @@ def _close_flight(conn: sqlite3.Connection, icao: str) -> None:
         return
     flight_id = state["flight_id"]
     conn.execute("DELETE FROM active_flights WHERE icao_hex = ?", (icao,))
+    # Audit-12 #186 — keep _squawk_notified bounded by max-active-flights.
+    _squawk_notified.discard(flight_id)
 
     row = conn.execute(
         "SELECT total_positions, adsb_positions, mlat_positions FROM flights WHERE id = ?",

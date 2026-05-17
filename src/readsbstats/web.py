@@ -770,14 +770,26 @@ def api_flight_detail(flight_id: int) -> dict:
 # API — aircraft photo (Planespotters → airport-data.com → hexdb.io, cached)
 # ---------------------------------------------------------------------------
 
-# Per-type asyncio locks — prevent concurrent duplicate fetches for the same type
-_type_fetch_locks: dict[str, asyncio.Lock] = {}
+# Per-type asyncio locks — prevent concurrent duplicate fetches for the same type.
+# Audit-12 #150 — LRU-capped so the dict can't grow without bound across the
+# worker's lifetime. ICAO type designators are ~3k distinct in practice; 1024
+# is comfortable headroom for hot types while still capping memory.
+from collections import OrderedDict as _OrderedDict
+
+_TYPE_LOCKS_MAX = 1024
+_type_fetch_locks: "_OrderedDict[str, asyncio.Lock]" = _OrderedDict()
 
 
 def _type_lock(type_code: str) -> asyncio.Lock:
-    if type_code not in _type_fetch_locks:
-        _type_fetch_locks[type_code] = asyncio.Lock()
-    return _type_fetch_locks[type_code]
+    existing = _type_fetch_locks.get(type_code)
+    if existing is not None:
+        _type_fetch_locks.move_to_end(type_code)
+        return existing
+    lock = asyncio.Lock()
+    _type_fetch_locks[type_code] = lock
+    if len(_type_fetch_locks) > _TYPE_LOCKS_MAX:
+        _type_fetch_locks.popitem(last=False)
+    return lock
 
 
 async def _fetch_photo(icao_hex: str) -> dict | None:
@@ -1833,6 +1845,40 @@ _PREWARM_TARGETS: list[tuple[str, str]] = [
     ("heatmap", "24h"), ("heatmap", "7d"),  ("heatmap", "30d"),  ("heatmap", "all"),
     ("coverage", "24h"), ("coverage", "7d"), ("coverage", "30d"), ("coverage", "all"),
 ]
+
+# Stagger gap between the first refresh of consecutive targets. With 8
+# targets and a 15s gap, the initial burst is spread across ~105s instead
+# of all 8 contending immediately at process startup (audit-12 #185).
+_PREWARM_INITIAL_STAGGER_S = 15
+
+# TTL-priority order for the initial schedule: shortest-TTL windows are
+# the ones a user is most likely to hit first, so they run first. The
+# longest-TTL ("all") windows are slowest to compute and rarely hit cold —
+# they can wait.
+_PREWARM_TTL_PRIORITY = {"24h": 0, "7d": 1, "30d": 2, "all": 3}
+
+
+def _initial_prewarm_schedule(
+    targets: list[tuple[str, str]],
+    *,
+    now: float,
+) -> dict[tuple[str, str], float]:
+    """Return ``{(kind, window): epoch_seconds}`` mapping each target to its
+    desired *first* refresh time. Earliest first is ``now``; subsequent
+    targets are spaced by ``_PREWARM_INITIAL_STAGGER_S``. Targets are
+    ordered by TTL ascending (shortest-window = most-user-hit = first),
+    with kind as a tiebreaker so heatmap runs before coverage at each TTL.
+
+    Pulled out so we can unit-test the ordering without spinning up the
+    thread or sleeping for real time.
+    """
+    ordered = sorted(
+        targets,
+        key=lambda kw: (_PREWARM_TTL_PRIORITY.get(kw[1], 99), 0 if kw[0] == "heatmap" else 1),
+    )
+    return {kw: now + i * _PREWARM_INITIAL_STAGGER_S for i, kw in enumerate(ordered)}
+
+
 _prewarmer_stop = threading.Event()
 _prewarmer_thread: threading.Thread | None = None
 
@@ -1855,7 +1901,10 @@ def _prewarm_loop() -> None:
     (half-TTL: 150 s for 24h, 10800 s for `all`) so the thread spends most
     of its life sleeping.
     """
-    next_at: dict[tuple[str, str], float] = {(k, w): 0.0 for k, w in _PREWARM_TARGETS}
+    # Staggered initial schedule — see _initial_prewarm_schedule().
+    next_at: dict[tuple[str, str], float] = _initial_prewarm_schedule(
+        _PREWARM_TARGETS, now=time.time(),
+    )
     if _prewarmer_stop.wait(5):
         return
 

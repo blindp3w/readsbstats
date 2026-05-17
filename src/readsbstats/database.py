@@ -430,7 +430,13 @@ def backfill_bearing(path: str = config.DB_PATH) -> None:
     """Backfill max_distance_bearing for flights that have max_distance_nm but
     no bearing yet.  Runs in batches to avoid long WAL write locks.  Called
     from collector.py in a background thread after READY=1 so it never blocks
-    systemd startup."""
+    systemd startup.
+
+    Uses a ``WHERE id > last_id`` cursor (audit-12 #147) so each row is
+    examined exactly once. The previous LIMIT-subquery pattern re-scanned
+    the flights table from the top on every iteration; on a Pi 4 with
+    200k+ flights that would have turned a ~30s job into hours of work.
+    """
     _log = logging.getLogger(__name__)
     conn: sqlite3.Connection | None = None
     try:
@@ -445,8 +451,26 @@ def backfill_bearing(path: str = config.DB_PATH) -> None:
         _log.info("Backfilling max_distance_bearing for %d flights …", need_backfill)
         conn.execute("PRAGMA busy_timeout = 10000")
         batch_size = 500
+        last_id = 0
         done = 0
-        while done < need_backfill:
+        while True:
+            # Pull the next batch of IDs past the cursor. The PK index on
+            # `id` makes this an O(batch_size) seek, regardless of how many
+            # rows we've already processed.
+            ids = [
+                row[0]
+                for row in conn.execute(
+                    "SELECT id FROM flights "
+                    "WHERE id > ? "
+                    "  AND max_distance_nm IS NOT NULL "
+                    "  AND max_distance_bearing IS NULL "
+                    "ORDER BY id LIMIT ?",
+                    (last_id, batch_size),
+                ).fetchall()
+            ]
+            if not ids:
+                break
+            placeholders = ",".join("?" * len(ids))
             conn.execute(
                 f"""
                 UPDATE flights SET max_distance_bearing = (
@@ -466,17 +490,15 @@ def backfill_bearing(path: str = config.DB_PATH) -> None:
                     ) DESC
                     LIMIT 1
                 )
-                WHERE id IN (
-                    SELECT id FROM flights
-                    WHERE max_distance_nm IS NOT NULL AND max_distance_bearing IS NULL
-                    LIMIT {batch_size}
-                )
-                """
+                WHERE id IN ({placeholders})
+                """,
+                ids,
             )
             conn.commit()
-            done += batch_size
+            last_id = ids[-1]
+            done += len(ids)
             if done < need_backfill:
-                _log.info("  … %d / %d", min(done, need_backfill), need_backfill)
+                _log.info("  … %d / %d", done, need_backfill)
         _log.info("Backfill complete.")
     except Exception:
         _log.exception("backfill_bearing failed")

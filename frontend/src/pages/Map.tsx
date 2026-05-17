@@ -137,7 +137,6 @@ export default function MapPage() {
   });
 
   // ── playback tick — advance time forward by `speed × tick` per real sec ─
-  const tickRef = useRef<number | null>(null);
   useEffect(() => {
     if (!playing || mode !== 'rewind') return;
     const id = window.setInterval(() => {
@@ -151,28 +150,17 @@ export default function MapPage() {
         return next;
       });
     }, PLAYBACK_TICK_MS);
-    tickRef.current = id;
-    return () => {
-      window.clearInterval(id);
-      tickRef.current = null;
-    };
+    return () => window.clearInterval(id);
   }, [playing, mode, speed]);
 
-  // React doesn't reliably sync `<input type="range">`'s DOM `.value`
-  // property once the input is "dirty" (post-first-user-interaction).
-  // The `value` attribute updates, but the slider thumb (and Playwright's
-  // input_value()) read the property. Force the sync via a ref so playback
-  // tick updates are reflected visually.
-  // React + `<input type="range">` quirk (Compiler-amplified): the input's
-  // `.value` property goes stale during reactive state-only updates because
-  // React's controlled-input commit doesn't always overwrite the property
-  // for ranges once they're "dirty" from user interaction. We force the sync
-  // imperatively after every state change — this lands on the property and
-  // updates the thumb position.
-  // Force the DOM property to stay synced with state after playback ticks —
-  // React's controlled-input commit doesn't reliably touch `.value` once the
-  // slider is "dirty" from prior user interaction. Using the prototype setter
-  // (not the React-tracked one) ensures the property update isn't fought.
+  // <input type="range"> + React + React-Compiler quirk: once the input is
+  // "dirty" from user interaction, React's controlled-input commit no longer
+  // reliably touches the underlying DOM `.value` property, only the `value`
+  // attribute. The thumb position (and Playwright's `input_value()`) reads
+  // the property, so during playback the slider visually freezes even though
+  // `rewindOffsetSec` advances correctly in state. The fix uses the prototype
+  // setter directly (sidesteps React's tracked setter) to push the value onto
+  // the DOM node after every state change.
   const sliderRef = useRef<HTMLInputElement | null>(null);
   useEffect(() => {
     const el = sliderRef.current;
@@ -308,6 +296,22 @@ export default function MapPage() {
               Snapshot
             </span>
             {snapshot.data ? fmtTs(snapshot.data.at) : '—'}
+            {/*
+              Audit-12 #158 — `placeholderData: (prev) => prev` keeps the
+              previous moment's data visible across rewind fetches so the
+              map doesn't flicker. On a failed fetch this means we're
+              showing stale aircraft positions; surface that explicitly so
+              the user knows the displayed time is not the requested time.
+            */}
+            {snapshot.isError && snapshot.data && (
+              <span
+                className="ml-2 rounded bg-[var(--color-warn-bg,_#7c2d12)]/40 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-[var(--color-warn-fg,_#fed7aa)]"
+                data-testid="map-snapshot-stale"
+                title="The requested moment failed to load — showing the previous snapshot"
+              >
+                stale
+              </span>
+            )}
           </div>
         </div>
       </div>

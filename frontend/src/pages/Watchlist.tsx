@@ -99,11 +99,16 @@ export default function WatchlistPage() {
     },
   });
 
-  const delMut = useMutation<void, Error, number>({
+  // Audit-12 #160 — declare the optimistic-context shape via the 4th
+  // useMutation generic so onError sees `ctx` as typed `DelMutCtx`
+  // instead of relying on a hand-typed annotation that would silently
+  // go stale if onMutate's return shape changed.
+  type DelMutCtx = { prev?: WatchlistResponse };
+  const delMut = useMutation<void, Error, number, DelMutCtx>({
     mutationFn: async (id) => {
       await apiFetch(`watchlist/${id}`, { method: 'DELETE' });
     },
-    onMutate: async (id) => {
+    onMutate: async (id): Promise<DelMutCtx> => {
       // Optimistic — remove from the list immediately.
       await qc.cancelQueries({ queryKey: ['watchlist'] });
       const prev = qc.getQueryData<WatchlistResponse>(['watchlist']);
@@ -114,7 +119,7 @@ export default function WatchlistPage() {
       }
       return { prev };
     },
-    onError: (err, _id, ctx: { prev?: WatchlistResponse } | undefined) => {
+    onError: (err, _id, ctx) => {
       if (ctx?.prev) qc.setQueryData(['watchlist'], ctx.prev);
       toast.error(`Delete failed: ${err.message}`);
     },

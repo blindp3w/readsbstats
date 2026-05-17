@@ -1,5 +1,79 @@
 # Changelog
 
+## 2.1.6 — 2026-05-17
+
+### Audit 12 Phase 4 — performance + UX polish
+
+Performance + UX cleanup phase. No new features; reduces a long-running
+data backfill from O(n²) to O(n), spreads prewarmer startup CPU across
+~100s instead of bunching it at boot, bounds three previously-unbounded
+collections, prevents an in-memory hammering loop during upstream
+outages, and tightens a handful of UI rough edges.
+
+**Backend performance**
+
+- **#147** `database.backfill_bearing` now uses a `WHERE id > last_id`
+  cursor pattern. Each row is examined exactly once; the previous
+  LIMIT-subquery pattern re-scanned the table from the top on every
+  iteration (O(n²)). On a Pi 4 with 200k+ flights this turns hours of
+  backfill into ~30s.
+- **#185** Prewarmer no longer starts all 8 cache targets at `next_at=0.0`
+  (which caused 8 back-to-back full-table scans across the first ~80s
+  of startup). New `_initial_prewarm_schedule()` helper staggers the
+  first refresh of each target by 15s, ordered by TTL ascending so
+  the shortest-window heatmap/coverage (most-likely-hit by a user) is
+  warmed first.
+
+**Bounded memory**
+
+- **#150** `web._type_fetch_locks` is now an LRU-bounded `OrderedDict`
+  capped at 1024 entries. ICAO type designators are ~3k distinct so
+  the cap is comfortable headroom; the previous unbounded dict would
+  grow across worker lifetime without bound.
+- **#186** `collector._squawk_notified` now gets `discard(flight_id)` in
+  `_close_flight`, so the set is naturally bounded by max-concurrent
+  active flights (a few thousand) rather than growing forever.
+  `_notified_icao` is intentionally left unbounded — bounded LRU
+  semantics would re-alert for the oldest first-sighting ICAOs after
+  wraparound, which is the wrong behaviour for that data shape. The
+  set is bounded in practice by tens of thousands of distinct flagged
+  ICAOs (<50MB resident) over years of operation. A comment now
+  documents this.
+
+**Reliability**
+
+- **#155** `route_enricher` now keeps a per-callsign cooldown after a
+  transient (network / HTTP) failure. Without it, a multi-hour
+  upstream outage hammered the same N callsigns every batch interval.
+  Default cooldown is 300s; success clears the cooldown entry so
+  recovered state isn't sticky.
+- **#154** `notifier._watch_remove` now tries the inferred match_type
+  first (preserves Audit 11 #116 — when both icao and registration
+  rows exist for the same 6-hex value, icao wins). If that lookup
+  matches nothing, falls back to the alternate type so a 6-hex-shaped
+  registration (e.g. `ABC123`) is still removable via the bot.
+
+**Frontend UX**
+
+- **#157** `Map.tsx`: deleted dead `tickRef` state. Consolidated three
+  duplicate comment blocks about the `<input type="range">` quirk into
+  one coherent paragraph.
+- **#158** `Map.tsx`: when a rewind snapshot fetch fails, the previous
+  moment's data stays visible (intentional — avoids flicker). Now
+  shows an inline "stale" badge on the snapshot timestamp pill so the
+  user knows the displayed time is not the requested time.
+- **#159** `Metrics.tsx`: hoisted `ALL_METRICS` from `useMemo(..., [])`
+  to module scope. PANELS is a module constant so the join is
+  constant — computing it once at import time is simpler and avoids
+  the future-bug shape of a memo silently freezing on first render if
+  PANELS ever became dynamic.
+- **#160** `Watchlist.tsx`: tightened the optimistic-delete context via
+  the 4th `useMutation` generic. `onError`'s `ctx` is now typed
+  `DelMutCtx` automatically instead of a hand-typed annotation that
+  would drift if `onMutate`'s return shape changed.
+
+**Test suite**: Python 1245 → 1252 (+7). Frontend Vitest unchanged at 54.
+
 ## 2.1.5 — 2026-05-17
 
 ### Audit 12 Phase 3 — reliability fixes

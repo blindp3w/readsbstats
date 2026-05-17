@@ -1701,6 +1701,34 @@ class TestPollEdgeCases:
         fid = self.conn.execute("SELECT id FROM flights").fetchone()[0]
         assert fid in _squawk_notified
 
+    def test_squawk_notified_dropped_on_close_flight(self):
+        """Audit-12 #186 — `_squawk_notified` historically grew unboundedly:
+        every emergency-squawk flight_id was kept forever. Now the flight_id
+        is dropped from the set when `_close_flight` finalises, so the set
+        is naturally bounded by max-concurrent-active-flights."""
+        from readsbstats.collector import _close_flight, _squawk_notified
+        # Set up a flight + put its id in the squawk-notified set
+        cur = self.conn.execute(
+            "INSERT INTO flights (icao_hex, first_seen, last_seen, total_positions) "
+            "VALUES ('aabbcc', 1000, 2000, 10)"
+        )
+        fid = cur.lastrowid
+        self.conn.execute(
+            "INSERT INTO active_flights (icao_hex, flight_id, last_seen) VALUES ('aabbcc', ?, 2000)",
+            (fid,),
+        )
+        self.conn.commit()
+        # Re-seed in-memory state to match
+        from readsbstats import collector as _c
+        _c._active["aabbcc"] = {"flight_id": fid, "last_seen": 2000, "last_pos_ts": 2000}
+        _squawk_notified.add(fid)
+
+        _close_flight(self.conn, "aabbcc")
+
+        assert fid not in _squawk_notified, (
+            "flight_id was not dropped from _squawk_notified on _close_flight"
+        )
+
     def test_empty_hex_entry_skipped(self):
         """Aircraft with empty hex string must not create a flight."""
         from readsbstats.collector import _poll

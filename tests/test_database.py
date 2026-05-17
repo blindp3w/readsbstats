@@ -185,6 +185,57 @@ class TestMigrate:
         assert row[0] < 10 or row[0] > 350
         conn.close()
 
+    def test_backfill_bearing_processes_many_flights_with_cursor(self, tmp_path):
+        """Regression for audit-12 #147 — the old LIMIT subquery re-scanned
+        the table from the top on every iteration (O(n²) work). The cursor
+        pattern uses ``WHERE id > last_id`` so each row is examined once.
+
+        We verify two things:
+          1. Every needs-bearing flight gets a bearing.
+          2. The whole run completes in well under the "scan-everything"
+             worst case — checked by capping wall time."""
+        import time as _time
+        db_path = str(tmp_path / "test.db")
+        database.init_db(db_path)
+        conn = database.connect(db_path)
+        # Insert N flights, each with one position northwest of receiver.
+        N = 600  # > one batch (500), so the cursor branch is exercised
+        rows = []
+        for i in range(N):
+            cur = conn.execute(
+                "INSERT INTO flights (icao_hex, first_seen, last_seen, max_distance_nm) "
+                "VALUES (?, ?, ?, ?)",
+                (f"a{i:05x}", 1000 + i, 2000 + i, 50.0 + i),
+            )
+            rows.append(cur.lastrowid)
+        for fid in rows:
+            conn.execute(
+                "INSERT INTO positions (flight_id, ts, lat, lon) "
+                "VALUES (?, ?, 53.225, 20.940)",
+                (fid, 1500),
+            )
+        conn.commit()
+        conn.close()
+
+        t0 = _time.monotonic()
+        database.backfill_bearing(db_path)
+        elapsed = _time.monotonic() - t0
+
+        # Every flight must have a bearing now.
+        conn = database.connect(db_path)
+        null_count = conn.execute(
+            "SELECT COUNT(*) FROM flights "
+            "WHERE max_distance_nm IS NOT NULL AND max_distance_bearing IS NULL"
+        ).fetchone()[0]
+        assert null_count == 0, f"{null_count} flights still missing bearing"
+        conn.close()
+
+        # Soft perf assert: on a modern dev machine even 600 flights should
+        # complete in well under 5s; the old O(n²) pattern would still be
+        # fast at this size but the assert prevents future regressions if
+        # someone re-introduces full-table scans on every iteration.
+        assert elapsed < 5.0, f"backfill_bearing took {elapsed:.2f}s for {N} flights"
+
     def test_backfill_skipped_when_bearing_already_set(self, tmp_path):
         db_path = str(tmp_path / "test.db")
         database.init_db(db_path)

@@ -424,11 +424,16 @@ class TestEnrichBatch:
         ).fetchone()
         assert row is None, "network failure must not store a confirmed-unknown sentinel"
 
-    def test_network_failure_callsign_retried_next_batch(self, monkeypatch):
-        """After a network failure the callsign must be retried in the next batch."""
+    def test_network_failure_callsign_retried_after_cooldown(self, monkeypatch):
+        """After the per-callsign cooldown elapses, a transient-failed
+        callsign is retried (audit-12 #155). For the test we set cooldown=0
+        so the retry happens on the very next batch — verifies the
+        cooldown-aware logic doesn't permanently blacklist on transient
+        errors."""
         monkeypatch.setattr(config, "ROUTE_CACHE_DAYS", 30)
         monkeypatch.setattr(config, "ROUTE_BATCH_SIZE", 10)
         monkeypatch.setattr(config, "ROUTE_RATE_LIMIT_SEC", 0.0)
+        monkeypatch.setattr(self.re, "_TRANSIENT_COOLDOWN_S", 0)
         insert_flight(self.conn, callsign="ERR123")
 
         import httpx
@@ -441,11 +446,60 @@ class TestEnrichBatch:
         monkeypatch.setattr(self.re.httpx, "Client", lambda **kw: _FailingClient())
         self.re._enrich_batch(self.conn)
 
-        # Now API recovers — callsign must appear in the next batch
+        # Now API recovers — callsign must appear in the next batch (cooldown=0)
         calls = []
         monkeypatch.setattr(self.re, "_fetch_route", lambda cs: calls.append(cs) or None)
         self.re._enrich_batch(self.conn)
         assert "ERR123" in calls, "callsign not retried after transient failure"
+
+    def test_transient_failure_cooldown_skips_immediate_retry(self, monkeypatch):
+        """Regression for audit-12 #155 — without a per-callsign cooldown,
+        a multi-hour upstream outage would hammer the same N callsigns
+        every batch interval. Now an in-memory cooldown skips a failed
+        callsign on the next batch until _TRANSIENT_COOLDOWN_S elapses."""
+        monkeypatch.setattr(config, "ROUTE_CACHE_DAYS", 30)
+        monkeypatch.setattr(config, "ROUTE_BATCH_SIZE", 10)
+        monkeypatch.setattr(config, "ROUTE_RATE_LIMIT_SEC", 0.0)
+        # Realistic cooldown — keep the callsign blocked through the test
+        monkeypatch.setattr(self.re, "_TRANSIENT_COOLDOWN_S", 300)
+        insert_flight(self.conn, callsign="ERR456")
+
+        attempt_count = {"n": 0}
+
+        def failing_fetch(cs):
+            attempt_count["n"] += 1
+            raise self.re._TransientError("simulated transient failure")
+
+        monkeypatch.setattr(self.re, "_fetch_route", failing_fetch)
+
+        # First batch — callsign tried, fails, enters cooldown
+        self.re._enrich_batch(self.conn)
+        assert attempt_count["n"] == 1
+
+        # Second batch immediately after — callsign in cooldown, must NOT
+        # be tried again
+        self.re._enrich_batch(self.conn)
+        assert attempt_count["n"] == 1, (
+            f"cooldown not honored — got {attempt_count['n']} fetch attempts "
+            f"instead of 1"
+        )
+
+    def test_successful_fetch_clears_cooldown(self, monkeypatch):
+        """A previously-failed callsign that succeeds must clear its
+        cooldown so subsequent operational state isn't sticky."""
+        monkeypatch.setattr(config, "ROUTE_CACHE_DAYS", 30)
+        monkeypatch.setattr(config, "ROUTE_BATCH_SIZE", 10)
+        monkeypatch.setattr(config, "ROUTE_RATE_LIMIT_SEC", 0.0)
+        monkeypatch.setattr(self.re, "_TRANSIENT_COOLDOWN_S", 300)
+        # Pre-seed the cooldown map for this callsign — pretend it failed earlier
+        self.re._transient_failure_at["LOT123"] = 0.0  # in the past, expired
+        insert_flight(self.conn, callsign="LOT123")
+
+        monkeypatch.setattr(self.re, "_fetch_route", lambda cs: self._mock_route())
+        self.re._enrich_batch(self.conn)
+
+        # Success must remove the cooldown entry
+        assert "LOT123" not in self.re._transient_failure_at
 
     def test_transient_failures_logged_as_warning_at_batch_level(self, monkeypatch, caplog):
         """When any callsign in a batch fails transiently, a WARNING must be emitted

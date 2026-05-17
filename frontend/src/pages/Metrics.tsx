@@ -142,20 +142,22 @@ const RANGE_OPTIONS: { value: RangeValue; label: string }[] = [
   { value: '90d', label: '90d' },
 ];
 
+// Audit-12 #159 — PANELS is a module constant; the comma-joined metric list
+// is therefore also constant. Hoisting it to module scope means it's computed
+// once at import time instead of inside a `useMemo(..., [])` that would
+// silently freeze on the first render if anyone ever made PANELS dynamic.
+const ALL_METRICS = PANELS.flatMap((p) => p.metrics).join(',');
+
 export default function MetricsPage() {
   const { state: range, setPreset, setCustom } = useRange('24h');
   const now = Math.floor(Date.now() / 1000);
   const from = range.from ?? now - 86400;
   const to = range.to ?? now;
 
-  // All panels' metrics get requested in a single /api/metrics call — server
-  // already supports comma-separated and returns columnar data so this
-  // doesn't blow up beyond what v1 did.
-  const allMetrics = useMemo(() => PANELS.flatMap((p) => p.metrics).join(','), []);
   const qsStr = new URLSearchParams({
     from: String(from),
     to: String(to),
-    metrics: allMetrics,
+    metrics: ALL_METRICS,
   }).toString();
 
   const metricsQ = useQuery<MetricsResp>({

@@ -1333,10 +1333,17 @@ class TestWatchlistBotCommands:
         assert db_conn.execute("SELECT COUNT(*) FROM watchlist").fetchone()[0] == 0
         assert "Removed" in sent[0]
 
-    def test_watch_remove_not_found_when_only_other_match_type_has_value(self, db_conn, monkeypatch):
-        """If only the registration row exists, `/unwatch <6-hex>` must say
-        not-found rather than deleting the registration row.  This pins the
-        match_type filter, not just the inference."""
+    def test_watch_remove_falls_back_to_registration_for_hex_shape(
+        self, db_conn, monkeypatch,
+    ):
+        """Audit-12 #154 — if a registration just happens to be 6 hex chars
+        (e.g. ``ABC123``), the icao-shape inference would historically have
+        left it un-removable via the bot. Now, when the icao lookup matches
+        zero rows, we fall through to the registration type.
+
+        When BOTH rows exist for the same 6-hex value the icao row still
+        wins (preserves Audit 11 #116 — see
+        ``test_watch_remove_does_not_cross_match_types``)."""
         sent = []
         monkeypatch.setattr(notifier, "_send", lambda txt: sent.append(txt))
         db_conn.execute(
@@ -1345,11 +1352,11 @@ class TestWatchlistBotCommands:
         )
         db_conn.commit()
         notifier._watch_remove(db_conn, "abcdef")
-        # registration row must still be there
+        # Registration row removed — message confirms it
         assert db_conn.execute(
-            "SELECT COUNT(*) FROM watchlist WHERE match_type='registration' AND value='abcdef'"
-        ).fetchone()[0] == 1
-        assert "Not in watchlist" in sent[0]
+            "SELECT COUNT(*) FROM watchlist WHERE value='abcdef'"
+        ).fetchone()[0] == 0
+        assert "Removed" in sent[0]
 
     def test_handle_update_watchlist_command(self, db_conn, monkeypatch):
         called = []

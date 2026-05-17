@@ -789,16 +789,25 @@ def _watch_remove(conn: sqlite3.Connection, value_raw: str) -> None:
     if not value:
         _send("Usage: /unwatch &lt;icao_hex|registration|callsign_prefix&gt;")
         return
-    # Infer match_type from value shape, mirroring _watch_add.  Without this
-    # filter, /unwatch <hex> would also remove a registration-typed row with
-    # the same literal value (see improvements.md #116).  Authoritative
-    # removal by id is still available via the HTTP DELETE endpoint.
-    match_type = "icao" if re.fullmatch(r"[0-9a-f]{6}", value) else "registration"
+    # Infer match_type from value shape, mirroring _watch_add. We try the
+    # inferred type first to preserve Audit 11 #116 — when both an icao and
+    # registration row exist with the same 6-hex literal, /unwatch <hex>
+    # removes only the icao row. If that lookup matches nothing, fall back
+    # to the alternate type so a 6-hex-shaped registration (e.g. ABC123)
+    # is still removable via the bot (audit-12 #154).
+    primary = "icao" if re.fullmatch(r"[0-9a-f]{6}", value) else "registration"
     cur = conn.execute(
         "DELETE FROM watchlist WHERE match_type = ? AND value = ?",
-        (match_type, value),
+        (primary, value),
     )
     conn.commit()
+    if cur.rowcount == 0:
+        fallback = "registration" if primary == "icao" else "icao"
+        cur = conn.execute(
+            "DELETE FROM watchlist WHERE match_type = ? AND value = ?",
+            (fallback, value),
+        )
+        conn.commit()
     if cur.rowcount:
         _send(f"Removed from watchlist: <b>{value.upper()}</b>")
     else:

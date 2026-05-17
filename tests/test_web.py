@@ -2803,6 +2803,62 @@ class TestMapPrewarmer:
         assert cached is not None
         assert len(cached["polygon"]) == 36
 
+    def test_type_lock_evicts_oldest_beyond_cap(self):
+        """Audit-12 #150 — _type_fetch_locks used to grow unboundedly.
+        Now LRU-capped at _TYPE_LOCKS_MAX entries."""
+        # Reset to a clean state for the test
+        web._type_fetch_locks.clear()
+        cap = web._TYPE_LOCKS_MAX
+        # Fill past the cap
+        for i in range(cap + 5):
+            web._type_lock(f"T{i:04d}")
+        # Total entries respects the cap
+        assert len(web._type_fetch_locks) <= cap
+        # Oldest entries were evicted — first inserted key no longer present
+        assert "T0000" not in web._type_fetch_locks
+        # Most-recently-touched key still present
+        assert f"T{cap + 4:04d}" in web._type_fetch_locks
+
+    def test_type_lock_returns_same_lock_for_same_key(self):
+        """Sanity — eviction must not break the 'one lock per type' contract
+        for keys still under the cap."""
+        web._type_fetch_locks.clear()
+        a1 = web._type_lock("A320")
+        a2 = web._type_lock("A320")
+        assert a1 is a2
+
+    def test_initial_prewarm_schedule_staggers_targets(self):
+        """Regression for audit-12 #185 — the prewarmer used to start all 8
+        targets at next_at=0.0, causing 8 back-to-back full-table scans
+        across the first ~80s of process startup. The staggered schedule
+        spreads the first refreshes apart and prioritises the shortest-TTL
+        windows (most-used) first."""
+        now = 1_000_000.0
+        schedule = web._initial_prewarm_schedule(web._PREWARM_TARGETS, now=now)
+
+        # Every target has an entry
+        for target in web._PREWARM_TARGETS:
+            assert target in schedule
+
+        # First target is "ready now" (no synthetic wait penalty on the
+        # most-important short-TTL window)
+        first_at = min(schedule.values())
+        assert first_at == now
+
+        # The 8 targets are spread out — not all bunched at the same time
+        unique = sorted(set(schedule.values()))
+        assert len(unique) >= 4, (
+            f"expected staggered values across targets, got {len(unique)} "
+            f"unique entries"
+        )
+
+        # 24h heatmap (shortest TTL, most likely to be hit by user) must be
+        # in the first half of the schedule
+        ranked = sorted(web._PREWARM_TARGETS, key=lambda t: schedule[t])
+        early = ranked[: len(ranked) // 2]
+        assert ("heatmap", "24h") in early
+        assert ("coverage", "24h") in early
+
 
 class TestApiAircraftPhoto:
     def test_cached_photo_returned(self, client, db_conn):

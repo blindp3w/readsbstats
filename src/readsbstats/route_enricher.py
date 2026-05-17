@@ -29,6 +29,13 @@ _TIMEOUT    = 8.0
 # pin memory in the background thread.
 _RESPONSE_MAX_BYTES = 64 * 1024
 
+# Audit-12 #155 — per-callsign cooldown after a transient (network / HTTP)
+# failure. Without it, a multi-hour upstream outage hammers the same N
+# callsigns every batch interval. The cooldown is in-memory only (lost on
+# restart, by design — restart is itself a recovery signal).
+_TRANSIENT_COOLDOWN_S = 300
+_transient_failure_at: dict[str, float] = {}
+
 
 # ---------------------------------------------------------------------------
 # Pure parsing — no I/O, easily unit-testable
@@ -217,20 +224,35 @@ def _enrich_batch(conn: sqlite3.Connection) -> int:
 
     processed = 0
     transient_failures = 0
+    cooled_off = 0
+    now = time.time()
     for row in rows:
         cs = row["callsign"]
+        # Skip if we just failed for this callsign — see _TRANSIENT_COOLDOWN_S.
+        last_fail = _transient_failure_at.get(cs)
+        if last_fail is not None and now - last_fail < _TRANSIENT_COOLDOWN_S:
+            cooled_off += 1
+            continue
         try:
             route = _fetch_route(cs)
             _store_route(conn, cs, route)
             _apply_to_flights(conn, cs, route)
+            # Success clears any prior failure record so future operational
+            # state isn't sticky.
+            _transient_failure_at.pop(cs, None)
         except _TransientError as exc:
-            log.debug("Transient error for %s — skipping, will retry next batch: %s", cs, exc)
+            log.debug("Transient error for %s — cooldown %ds: %s",
+                      cs, _TRANSIENT_COOLDOWN_S, exc)
+            _transient_failure_at[cs] = time.time()
             transient_failures += 1
         except Exception:
             log.exception("Route enricher error for callsign %s", cs)
         processed += 1
         if config.ROUTE_RATE_LIMIT_SEC > 0:
             time.sleep(config.ROUTE_RATE_LIMIT_SEC)
+
+    if cooled_off:
+        log.debug("Route enricher: skipped %d callsign(s) in cooldown", cooled_off)
 
     if transient_failures:
         log.warning(
