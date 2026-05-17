@@ -911,6 +911,40 @@ class TestSpaMount:
         assert r.status_code == 301
         assert r.headers["location"].endswith("/")
 
+    def test_v2_open_redirect_blocked(self, client, monkeypatch):
+        """CodeQL py/url-redirection (alert #28) — the `rest:path` captured
+        segment was interpolated into the Location header verbatim. With
+        an empty root_path (dev mode without nginx prefix), a request like
+        `/v2//evil.com` produced `Location: //evil.com`, which browsers
+        treat as scheme-relative and follow off-site. Defence: strip
+        leading `/` and `\\` from `rest` before building the target.
+
+        The production `root_path=/stats` shields against this because the
+        Location starts with `/stats/…` — but the test deliberately
+        simulates dev mode (`root_path=""`) so the fix is verified in the
+        exact configuration the vulnerability surfaces in."""
+        if not web.SPA_INDEX.is_file():
+            pytest.skip("frontend/dist not built")
+        monkeypatch.setattr(web.app, "root_path", "")
+
+        for hostile_path in (
+            "/v2//evil.com",
+            "/v2///evil.com",
+            "/v2/\\evil.com",
+            "/v2/\\\\evil.com",
+            "/v2//\\evil.com",
+        ):
+            r = client.get(hostile_path, follow_redirects=False)
+            assert r.status_code == 301, hostile_path
+            loc = r.headers["location"]
+            # Location must not start with `//` or `/\` (or their %-encoded
+            # variants) — all interpreted as off-site by at least one major
+            # browser.
+            assert not loc.startswith("//"), f"{hostile_path} → {loc}"
+            assert not loc.startswith("/\\"), f"{hostile_path} → {loc}"
+            assert not loc.startswith("/%5C"), f"{hostile_path} → {loc}"
+            assert not loc.startswith("/%2F"), f"{hostile_path} → {loc}"
+
 
 # ---------------------------------------------------------------------------
 # Feeder health check helpers

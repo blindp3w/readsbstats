@@ -1,5 +1,33 @@
 # Changelog
 
+## 2.1.1 — 2026-05-17
+
+### Security — open-redirect in /v2 compat handler (CodeQL py/url-redirection)
+
+CodeQL alert
+[#28](https://github.com/blindp3w/readsbstats/security/code-scanning/28)
+flagged the `_v2_compat` route in `web.py` (introduced for v2.0.0-rc.1
+bookmark compatibility): the captured `rest:path` segment was
+interpolated into the Location header without sanitisation. A crafted
+request to `/v2//evil.com` produced `Location: //evil.com`, which
+browsers treat as a scheme-relative URL and follow off-site —
+classical CWE-601 open redirect / phishing vector.
+
+**Exploitable** only when `RSBS_ROOT_PATH=""` (dev mode, the `tests/ui/`
+ASGI wrapper, or any deploy without nginx's `/stats` prefix). The
+production setup uses `root_path=/stats` so the Location always starts
+with `/stats/…` and the scheme-relative smuggle never lands. Fixed
+anyway as defence in depth and to silence the static-analysis alert.
+
+**Fix**: `rest.lstrip("/\\")` before constructing the target. Strips
+both leading forward and back slashes (some browsers treat `\` as `/`
+in URLs per the CodeQL guidance). One-line change in `web.py`. New
+test `tests/test_web.py::TestSpaMount::test_v2_open_redirect_blocked`
+covers five hostile inputs (`/v2//evil.com`, `/v2///evil.com`,
+`/v2/\evil.com`, `/v2/\\evil.com`, `/v2//\evil.com`) and explicitly
+sets `app.root_path=""` so the assertion fires against the actual
+vulnerability shape, not the prod-config-shielded one.
+
 ## 2.1.0 — 2026-05-17
 
 ### Fixed — SPA favicon 404 + nginx-direct static serving

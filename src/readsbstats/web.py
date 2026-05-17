@@ -122,6 +122,17 @@ if _SPA_AVAILABLE:
     @app.get("/v2", include_in_schema=False)
     @app.get("/v2/{rest:path}", include_in_schema=False)
     def _v2_compat(request: Request, rest: str = "") -> RedirectResponse:
+        # Strip leading slashes / backslashes from the captured path so a
+        # crafted request like `/v2//evil.com` can't produce a Location
+        # header starting with `//`. Browsers treat `Location: //host/...`
+        # as a scheme-relative URL and follow it off-site — that's the
+        # classic open-redirect / phishing vector flagged as CodeQL alert
+        # py/url-redirection (#28). Backslashes are stripped too because
+        # some browsers treat them as `/` in URLs. The production
+        # root_path="/stats" shields against this in deployed builds
+        # (Location always starts with `/stats/...`), but dev mode runs
+        # with root_path="" so the validation has to happen here.
+        rest = rest.lstrip("/\\")
         root = request.scope.get("root_path", "").rstrip("/")
         target = f"{root}/{rest}" if rest else f"{root}/"
         return RedirectResponse(url=target, status_code=301)
