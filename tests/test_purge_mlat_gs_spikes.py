@@ -178,6 +178,30 @@ class TestScanOrphanMaxGs:
 
 
 # ---------------------------------------------------------------------------
+# _new_max_gs — empty-list guard (audit-12 #164)
+# ---------------------------------------------------------------------------
+
+class TestNewMaxGsEmptyList:
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        self.conn = make_db()
+        yield
+        self.conn.close()
+
+    def test_empty_bad_ids_does_not_raise(self):
+        fid = insert_flight(self.conn)
+        insert_pos(self.conn, fid, 1000, 400.0)
+        insert_pos(self.conn, fid, 1005, 450.0)
+        result = _new_max_gs(self.conn, fid, [])
+        assert result == 450.0
+
+    def test_empty_bad_ids_with_no_positions_returns_none(self):
+        fid = insert_flight(self.conn)
+        result = _new_max_gs(self.conn, fid, [])
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
 # apply_purge
 # ---------------------------------------------------------------------------
 

@@ -1,5 +1,58 @@
 # Changelog
 
+## 2.1.3 — 2026-05-17
+
+### Audit 12 Phase 1 — invariant violations + latent footguns
+
+Full post-v2 security/quality audit ran today (`internal_docs/security/audit-12-2026-05-17-post-v2.md`).
+This release ships Phase 1 of the proposed sequence: documented-invariant breaks,
+one user-visible data-loss bug, and latent footguns. Every fix is test-first; no
+functional change for users beyond the `category` data quality improvement.
+
+**Database**
+
+- **#139** Moved the closed-flight `primary_source` backfill out of `_migrate()`
+  into a new `_backfill_primary_source()` helper that runs in
+  `run_background_migrations()`. The full-table UPDATE was holding the SQLite
+  write lock during web startup, violating the documented
+  "_migrate is web-hot-path; slow ops go to run_background_migrations" invariant.
+- **#140** Added `CREATE TABLE IF NOT EXISTS` for `airports` and `callsign_routes`
+  to `_migrate()`. Both tables existed in the DDL (collector path) but were
+  missing from `_migrate()` (web path), so a web-only restart against an old
+  DB would leave route_enricher writes and airport joins failing until the
+  collector restarted.
+
+**Collector**
+
+- **#146** `_poll` now treats an explicit `seen_pos: null` (or missing field) as
+  "stale → skip" rather than letting `None > MAX_SEEN_POS_SEC` raise a
+  TypeError that the outer `except Exception` swallowed by aborting the whole
+  poll cycle. One malformed aircraft entry no longer drops every other aircraft
+  for that tick.
+- **#144** `_update_flight_agg` now persists `category` via `COALESCE(category, ?)`.
+  Previously `category` was set on the first INSERT only; readsb often emits
+  it after the first position, leaving the flights row permanently NULL on
+  category even though the data was available mid-flight.
+
+**Enrichment cache**
+
+- **#141** Added `_LRUDict.invalidate(key)` and `.clear_locked()` public methods.
+  `enrichment.invalidate_adsbx` / `clear_cache` now use them instead of reaching
+  into `_LRUDict._lock` / `.pop()` / `.clear()` directly. The previous pattern
+  violated the documented "always use get_cached()/put()" contract from
+  `src/readsbstats/CLAUDE.md`.
+
+**Purge scripts**
+
+- **#143 + #164** Guarded the empty-list `IN ()` SQL path in
+  `purge_ghosts.max_distance_after_purge`, `purge_bad_gs._new_max_gs`, and
+  `purge_mlat_gs_spikes._new_max_gs`. SQLite actually accepts `NOT IN ()`
+  (audit was wrong about a crash), but standard SQL forbids it — same
+  portability concern raised in Audit 11 #118.
+
+**Test suite**: 1200 → 1214 (added 14 regression tests across
+`test_database`, `test_purge_*`, `test_enrichment`, `test_collector`).
+
 ## 2.1.2 — 2026-05-17
 
 ### Docs — restructured documentation tree

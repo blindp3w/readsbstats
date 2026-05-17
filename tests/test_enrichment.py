@@ -83,6 +83,33 @@ class TestLRUDictBasics:
         assert cache.get_cached("b") == (False, None)
         assert cache.get_cached("c") == (True, 3)
 
+    def test_invalidate_removes_specific_key(self):
+        """Regression for audit-12 #141 — invalidate() is the public API for
+        busting a single entry. Callers must not reach into ._lock / .pop()."""
+        cache = _LRUDict(maxsize=4)
+        cache.put("a", 1)
+        cache.put("b", 2)
+        cache.invalidate("a")
+        assert cache.get_cached("a") == (False, None)
+        assert cache.get_cached("b") == (True, 2)
+
+    def test_invalidate_missing_key_is_noop(self):
+        cache = _LRUDict(maxsize=4)
+        cache.put("a", 1)
+        cache.invalidate("never-was-here")  # must not raise
+        assert cache.get_cached("a") == (True, 1)
+
+    def test_clear_locked_empties_cache(self):
+        """clear_locked() is the public bulk-clear API; callers must not
+        reach into ._lock / .clear()."""
+        cache = _LRUDict(maxsize=4)
+        cache.put("a", 1)
+        cache.put("b", 2)
+        cache.clear_locked()
+        assert cache.get_cached("a") == (False, None)
+        assert cache.get_cached("b") == (False, None)
+        assert len(cache) == 0
+
 
 # ---------------------------------------------------------------------------
 # _LRUDict — thread-safety
@@ -125,8 +152,7 @@ class TestLRUDictThreadSafety:
         def clear():
             try:
                 for _ in range(50):
-                    with cache._lock:
-                        cache.clear()
+                    cache.clear_locked()
             except Exception as exc:
                 errors.append(exc)
         def reader():

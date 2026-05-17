@@ -151,13 +151,23 @@ def scan_orphan_max_gs(conn: sqlite3.Connection) -> dict[int, float | None]:
 
 
 def _new_max_gs(conn: sqlite3.Connection, flight_id: int, bad_ids: list[int]) -> float | None:
-    """Return max gs from positions excluding the bad ones."""
-    placeholders = ",".join("?" * len(bad_ids))
-    row = conn.execute(
-        f"SELECT MAX(gs) FROM positions "
-        f"WHERE flight_id = ? AND id NOT IN ({placeholders}) AND gs IS NOT NULL",
-        [flight_id] + bad_ids,
-    ).fetchone()
+    """Return max gs from positions excluding the bad ones.
+
+    SQLite accepts `NOT IN ()` but the standard SQL grammar forbids it —
+    use a plain WHERE when there are no exclusions (also clearer to read)."""
+    if bad_ids:
+        placeholders = ",".join("?" * len(bad_ids))
+        row = conn.execute(
+            f"SELECT MAX(gs) FROM positions "
+            f"WHERE flight_id = ? AND id NOT IN ({placeholders}) AND gs IS NOT NULL",
+            [flight_id] + bad_ids,
+        ).fetchone()
+    else:
+        row = conn.execute(
+            "SELECT MAX(gs) FROM positions "
+            "WHERE flight_id = ? AND gs IS NOT NULL",
+            (flight_id,),
+        ).fetchone()
     return row[0] if row else None
 
 

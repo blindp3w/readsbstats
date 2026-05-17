@@ -601,6 +601,40 @@ class TestPoll:
         _poll(self.conn)
         assert self.conn.execute("SELECT COUNT(*) FROM flights").fetchone()[0] == 0
 
+    def test_poll_handles_explicit_null_seen_pos_without_killing_cycle(self):
+        """Regression for audit-12 #146 — `seen_pos: null` in aircraft.json was
+        causing `None > 60` TypeError that aborted the whole poll cycle via the
+        outer `except Exception`, dropping every aircraft for that tick.
+
+        Now: skip just the bad aircraft and process the rest normally.
+        """
+        from readsbstats.collector import _poll
+        self._write_json([
+            {"hex": "aabbcc", "lat": 52.0, "lon": 21.0, "seen_pos": None},  # malformed
+            {"hex": "ddeeff", "lat": 52.1, "lon": 21.1, "seen_pos": 0},     # normal
+        ])
+        _poll(self.conn)
+        # Bad aircraft skipped, good one still recorded
+        rows = self.conn.execute("SELECT icao_hex FROM flights ORDER BY icao_hex").fetchall()
+        icaos = [r[0] for r in rows]
+        assert "ddeeff" in icaos
+        assert "aabbcc" not in icaos
+
+    def test_poll_handles_missing_seen_pos_field(self):
+        """When `seen_pos` is absent entirely, treat as stale (skip) — same
+        as the explicit-null path. Matches the historical `.get(..., 999)`
+        behavior but now without a TypeError fallthrough."""
+        from readsbstats.collector import _poll
+        self._write_json([
+            {"hex": "aabbcc", "lat": 52.0, "lon": 21.0},  # no seen_pos key
+            {"hex": "ddeeff", "lat": 52.1, "lon": 21.1, "seen_pos": 0},
+        ])
+        _poll(self.conn)
+        rows = self.conn.execute("SELECT icao_hex FROM flights").fetchall()
+        icaos = [r[0] for r in rows]
+        assert "ddeeff" in icaos
+        assert "aabbcc" not in icaos
+
     def test_poll_same_aircraft_twice_stays_one_flight(self):
         """Two polls within FLIGHT_GAP_SEC → same flight, just more positions."""
         from readsbstats.collector import _poll
@@ -1330,6 +1364,28 @@ class TestUpdateFlightAgg:
         self._call(squawk="1234")
         self._call(pos_ts=1002, squawk=None)
         assert self._agg()["squawk"] == "1234"
+
+    # --- category (audit-12 #144) ---
+
+    def test_category_set_when_previously_null(self):
+        """Regression for audit-12 #144 — readsb often emits `category` only
+        after the first position. _update_flight_agg must carry it forward,
+        not leave the column NULL forever."""
+        self._call(category=None)
+        self._call(pos_ts=1002, category="A3")
+        assert self._agg()["category"] == "A3"
+
+    def test_category_first_value_wins(self):
+        """COALESCE(existing, new) — first non-null sticks (same semantics
+        as callsign/registration/aircraft_type)."""
+        self._call(category="A3")
+        self._call(pos_ts=1002, category="A5")
+        assert self._agg()["category"] == "A3"
+
+    def test_category_null_does_not_clear(self):
+        self._call(category="A3")
+        self._call(pos_ts=1002, category=None)
+        assert self._agg()["category"] == "A3"
 
     # --- last_seen ---
 

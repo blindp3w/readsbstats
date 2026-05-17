@@ -276,12 +276,9 @@ def _migrate(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_flights_max_alt "
         "ON flights(max_alt_baro DESC)"
     )
-    # Backfill NULL primary_source on closed flights (crash recovery)
-    conn.execute(
-        "UPDATE flights SET primary_source = 'other' "
-        "WHERE primary_source IS NULL "
-        "AND id NOT IN (SELECT flight_id FROM active_flights)"
-    )
+    # NOTE: backfill of NULL primary_source on closed flights moved to
+    # run_background_migrations() — it's a full-table UPDATE that would block
+    # web startup on the SQLite write lock. See audit-12 #139.
 
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_flights_registration ON flights(registration)"
@@ -335,6 +332,33 @@ def _migrate(conn: sqlite3.Connection) -> None:
             link_url      TEXT,
             photographer  TEXT,
             fetched_at    INTEGER NOT NULL
+        )
+        """
+    )
+
+    # Airport metadata (populated by route_enricher via adsbdb.com)
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS airports (
+            icao_code   TEXT PRIMARY KEY,
+            iata_code   TEXT,
+            name        TEXT,
+            country     TEXT,
+            latitude    REAL,
+            longitude   REAL,
+            fetched_at  INTEGER NOT NULL
+        )
+        """
+    )
+
+    # Route cache: callsign → origin/dest airport ICAO codes
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS callsign_routes (
+            callsign    TEXT PRIMARY KEY,
+            origin_icao TEXT,
+            dest_icao   TEXT,
+            fetched_at  INTEGER NOT NULL
         )
         """
     )
@@ -504,11 +528,38 @@ def _build_positions_indexes(path: str = config.DB_PATH) -> None:
             conn.close()
 
 
+def _backfill_primary_source(path: str = config.DB_PATH) -> None:
+    """Set primary_source='other' on closed flights where it's NULL.
+
+    Crash-recovery backfill: a collector that died mid-flight without writing
+    _close_flight leaves the row open with NULL primary_source. Runs in a
+    background thread (after READY=1) — a full-table UPDATE here historically
+    lived in _migrate() and blocked web startup on the SQLite write lock."""
+    _log = logging.getLogger(__name__)
+    conn: sqlite3.Connection | None = None
+    try:
+        conn = connect(path)
+        conn.execute("PRAGMA busy_timeout = 10000")
+        conn.execute(
+            "UPDATE flights SET primary_source = 'other' "
+            "WHERE primary_source IS NULL "
+            "AND id NOT IN (SELECT flight_id FROM active_flights)"
+        )
+        conn.commit()
+    except Exception:
+        _log.exception("_backfill_primary_source failed")
+    finally:
+        if conn is not None:
+            conn.close()
+
+
 def run_background_migrations(path: str = config.DB_PATH) -> None:
     """Run slow one-time migrations in a background thread (after READY=1).
-    Builds positions indexes and backfills max_distance_bearing."""
+    Builds positions indexes, backfills max_distance_bearing, and sets
+    primary_source='other' on closed flights crashed mid-write."""
     _build_positions_indexes(path)
     backfill_bearing(path)
+    _backfill_primary_source(path)
 
 
 def snapshot_db(src_path: str, dest_path: str | None = None) -> str:

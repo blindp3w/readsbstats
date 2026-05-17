@@ -112,11 +112,19 @@ def max_distance_after_purge(
     rlon: float,
 ) -> float | None:
     """Compute the new max_distance_nm excluding the ghost positions."""
-    placeholders = ",".join("?" * len(ghost_ids))
-    rows = conn.execute(
-        f"SELECT lat, lon FROM positions WHERE flight_id = ? AND id NOT IN ({placeholders})",
-        [flight_id] + ghost_ids,
-    ).fetchall()
+    # SQLite accepts `NOT IN ()` but the standard SQL grammar forbids it —
+    # use a plain WHERE when there are no exclusions (also clearer to read).
+    if ghost_ids:
+        placeholders = ",".join("?" * len(ghost_ids))
+        rows = conn.execute(
+            f"SELECT lat, lon FROM positions WHERE flight_id = ? AND id NOT IN ({placeholders})",
+            [flight_id] + ghost_ids,
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT lat, lon FROM positions WHERE flight_id = ?",
+            (flight_id,),
+        ).fetchall()
     if not rows:
         return None
     return max(haversine_nm(rlat, rlon, r["lat"], r["lon"]) for r in rows)

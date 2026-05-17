@@ -358,8 +358,13 @@ def _update_flight_agg(
     source_type: str | None,
     distance_nm: float | None,
     distance_bearing: float | None,
+    category=None,
 ) -> None:
-    """Update aggregate columns on the flights row."""
+    """Update aggregate columns on the flights row.
+
+    `category` uses COALESCE(existing, new) like callsign/registration —
+    readsb often emits `category` only after the first position, and we
+    want to capture it whenever it first appears in the flight."""
     adsb_inc = 1 if _is_adsb(source_type) else 0
     mlat_inc = 1 if _is_mlat(source_type) else 0
 
@@ -371,6 +376,7 @@ def _update_flight_agg(
             registration     = COALESCE(registration, ?),
             aircraft_type    = COALESCE(aircraft_type, ?),
             squawk           = COALESCE(?, squawk),
+            category         = COALESCE(category, ?),
             max_alt_baro     = CASE WHEN ? IS NOT NULL AND (max_alt_baro IS NULL OR ? > max_alt_baro)
                                     THEN ? ELSE max_alt_baro END,
             max_gs           = CASE WHEN ? IS NOT NULL AND (max_gs IS NULL OR ? > max_gs)
@@ -394,7 +400,7 @@ def _update_flight_agg(
         """,
         (
             pos_ts,
-            callsign, registration, aircraft_type, squawk,
+            callsign, registration, aircraft_type, squawk, category,
             alt, alt, alt,
             gs, gs, gs,
             rssi, rssi, rssi,
@@ -566,8 +572,12 @@ def _poll(conn: sqlite3.Connection) -> None:
             if not (-90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0):
                 continue
 
-            seen_pos = ac.get("seen_pos", 999)
-            if seen_pos > config.MAX_SEEN_POS_SEC:
+            seen_pos = ac.get("seen_pos")
+            # Explicit None or missing → treat as stale (skip).
+            # Without this guard `None > config.MAX_SEEN_POS_SEC` raises
+            # TypeError, which the outer `except Exception` swallows by
+            # aborting the whole poll cycle.
+            if seen_pos is None or seen_pos > config.MAX_SEEN_POS_SEC:
                 continue
 
             pos_ts = int(ref_time - seen_pos)
@@ -775,6 +785,7 @@ def _poll(conn: sqlite3.Connection) -> None:
                 callsign, registration, aircraft_type, squawk,
                 lat, lon, alt_baro, gs, rssi, source_type,
                 distance_nm, distance_bearing,
+                category=category,
             )
             _active[icao]["last_pos_ts"] = pos_ts
             _active[icao]["last_lat"] = lat

@@ -152,6 +152,24 @@ class TestMaxDistanceAfterPurge:
         assert result is not None
         assert result < 100  # ghost excluded; real positions are ~20-25 nm
 
+    def test_empty_ghost_ids_does_not_raise(self):
+        """Regression for audit-12 #143 — empty ghost_ids must not produce
+        `id NOT IN ()` SQL syntax error. apply_purge calls this with [] after
+        DELETE; the dry-run report calls with the real list."""
+        fid = insert_flight(self.conn)
+        insert_pos(self.conn, fid, 1000, 52.6, 20.75)   # ~23 nm
+        insert_pos(self.conn, fid, 1010, 52.5, 20.6)    # ~21 nm
+
+        # Must not raise sqlite3.OperationalError
+        result = max_distance_after_purge(self.conn, fid, [], RLAT, RLON)
+        assert result is not None
+        assert result < 100
+
+    def test_empty_ghost_ids_with_no_positions_returns_none(self):
+        fid = insert_flight(self.conn)
+        result = max_distance_after_purge(self.conn, fid, [], RLAT, RLON)
+        assert result is None
+
 
 # ---------------------------------------------------------------------------
 # apply_purge

@@ -42,6 +42,16 @@ class _LRUDict(OrderedDict):
             if len(self) > self._maxsize:
                 self.popitem(last=False)
 
+    def invalidate(self, key) -> None:
+        """Remove `key` from the cache if present (no-op otherwise)."""
+        with self._lock:
+            self.pop(key, None)
+
+    def clear_locked(self) -> None:
+        """Atomic bulk-clear. Use this rather than reaching into ._lock / .clear()."""
+        with self._lock:
+            self.clear()
+
 
 _aircraft_cache = _LRUDict(_MAX_AIRCRAFT)
 _airline_cache  = _LRUDict(_MAX_AIRLINE)
@@ -112,15 +122,11 @@ def lookup_adsbx(conn: sqlite3.Connection, icao_hex: str) -> dict | None:
 
 def invalidate_adsbx(icao_hex: str) -> None:
     """Bust the cache for a single hex after adsbx_enricher upserts it."""
-    with _adsbx_cache._lock:
-        _adsbx_cache.pop(icao_hex, None)
+    _adsbx_cache.invalidate(icao_hex)
 
 
 def clear_cache() -> None:
     """Clear all caches — call after db_updater runs to pick up fresh data."""
-    with _aircraft_cache._lock:
-        _aircraft_cache.clear()
-    with _airline_cache._lock:
-        _airline_cache.clear()
-    with _adsbx_cache._lock:
-        _adsbx_cache.clear()
+    _aircraft_cache.clear_locked()
+    _airline_cache.clear_locked()
+    _adsbx_cache.clear_locked()

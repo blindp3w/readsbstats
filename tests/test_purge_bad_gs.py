@@ -409,6 +409,21 @@ class TestNewMaxGs:
         result = _new_max_gs(self.conn, fid, [bad_pid])
         assert result == 350.0
 
+    def test_empty_bad_ids_does_not_raise(self):
+        """Regression for audit-12 #164 — empty bad_ids must not produce
+        `id NOT IN ()` SQL syntax error."""
+        fid = insert_flight(self.conn)
+        insert_pos(self.conn, fid, 1000, 52.0, 21.0, gs=400)
+        insert_pos(self.conn, fid, 1060, 52.1, 21.0, gs=450)
+
+        result = _new_max_gs(self.conn, fid, [])
+        assert result == 450.0
+
+    def test_empty_bad_ids_with_no_positions_returns_none(self):
+        fid = insert_flight(self.conn)
+        result = _new_max_gs(self.conn, fid, [])
+        assert result is None
+
 
 # ---------------------------------------------------------------------------
 # apply_purge

@@ -410,6 +410,8 @@ class TestSnapshotDb:
         assert Path(dest).read_text() == "placeholder"
 
     def test_primary_source_backfill_on_closed_flights(self, tmp_path):
+        """Backfill runs in run_background_migrations() (collector-only),
+        not in _migrate() — slow UPDATE must not block web startup."""
         db_path = str(tmp_path / "test.db")
         database.init_db(db_path)
         conn = database.connect(db_path)
@@ -418,7 +420,9 @@ class TestSnapshotDb:
             "VALUES ('aabbcc', 1000, 2000, NULL)"
         )
         conn.commit()
-        database._migrate(conn)
+        conn.close()
+        database.run_background_migrations(db_path)
+        conn = database.connect(db_path)
         row = conn.execute("SELECT primary_source FROM flights WHERE icao_hex = 'aabbcc'").fetchone()
         assert row[0] == "other"
         conn.close()
@@ -437,7 +441,71 @@ class TestSnapshotDb:
             (fid,),
         )
         conn.commit()
-        database._migrate(conn)
+        conn.close()
+        database.run_background_migrations(db_path)
+        conn = database.connect(db_path)
         row = conn.execute("SELECT primary_source FROM flights WHERE id = ?", (fid,)).fetchone()
         assert row[0] is None  # still NULL — active flight not touched
+        conn.close()
+
+    def test_migrate_does_not_run_slow_backfill(self, tmp_path):
+        """Regression for #139 — _migrate() must NOT run the full-table backfill
+        that historically lived inside it. _migrate() is on the web hot path; the
+        backfill belongs in run_background_migrations() (collector-only)."""
+        db_path = str(tmp_path / "test.db")
+        conn = database.connect(db_path)
+        conn.executescript(database.DDL)
+        # Pre-existing closed flight with NULL primary_source
+        conn.execute(
+            "INSERT INTO flights (icao_hex, first_seen, last_seen, primary_source) "
+            "VALUES ('aabbcc', 1000, 2000, NULL)"
+        )
+        conn.commit()
+        database._migrate(conn)
+        # Should still be NULL — _migrate must not touch it
+        row = conn.execute(
+            "SELECT primary_source FROM flights WHERE icao_hex = 'aabbcc'"
+        ).fetchone()
+        assert row[0] is None
+        conn.close()
+
+    def test_migrate_creates_airports_and_callsign_routes(self, tmp_path):
+        """Regression for #140 — both tables defined in DDL but historically
+        missing from _migrate(). On a web-only restart against an old DB they
+        must be created or route_enricher writes / airport joins fail."""
+        db_path = str(tmp_path / "test.db")
+        conn = database.connect(db_path)
+        # Old-schema simulation: only the minimum tables _migrate() touches
+        conn.execute("""
+            CREATE TABLE flights (
+                id INTEGER PRIMARY KEY, icao_hex TEXT, callsign TEXT,
+                registration TEXT, aircraft_type TEXT,
+                first_seen INTEGER, last_seen INTEGER,
+                max_distance_nm REAL, max_alt_baro REAL, max_gs REAL,
+                total_positions INTEGER DEFAULT 0,
+                adsb_positions INTEGER DEFAULT 0,
+                mlat_positions INTEGER DEFAULT 0,
+                primary_source TEXT
+            )
+        """)
+        conn.execute("CREATE TABLE IF NOT EXISTS positions (id INTEGER PRIMARY KEY, flight_id INTEGER)")
+        conn.execute("CREATE TABLE IF NOT EXISTS active_flights (icao_hex TEXT PRIMARY KEY, flight_id INTEGER NOT NULL, last_seen INTEGER NOT NULL)")
+        conn.commit()
+
+        database._migrate(conn)
+
+        tables = {
+            row[0]
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        assert "airports" in tables
+        assert "callsign_routes" in tables
+        # Schema sanity — primary keys + a couple of expected columns
+        airports_cols = {row[1] for row in conn.execute("PRAGMA table_info(airports)")}
+        assert "icao_code" in airports_cols
+        assert "fetched_at" in airports_cols
+        routes_cols = {row[1] for row in conn.execute("PRAGMA table_info(callsign_routes)")}
+        assert "callsign" in routes_cols
+        assert "origin_icao" in routes_cols
+        assert "dest_icao" in routes_cols
         conn.close()
