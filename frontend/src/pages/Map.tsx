@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { PlayIcon, PauseIcon, ArrowRightIcon } from '@radix-ui/react-icons';
 import { apiJson } from '@/lib/api';
+import { SimpleTooltip } from '@/components/ui/Tooltip';
 import { Button } from '@/components/ui/Button';
 import { Alert } from '@/components/ui/Alert';
 import { Badge } from '@/components/ui/Badge';
@@ -305,13 +306,15 @@ export default function MapPage() {
               the user knows the displayed time is not the requested time.
             */}
             {snapshot.isError && snapshot.data && (
-              <span
-                className="ml-2 rounded bg-[var(--color-warn-bg,_#7c2d12)]/40 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-[var(--color-warn-fg,_#fed7aa)]"
-                data-testid="map-snapshot-stale"
-                title="The requested moment failed to load — showing the previous snapshot"
-              >
-                stale
-              </span>
+              <SimpleTooltip content="The requested moment failed to load — showing the previous snapshot">
+                <span
+                  tabIndex={0}
+                  className="ml-2 rounded bg-[var(--color-warn-bg,_#7c2d12)]/40 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-[var(--color-warn-fg,_#fed7aa)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)]"
+                  data-testid="map-snapshot-stale"
+                >
+                  stale
+                </span>
+              </SimpleTooltip>
             )}
           </div>
         </div>

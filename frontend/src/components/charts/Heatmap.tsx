@@ -4,6 +4,7 @@
 // improvements.md #11 — addressed the "invisible 1-2 flight cells" gap).
 
 import { CHART_COLORS } from './theme';
+import { SimpleTooltip } from '@/components/ui/Tooltip';
 
 interface HeatmapRow {
   dow: number; // 0=Sun .. 6=Sat
@@ -56,18 +57,19 @@ export function ActivityHeatmap({ rows }: { rows: HeatmapRow[] }) {
               const count = grid[d][h];
               const opacity = max === 0 ? 0 : count === 0 ? 0 : Math.max(0.18, count / max);
               return (
-                <div
-                  key={h}
-                  title={`${label} ${h}:00 — ${count} flights`}
-                  className="h-5 rounded-sm outline outline-1 outline-[var(--color-border-default)]/40"
-                  style={{
-                    background:
-                      count === 0
-                        ? 'transparent'
-                        : `${CHART_COLORS.accent}${alphaHex(opacity)}`,
-                  }}
-                  aria-label={`${label} ${h}:00 ${count} flights`}
-                />
+                <SimpleTooltip key={h} content={`${label} ${h}:00 — ${count} flights`}>
+                  <div
+                    tabIndex={0}
+                    className="h-5 rounded-sm outline outline-1 outline-[var(--color-border-default)]/40 focus:outline-2 focus:outline-[var(--color-accent)]"
+                    style={{
+                      background:
+                        count === 0
+                          ? 'transparent'
+                          : `${CHART_COLORS.accent}${alphaHex(opacity)}`,
+                    }}
+                    aria-label={`${label} ${h}:00 ${count} flights`}
+                  />
+                </SimpleTooltip>
               );
             })}
           </div>

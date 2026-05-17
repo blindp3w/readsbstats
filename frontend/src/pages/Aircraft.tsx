@@ -3,6 +3,7 @@ import { Link, useParams } from 'react-router-dom';
 import { ArrowLeftIcon, CheckIcon } from '@radix-ui/react-icons';
 import { toast } from 'sonner';
 import { apiFetch, apiJson } from '@/lib/api';
+import { SimpleTooltip } from '@/components/ui/Tooltip';
 import type { WatchlistEntry } from '@/lib/types';
 import { useSearchParam, useSearchParamBatch } from '@/hooks/useSearchParam';
 import { safeUrl } from '@/lib/safeUrl';
@@ -221,18 +222,19 @@ function WatchButton({ icao }: { icao: string }) {
 
   if (existing) {
     return (
-      <Button
-        size="sm"
-        variant="secondary"
-        onClick={() => removeMut.mutate(existing.id)}
-        disabled={removeMut.isPending}
-        data-testid="aircraft-watch-toggle"
-        aria-pressed={true}
-        title="Click to remove from watchlist"
-      >
-        <CheckIcon aria-hidden="true" />
-        Watching
-      </Button>
+      <SimpleTooltip content="Click to remove from watchlist">
+        <Button
+          size="sm"
+          variant="secondary"
+          onClick={() => removeMut.mutate(existing.id)}
+          disabled={removeMut.isPending}
+          data-testid="aircraft-watch-toggle"
+          aria-pressed={true}
+        >
+          <CheckIcon aria-hidden="true" />
+          Watching
+        </Button>
+      </SimpleTooltip>
     );
   }
 

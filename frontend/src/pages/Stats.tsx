@@ -24,6 +24,7 @@ import { Badge } from '@/components/ui/Badge';
 import { ActivityHeatmap } from '@/components/charts/Heatmap';
 import { PolarRange } from '@/components/charts/PolarRange';
 import { Table, THead, TBody, TR, TH, TD } from '@/components/ui/Table';
+import { SimpleTooltip } from '@/components/ui/Tooltip';
 import { useFormat } from '@/hooks/useFormat';
 import { fmtBytes, fmtTs } from '@/lib/format';
 import { cn } from '@/lib/cn';
@@ -820,31 +821,34 @@ function EmergencySquawks({
             {(['7700', '7600', '7500'] as const).map((code) => {
               const count = data?.[code] ?? 0;
               return (
-                <Link
+                <SimpleTooltip
                   key={code}
-                  to={`/history?squawk=${code}`}
-                  className={cn(
-                    'rounded border border-[var(--color-border-default)] bg-[var(--color-surface-2)]/60 p-3 text-center transition-colors',
-                    count > 0
-                      ? 'hover:border-[var(--color-danger)] hover:bg-[var(--color-surface-3)]'
-                      : 'hover:bg-[var(--color-surface-2)]',
-                  )}
-                  data-testid={`stats-squawk-${code}`}
-                  title={`${count.toLocaleString()} flights with squawk ${code}`}
+                  content={`${count.toLocaleString()} flights with squawk ${code}`}
                 >
-                  <div className="font-mono text-xs text-[var(--color-text-dim)]">{code}</div>
-                  <div
+                  <Link
+                    to={`/history?squawk=${code}`}
                     className={cn(
-                      'tabnum text-2xl font-bold',
-                      count > 0 ? 'text-[var(--color-danger)]' : 'text-[var(--color-text-dim)]',
+                      'rounded border border-[var(--color-border-default)] bg-[var(--color-surface-2)]/60 p-3 text-center transition-colors',
+                      count > 0
+                        ? 'hover:border-[var(--color-danger)] hover:bg-[var(--color-surface-3)]'
+                        : 'hover:bg-[var(--color-surface-2)]',
                     )}
+                    data-testid={`stats-squawk-${code}`}
                   >
-                    {count.toLocaleString()}
-                  </div>
-                  <div className="text-[10px] uppercase tracking-wide text-[var(--color-text-dim)]">
-                    {SQUAWK_LABELS[code]}
-                  </div>
-                </Link>
+                    <div className="font-mono text-xs text-[var(--color-text-dim)]">{code}</div>
+                    <div
+                      className={cn(
+                        'tabnum text-2xl font-bold',
+                        count > 0 ? 'text-[var(--color-danger)]' : 'text-[var(--color-text-dim)]',
+                      )}
+                    >
+                      {count.toLocaleString()}
+                    </div>
+                    <div className="text-[10px] uppercase tracking-wide text-[var(--color-text-dim)]">
+                      {SQUAWK_LABELS[code]}
+                    </div>
+                  </Link>
+                </SimpleTooltip>
               );
             })}
           </div>

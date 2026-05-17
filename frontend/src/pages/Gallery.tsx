@@ -12,6 +12,7 @@ import { FlagBadge } from '@/components/FlagBadge';
 import { Pagination } from '@/components/Pagination';
 import { ToggleGroupRoot, ToggleGroupItem } from '@/components/ui/ToggleGroup';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/Popover';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/Tooltip';
 import { fmtTs } from '@/lib/format';
 import { cn } from '@/lib/cn';
 
@@ -207,22 +208,29 @@ function SortPopover({
 }) {
   return (
     <Popover>
-      <PopoverTrigger asChild>
-        <button
-          type="button"
-          aria-label={`Sort: ${currentLabel}`}
-          title={`Sort: ${currentLabel}`}
-          data-testid="gallery-sort"
-          className={cn(
-            'inline-flex items-center gap-1.5 rounded border px-3 text-xs font-medium transition-colors',
-            'border-[var(--color-border-default)] text-[var(--color-text-dim)] hover:bg-[var(--color-surface-2)] hover:text-[var(--color-text)]',
-            'min-h-[40px] min-w-[44px] md:min-h-[32px]',
-          )}
-        >
-          <SortIcon />
-          <span className="hidden sm:inline">{currentLabel}</span>
-        </button>
-      </PopoverTrigger>
+      {/* Nested Tooltip + Popover: both wrappers use Radix Slot via asChild,
+          so the inner button receives merged props/refs from both. Tooltip
+          dismisses automatically when the popover opens (focus moves). */}
+      <Tooltip>
+        <PopoverTrigger asChild>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              aria-label={`Sort: ${currentLabel}`}
+              data-testid="gallery-sort"
+              className={cn(
+                'inline-flex items-center gap-1.5 rounded border px-3 text-xs font-medium transition-colors',
+                'border-[var(--color-border-default)] text-[var(--color-text-dim)] hover:bg-[var(--color-surface-2)] hover:text-[var(--color-text)]',
+                'min-h-[40px] min-w-[44px] md:min-h-[32px]',
+              )}
+            >
+              <SortIcon />
+              <span className="hidden sm:inline">{currentLabel}</span>
+            </button>
+          </TooltipTrigger>
+        </PopoverTrigger>
+        <TooltipContent>{`Sort: ${currentLabel}`}</TooltipContent>
+      </Tooltip>
       <PopoverContent className="w-[180px] p-1" data-testid="gallery-sort-panel">
         <ul role="radiogroup" aria-label="Sort options" className="space-y-0.5">
           {SORT_OPTIONS.map((opt) => {

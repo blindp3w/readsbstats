@@ -11,6 +11,7 @@ import { render, fireEvent, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { Nav } from '@/components/Nav';
+import { TooltipProvider } from '@/components/ui/Tooltip';
 
 const EXPECTED_LABELS = [
   'statistics',
@@ -29,9 +30,11 @@ function renderNav() {
   });
   return render(
     <QueryClientProvider client={qc}>
-      <MemoryRouter initialEntries={['/']}>
-        <Nav />
-      </MemoryRouter>
+      <TooltipProvider>
+        <MemoryRouter initialEntries={['/']}>
+          <Nav />
+        </MemoryRouter>
+      </TooltipProvider>
     </QueryClientProvider>,
   );
 }
