@@ -2,7 +2,14 @@ import { useQuery } from '@tanstack/react-query';
 import { apiJson, apiUrl } from '@/lib/api';
 import { useSearchParam, useSearchParamBatch } from '@/hooks/useSearchParam';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
-import { Input, NativeSelect } from '@/components/ui/Input';
+import { Input } from '@/components/ui/Input';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/Select';
 import { Label } from '@/components/ui/Label';
 import { Button, buttonClass } from '@/components/ui/Button';
 import {
@@ -21,6 +28,9 @@ interface FlightsResponse {
 }
 
 const PAGE_SIZE = 100;
+// Radix Select forbids "" as an Item value; use this sentinel for "no
+// filter" in the source/flags dropdowns and translate at the boundary.
+const ANY_VALUE = '__any__';
 
 const SORT_KEYS: SortKey[] = [
   'first_seen',
@@ -193,31 +203,40 @@ export default function HistoryPage() {
               />
             </Field>
             <Field label="Source" htmlFor="f-source">
-              <NativeSelect
-                id="f-source"
-                value={source}
-                onChange={(e) => setSource(e.target.value)}
-                data-testid="history-filter-source"
+              {/* Radix Select.Item rejects "" as a value at runtime, so the
+                  "any" option uses sentinel ANY_VALUE and we translate at
+                  the boundary. The URL param stays empty for "no filter". */}
+              <Select
+                value={source || ANY_VALUE}
+                onValueChange={(v) => setSource(v === ANY_VALUE ? '' : v)}
               >
-                <option value="">any</option>
-                <option value="adsb">ADS-B</option>
-                <option value="mlat">MLAT</option>
-                <option value="mixed">mixed</option>
-                <option value="other">other</option>
-              </NativeSelect>
+                <SelectTrigger id="f-source" data-testid="history-filter-source" className="text-sm">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={ANY_VALUE}>any</SelectItem>
+                  <SelectItem value="adsb">ADS-B</SelectItem>
+                  <SelectItem value="mlat">MLAT</SelectItem>
+                  <SelectItem value="mixed">mixed</SelectItem>
+                  <SelectItem value="other">other</SelectItem>
+                </SelectContent>
+              </Select>
             </Field>
             <Field label="Flag" htmlFor="f-flags">
-              <NativeSelect
-                id="f-flags"
-                value={flags}
-                onChange={(e) => setFlags(e.target.value)}
-                data-testid="history-filter-flags"
+              <Select
+                value={flags || ANY_VALUE}
+                onValueChange={(v) => setFlags(v === ANY_VALUE ? '' : v)}
               >
-                <option value="">any</option>
-                <option value="military">military</option>
-                <option value="interesting">interesting</option>
-                <option value="anonymous">anonymous</option>
-              </NativeSelect>
+                <SelectTrigger id="f-flags" data-testid="history-filter-flags" className="text-sm">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={ANY_VALUE}>any</SelectItem>
+                  <SelectItem value="military">military</SelectItem>
+                  <SelectItem value="interesting">interesting</SelectItem>
+                  <SelectItem value="anonymous">anonymous</SelectItem>
+                </SelectContent>
+              </Select>
             </Field>
             <Field label="Squawk" htmlFor="f-squawk">
               <Input
