@@ -53,6 +53,16 @@ test-results/
 # Internal / private project material (not for public repo)
 internal_docs/
 
+# Session continuity (internal, not for public repo)
+NOTES.md
+scratchpad.md
+
+# Local dev overrides
+CLAUDE.local.md
+
+# Claude.md backup artifacts
+CLAUDE.old.md
+
 # Claude Code (AI assistant local context — not for public repo)
 .claude/
 CLAUDE.md

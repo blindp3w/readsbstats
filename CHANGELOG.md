@@ -1,5 +1,26 @@
 # Changelog
 
+## 2.1.2 — 2026-05-17
+
+### Docs — restructured documentation tree
+
+Split the monolithic README into purpose-specific guides under `docs/`:
+
+| New file | Contents |
+|---|---|
+| [`docs/configuration.md`](docs/configuration.md) | All 38 `RSBS_*` environment variables |
+| [`docs/api.md`](docs/api.md) | All API endpoints, SPA routes, database schema |
+| [`docs/integrations.md`](docs/integrations.md) | Telegram setup, bot commands, ghost/GS filtering |
+| [`docs/operations.md`](docs/operations.md) | Updating, useful commands, backups |
+| [`docs/development.md`](docs/development.md) | Local dev, tests, build, deploy |
+| [`docs/decisions/`](docs/decisions/) | Architecture Decision Records (ADR 0001–0006) |
+
+`README.md` trimmed from 697 to ~270 lines — installation and feature overview only; detailed
+reference lives in the guides above.
+
+`docs/piaware_install_ubuntu_24.04_arm64.md` removed (personal setup note, not a readsbstats
+guide).
+
 ## 2.1.1 — 2026-05-17
 
 ### Security — open-redirect in /v2 compat handler (CodeQL py/url-redirection)
