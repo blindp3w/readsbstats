@@ -1,5 +1,40 @@
 # Changelog
 
+## 2.1.14 — 2026-05-17
+
+### Documentation refresh
+
+**DuckDB ADR rewrite** (`docs/decisions/0002`) — collapses the
+278-line "captured at time of decision" planning doc into a 41-line
+classic ADR (Status / Context / Decision / Consequences). The
+detailed status snapshots, phase plans, and measured numbers move
+out of the public ADR; the ADR now reads as the architectural
+record only.
+
+**Setup examples polish** — clarifies in `docs/configuration.md`
+that `RSBS_TELEGRAM_BASE_URL` is a value users must set to their
+own URL, and switches the rsync / SSH examples in
+`docs/development.md` and `docs/integrations.md` to a generic
+placeholder host so the snippets work as templates regardless of
+which network the operator is on.
+
+**Stale-number sweep** — caught up references that drifted during
+the v2.1.13 UI consistency pass:
+
+- `docs/development.md` — Python test count `1198` → `1317`;
+  Vitest count `43` → `103`.
+- `README.md` — file tree pytest count `1198` → `1317`.
+
+### Test count
+
+```
+1317 Python + 103 Vitest = 1420 unit tests
+```
+
+(unchanged from 2.1.13 — this release is docs-only)
+
+---
+
 ## 2.1.13 — 2026-05-17
 
 ### UI consistency pass — Radix primitives across the SPA

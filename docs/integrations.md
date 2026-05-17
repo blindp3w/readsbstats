@@ -18,7 +18,7 @@ Environment="RSBS_TELEGRAM_TOKEN=123456:ABCdef..."
 Environment="RSBS_TELEGRAM_CHAT_ID=987654321"
 Environment="RSBS_SUMMARY_TIME=21:00"
 Environment="RSBS_TELEGRAM_UNITS=metric"
-Environment="RSBS_TELEGRAM_BASE_URL=http://homepi.local/stats"
+Environment="RSBS_TELEGRAM_BASE_URL=http://your-pi.local/stats"
 ```
 
 Notifications are disabled when the token or chat ID is not set — fully opt-in.

@@ -12,7 +12,7 @@ python3 -m venv .venv
 Copy `history.db` from the Pi for real data locally:
 
 ```bash
-rsync homepi.local:/mnt/ext/readsbstats/history.db ./db/
+rsync your-pi.local:/mnt/ext/readsbstats/history.db ./db/
 ```
 
 ## Run the web server
@@ -43,8 +43,8 @@ RSBS_AIRCRAFT_JSON=/tmp/rsbs_sim.json RSBS_DB_PATH=./db/history.db \
 ## Running tests
 
 ```bash
-.venv/bin/pytest                                              # 1190 Python tests
-( cd frontend && npm test )                                   # 43 Vitest tests
+.venv/bin/pytest                                              # 1317 Python tests
+( cd frontend && npm test )                                   # 103 Vitest tests
 
 # Coverage
 .venv/bin/pytest --cov=readsbstats --cov-report=term-missing
@@ -90,8 +90,8 @@ rsync -avz --delete \
   --exclude='*.db' --exclude='*.db-wal' --exclude='*.db-shm' \
   --exclude='frontend/node_modules' --exclude='frontend/.vite' --exclude='frontend/coverage' \
   --exclude='internal_docs' --exclude='.claude' --exclude='CLAUDE.md' \
-  ~/projects/readsbstats/ homepi.local:/tmp/readsbstats/
-ssh homepi.local sudo bash /tmp/readsbstats/scripts/update.sh
+  ~/projects/readsbstats/ your-pi.local:/tmp/readsbstats/
+ssh your-pi.local sudo bash /tmp/readsbstats/scripts/update.sh
 ```
 
 `update.sh` refuses to run if `frontend/dist/` is missing or stale relative to `frontend/src/`. The rsync goes to `dist.new/` then atomic-renames to `dist/` so a half-finished sync never serves a broken page.

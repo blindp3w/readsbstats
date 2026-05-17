@@ -48,7 +48,7 @@ Environment="RSBS_FLIGHT_GAP=1200"
 | `RSBS_TELEGRAM_UNITS` | `metric` | Units in notification messages: `metric`, `imperial`, or `aeronautical` |
 | `RSBS_TELEGRAM_PHOTOS` | `1` | Send aircraft photo with alerts (`0` to disable) |
 | `RSBS_TELEGRAM_ANONYMOUS_ALERT` | `1` | Fire alerts for anonymous (non-ICAO hex) aircraft (`0` to mute) |
-| `RSBS_TELEGRAM_BASE_URL` | `http://homepi.local/stats` | Base URL for profile links in Telegram messages |
+| `RSBS_TELEGRAM_BASE_URL` | `http://homepi.local/stats` | Base URL for profile links in Telegram messages — **set to your Pi's URL** |
 | `RSBS_MAP_HISTORY_HOURS` | `24` | How many hours back the rewind slider can reach (1–168) |
 | `RSBS_HEALTH_*` | _(see /settings)_ | Health-dashboard thresholds — all effective values listed on the `/settings` page |
 | `RSBS_USE_DUCKDB` | `0` | Enable DuckDB analytical accelerator for heatmap/coverage endpoints |

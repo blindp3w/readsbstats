@@ -120,7 +120,7 @@ readsbstats/
 │   ├── purge_bad_gs.py         # One-shot: null implausible gs values
 │   └── purge_mlat_gs_spikes.py # One-shot: null MLAT gs spikes
 ├── frontend/                   # React 19 + Vite 7 SPA
-├── tests/                      # pytest (1198 tests) + Playwright UI (81 tests)
+├── tests/                      # pytest (1317 tests) + Playwright UI (81 tests)
 ├── static/airspace/            # Bundled airspace GeoJSON
 ├── systemd/                    # Service + timer unit files
 └── docs/                       # Public documentation
