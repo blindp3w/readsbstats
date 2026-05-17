@@ -1,5 +1,64 @@
 # Changelog
 
+## 2.1.7 — 2026-05-17
+
+### Audit 12 Phase 5 — test coverage hardening
+
+Test-only phase. No production code changes. Closes the most-leverage
+coverage gaps the audit flagged so future refactors trip a test before
+reaching prod.
+
+**Frontend (Vitest 54 → 90, +36 tests)**
+
+- **#200** `useSearchParamBatch` covered for the first time. 12 tests
+  exercise single-param and multi-param updates, default-stripping,
+  explicit `null` removal, and the documented contract that the helper
+  is the v7 stale-state *fix* (one call with multiple keys), not a
+  workaround for two-call usage. CLAUDE.md flagged this as the
+  highest-leverage missing test.
+- **#210** `lib/flags.ts` covered with 12 tests: FLAG_* bit values pinned
+  to backend `config.py`, the `primaryFlagLabel` precedence ladder
+  (military > interesting > anonymous > none), and PIA/LADD non-
+  surfacing as primary labels.
+- **#201** Smoke tests for App shell + ErrorBoundary + 9 pages
+  (Settings, Feeders, Watchlist, History, Gallery, Stats, Metrics,
+  Aircraft, Flight). Shared QueryClient + MemoryRouter + global-fetch
+  stub harness. Each test verifies "renders without throwing on
+  minimal/empty data" so a regression in imports, required props, or
+  initial-state assumptions surfaces in CI. `Map.tsx` skipped
+  (Leaflet's imperative DOM mutation isn't fully shimmed in jsdom;
+  Playwright mobile suite covers it). `Hello.tsx` skipped (PoC, not
+  routed).
+
+**Backend (Python 1252 → 1299, +47 tests)**
+
+- **#212** `notifier._h()` — direct unit tests for the HTML escape
+  primitive (was indirectly covered via `notify_*`).
+- **#206** `http_safe` IPv6 reject branches: loopback (`::1`),
+  link-local (`fe80::`), unique-local (`fc00::/7`), multicast
+  (`ff00::/8`), unspecified (`::`). Plus the previously-uncovered
+  IPv4 `0.0.0.0`, RFC1918 (10/8, 172.16/12, 192.168/16), and a
+  "mixed addrinfo with one private result rejects the whole URL"
+  rebinding-defence test.
+- **#204** `country_sql_case` — the SQL twin of `icao_to_country` had
+  no direct tests. Added parity vs. Python for diverse hexes, the
+  apostrophe-escape contract (`'` → `''`), and a synthetic execute
+  check for hypothetical apostrophe-bearing country names.
+- **#205** `_RAW` boundary edges parametrised for 6 representative
+  blocks: exact start + exact end include, start-1 / end+1 fall out
+  to a neighbour, and a "no partial overlap in _RAW" structural
+  invariant.
+- **#208** `analytics` engine-init error branches: unsafe DB_PATH
+  rejects, OSError on `mkdir`, DuckDB exception during INSTALL/LOAD/
+  ATTACH. Plus per-query exception → None fallback for both
+  `heatmap` and `coverage`, and `close()` resets `_CONN`.
+- **#211** `_prewarm_loop` survives one `_prewarm_one` raising —
+  loop catches, schedules backoff for that target, continues with
+  the next.
+- **#203** `purge_mlat_gs_spikes` `TestMain` class — dry-run report,
+  --apply modifies data, no-spikes-clean message, snapshot-by-default
+  on --apply.
+
 ## 2.1.6 — 2026-05-17
 
 ### Audit 12 Phase 4 — performance + UX polish

@@ -84,6 +84,63 @@ def _make_safe_urlopen(response_bytes=b'{"ok":true}',
 
 
 # ---------------------------------------------------------------------------
+# _h — HTML escape primitive (audit-12 #212)
+# ---------------------------------------------------------------------------
+
+class TestH:
+    """Direct unit tests for the HTML escape helper used at every Telegram
+    caption interpolation boundary. Indirect coverage exists via the
+    notify_* tests, but a regression in _h itself would silently affect
+    every alert path — explicit tests pin the contract."""
+
+    def test_none_returns_empty_string(self):
+        # _h is called at f-string boundaries where the source field may
+        # legitimately be None (e.g. callsign for a non-broadcasting mode-S
+        # contact). Must not emit "None" or raise.
+        assert notifier._h(None) == ""
+
+    def test_empty_string_returns_empty_string(self):
+        assert notifier._h("") == ""
+
+    def test_ampersand_escaped(self):
+        assert notifier._h("A & B") == "A &amp; B"
+
+    def test_less_than_escaped(self):
+        assert notifier._h("<bad>") == "&lt;bad&gt;"
+
+    def test_greater_than_escaped(self):
+        assert notifier._h(">x") == "&gt;x"
+
+    def test_quote_escaped(self):
+        # html.escape defaults to quote=True so single + double quotes are
+        # also escaped. Telegram doesn't strictly require this but it's
+        # belt-and-braces against future HTML-attribute interpolation.
+        assert notifier._h('"hi"') == "&quot;hi&quot;"
+        assert notifier._h("'x'") == "&#x27;x&#x27;"
+
+    def test_mixed_payload(self):
+        # The smoking-gun pattern: a registration like "AB<C&D>" must not
+        # break Telegram's parser. Order of operations: escape `&` first
+        # (already what html.escape does), THEN `<`/`>`. Otherwise the
+        # `&lt;` we produce gets its own `&` re-escaped.
+        assert notifier._h("AB<C&D>") == "AB&lt;C&amp;D&gt;"
+
+    def test_plain_alnum_passthrough(self):
+        # No-op on regular alphanumeric content (the common case).
+        assert notifier._h("LOT123") == "LOT123"
+        assert notifier._h("SP-LRA") == "SP-LRA"
+
+    def test_idempotent_on_already_escaped_input(self):
+        # If someone double-escapes by mistake the second pass produces
+        # &amp;lt; etc. — Telegram will render those literally. Documenting
+        # the (correct, html.escape) behaviour so a future change can't
+        # silently "fix" it into something that breaks at the wrong layer.
+        once = notifier._h("<a>")
+        twice = notifier._h(once)
+        assert twice == "&amp;lt;a&amp;gt;"
+
+
+# ---------------------------------------------------------------------------
 # _fmt_dist
 # ---------------------------------------------------------------------------
 

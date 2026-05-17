@@ -347,3 +347,115 @@ class TestScanStatisticalOutliers:
             insert_pos(self.conn, fid, t, 70.0)
         bad = scan_statistical_outliers(self.conn, outlier_factor=5.0, min_readings=10)
         assert normal_pid not in bad.get(fid, [])
+
+
+# ---------------------------------------------------------------------------
+# main() CLI — audit-12 #203
+# ---------------------------------------------------------------------------
+
+import os
+import sys
+import tempfile
+
+from purge_mlat_gs_spikes import main
+
+
+def make_file_db(path: str) -> sqlite3.Connection:
+    conn = database.connect(path)
+    conn.executescript(database.DDL)
+    database._migrate(conn)
+    return conn
+
+
+class TestMain:
+    """Sibling purge scripts (purge_bad_gs, purge_ghosts) each have a
+    TestMain class exercising the CLI; this one didn't (audit-12 #203)."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.db_path = os.path.join(self.tmpdir, "test.db")
+        self.conn = make_file_db(self.db_path)
+        yield
+        self.conn.close()
+        for ext in ("", "-wal", "-shm"):
+            try:
+                os.unlink(self.db_path + ext)
+            except FileNotFoundError:
+                pass
+        # Tidy up any snapshot the apply path may have created
+        for entry in os.listdir(self.tmpdir):
+            try:
+                os.unlink(os.path.join(self.tmpdir, entry))
+            except OSError:
+                pass
+        os.rmdir(self.tmpdir)
+
+    def _insert_spike_flight(self) -> int:
+        fid = insert_flight(self.conn, max_gs=724.0)
+        # Normal MLAT readings + one spike
+        insert_pos(self.conn, fid, 1000, 70.0)
+        insert_pos(self.conn, fid, 1007, 724.0)   # spike (delta/dt = 93 kts/s)
+        insert_pos(self.conn, fid, 1014, 75.0)
+        return fid
+
+    def test_dry_run_does_not_modify(self, monkeypatch, capsys):
+        fid = self._insert_spike_flight()
+        monkeypatch.setattr("sys.argv", [
+            "purge_mlat_gs_spikes.py", "--db", self.db_path,
+        ])
+        main()
+        out = capsys.readouterr().out
+        # dry-run header present
+        assert "dry-run" in out.lower()
+        # Detected at least one spike
+        assert "spike" in out.lower()
+        # Data unchanged
+        row = self.conn.execute(
+            "SELECT max_gs FROM flights WHERE id = ?", (fid,)
+        ).fetchone()
+        assert row[0] == 724.0
+
+    def test_apply_modifies_data(self, monkeypatch, capsys):
+        fid = self._insert_spike_flight()
+        monkeypatch.setattr("sys.argv", [
+            "purge_mlat_gs_spikes.py", "--db", self.db_path,
+            "--apply", "--i-have-a-backup",
+        ])
+        main()
+        out = capsys.readouterr().out
+        assert "Done" in out
+        check = sqlite3.connect(self.db_path)
+        check.row_factory = sqlite3.Row
+        max_gs = check.execute(
+            "SELECT max_gs FROM flights WHERE id = ?", (fid,)
+        ).fetchone()[0]
+        check.close()
+        # Spike nulled → max should fall to the largest normal reading (75.0)
+        assert max_gs == 75.0
+
+    def test_no_spikes_prints_clean(self, monkeypatch, capsys):
+        # All-normal flight → nothing to fix.
+        fid = insert_flight(self.conn, max_gs=80.0)
+        insert_pos(self.conn, fid, 1000, 70.0)
+        insert_pos(self.conn, fid, 1010, 75.0)
+        insert_pos(self.conn, fid, 1020, 80.0)
+        monkeypatch.setattr("sys.argv", [
+            "purge_mlat_gs_spikes.py", "--db", self.db_path,
+        ])
+        main()
+        out = capsys.readouterr().out
+        assert "No MLAT spikes" in out
+
+    def test_apply_takes_snapshot_by_default(self, monkeypatch, capsys):
+        self._insert_spike_flight()
+        monkeypatch.setattr("sys.argv", [
+            "purge_mlat_gs_spikes.py", "--db", self.db_path, "--apply",
+        ])
+        main()
+        # A snapshot file was created next to the DB
+        snapshots = [
+            f for f in os.listdir(self.tmpdir)
+            if f.startswith("test.db.backup-")
+        ]
+        assert len(snapshots) >= 1, "snapshot not created on --apply (without --i-have-a-backup)"

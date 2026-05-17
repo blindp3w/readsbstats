@@ -19,6 +19,11 @@ def _fake_addrinfo(ip: str):
     return [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", (ip, 443))]
 
 
+def _fake_addrinfo_v6(ip: str):
+    # IPv6 addrinfo tuple shape: (af, type, proto, canonname, (addr, port, flow, scope))
+    return [(socket.AF_INET6, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", (ip, 443, 0, 0))]
+
+
 def _mock_urllib_resp(body: bytes, headers: dict | None = None, url: str | None = None):
     mock = MagicMock()
     mock.__enter__ = lambda s: s
@@ -75,6 +80,79 @@ class TestValidateUrl:
         monkeypatch.setattr(http_safe, "_real_getaddrinfo", _gai)
         with pytest.raises(ValueError, match="DNS resolution failed"):
             http_safe.validate_url("https://nope.invalid/")
+
+    # IPv6 reject branches (audit-12 #206) ---
+    # Python's ipaddress.IPv6Address handles these correctly; the tests pin
+    # the policy so a future refactor can't silently drop coverage for any
+    # of the v6 private-address classes.
+
+    def test_ipv6_loopback_rejected(self, monkeypatch):
+        monkeypatch.setattr(http_safe, "_real_getaddrinfo",
+                            lambda h, p, **kw: _fake_addrinfo_v6("::1"))
+        with pytest.raises(ValueError, match="non-public"):
+            http_safe.validate_url("https://example.com/")
+
+    def test_ipv6_link_local_rejected(self, monkeypatch):
+        # fe80::/10 — link-local
+        monkeypatch.setattr(http_safe, "_real_getaddrinfo",
+                            lambda h, p, **kw: _fake_addrinfo_v6("fe80::1"))
+        with pytest.raises(ValueError, match="non-public"):
+            http_safe.validate_url("https://example.com/")
+
+    def test_ipv6_unique_local_rejected(self, monkeypatch):
+        # fc00::/7 — unique-local (the IPv6 equivalent of RFC1918)
+        monkeypatch.setattr(http_safe, "_real_getaddrinfo",
+                            lambda h, p, **kw: _fake_addrinfo_v6("fc00::1"))
+        with pytest.raises(ValueError, match="non-public"):
+            http_safe.validate_url("https://example.com/")
+
+    def test_ipv6_multicast_rejected(self, monkeypatch):
+        # ff00::/8 — multicast
+        monkeypatch.setattr(http_safe, "_real_getaddrinfo",
+                            lambda h, p, **kw: _fake_addrinfo_v6("ff02::1"))
+        with pytest.raises(ValueError, match="non-public"):
+            http_safe.validate_url("https://example.com/")
+
+    def test_ipv6_unspecified_rejected(self, monkeypatch):
+        # :: — unspecified (matches IPv4 0.0.0.0)
+        monkeypatch.setattr(http_safe, "_real_getaddrinfo",
+                            lambda h, p, **kw: _fake_addrinfo_v6("::"))
+        with pytest.raises(ValueError, match="non-public"):
+            http_safe.validate_url("https://example.com/")
+
+    def test_ipv6_public_passes(self, monkeypatch):
+        # 2001:db8::/32 is documentation space but ipaddress considers it
+        # non-private. Use a well-known public address instead.
+        monkeypatch.setattr(http_safe, "_real_getaddrinfo",
+                            lambda h, p, **kw: _fake_addrinfo_v6("2606:4700:4700::1111"))
+        http_safe.validate_url("https://one.one.one.one/")
+
+    def test_ipv4_zero_zero_zero_zero_rejected(self, monkeypatch):
+        # is_unspecified — was untested for IPv4 too
+        monkeypatch.setattr(http_safe, "_real_getaddrinfo",
+                            lambda h, p, **kw: _fake_addrinfo("0.0.0.0"))
+        with pytest.raises(ValueError, match="non-public"):
+            http_safe.validate_url("https://example.com/")
+
+    def test_ipv4_rfc1918_rejected(self, monkeypatch):
+        # 10.0.0.0/8 / 172.16.0.0/12 / 192.168.0.0/16 — covered indirectly
+        # by photo_sources tests; pin here too so test_http_safe is the
+        # authoritative reject-policy spec.
+        for ip in ("10.0.0.1", "172.16.0.1", "192.168.1.1"):
+            monkeypatch.setattr(http_safe, "_real_getaddrinfo",
+                                lambda h, p, ip=ip, **kw: _fake_addrinfo(ip))
+            with pytest.raises(ValueError, match="non-public"):
+                http_safe.validate_url("https://example.com/")
+
+    def test_mixed_addrinfo_one_private_rejects(self, monkeypatch):
+        """If getaddrinfo returns multiple records and any is private, the
+        whole URL must be rejected — a partially-trusted resolver is the
+        same threat shape as the rebinding attack."""
+        def _gai(h, p, **kw):
+            return _fake_addrinfo("8.8.8.8") + _fake_addrinfo("127.0.0.1")
+        monkeypatch.setattr(http_safe, "_real_getaddrinfo", _gai)
+        with pytest.raises(ValueError, match="non-public"):
+            http_safe.validate_url("https://example.com/")
 
 
 # ---------------------------------------------------------------------------

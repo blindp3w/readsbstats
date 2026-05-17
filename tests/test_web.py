@@ -2827,6 +2827,66 @@ class TestMapPrewarmer:
         a2 = web._type_lock("A320")
         assert a1 is a2
 
+    def test_prewarm_loop_survives_one_prewarm_raising(self, monkeypatch):
+        """Audit-12 #211 — a single _prewarm_one() exception must NOT kill
+        the daemon thread. The loop catches the exception, schedules a
+        5-minute backoff for that target, and continues with the next
+        target. Without this we'd lose all cache refresh after the first
+        transient compute failure."""
+        # Drive a controlled finite loop: clear the stop event up-front,
+        # set it inside the second `_prewarm_one` call to break out cleanly.
+        web._prewarmer_stop.clear()
+        web._cache.clear()
+
+        call_log: list[tuple[str, str]] = []
+
+        def fake_prewarm(kind, window):
+            call_log.append((kind, window))
+            if len(call_log) == 1:
+                raise RuntimeError("simulated prewarm compute failure")
+            if len(call_log) == 2:
+                # Stop the loop on the second call so the test terminates.
+                web._prewarmer_stop.set()
+
+        monkeypatch.setattr(web, "_prewarm_one", fake_prewarm)
+        # Skip the initial 5s wait so the loop starts immediately.
+        # Skip the inter-iteration 10s cool-off too. Both wait()s must
+        # return False (timed out) so the loop body runs; the explicit
+        # stop.set() inside fake_prewarm is what exits the loop.
+        wait_calls = {"n": 0}
+        original_wait = web._prewarmer_stop.wait
+
+        def fast_wait(timeout=None):
+            wait_calls["n"] += 1
+            # Honour the actual event state — when fake_prewarm sets the
+            # event, wait() returns True and the loop exits.
+            return web._prewarmer_stop.is_set()
+
+        monkeypatch.setattr(web._prewarmer_stop, "wait", fast_wait)
+        # Also stub time.time so all targets are "due" immediately on the
+        # very first iteration (the staggered schedule otherwise inserts
+        # 15s waits between iterations and our wait stub bails out before
+        # any prewarm runs).
+        import time as _time
+        monkeypatch.setattr(
+            web, "_initial_prewarm_schedule",
+            lambda targets, now: {t: now for t in targets},
+        )
+        monkeypatch.setattr(_time, "time", lambda: 1_000_000.0)
+
+        # Should not raise — exception is caught inside the loop.
+        web._prewarm_loop()
+
+        # Loop executed at least 2 iterations (one raising, one stopping).
+        assert len(call_log) >= 2, (
+            f"loop terminated after only {len(call_log)} call(s); the first "
+            "exception was likely not caught"
+        )
+        # Clean up so other tests don't see a set stop event.
+        web._prewarmer_stop.clear()
+        # Restore the wait method ref (monkeypatch handles undo, but be explicit)
+        _ = original_wait
+
     def test_initial_prewarm_schedule_staggers_targets(self):
         """Regression for audit-12 #185 — the prewarmer used to start all 8
         targets at next_at=0.0, causing 8 back-to-back full-table scans

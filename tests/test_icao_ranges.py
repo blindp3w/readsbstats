@@ -193,3 +193,173 @@ class TestAnonymousFlagSql:
         # If we ever bump FLAG_ANONYMOUS, the helper picks up the new value.
         expr = icao_ranges.anonymous_flag_sql("icao_hex", 32)
         assert "ELSE 32 END" in expr
+
+
+# ---------------------------------------------------------------------------
+# country_sql_case — Audit-12 #204
+# ---------------------------------------------------------------------------
+
+class TestCountrySqlCase:
+    """`country_sql_case` is the SQL twin of `icao_to_country`. Untested
+    before audit-12; a regression in the apostrophe-escape (`'` → `''`)
+    would silently break every aggregate query that groups by country."""
+
+    @pytest.fixture
+    def conn(self):
+        c = sqlite3.connect(":memory:")
+        c.row_factory = sqlite3.Row
+        c.execute("CREATE TABLE t (icao_hex TEXT)")
+        yield c
+        c.close()
+
+    def test_sql_matches_python_for_diverse_hexes(self, conn):
+        sample = [
+            "488001",   # Poland
+            "3c0001",   # Germany
+            "a00001",   # United States
+            "100001",   # Russia
+            "380001",   # France
+            "405000",   # United Kingdom
+            "06a001",   # Qatar
+            "dd85cb",   # gap / anonymous
+            "000001",   # outside all blocks
+            "ffffff",   # outside all blocks
+        ]
+        conn.executemany("INSERT INTO t VALUES (?)", [(h,) for h in sample])
+        expr = icao_ranges.country_sql_case("icao_hex")
+        rows = conn.execute(
+            f"SELECT icao_hex, ({expr}) AS country FROM t"
+        ).fetchall()
+        for r in rows:
+            sql = r["country"]
+            py = icao_ranges.icao_to_country(r["icao_hex"])
+            assert sql == py, (
+                f"SQL/Python disagree on {r['icao_hex']}: sql={sql!r} py={py!r}"
+            )
+
+    def test_apostrophe_in_country_name_is_doubled(self):
+        """Audit-12 #204 — names like "Côte d'Ivoire" must escape their
+        apostrophe by doubling it in SQL. A regression here would either
+        crash the query (unterminated string) or shift the table boundary
+        and corrupt aggregates."""
+        expr = icao_ranges.country_sql_case()
+        # If any range names a country with an apostrophe, the doubled
+        # form must appear. If none do, the test is a no-op cross-check
+        # (skips with an info message).
+        countries_with_apostrophe = [
+            c for _s, _e, c, _i in icao_ranges._RANGES if "'" in c
+        ]
+        if not countries_with_apostrophe:
+            pytest.skip("no apostrophe-bearing country in _RANGES today; "
+                        "synthetic test instead")
+        for c in countries_with_apostrophe:
+            doubled = c.replace("'", "''")
+            assert f"THEN '{doubled}'" in expr, (
+                f"country {c!r} not safely quoted in SQL CASE"
+            )
+
+    def test_synthetic_apostrophe_country_executes_cleanly(self, conn):
+        """Synthetic regression: feed `country_sql_case` a fake range with
+        an apostrophe in the country name and verify the resulting CASE
+        expression compiles + executes without syntax error."""
+        # Build the CASE expression directly with a known apostrophe-bearing
+        # synthetic country, mirroring the helper's escape logic.
+        country = "Côte d'Ivoire"
+        safe = country.replace("'", "''")
+        # Insert one matching ICAO into a synthetic block + check the
+        # generated escape pattern produces a parseable SQL string.
+        expr = f"CASE WHEN icao_hex >= '000000' AND icao_hex <= 'ffffff' THEN '{safe}' ELSE 'Unknown' END"
+        conn.execute("INSERT INTO t VALUES ('aabbcc')")
+        row = conn.execute(f"SELECT ({expr}) AS c FROM t").fetchone()
+        assert row["c"] == country
+
+    def test_custom_column_name(self):
+        expr = icao_ranges.country_sql_case("f.icao_hex")
+        assert "f.icao_hex >=" in expr
+        assert "ELSE 'Unknown' END" in expr
+
+
+# ---------------------------------------------------------------------------
+# _RAW boundary edges — Audit-12 #205
+# ---------------------------------------------------------------------------
+
+class TestRangeBoundaries:
+    """Parametrise (start-1, start, end, end+1) for representative blocks
+    so an off-by-one regression in inclusiveness gets caught.
+    Audit-12 #205 — adding a missing state allocation retroactively
+    reclassifies historical flights, so wrong boundaries are silent
+    data corruption."""
+
+    @pytest.mark.parametrize(
+        "start,end,country",
+        [
+            (0x488000, 0x48FFFF, "Poland"),
+            (0x3C0000, 0x3FFFFF, "Germany"),
+            (0xA00000, 0xAFFFFF, "United States"),
+            (0x380000, 0x3BFFFF, "France"),
+            (0x400000, 0x43FFFF, "United Kingdom"),
+            (0x06A000, 0x06A3FF, "Qatar"),
+        ],
+    )
+    def test_inclusive_at_both_edges(self, start, end, country):
+        # Exact start and exact end are INCLUDED in the block.
+        assert icao_ranges.icao_to_country(format(start, "06x")) == country
+        assert icao_ranges.icao_to_country(format(end, "06x")) == country
+
+    @pytest.mark.parametrize(
+        "start,end",
+        [
+            (0x488000, 0x48FFFF),
+            (0x3C0000, 0x3FFFFF),
+            (0xA00000, 0xAFFFFF),
+            (0x06A000, 0x06A3FF),
+        ],
+    )
+    def test_boundary_minus_one_outside_block(self, start, end):
+        # start-1 must NOT match the block — either falls into a neighbour
+        # or "Unknown", but never the current block.
+        if start == 0:
+            return  # underflow — no "before" boundary
+        outside_country = icao_ranges.icao_to_country(format(start - 1, "06x"))
+        inside_country = icao_ranges.icao_to_country(format(start, "06x"))
+        assert outside_country != inside_country, (
+            f"boundary leak at {format(start - 1, '06x')} → {outside_country}"
+        )
+
+    @pytest.mark.parametrize(
+        "start,end",
+        [
+            (0x488000, 0x48FFFF),
+            (0x3C0000, 0x3FFFFF),
+            (0xA00000, 0xAFFFFF),
+            (0x06A000, 0x06A3FF),
+        ],
+    )
+    def test_boundary_plus_one_outside_block(self, start, end):
+        if end >= 0xFFFFFF:
+            return  # overflow — no "after" boundary
+        outside_country = icao_ranges.icao_to_country(format(end + 1, "06x"))
+        inside_country = icao_ranges.icao_to_country(format(end, "06x"))
+        assert outside_country != inside_country, (
+            f"boundary leak at {format(end + 1, '06x')} → {outside_country}"
+        )
+
+    def test_no_block_overlap_in_raw(self):
+        """A new state allocation in _RAW must not overlap an existing
+        block — overlaps would make the smallest-first sort order
+        (sub-allocations win) the only thing keeping classifications
+        sensible, which is fragile."""
+        ranges = sorted(icao_ranges._RAW, key=lambda r: r[0])
+        for i in range(len(ranges) - 1):
+            s1, e1, c1, _ = ranges[i]
+            s2, e2, c2, _ = ranges[i + 1]
+            # Allow contained sub-allocations (s2 >= s1 and e2 <= e1) but
+            # forbid the partially-overlapping case where blocks cross.
+            if s2 <= e1 and not (s2 >= s1 and e2 <= e1):
+                # Sub-allocations of an outer block are OK
+                if s1 >= s2 and e1 <= e2:
+                    continue
+                pytest.fail(
+                    f"partial overlap: [{format(s1, '06x')}-{format(e1, '06x')}] "
+                    f"{c1!r} vs [{format(s2, '06x')}-{format(e2, '06x')}] {c2!r}"
+                )

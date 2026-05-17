@@ -273,3 +273,91 @@ def test_path_validator_rejects_quoted_db_path():
     assert analytics._is_safe_sql_path("/tmp/foo;DROP") is False
     assert analytics._is_safe_sql_path("/tmp/with\x00null") is False
     assert analytics._is_safe_sql_path("") is False
+
+
+# ---------------------------------------------------------------------------
+# 9. Engine init error branches (audit-12 #208)
+# ---------------------------------------------------------------------------
+
+
+def test_init_connection_unsafe_db_path_disables_engine(file_db, monkeypatch, caplog):
+    """A DB_PATH containing characters that can't be safely embedded in SQL
+    must short-circuit init and flip _INFRA_OK to False (no DuckDB attempt)."""
+    import logging
+    monkeypatch.setattr(config, "DB_PATH", "/tmp/x';attach 'evil.db'as e;--")
+    monkeypatch.setattr(config, "USE_DUCKDB", True)
+    analytics._reset_for_tests()
+    with caplog.at_level(logging.WARNING, logger="readsbstats.analytics"):
+        assert analytics.is_available() is False
+    assert any("rejecting DuckDB init" in r.message for r in caplog.records)
+
+
+def test_init_connection_oserror_on_mkdir_disables_engine(file_db, monkeypatch, caplog):
+    """`Path(home_dir).mkdir(...)` raising OSError must disable the engine
+    and log a warning; the loop falls back to SQLite cleanly."""
+    import logging
+    from pathlib import Path as _Path
+
+    def _boom(self, *a, **kw):
+        raise OSError("simulated mkdir failure")
+
+    monkeypatch.setattr(config, "USE_DUCKDB", True)
+    monkeypatch.setattr(_Path, "mkdir", _boom)
+    analytics._reset_for_tests()
+    with caplog.at_level(logging.WARNING, logger="readsbstats.analytics"):
+        assert analytics.is_available() is False
+    assert any("cannot prepare DuckDB dirs" in r.message for r in caplog.records)
+
+
+def test_init_connection_duckdb_exception_disables_engine(file_db, monkeypatch, caplog):
+    """DuckDB raising during INSTALL/LOAD/ATTACH must disable the engine
+    (so per-query callers safely return None and SQLite fallback runs)
+    and log the failure with the exception type name."""
+    import logging
+    if not analytics._DUCKDB_IMPORT_OK:
+        pytest.skip("duckdb not installed in this environment")
+
+    def _boom(*a, **kw):
+        raise RuntimeError("simulated duckdb attach failure")
+
+    monkeypatch.setattr(config, "USE_DUCKDB", True)
+    monkeypatch.setattr(analytics.duckdb, "connect", _boom)
+    analytics._reset_for_tests()
+    with caplog.at_level(logging.WARNING, logger="readsbstats.analytics"):
+        assert analytics.is_available() is False
+    assert any("DuckDB init failed" in r.message for r in caplog.records)
+
+
+def test_heatmap_returns_none_when_engine_throws(file_db, monkeypatch):
+    """Per-query exception path: the cursor execute raises, the function
+    swallows it and returns None so the caller falls back to SQLite."""
+    monkeypatch.setattr(config, "USE_DUCKDB", True)
+    analytics._reset_for_tests()
+    # Force engine initialised
+    assert analytics.is_available() is True
+
+    class _BoomCursor:
+        def execute(self, *a, **kw):
+            raise RuntimeError("simulated query failure")
+
+    class _BoomConn:
+        def cursor(self):
+            return _BoomCursor()
+
+    monkeypatch.setattr(analytics, "_CONN", _BoomConn())
+    # Both APIs should fall to None on a per-query exception
+    assert analytics.heatmap(None, 2) is None
+    assert analytics.coverage(None, 52.0, 21.0, 10) is None
+
+
+def test_close_resets_conn(file_db, monkeypatch):
+    """close() must drop the connection so subsequent is_available() either
+    re-initialises or stays False (the test exercises the close path that
+    `_reset_for_tests` and shutdown rely on)."""
+    monkeypatch.setattr(config, "USE_DUCKDB", True)
+    analytics._reset_for_tests()
+    assert analytics.is_available() is True
+    assert analytics._CONN is not None
+
+    analytics.close()
+    assert analytics._CONN is None
