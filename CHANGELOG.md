@@ -1,5 +1,69 @@
 # Changelog
 
+## 2.1.13 — 2026-05-17
+
+### UI consistency pass — Radix primitives across the SPA
+
+Four cosmetic-but-substantive frontend refactors that bring the SPA's
+icon, menu, tooltip, and dropdown language into one source. All four
+land as separate commits before this release tag so the history reads
+cleanly.
+
+**1. `@radix-ui/react-icons` replaces every text glyph + inline SVG.**
+`☰` `▾` `▴` `▼` `▲` `✓` `←` `→` and three hand-rolled SVGs (Sheet
+close, Map play/pause, Gallery sort) now use typed Radix components.
+Stats trend cards switch to `TriangleUp`/`Down`/`DotFilled`. Brand
+`✈` and inline route-string arrows (`EPWA→EDDF`) intentionally
+remain — Radix has no plane glyph and those arrows are text content.
+
+**2. Mobile hamburger nav is now a Radix `DropdownMenu`.** Drops the
+hand-rolled `open`/`setOpen` toggle and conditional `<ul>`; gains
+focus trap, ESC-to-close, outside-click dismissal, arrow-key
+navigation, and proper `role="menu"`/`role="menuitem"` ARIA. Splits
+the nav into a desktop horizontal list (`md:flex`) and a mobile
+DropdownMenu (`md:hidden`).
+
+**3. Native `title="…"` replaced by Radix Tooltip on six sites.**
+LiveCountBadge, Heatmap (168 cells, now keyboard-focusable), Gallery
+sort (nested `Tooltip + Popover` via stacked `asChild` Slot
+composition), Map stale-snapshot badge, Aircraft "Watching" toggle,
+Stats emergency squawks. Adds `<TooltipProvider>` at the app root
+with a 300 ms delay / 500 ms skip.
+
+**4. History Source + Flag filters migrate to Radix `Select`.** The
+only `NativeSelect`s left in the app are gone; the `NativeSelect`
+export is removed from `ui/Input.tsx` (zero consumers). Adds an
+`ANY_VALUE='__any__'` sentinel because Radix `SelectItem` rejects
+`""` as a value at runtime, with translation at the URL-param
+boundary so the existing search params stay unchanged.
+
+### Bugfix — receiver-health per-check icons rendered identically
+
+The /metrics receiver-health panel showed nine rows with the same
+dim info icon regardless of severity. Root cause was a field-name
+mismatch the type system couldn't catch: the backend dataclass
+returns `Check.severity` but the frontend `HealthCheck` interface
+declared `status`. Every read fell through to the
+`InfoCircledIcon` fallback and the same dim grey colour.
+
+Renamed the interface field with a comment referencing
+`health.py` as the source of truth, and added
+`test/metrics-health.test.tsx` (2 tests) that render the panel with
+a synthetic fixture and assert the `data-status` attribute and icon
+colour differ across severities — would have caught the original
+drift.
+
+### Test count
+
+```
+1317 Python + 103 Vitest = 1420 unit tests
+```
+
+(+13 vitest from this release: 4 nav, 3 tooltip, 4 history-filters,
+2 metrics-health.)
+
+---
+
 ## 2.1.12 — 2026-05-17
 
 ### Security — CodeQL #29 (py/url-redirection) defence-in-depth
