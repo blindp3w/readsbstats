@@ -1,6 +1,7 @@
 import { lazy, Suspense, useMemo } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
+import { ArrowLeftIcon } from '@radix-ui/react-icons';
 import {
   ComposedChart,
   Line,
@@ -125,9 +126,10 @@ export default function FlightPage() {
       <header>
         <Link
           to="/history"
-          className="text-xs text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
+          className="inline-flex items-center gap-1 text-xs text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
         >
-          ← back to history
+          <ArrowLeftIcon aria-hidden="true" />
+          back to history
         </Link>
       </header>
 

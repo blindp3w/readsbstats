@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
+import { ChevronDownIcon, ChevronUpIcon } from '@radix-ui/react-icons';
 import { ToggleGroupRoot, ToggleGroupItem } from '@/components/ui/ToggleGroup';
 import { Input } from '@/components/ui/Input';
 import { Button } from '@/components/ui/Button';
@@ -175,7 +176,8 @@ export function RangePicker({
             )}
             data-testid="range-custom-toggle"
           >
-            Custom {open ? '▴' : '▾'}
+            <span>Custom</span>
+            {open ? <ChevronUpIcon aria-hidden="true" /> : <ChevronDownIcon aria-hidden="true" />}
           </button>
         </PopoverTrigger>
         <PopoverContent className="w-[260px]" data-testid="range-custom-panel">

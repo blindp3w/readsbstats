@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
+import { MixerHorizontalIcon, CheckIcon } from '@radix-ui/react-icons';
 import { apiJson } from '@/lib/api';
 import { useSearchParam, useSearchParamBatch } from '@/hooks/useSearchParam';
 import { safeUrl } from '@/lib/safeUrl';
@@ -193,26 +194,7 @@ export default function GalleryPage() {
 // same height.
 // ---------------------------------------------------------------------------
 
-function SortIcon() {
-  // Sort-by-bars: a simple 3-line descending stack. Inline SVG keeps the
-  // bundle clean (no icon library).
-  return (
-    <svg
-      width="14"
-      height="14"
-      viewBox="0 0 16 16"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.5"
-      strokeLinecap="round"
-      aria-hidden="true"
-    >
-      <line x1="3" y1="4" x2="13" y2="4" />
-      <line x1="3" y1="8" x2="10" y2="8" />
-      <line x1="3" y1="12" x2="7" y2="12" />
-    </svg>
-  );
-}
+const SortIcon = MixerHorizontalIcon;
 
 function SortPopover({
   value,
@@ -262,7 +244,7 @@ function SortPopover({
                   )}
                 >
                   <span>{opt.label}</span>
-                  {selected ? <span aria-hidden="true">✓</span> : null}
+                  {selected ? <CheckIcon aria-hidden="true" /> : null}
                 </button>
               </li>
             );

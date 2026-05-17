@@ -1,4 +1,5 @@
 import * as Sel from '@radix-ui/react-select';
+import { ChevronDownIcon } from '@radix-ui/react-icons';
 import { forwardRef, type ReactNode } from 'react';
 import { cn } from '@/lib/cn';
 
@@ -31,7 +32,7 @@ export const SelectTrigger = forwardRef<HTMLButtonElement, TriggerProps>(
     >
       {children}
       <Sel.Icon className="text-[var(--color-text-dim)]" aria-hidden>
-        ▾
+        <ChevronDownIcon />
       </Sel.Icon>
     </Sel.Trigger>
   ),

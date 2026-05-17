@@ -1,6 +1,14 @@
 import { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
+  ChevronDownIcon,
+  ChevronUpIcon,
+  CheckCircledIcon,
+  ExclamationTriangleIcon,
+  CrossCircledIcon,
+  InfoCircledIcon,
+} from '@radix-ui/react-icons';
+import {
   Area,
   AreaChart,
   XAxis,
@@ -32,7 +40,9 @@ interface MetricsResp {
 
 interface HealthCheck {
   name: string;
-  status: 'ok' | 'warn' | 'critical' | 'info' | string;
+  // Matches the backend `Check.severity` dataclass field — do not rename
+  // to "status" without also changing health.py and the Python tests.
+  severity: 'ok' | 'warn' | 'critical' | 'info' | string;
   message?: string;
 }
 
@@ -242,6 +252,23 @@ function statusColor(status: string): string {
   return CHART_COLORS.textDim; // info / unknown
 }
 
+// Per-check status badge: icon (semantic shape) + accessible text. The
+// left-border stripe on each row is a secondary cue; this is the primary
+// at-a-glance signal and is colourblind-safer (shape, not just colour).
+function StatusIcon({ status }: { status: string }) {
+  const color = statusColor(status);
+  const props = {
+    width: 16,
+    height: 16,
+    style: { color, flexShrink: 0 },
+    'aria-hidden': true as const,
+  };
+  if (status === 'ok') return <CheckCircledIcon {...props} />;
+  if (status === 'warn') return <ExclamationTriangleIcon {...props} />;
+  if (status === 'critical') return <CrossCircledIcon {...props} />;
+  return <InfoCircledIcon {...props} />;
+}
+
 // ---------------------------------------------------------------------------
 // Health banner — collapsed by default, click-to-expand per-check detail.
 // Mirrors v1's behaviour (templates/metrics.html lines 9–16).
@@ -269,7 +296,7 @@ function HealthBanner({
         : q.data.overall === 'critical'
           ? 'danger'
           : 'muted';
-  const bad = q.data.checks.filter((c) => c.status === 'warn' || c.status === 'critical');
+  const bad = q.data.checks.filter((c) => c.severity === 'warn' || c.severity === 'critical');
   return (
     <Alert variant={variant} data-testid="metrics-health-banner" className="p-0">
       <button
@@ -287,9 +314,9 @@ function HealthBanner({
             {bad.length} alert{bad.length === 1 ? '' : 's'}
           </span>
         )}
-        <span className="ml-auto text-[var(--color-text-dim)]">
-          {q.data.checks.length} check{q.data.checks.length === 1 ? '' : 's'}{' '}
-          <span aria-hidden="true">{open ? '▴' : '▾'}</span>
+        <span className="ml-auto inline-flex items-center gap-1 text-[var(--color-text-dim)]">
+          {q.data.checks.length} check{q.data.checks.length === 1 ? '' : 's'}
+          {open ? <ChevronUpIcon aria-hidden="true" /> : <ChevronDownIcon aria-hidden="true" />}
         </span>
       </button>
       {open && (
@@ -301,11 +328,13 @@ function HealthBanner({
           {q.data.checks.map((c) => (
             <li
               key={c.name}
-              className="flex flex-wrap items-baseline gap-2 border-l-4 pl-3 pr-3 py-2 text-xs"
-              style={{ borderLeftColor: statusColor(c.status) }}
+              className="flex flex-wrap items-center gap-2 border-l-4 pl-3 pr-3 py-2 text-xs"
+              style={{ borderLeftColor: statusColor(c.severity) }}
               data-testid={`metrics-health-check-${c.name}`}
-              data-status={c.status}
+              data-status={c.severity}
             >
+              <StatusIcon status={c.severity} />
+              <span className="sr-only">{c.severity}:</span>
               <span className="font-medium">{c.name}</span>
               {c.message ? (
                 <span className="text-[var(--color-text-dim)]">{c.message}</span>

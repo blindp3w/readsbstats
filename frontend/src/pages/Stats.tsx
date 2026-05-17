@@ -1,6 +1,12 @@
 import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import {
+  TriangleUpIcon,
+  TriangleDownIcon,
+  DotFilledIcon,
+  ArrowRightIcon,
+} from '@radix-ui/react-icons';
+import {
   BarChart,
   Bar,
   XAxis,
@@ -337,7 +343,8 @@ function TrendCard({
 }) {
   const delta = prev == null ? null : value - prev;
   const pct = prev != null && prev > 0 ? ((value - prev) / prev) * 100 : null;
-  const arrow = delta == null ? '' : delta > 0 ? '▲' : delta < 0 ? '▼' : '·';
+  const ArrowIcon =
+    delta == null ? null : delta > 0 ? TriangleUpIcon : delta < 0 ? TriangleDownIcon : DotFilledIcon;
   const tone =
     delta == null || delta === 0
       ? 'text-[var(--color-text-dim)]'
@@ -355,11 +362,14 @@ function TrendCard({
           {delta == null ? (
             <span className="text-[var(--color-text-dim)]">no previous data</span>
           ) : (
-            <>
-              {arrow} {Math.abs(delta).toLocaleString()}
-              {pct != null ? ` (${pct >= 0 ? '+' : ''}${pct.toFixed(0)}%)` : ''}
+            <span className="inline-flex items-center gap-1">
+              {ArrowIcon ? <ArrowIcon aria-hidden="true" /> : null}
+              <span>
+                {Math.abs(delta).toLocaleString()}
+                {pct != null ? ` (${pct >= 0 ? '+' : ''}${pct.toFixed(0)}%)` : ''}
+              </span>
               <span className="ml-1 text-[var(--color-text-dim)]">vs prev period</span>
-            </>
+            </span>
           )}
         </div>
       </CardContent>
@@ -385,9 +395,10 @@ function FlaggedCard({
         <div className="tabnum text-2xl font-bold">{count.toLocaleString()}</div>
         <Link
           to={`/history?flags=${label.toLowerCase()}`}
-          className="text-xs text-[var(--color-accent)] hover:underline"
+          className="inline-flex items-center gap-1 text-xs text-[var(--color-accent)] hover:underline"
         >
-          See in history →
+          See in history
+          <ArrowRightIcon aria-hidden="true" />
         </Link>
       </CardContent>
     </Card>

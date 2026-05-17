@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useParams } from 'react-router-dom';
+import { ArrowLeftIcon, CheckIcon } from '@radix-ui/react-icons';
 import { toast } from 'sonner';
 import { apiFetch, apiJson } from '@/lib/api';
 import type { WatchlistEntry } from '@/lib/types';
@@ -97,9 +98,10 @@ export default function AircraftPage() {
       <header>
         <Link
           to="/history"
-          className="text-xs text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
+          className="inline-flex items-center gap-1 text-xs text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
         >
-          ← back to history
+          <ArrowLeftIcon aria-hidden="true" />
+          back to history
         </Link>
         <h1 className="mt-1 text-xl font-semibold font-mono tabnum">{icao}</h1>
       </header>
@@ -228,7 +230,8 @@ function WatchButton({ icao }: { icao: string }) {
         aria-pressed={true}
         title="Click to remove from watchlist"
       >
-        ✓ Watching
+        <CheckIcon aria-hidden="true" />
+        Watching
       </Button>
     );
   }

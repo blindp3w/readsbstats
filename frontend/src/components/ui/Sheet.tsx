@@ -1,4 +1,5 @@
 import * as Dlg from '@radix-ui/react-dialog';
+import { Cross2Icon } from '@radix-ui/react-icons';
 import { forwardRef } from 'react';
 import { cn } from '@/lib/cn';
 
@@ -49,14 +50,7 @@ export const SheetContent = forwardRef<HTMLDivElement, ContentProps>(
           aria-label="Close"
           className="absolute right-3 top-3 rounded p-1 text-[var(--color-text-dim)] hover:bg-[var(--color-surface-2)] hover:text-[var(--color-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)]"
         >
-          <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
-            <path
-              d="M3 3l10 10M13 3L3 13"
-              stroke="currentColor"
-              strokeWidth="1.5"
-              strokeLinecap="round"
-            />
-          </svg>
+          <Cross2Icon aria-hidden="true" />
         </Dlg.Close>
         {children}
       </Dlg.Content>

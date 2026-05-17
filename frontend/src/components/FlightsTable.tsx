@@ -1,4 +1,5 @@
 import { Link } from 'react-router-dom';
+import { ChevronUpIcon, ChevronDownIcon } from '@radix-ui/react-icons';
 import { Table, THead, TBody, TR, TH, TD } from '@/components/ui/Table';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { Alert } from '@/components/ui/Alert';
@@ -139,7 +140,13 @@ export function FlightsTable({ flights, isLoading, error, sortBy, sortDir, onSor
                     data-testid={`flights-sort-${c.key}`}
                   >
                     {label}
-                    {isSortedHere ? <span aria-hidden="true">{sortDir === 'asc' ? '▲' : '▼'}</span> : null}
+                    {isSortedHere ? (
+                      sortDir === 'asc' ? (
+                        <ChevronUpIcon aria-hidden="true" />
+                      ) : (
+                        <ChevronDownIcon aria-hidden="true" />
+                      )
+                    ) : null}
                   </button>
                 ) : (
                   label

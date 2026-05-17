@@ -1,6 +1,7 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
+import { PlayIcon, PauseIcon, ArrowRightIcon } from '@radix-ui/react-icons';
 import { apiJson } from '@/lib/api';
 import { Button } from '@/components/ui/Button';
 import { Alert } from '@/components/ui/Alert';
@@ -539,23 +540,6 @@ function JumpButton({
   );
 }
 
-function PlayIcon() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">
-      <path d="M4 3l9 5-9 5z" fill="currentColor" />
-    </svg>
-  );
-}
-
-function PauseIcon() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">
-      <rect x="3" y="3" width="3.5" height="10" fill="currentColor" />
-      <rect x="9.5" y="3" width="3.5" height="10" fill="currentColor" />
-    </svg>
-  );
-}
-
 function describeRewind(sec: number): string {
   if (sec === 0) return 'Now';
   const h = Math.floor(sec / 3600);
@@ -696,7 +680,8 @@ function AircraftDetail({ ac }: { ac: Aircraft }) {
           )}
           data-testid="aircraft-detail-flight-link"
         >
-          Flight detail →
+          <span>Flight detail</span>
+          <ArrowRightIcon aria-hidden="true" className="ml-1" />
         </Link>
         <Link
           to={`/aircraft/${ac.icao_hex}`}
