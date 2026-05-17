@@ -201,6 +201,45 @@ class TestNewMaxGsEmptyList:
         assert result is None
 
 
+class TestApplyPurgeBatching:
+    """Audit-12 #P3.2 — apply_purge must commit periodically rather than
+    holding the write lock for the whole flight loop."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        self.conn = make_db()
+        yield
+        self.conn.close()
+
+    def test_apply_purge_batches_commits(self):
+        from purge_mlat_gs_spikes import _BATCH_SIZE
+
+        class _CountingConn:
+            def __init__(self, c):
+                self._c = c
+                self.commits = 0
+            def __getattr__(self, name):
+                return getattr(self._c, name)
+            def commit(self):
+                self.commits += 1
+                self._c.commit()
+
+        bad: dict[int, list[int]] = {}
+        n_flights = _BATCH_SIZE * 2 + 5
+        for i in range(n_flights):
+            fid = insert_flight(self.conn, icao=f"a{i:05x}")
+            insert_pos(self.conn, fid, 1000 + i, 90.0)
+            spike = insert_pos(self.conn, fid, 1007 + i, 700.0)
+            bad[fid] = [spike]
+
+        counter = _CountingConn(self.conn)
+        apply_purge(counter, bad, {})
+        assert counter.commits >= 3, (
+            f"expected ≥3 commits for {n_flights} flights at batch={_BATCH_SIZE},"
+            f" got {counter.commits}"
+        )
+
+
 # ---------------------------------------------------------------------------
 # apply_purge
 # ---------------------------------------------------------------------------

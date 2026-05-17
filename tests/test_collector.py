@@ -2779,6 +2779,42 @@ class TestNotificationConsumer:
         collector._drain_notifications(timeout=0.5)
         assert collector._notification_queue.unfinished_tasks == 0
 
+    def test_stop_notification_consumer_drains_pending_before_join(self):
+        """Audit-12 #145 — on shutdown, queued items must be dispatched
+        BEFORE the consumer thread is joined. Previously the consumer was
+        a daemon thread that the interpreter killed abruptly, so any
+        alerts queued in the last poll cycle were silently dropped."""
+        from readsbstats import collector
+        collector.start_notification_consumer()
+
+        # Enqueue work and immediately ask for shutdown — the helper must
+        # drain the queue first, then stop the consumer.
+        collector._notification_queue.put(
+            ("mil", "aabbcc", "REG1", None, "Type1", "T1", 100.0),
+        )
+        collector._notification_queue.put(
+            ("sqk", "ddeeff", "REG2", None, "7700", 50.0),
+        )
+
+        collector.stop_notification_consumer(timeout=2.0)
+
+        # All items processed (FIFO):
+        assert [c[0] for c in self.calls] == ["mil", "sqk"]
+        # Thread has exited:
+        assert collector._consumer_thread is None or not collector._consumer_thread.is_alive()
+        # Queue is fully drained:
+        assert collector._notification_queue.unfinished_tasks == 0
+
+    def test_stop_notification_consumer_is_noop_when_not_started(self):
+        from readsbstats import collector
+        # Ensure no thread is alive at entry
+        if collector._consumer_thread is not None:
+            collector._notification_queue.put(None)
+            collector._consumer_thread.join(timeout=1.0)
+            collector._consumer_thread = None
+        # Must not raise
+        collector.stop_notification_consumer(timeout=0.5)
+
 
 # ---------------------------------------------------------------------------
 # Consumer thread reuses one sqlite connection

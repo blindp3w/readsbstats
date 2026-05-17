@@ -426,6 +426,56 @@ class TestNewMaxGs:
 
 
 # ---------------------------------------------------------------------------
+# apply_purge — batched commits (audit-12 #P3.2)
+# ---------------------------------------------------------------------------
+
+class TestApplyPurgeBatching:
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        self.conn = make_db()
+        yield
+        self.conn.close()
+
+    def test_apply_purge_batches_commits(self):
+        """Apply per-batch commits so a multi-thousand-flight purge doesn't
+        hold the write lock for the whole run (collector starvation)."""
+        from purge_bad_gs import _BATCH_SIZE
+
+        class _CountingConn:
+            def __init__(self, c):
+                self._c = c
+                self.commits = 0
+            def __getattr__(self, name):
+                return getattr(self._c, name)
+            def commit(self):
+                self.commits += 1
+                self._c.commit()
+
+        bad: dict[int, list[int]] = {}
+        n_flights = _BATCH_SIZE * 2 + 5
+        for i in range(n_flights):
+            fid = insert_flight(self.conn, icao=f"a{i:05x}")
+            insert_pos(self.conn, fid, 1000 + i, 52.0, 21.0, gs=400)
+            bad_pid = insert_pos(self.conn, fid, 1060 + i, 52.1, 21.0, gs=900)
+            bad[fid] = [bad_pid]
+
+        counter = _CountingConn(self.conn)
+        apply_purge(counter, bad)
+        assert counter.commits >= 3, (
+            f"expected ≥3 commits for {n_flights} flights at batch={_BATCH_SIZE},"
+            f" got {counter.commits}"
+        )
+        # All bad gs values nulled (correctness preserved)
+        for fid, ids in bad.items():
+            placeholders = ",".join("?" * len(ids))
+            null_count = self.conn.execute(
+                f"SELECT COUNT(*) FROM positions WHERE id IN ({placeholders}) AND gs IS NULL",
+                ids,
+            ).fetchone()[0]
+            assert null_count == len(ids)
+
+
+# ---------------------------------------------------------------------------
 # apply_purge
 # ---------------------------------------------------------------------------
 

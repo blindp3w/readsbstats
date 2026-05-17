@@ -130,6 +130,13 @@ def max_distance_after_purge(
     return max(haversine_nm(rlat, rlon, r["lat"], r["lon"]) for r in rows)
 
 
+# Commit every N flights so a multi-thousand-flight purge doesn't hold the
+# SQLite write lock for the whole run (would starve the collector). The
+# delete/update for a single flight stays in one transaction; only the
+# batch boundary commits early.
+_BATCH_SIZE = 100
+
+
 def apply_purge(
     conn: sqlite3.Connection,
     ghosts: dict[int, list[int]],
@@ -137,16 +144,22 @@ def apply_purge(
     rlon: float,
 ) -> None:
     """Delete ghost positions and recompute max_distance_nm for affected flights."""
-    with conn:
-        for fid, ghost_ids in ghosts.items():
-            placeholders = ",".join("?" * len(ghost_ids))
-            conn.execute(
-                f"DELETE FROM positions WHERE id IN ({placeholders})", ghost_ids
-            )
-            new_max = max_distance_after_purge(conn, fid, [], rlat, rlon)
-            conn.execute(
-                "UPDATE flights SET max_distance_nm = ? WHERE id = ?", (new_max, fid)
-            )
+    pending = 0
+    for fid, ghost_ids in ghosts.items():
+        placeholders = ",".join("?" * len(ghost_ids))
+        conn.execute(
+            f"DELETE FROM positions WHERE id IN ({placeholders})", ghost_ids
+        )
+        new_max = max_distance_after_purge(conn, fid, [], rlat, rlon)
+        conn.execute(
+            "UPDATE flights SET max_distance_nm = ? WHERE id = ?", (new_max, fid)
+        )
+        pending += 1
+        if pending >= _BATCH_SIZE:
+            conn.commit()
+            pending = 0
+    if pending:
+        conn.commit()
 
 
 # ---------------------------------------------------------------------------

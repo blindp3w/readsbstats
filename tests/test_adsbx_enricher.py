@@ -129,6 +129,40 @@ class TestParseAreaResponse:
         results = self.parse(data)
         assert results[0]["flags"] == 5  # military(1) + PIA(4)
 
+    # Audit-12 #156 — reject malformed icao_hex before it lands in the
+    # adsbx_overrides PK column.
+
+    def test_skips_hex_with_wrong_length(self):
+        data = {"ac": [
+            {"hex": "abc",       "dbFlags": 1, "r": "X", "t": None, "desc": None},  # too short
+            {"hex": "deadbeef",  "dbFlags": 1, "r": "X", "t": None, "desc": None},  # too long
+            {"hex": "aabbcc",    "dbFlags": 1, "r": "X", "t": None, "desc": None},  # valid baseline
+        ]}
+        results = self.parse(data)
+        assert [r["icao_hex"] for r in results] == ["aabbcc"]
+
+    def test_skips_hex_with_non_hex_chars(self):
+        data = {"ac": [
+            {"hex": "xyz123", "dbFlags": 1, "r": "X", "t": None, "desc": None},
+            {"hex": "abz123", "dbFlags": 1, "r": "X", "t": None, "desc": None},
+            {"hex": "abcdef", "dbFlags": 1, "r": "X", "t": None, "desc": None},  # valid
+        ]}
+        results = self.parse(data)
+        assert [r["icao_hex"] for r in results] == ["abcdef"]
+
+    def test_accepts_full_hex_alphabet(self):
+        data = {"ac": [{"hex": "0123ef", "dbFlags": 1, "r": "X", "t": None, "desc": None}]}
+        results = self.parse(data)
+        assert results[0]["icao_hex"] == "0123ef"
+
+    def test_anonymous_tilde_prefix_stripped(self):
+        """Some feeds prepend `~` to anonymous Mode-S addresses; the parser
+        already lowercases via strip+lower, but the tilde character is not
+        valid hex. Verify it's rejected (we never want `~abcdef` in the PK)."""
+        data = {"ac": [{"hex": "~abcdef", "dbFlags": 1, "r": "X", "t": None, "desc": None}]}
+        results = self.parse(data)
+        assert results == []
+
 
 # ---------------------------------------------------------------------------
 # _upsert_overrides

@@ -207,7 +207,16 @@ def _poll_stats(conn: sqlite3.Connection, path: str) -> bool:
 # ---------------------------------------------------------------------------
 
 def run_metrics_loop(db_path: str) -> None:
-    """Entry point for the background thread.  Runs until process exits."""
+    """Entry point for the background thread.  Runs until process exits.
+
+    Failure handling (audit-12 #142 + #148):
+      * `sqlite3.OperationalError` — the DB handle is presumed bad (file
+        moved, snapshot/restore, disk error). Close it and re-connect via
+        ``database.connect`` so the next iteration starts fresh.
+      * Any other unexpected exception — back off (don't reset to interval
+        and tight-loop the log).
+      * `_TransientError` — file-read failure, back off (existing behaviour).
+    """
     if not config.METRICS_ENABLED:
         log.info("Metrics collector disabled")
         return
@@ -224,9 +233,20 @@ def run_metrics_loop(db_path: str) -> None:
         except _TransientError as exc:
             log.warning("Metrics poll failed (will retry): %s", exc)
             sleep_time = min(sleep_time * 2, 300)
+        except sqlite3.OperationalError:
+            log.exception("Metrics collector DB error — reconnecting")
+            try:
+                conn.close()
+            except Exception:
+                pass
+            try:
+                conn = database.connect(db_path)
+            except Exception:
+                log.exception("Metrics reconnect failed; will retry next cycle")
+            sleep_time = min(max(sleep_time, config.METRICS_INTERVAL) * 2, 300)
         except Exception:
             log.exception("Metrics collector error")
-            sleep_time = config.METRICS_INTERVAL
+            sleep_time = min(max(sleep_time, config.METRICS_INTERVAL) * 2, 300)
         time.sleep(sleep_time)
 
 

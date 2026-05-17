@@ -32,6 +32,20 @@ _RESPONSE_MAX_BYTES = 4 * 1024 * 1024
 # Pure parsing — no I/O, easily unit-testable
 # ---------------------------------------------------------------------------
 
+_HEX_CHARS = frozenset("0123456789abcdef")
+
+
+def _is_valid_icao_hex(s: str) -> bool:
+    """A real Mode-S address is exactly 6 lowercase hex chars.
+
+    Audit-12 #156 — reject malformed values before they land in the
+    ``adsbx_overrides`` PK column. Without this, anonymous-tilde-prefixed
+    hexes, garbage from upstream JSON, or shorter/longer strings would
+    silently pollute the table.
+    """
+    return len(s) == 6 and all(c in _HEX_CHARS for c in s)
+
+
 def _parse_area_response(data: dict) -> list[dict]:
     """
     Extract aircraft entries from an airplanes.live v2 area response.
@@ -46,7 +60,7 @@ def _parse_area_response(data: dict) -> list[dict]:
         if not icao:
             continue
         icao = icao.strip().lower()
-        if not icao:
+        if not _is_valid_icao_hex(icao):
             continue
 
         flags = 0

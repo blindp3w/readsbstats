@@ -1,5 +1,76 @@
 # Changelog
 
+## 2.1.5 — 2026-05-17
+
+### Audit 12 Phase 3 — reliability fixes
+
+Phase 3 of the post-v2 audit. Prevents silent outages: stale DB handles,
+dropped alerts at shutdown, leaked subprocesses, silently-swallowed
+feeder errors, slow/contended SQLite pragmas on a fresh photo connection,
+and PK pollution in `adsbx_overrides`. All test-first.
+
+**Metrics collector**
+
+- **#142** `run_metrics_loop` now catches `sqlite3.OperationalError`,
+  closes the bad handle, and re-connects via `database.connect()` so a
+  moved DB / disk error / WAL hiccup doesn't wedge the collector for
+  the rest of the process lifetime.
+- **#148** Apply exponential backoff (capped at 300s) on the broad
+  `Exception` path too — previously only `_TransientError` triggered
+  backoff and a persistent DB error would tight-loop the log at the
+  configured 60s interval.
+
+**Purge scripts — batched commits**
+
+- All three `apply_purge()` functions
+  (`scripts/purge_ghosts.py`, `scripts/purge_bad_gs.py`,
+  `scripts/purge_mlat_gs_spikes.py`) now commit every `_BATCH_SIZE = 100`
+  flights instead of wrapping the whole flight loop in one transaction.
+  On a database with thousands of flagged flights, the old pattern held
+  the SQLite write lock for the full run and starved the collector. A
+  single flight's delete + flight-row update still lives in one
+  transaction; only the batch boundary commits early.
+
+**Notification queue — drain on shutdown**
+
+- **#145** New `collector.stop_notification_consumer(timeout=5.0)`
+  helper drains the queue, posts the `None` sentinel, and joins the
+  `tg-dispatch` thread. `main()` calls it during shutdown, after
+  finalising active flights, before closing the DB. Previously the
+  consumer was a daemon thread the interpreter killed abruptly at
+  process exit, dropping any Telegram alerts queued by the last
+  `_poll()` before SIGTERM.
+
+**Subprocess leak**
+
+- **#152** `_check_systemd_unit` and `_feeder_details_mlat` now
+  `proc.kill()` + `await proc.wait()` on `asyncio.TimeoutError` so a
+  hung systemctl/journalctl doesn't pile up zombie children under load.
+
+**Operator visibility**
+
+- **#151** `_fetch_feeder_details` no longer silently returns `[]` on
+  exception — logs `WARNING ... exc_info=True` with the feeder name +
+  status_type. A misconfigured feeder or corrupted status file would
+  otherwise have been invisible.
+
+**Photo lookup connection hygiene**
+
+- **#153** `notifier._get_photo_result` now opens its fresh fallback
+  connection via `database.connect()` instead of a bare
+  `sqlite3.connect()`. Picks up the project's WAL / synchronous=NORMAL
+  / mmap / busy_timeout pragmas — faster writes and 30s busy_timeout
+  for collector contention.
+
+**Data quality**
+
+- **#156** `adsbx_enricher._parse_area_response` rejects any `hex` field
+  that isn't exactly 6 lowercase hex chars (via new `_is_valid_icao_hex`
+  helper). Prevents `~abcdef`-style anonymous-prefix strings and other
+  malformed values from polluting the `adsbx_overrides` PK column.
+
+**Test suite**: Python 1232 → 1245 (+13). Vitest unchanged.
+
 ## 2.1.4 — 2026-05-17
 
 ### Audit 12 Phase 2 — security hardening

@@ -222,6 +222,52 @@ class TestApplyPurge:
         after = self.conn.execute("SELECT COUNT(*) FROM positions").fetchone()[0]
         assert before == after
 
+    def test_apply_purge_batches_commits(self):
+        """Regression for audit-12 #P3.2 — apply_purge must commit
+        periodically rather than holding the write lock for the entire
+        flight loop. On a DB with thousands of flagged flights the
+        single-transaction pattern starved the collector for minutes."""
+        from purge_ghosts import _BATCH_SIZE
+
+        # sqlite3.Connection.commit is a C-level read-only slot, so we wrap
+        # the connection in a thin Proxy that intercepts commit() before
+        # forwarding to the real conn.
+        class _CountingConn:
+            def __init__(self, c):
+                self._c = c
+                self.commits = 0
+            def __getattr__(self, name):
+                return getattr(self._c, name)
+            def commit(self):
+                self.commits += 1
+                self._c.commit()
+
+        # Build 2 × _BATCH_SIZE + 5 flights, each with one ghost
+        ghosts: dict[int, list[int]] = {}
+        n_flights = _BATCH_SIZE * 2 + 5
+        for i in range(n_flights):
+            fid = insert_flight(self.conn, icao=f"a{i:05x}")
+            insert_pos(self.conn, fid, 1000 + i, 52.6, 20.75)
+            gid = insert_pos(self.conn, fid, 1005 + i, 59.7, 21.5)
+            ghosts[fid] = [gid]
+
+        counter = _CountingConn(self.conn)
+        apply_purge(counter, ghosts, RLAT, RLON)
+
+        # At least 3 commits (2 batch boundaries + final): proves batching
+        assert counter.commits >= 3, (
+            f"expected ≥3 commits for {n_flights} flights at batch={_BATCH_SIZE},"
+            f" got {counter.commits}"
+        )
+        # All ghosts still deleted (correctness preserved)
+        for fid, ghost_ids in ghosts.items():
+            placeholders = ",".join("?" * len(ghost_ids))
+            remaining = self.conn.execute(
+                f"SELECT COUNT(*) FROM positions WHERE id IN ({placeholders})",
+                ghost_ids,
+            ).fetchone()[0]
+            assert remaining == 0
+
 
 # ---------------------------------------------------------------------------
 # main() CLI

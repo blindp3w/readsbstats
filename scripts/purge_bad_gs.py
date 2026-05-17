@@ -159,18 +159,28 @@ def _new_max_gs(conn: sqlite3.Connection, flight_id: int, bad_ids: list[int]) ->
     return row[0] if row else None
 
 
+# Commit every N flights — see purge_ghosts._BATCH_SIZE for rationale.
+_BATCH_SIZE = 100
+
+
 def apply_purge(conn: sqlite3.Connection, bad: dict[int, list[int]]) -> None:
     """Null gs for bad positions and recompute max_gs for affected flights."""
-    with conn:
-        for fid, bad_ids in bad.items():
-            placeholders = ",".join("?" * len(bad_ids))
-            conn.execute(
-                f"UPDATE positions SET gs = NULL WHERE id IN ({placeholders})", bad_ids
-            )
-            new_max = _new_max_gs(conn, fid, bad_ids)
-            conn.execute(
-                "UPDATE flights SET max_gs = ? WHERE id = ?", (new_max, fid)
-            )
+    pending = 0
+    for fid, bad_ids in bad.items():
+        placeholders = ",".join("?" * len(bad_ids))
+        conn.execute(
+            f"UPDATE positions SET gs = NULL WHERE id IN ({placeholders})", bad_ids
+        )
+        new_max = _new_max_gs(conn, fid, bad_ids)
+        conn.execute(
+            "UPDATE flights SET max_gs = ? WHERE id = ?", (new_max, fid)
+        )
+        pending += 1
+        if pending >= _BATCH_SIZE:
+            conn.commit()
+            pending = 0
+    if pending:
+        conn.commit()
 
 
 # ---------------------------------------------------------------------------

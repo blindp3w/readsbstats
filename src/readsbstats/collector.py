@@ -544,6 +544,27 @@ def _drain_notifications(timeout: float = 1.0) -> None:
         time.sleep(0.01)
 
 
+def stop_notification_consumer(timeout: float = 5.0) -> None:
+    """Drain the notification queue, post the sentinel, and join the
+    consumer thread. Audit-12 #145 — the consumer is a daemon thread the
+    interpreter would otherwise kill abruptly at process exit, dropping
+    any Telegram alerts queued by the last `_poll()` before SIGTERM.
+
+    Idempotent and safe to call when the consumer was never started."""
+    global _consumer_thread
+    t = _consumer_thread
+    if t is None or not t.is_alive():
+        return
+    # Process anything queued before we ask the consumer to stop. Give
+    # half the budget to draining real work; the rest to the post-sentinel
+    # join.
+    _drain_notifications(timeout=max(0.1, timeout / 2))
+    _notification_queue.put(None)
+    t.join(timeout=max(0.1, timeout / 2))
+    if not t.is_alive():
+        _consumer_thread = None
+
+
 def _poll(conn: sqlite3.Connection) -> None:
     data = _read_aircraft_json()
     if data is None:
@@ -975,6 +996,11 @@ def main() -> None:
                 _close_flight(conn, icao)
     except Exception:
         log.exception("Error during shutdown finalisation")
+    # Drain queued Telegram alerts before tearing down (audit-12 #145).
+    try:
+        stop_notification_consumer(timeout=5.0)
+    except Exception:
+        log.exception("Error stopping notification consumer")
     conn.close()
     log.info("Collector stopped")
 

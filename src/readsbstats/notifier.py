@@ -29,7 +29,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from . import config, http_safe, icao_ranges, photo_sources
+from . import config, database, http_safe, icao_ranges, photo_sources
 
 log = logging.getLogger("notifier")
 
@@ -212,8 +212,11 @@ def _get_photo_result(
     if not config.DB_PATH:
         return None, False
     try:
-        fresh = sqlite3.connect(config.DB_PATH, timeout=5)
-        fresh.row_factory = sqlite3.Row
+        # Use database.connect() so the fresh connection picks up the
+        # project's WAL/synchronous/mmap/busy_timeout pragmas (audit-12 #153).
+        # Bare sqlite3.connect() inherited Python defaults — slower writes
+        # with synchronous=FULL and no busy_timeout for collector contention.
+        fresh = database.connect(config.DB_PATH)
         try:
             result, is_type = photo_sources.resolve_photo(
                 fresh, icao_hex, type_code,

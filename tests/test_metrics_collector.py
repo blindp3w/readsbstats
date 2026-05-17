@@ -346,6 +346,106 @@ class TestPollStats:
 # start_metrics_collector
 # ---------------------------------------------------------------------------
 
+class TestRunMetricsLoop:
+    """Audit-12 #142 + #148: the loop must (a) reconnect on
+    sqlite3.OperationalError so a stale DB handle doesn't wedge the
+    collector silently, and (b) back off on any persistent failure
+    (not just _TransientError) so a wedged DB doesn't spin the log."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self, monkeypatch, tmp_path):
+        from readsbstats import metrics_collector
+        importlib.reload(metrics_collector)
+        self.mc = metrics_collector
+        self.monkeypatch = monkeypatch
+        self.db_path = str(tmp_path / "metrics.db")
+        # Build a real DB so database.connect succeeds on reconnect
+        from readsbstats import database
+        database.init_db(self.db_path)
+
+        monkeypatch.setattr(config, "METRICS_ENABLED", True)
+        monkeypatch.setattr(config, "METRICS_INTERVAL", 1)
+
+        # Capture sleep durations and terminate the loop after N iterations.
+        self.sleeps: list[float] = []
+        self.max_iterations = 5
+
+        def fake_sleep(s):
+            self.sleeps.append(s)
+            if len(self.sleeps) >= self.max_iterations:
+                raise SystemExit  # bail out of the infinite loop
+
+        monkeypatch.setattr(self.mc.time, "sleep", fake_sleep)
+        yield
+
+    def _run_until_done(self):
+        try:
+            self.mc.run_metrics_loop(self.db_path)
+        except SystemExit:
+            pass
+
+    def test_reconnects_on_operational_error(self):
+        """A sqlite3.OperationalError on poll must close the bad conn,
+        reopen via database.connect, and recover on the next iteration."""
+        from readsbstats import database
+        call_count = {"n": 0}
+        seen_conns: list[int] = []
+
+        def fake_poll(conn, path):
+            call_count["n"] += 1
+            seen_conns.append(id(conn))
+            if call_count["n"] == 1:
+                raise sqlite3.OperationalError("database is locked")
+            return True
+
+        self.monkeypatch.setattr(self.mc, "_poll_stats", fake_poll)
+        connect_count = {"n": 0}
+        real_connect = database.connect
+
+        def counting_connect(path):
+            connect_count["n"] += 1
+            return real_connect(path)
+
+        self.monkeypatch.setattr(self.mc.database, "connect", counting_connect)
+
+        self._run_until_done()
+
+        # Original conn + at least one reconnect after OperationalError
+        assert connect_count["n"] >= 2, "did not reconnect on OperationalError"
+        # The conn after reconnect must differ from the original
+        assert len(set(seen_conns)) >= 2, "loop reused the dead connection"
+
+    def test_backoff_on_persistent_non_transient_error(self):
+        """Repeated generic Exception (e.g. DB wedged) must back off, not
+        reset to interval every iteration. Previously only _TransientError
+        triggered backoff."""
+        def fake_poll(conn, path):
+            raise RuntimeError("DB wedged")
+
+        self.monkeypatch.setattr(self.mc, "_poll_stats", fake_poll)
+        # Avoid spamming reconnects in this test — Exception is not
+        # OperationalError, so reconnect shouldn't fire.
+        connect_count = {"n": 0}
+        from readsbstats import database
+        real_connect = database.connect
+
+        def counting_connect(path):
+            connect_count["n"] += 1
+            return real_connect(path)
+
+        self.monkeypatch.setattr(self.mc.database, "connect", counting_connect)
+
+        self._run_until_done()
+
+        # First sleep is METRICS_INTERVAL (1s), subsequent should grow (backoff)
+        assert len(self.sleeps) >= 3
+        assert self.sleeps[-1] > self.sleeps[0], (
+            f"no backoff applied: sleeps={self.sleeps}"
+        )
+        # Only the initial connection, no reconnect for a non-Operational error
+        assert connect_count["n"] == 1
+
+
 class TestStartMetricsCollector:
     @pytest.fixture(autouse=True)
     def setup(self, monkeypatch):

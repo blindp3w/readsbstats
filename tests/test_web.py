@@ -1045,6 +1045,74 @@ class TestFeederChecks:
         result = asyncio.get_event_loop().run_until_complete(web._check_systemd_unit("test.service"))
         assert result["systemd"] == "unavailable"
 
+    def test_check_systemd_unit_timeout_kills_subprocess(self, monkeypatch):
+        """Audit-12 #152 — wait_for(communicate()) timing out used to leak
+        the systemctl child process. The fix wraps the helper in
+        try/except TimeoutError: proc.kill(); await proc.wait()."""
+        import asyncio
+        kill_calls: list[bool] = []
+        wait_calls: list[bool] = []
+
+        class Proc:
+            async def communicate(self):
+                return (b"", b"")
+
+            def kill(self):
+                kill_calls.append(True)
+
+            async def wait(self):
+                wait_calls.append(True)
+
+        async def mock_exec(*args, **kwargs):
+            return Proc()
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", mock_exec)
+        # Force wait_for to raise TimeoutError without actually waiting.
+        async def insta_timeout(coro, timeout):
+            coro.close()  # don't leave the unawaited coroutine open
+            raise asyncio.TimeoutError()
+        monkeypatch.setattr(web.asyncio, "wait_for", insta_timeout)
+
+        result = asyncio.new_event_loop().run_until_complete(
+            web._check_systemd_unit("test.service")
+        )
+        assert result["systemd"] == "timeout"
+        assert kill_calls == [True], "kill() was not called on timeout"
+        assert wait_calls == [True], "await wait() was not called after kill()"
+
+    def test_feeder_details_mlat_timeout_kills_subprocess(self, monkeypatch):
+        """Same fix in _feeder_details_mlat."""
+        import asyncio
+        kill_calls: list[bool] = []
+        wait_calls: list[bool] = []
+
+        class Proc:
+            async def communicate(self):
+                return (b"", b"")
+
+            def kill(self):
+                kill_calls.append(True)
+
+            async def wait(self):
+                wait_calls.append(True)
+
+        async def mock_exec(*args, **kwargs):
+            return Proc()
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", mock_exec)
+        async def insta_timeout(coro, timeout):
+            coro.close()
+            raise asyncio.TimeoutError()
+        monkeypatch.setattr(web.asyncio, "wait_for", insta_timeout)
+
+        result = asyncio.new_event_loop().run_until_complete(
+            web._feeder_details_mlat("test.service")
+        )
+        # On timeout, returns whatever details accumulated (empty list)
+        assert isinstance(result, list)
+        assert kill_calls == [True]
+        assert wait_calls == [True]
+
     def test_check_port_open(self, monkeypatch):
         import asyncio
 

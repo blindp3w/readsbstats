@@ -2266,6 +2266,7 @@ def api_metrics_health() -> dict:
 
 async def _check_systemd_unit(unit: str) -> dict:
     """Run ``systemctl is-active <unit>`` and return the status string."""
+    proc = None
     try:
         proc = await asyncio.create_subprocess_exec(
             "systemctl", "is-active", unit,
@@ -2277,6 +2278,13 @@ async def _check_systemd_unit(unit: str) -> dict:
     except FileNotFoundError:
         return {"systemd": "unavailable"}
     except asyncio.TimeoutError:
+        # Don't leak the child process — kill it and reap (audit-12 #152).
+        if proc is not None:
+            try:
+                proc.kill()
+                await proc.wait()
+            except ProcessLookupError:
+                pass
         return {"systemd": "timeout"}
     except Exception as exc:
         return {"systemd": f"error: {exc}"}
@@ -2387,6 +2395,7 @@ def _feeder_details_piaware(status_path: str) -> list[tuple[str, str]]:
 async def _feeder_details_mlat(unit: str) -> list[tuple[str, str]]:
     """Parse recent journald output for mlat-client stats."""
     details: list[tuple[str, str]] = []
+    proc = None
     try:
         proc = await asyncio.create_subprocess_exec(
             "journalctl", "-u", unit, "--no-pager", "-n", "30", "-o", "cat",
@@ -2395,6 +2404,15 @@ async def _feeder_details_mlat(unit: str) -> list[tuple[str, str]]:
         )
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5.0)
         lines = stdout.decode(errors="replace").splitlines()
+    except asyncio.TimeoutError:
+        # Don't leak the child — kill + reap (audit-12 #152).
+        if proc is not None:
+            try:
+                proc.kill()
+                await proc.wait()
+            except ProcessLookupError:
+                pass
+        return details
     except Exception:
         return details
     import re
@@ -2472,7 +2490,13 @@ async def _fetch_feeder_details(feeder: dict) -> list[tuple[str, str]]:
         if st == "mlat":
             return await _feeder_details_mlat(feeder["unit"])
     except Exception:
-        pass
+        # audit-12 #151 — surface real failures to the operator instead of
+        # silently returning []. A misconfigured feeder or a corrupted
+        # status file would otherwise be invisible.
+        log.warning(
+            "feeder %r: details fetch failed (status_type=%r)",
+            feeder.get("name"), st, exc_info=True,
+        )
     return []
 
 
