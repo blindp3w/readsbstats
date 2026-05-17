@@ -1,5 +1,44 @@
 # Changelog
 
+## 2.1.12 — 2026-05-17
+
+### Security — CodeQL #29 (py/url-redirection) defence-in-depth
+
+CodeQL alert
+[#29](https://github.com/blindp3w/readsbstats/security/code-scanning/29)
+flagged the `/v2/{rest:path}` redirect handler with the same
+`py/url-redirection` rule that produced #28 in v2.1.1. The previous fix
+added a `_sanitize_v2_rest` custom sanitizer that strips leading `/` /
+`\\` / CR / LF and percent-encodes URL-special characters — functionally
+correct, but CodeQL's data-flow analyzer cannot statically recognise our
+custom helper as a safe sanitizer, so it kept flagging the path from
+the `rest` parameter into `RedirectResponse(url=target)`.
+
+This release adds the recognized sanitizer pattern from CodeQL's own
+documentation: an `urllib.parse.urlparse(target)` check that the final
+redirect target has neither a scheme nor a netloc. If anything slips
+past `_sanitize_v2_rest` (defence-in-depth — should never happen given
+the existing strips), the handler falls back to redirecting to the SPA
+root instead of honouring the off-site target.
+
+```python
+parsed_target = urllib.parse.urlparse(target)
+if parsed_target.scheme or parsed_target.netloc:
+    return RedirectResponse(url=f"{root}/", status_code=301)
+return RedirectResponse(url=target, status_code=301)
+```
+
+Same shape as the example in
+https://codeql.github.com/codeql-query-help/python/py-url-redirection/
+— ensures CodeQL recognises the guard.
+
+**Test**: `tests/test_web.py::TestSpaMount::test_v2_compat_urlparse_guard_falls_back_to_root`
+— monkey-patches `_sanitize_v2_rest` to a deliberately broken version
+that returns `/evil.com`, then verifies the route still produces a
+same-origin redirect rather than honouring the off-site target.
+
+**Test totals**: Python 1316 → 1317 (+1). Vitest 90 (unchanged).
+
 ## 2.1.11 — 2026-05-17
 
 ### Audit 12 Phase 9 — DNS-rebinding fix redesigned (H1 + H2)

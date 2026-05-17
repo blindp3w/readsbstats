@@ -1033,6 +1033,36 @@ class TestSpaMount:
         # The `/` is in the safe set so it stays intact
         assert sanitize("flight/123/positions") == "flight/123/positions"
 
+    def test_v2_compat_urlparse_guard_falls_back_to_root(
+        self, client, monkeypatch,
+    ):
+        """CodeQL #29 (py/url-redirection) — the `_v2_compat` handler now
+        runs a CodeQL-recognized `urlparse(target).scheme/.netloc` check
+        on the final redirect target. If anything slips past
+        `_sanitize_v2_rest` and produces a target with a scheme or
+        netloc, the handler falls back to redirecting to the SPA root
+        instead of honouring the off-site target.
+
+        Patch the sanitizer to a "broken" version that returns a hostile
+        value, and verify the route still produces a same-origin
+        redirect."""
+        if not web.SPA_INDEX.is_file():
+            pytest.skip("frontend/dist not built")
+        monkeypatch.setattr(web.app, "root_path", "")
+        # Defeat the real sanitizer
+        monkeypatch.setattr(web, "_sanitize_v2_rest", lambda rest: "/evil.com")
+
+        r = client.get("/v2/anything", follow_redirects=False)
+        assert r.status_code == 301
+        loc = r.headers["location"]
+        # urlparse("/evil.com") has no scheme/netloc — but our handler
+        # builds the target as f"{root}/{sanitized}" = "//evil.com" when
+        # root="" and sanitized="/evil.com". That target HAS a netloc,
+        # so the guard kicks in and we redirect to root.
+        assert not loc.startswith("//"), f"open-redirect not blocked → {loc}"
+        # The fallback is just the root path
+        assert loc == "/"
+
 
 # ---------------------------------------------------------------------------
 # Feeder health check helpers

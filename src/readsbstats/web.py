@@ -128,6 +128,17 @@ if _SPA_AVAILABLE:
         root = request.scope.get("root_path", "").rstrip("/")
         sanitized = _sanitize_v2_rest(rest)
         target = f"{root}/{sanitized}" if sanitized else f"{root}/"
+        # CodeQL #29 — explicit recognized sanitizer pattern. `_sanitize_v2_rest`
+        # already strips the leading `/` and `\` that produce scheme-relative
+        # URLs, but CodeQL's data-flow analysis doesn't know our custom helper
+        # is safe (CWE-601 / `py/url-redirection`). This urlparse() check is
+        # the pattern CodeQL's own documentation recommends, and serves as a
+        # defence-in-depth catch: a safe redirect target has neither scheme
+        # nor netloc. If anything slips through the sanitizer, fall back to
+        # the SPA root rather than honour the redirect.
+        parsed_target = urllib.parse.urlparse(target)
+        if parsed_target.scheme or parsed_target.netloc:
+            return RedirectResponse(url=f"{root}/", status_code=301)
         return RedirectResponse(url=target, status_code=301)
 
 
