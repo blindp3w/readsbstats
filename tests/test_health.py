@@ -262,6 +262,49 @@ class TestBaselineAvg:
 
 
 # ---------------------------------------------------------------------------
+# Column allowlist (audit-12 #169)
+# ---------------------------------------------------------------------------
+
+class TestBaselineColumnAllowlist:
+    """_baseline_avg / _recent_avg interpolate `column` into SQL via f-string.
+    Today every caller passes a hard-coded string; this allowlist makes the
+    boundary an explicit assertion rather than convention so a future caller
+    can't introduce a SQL-injection sink by forwarding untrusted input."""
+
+    def test_baseline_avg_rejects_unknown_column(self, conn):
+        with pytest.raises(ValueError, match="not allowed"):
+            health._baseline_avg(conn, "1 OR 1=1 --", NOW, lookback_weeks=4)
+
+    def test_baseline_avg_rejects_arbitrary_column(self, conn):
+        # 'noise' is in the schema but not in the allowlist (not used as a
+        # baseline metric today).  Defence-in-depth: only the three actually-
+        # used columns are accepted.
+        with pytest.raises(ValueError, match="not allowed"):
+            health._baseline_avg(conn, "noise", NOW, lookback_weeks=4)
+
+    def test_recent_avg_rejects_unknown_column(self, conn):
+        with pytest.raises(ValueError, match="not allowed"):
+            health._recent_avg(conn, "1; DROP TABLE flights--", NOW, window_s=900)
+
+    def test_baseline_avg_accepts_messages(self, conn):
+        # No raise — column is allowed (existing test asserts behaviour)
+        avg, n = health._baseline_avg(conn, "messages", NOW, lookback_weeks=4)
+        assert (avg, n) == (None, 0)
+
+    def test_baseline_avg_accepts_signal(self, conn):
+        avg, n = health._baseline_avg(conn, "signal", NOW, lookback_weeks=4)
+        assert (avg, n) == (None, 0)
+
+    def test_baseline_avg_accepts_ac_with_pos(self, conn):
+        avg, n = health._baseline_avg(conn, "ac_with_pos", NOW, lookback_weeks=4)
+        assert (avg, n) == (None, 0)
+
+    def test_recent_avg_accepts_messages(self, conn):
+        avg, n = health._recent_avg(conn, "messages", NOW, window_s=600)
+        assert (avg, n) == (None, 0)
+
+
+# ---------------------------------------------------------------------------
 # Phase 2 — message_rate
 # ---------------------------------------------------------------------------
 

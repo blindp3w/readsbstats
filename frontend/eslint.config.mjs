@@ -20,9 +20,10 @@ export default tseslint.config(
     rules: {
       ...reactHooks.configs.recommended.rules,
       'react-refresh/only-export-components': ['warn', { allowConstantExport: true }],
-      // M4 — forbid dangerouslySetInnerHTML; render third-party HTML via DOMPurify
-      // or explicit text nodes, never as raw HTML.
-      'react/no-danger': 'error',
+      // Note: `react/no-danger` lives in `eslint-plugin-react` which we
+      // deliberately don't load here (keeps the eslint dep surface tight).
+      // The actual guardrail against `dangerouslySetInnerHTML` is the Vitest
+      // test in `frontend/test/no-danger.test.ts` (audit-12 #174).
       '@typescript-eslint/no-unused-vars': ['warn', { argsIgnorePattern: '^_' }],
     },
   },

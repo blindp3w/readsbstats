@@ -122,20 +122,27 @@ if _SPA_AVAILABLE:
     @app.get("/v2", include_in_schema=False)
     @app.get("/v2/{rest:path}", include_in_schema=False)
     def _v2_compat(request: Request, rest: str = "") -> RedirectResponse:
-        # Strip leading slashes / backslashes from the captured path so a
-        # crafted request like `/v2//evil.com` can't produce a Location
-        # header starting with `//`. Browsers treat `Location: //host/...`
-        # as a scheme-relative URL and follow it off-site — that's the
-        # classic open-redirect / phishing vector flagged as CodeQL alert
-        # py/url-redirection (#28). Backslashes are stripped too because
-        # some browsers treat them as `/` in URLs. The production
-        # root_path="/stats" shields against this in deployed builds
-        # (Location always starts with `/stats/...`), but dev mode runs
-        # with root_path="" so the validation has to happen here.
-        rest = rest.lstrip("/\\")
         root = request.scope.get("root_path", "").rstrip("/")
-        target = f"{root}/{rest}" if rest else f"{root}/"
+        sanitized = _sanitize_v2_rest(rest)
+        target = f"{root}/{sanitized}" if sanitized else f"{root}/"
         return RedirectResponse(url=target, status_code=301)
+
+
+def _sanitize_v2_rest(rest: str) -> str:
+    """Return a safe path suffix for the /v2 → / redirect.
+
+    Hardening against:
+      * Open-redirect (CodeQL #28): a crafted `/v2//evil.com` would otherwise
+        produce a Location starting with `//` (browsers treat that as
+        scheme-relative and follow off-site). We strip leading `/` and `\\`
+        characters — some browsers treat the latter as the former in URLs.
+      * Response splitting (audit-12 #149) defence-in-depth: Starlette
+        rejects raw CR/LF in path parameters today, but if a future ASGI
+        server change weakens that we don't want CR/LF to reach the
+        Location header. Strip both characters from `rest` before use.
+    """
+    rest = rest.lstrip("/\\")
+    return rest.replace("\r", "").replace("\n", "")
 
 # Note: the SPA root catch-all (`@app.get("/{spa_path:path}")`) is registered
 # at the END of this module — see the bottom of the file. It has to come
@@ -337,14 +344,19 @@ def _settings_payload() -> dict:
     and the React /v2/settings page.  Single source of truth — keep this in
     sync with templates/settings.html.
 
-    Security audit (#H8): all sensitive values are masked here; the consumer
-    never sees raw secrets:
+    Security audit (#H8 + audit-12 #171): all sensitive / path-leaking values
+    are masked here; the consumer never sees raw secrets or filesystem paths:
       - Telegram token / chat id → "configured" or "not set"
       - DB path → basename only (no parent dir leak)
-      - Airspace GeoJSON path → label or "(bundled poland.geojson)"
+      - Airspace GeoJSON / stats.json paths → coarse label only
+      - web_host / web_port dropped entirely (client is already at that URL)
     """
     tok_masked = "configured" if config.TELEGRAM_TOKEN else "not set"
     cid_masked = "configured" if config.TELEGRAM_CHAT_ID else "not set"
+    # Mask filesystem paths — operator just needs to know whether a custom
+    # value was set, not the actual path on disk.
+    airspace_label = "(set)" if config.AIRSPACE_GEOJSON else "(bundled poland.geojson)"
+    stats_json_label = "(set)" if config.STATS_JSON != "/run/readsb/stats.json" else "(default)"
     return {
         # Receiver
         "lat":              config.RECEIVER_LAT,
@@ -362,7 +374,7 @@ def _settings_payload() -> dict:
         "purge_interval":   config.PURGE_INTERVAL_SEC,
         # Enrichment
         "photo_cache_days":    config.PHOTO_CACHE_DAYS,
-        "airspace_geojson":    config.AIRSPACE_GEOJSON or "(bundled poland.geojson)",
+        "airspace_geojson":    airspace_label,
         "route_cache_days":    config.ROUTE_CACHE_DAYS,
         "route_interval":      config.ROUTE_ENRICH_INTERVAL,
         "route_batch":         config.ROUTE_BATCH_SIZE,
@@ -375,7 +387,7 @@ def _settings_payload() -> dict:
         # Receiver metrics
         "metrics_enabled":     config.METRICS_ENABLED,
         "metrics_interval":    config.METRICS_INTERVAL,
-        "stats_json":          config.STATS_JSON,
+        "stats_json":          stats_json_label,
         # Receiver health
         "health_heartbeat_warn_s":     config.HEALTH_HEARTBEAT_WARN_S,
         "health_heartbeat_crit_s":     config.HEALTH_HEARTBEAT_CRIT_S,
@@ -393,9 +405,9 @@ def _settings_payload() -> dict:
         "health_range_short_days":     config.HEALTH_RANGE_SHORT_DAYS,
         "health_range_long_days":      config.HEALTH_RANGE_LONG_DAYS,
         "health_range_ratio":          config.HEALTH_RANGE_RATIO,
-        # Web server
-        "web_host":         config.WEB_HOST,
-        "web_port":         config.WEB_PORT,
+        # Web server — web_host/web_port intentionally omitted (audit-12 #171):
+        # the client is already at that URL, and on a reverse-proxied deploy
+        # the bind host (0.0.0.0) would be misleading anyway.
         "root_path":        config.ROOT_PATH,
         # UI
         "page_size":        config.DEFAULT_PAGE_SIZE,

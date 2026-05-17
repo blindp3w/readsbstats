@@ -21,6 +21,13 @@ from . import config
 # state down: a fresh install showing Phase 1 ok + Phase 2 info reads as "ok".
 _SEVERITY_RANK = {"info": 0, "ok": 1, "warn": 2, "critical": 3}
 
+# _baseline_avg / _recent_avg interpolate `column` into SQL via f-string —
+# safe today because all call sites pass literals, but a single mistake (or
+# a future caller forwarding a query param) becomes a SQL-injection sink.
+# Defence-in-depth: explicit allowlist of every column legitimately used as
+# a baseline metric.
+_BASELINE_ALLOWED_COLS = frozenset({"messages", "signal", "ac_with_pos"})
+
 
 @dataclass
 class Check:
@@ -210,6 +217,8 @@ def _baseline_avg(
     Uses SQLite's strftime to match the local DOW+hour — robust across DST and
     independent of Python locale.
     """
+    if column not in _BASELINE_ALLOWED_COLS:
+        raise ValueError(f"column {column!r} not allowed for baseline avg")
     earliest = now - lookback_weeks * 7 * 86400
     # Exclude the current hour so the baseline is "what's normal at this time
     # of week historically", not contaminated by the value we're comparing to.
@@ -238,6 +247,8 @@ def _recent_avg(
     window_s: int,
 ) -> tuple[float | None, int]:
     """Return (average, sample_count) for `column` over the last `window_s` seconds."""
+    if column not in _BASELINE_ALLOWED_COLS:
+        raise ValueError(f"column {column!r} not allowed for recent avg")
     row = conn.execute(
         f"SELECT AVG({column}) AS avg, COUNT({column}) AS n "
         f"FROM receiver_stats WHERE ts >= ?",

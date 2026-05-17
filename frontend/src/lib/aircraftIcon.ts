@@ -71,10 +71,16 @@ export function aircraftIcon(
   flags: number | null | undefined,
   iconType: IconType,
 ): L.DivIcon {
-  const isMilitary = (flags ?? 0) & FLAG_MILITARY;
+  const isMilitary = ((flags ?? 0) & FLAG_MILITARY) !== 0;
   const fill = isMilitary ? '#ef4444' : '#ffffff';
   const stroke = isMilitary ? '#7f1d1d' : '#1d4ed8';
-  const deg = track ?? 0;
+  // Hard-coerce `track` to an integer degree value. TypeScript declares
+  // `track` as `number | null | undefined`, but API schema drift or a
+  // hostile feed could deliver a string here. Without coercion the value
+  // would be interpolated straight into the inline `style` attribute —
+  // letting something like "0;}<script>" break out of the CSS context.
+  const trackNum = Number(track);
+  const deg = Number.isFinite(trackNum) ? Math.round(trackNum) : 0;
   const shape = ICON_SHAPES[iconType] ?? ICON_SHAPES.jet;
   return L.divIcon({
     className: 'ac-icon-wrap',

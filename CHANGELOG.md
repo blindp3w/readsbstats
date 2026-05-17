@@ -1,5 +1,81 @@
 # Changelog
 
+## 2.1.4 — 2026-05-17
+
+### Audit 12 Phase 2 — security hardening
+
+Phase 2 of the post-v2 audit. Real-world risk reduction across SSRF,
+SQL injection, info disclosure, and XSS surface area. All test-first.
+
+**SSRF guard (http_safe)**
+
+- **#167 + #168** Closed the DNS-rebinding TOCTOU in `safe_urlopen` and
+  `safe_httpx_get`. `validate_url()` now resolves DNS via a captured
+  `_real_getaddrinfo` and pins the validated infos in thread-local
+  storage; a process-wide `socket.getaddrinfo` wrapper returns the
+  pinned values for the same host within the same thread, so the
+  subsequent fetch resolves to the same IPs we just verified. Other
+  threads and other hostnames fall through to the real resolver
+  unchanged. Pin is cleared in `finally` after every fetch.
+
+**SQL injection defence-in-depth**
+
+- **#169** Added `_BASELINE_ALLOWED_COLS = {"messages", "signal",
+  "ac_with_pos"}` allowlist + `if column not in ...: raise ValueError`
+  guards at the entry to `_baseline_avg` and `_recent_avg` in
+  `health.py`. Both functions interpolate the column name into SQL via
+  f-string; current callers pass literals, but the explicit boundary
+  blocks the SQL-injection sink a future caller could otherwise open.
+
+**Info disclosure (`/api/settings`)**
+
+- **#171** Dropped `web_host` and `web_port` from the payload (the
+  client is already at that URL; on a reverse-proxied deploy the bind
+  host `0.0.0.0` would be misleading anyway). Masked filesystem paths:
+  `airspace_geojson` and `stats_json` now return `(set)` / `(default)`
+  / `(bundled poland.geojson)` rather than the actual paths. Frontend
+  Settings page updated to match. Field names stay so the UI continues
+  to show "configured".
+
+**Frontend XSS surface**
+
+- **#174** `react/no-danger` was declared in `eslint.config.mjs` but
+  `eslint-plugin-react` was never loaded — the rule was silently
+  inactive. Replaced with a Vitest grep test
+  (`frontend/test/no-danger.test.ts`) that uses `import.meta.glob` to
+  scan every `src/**/*.{ts,tsx}` source file at test time and fails
+  the run if any of them contain `dangerouslySetInnerHTML`. Lighter
+  than adding the eslint plugin; matches the project's "keep deps
+  tight" stance.
+- **#176** Hard-coerced `track` in `lib/aircraftIcon.ts`:
+  `Math.round(Number.isFinite(Number(track)) ? Number(track) : 0)`
+  before interpolating it into the `transform:rotate(${deg}deg)`
+  inline style attribute. TypeScript declares `track` as `number |
+  null | undefined`, but API drift or a hostile feed could land a
+  string here — the coercion ensures CSS injection is impossible
+  even under that scenario. Also fixes `isMilitary` to be a true
+  boolean rather than a bitwise int.
+
+**Open redirect / response splitting defence-in-depth**
+
+- **#149** Extracted `_sanitize_v2_rest(rest)` helper from
+  `_v2_compat` and added CR/LF scrubbing on top of the existing
+  leading-`/`/`\\` strip. Starlette rejects raw CR/LF in path
+  components today, but the helper is now unit-testable and the
+  scrub provides belt-and-braces if a future ASGI server weakens
+  that.
+
+**Failure-notification reliability**
+
+- **#166** `scripts/notify-telegram-failure.sh` now guards
+  `RSBS_TELEGRAM_TOKEN` and `RSBS_TELEGRAM_CHAT_ID` with `:?` parameter
+  expansion at the top of the script. Without it, `set -u` would still
+  trip but deeper in the script, producing a confusing journal log
+  with no actionable error.
+
+**Test suite**: Python 1218 → 1232 (+14); Vitest 44 → 54 (+10). Both
+suites green, frontend builds clean.
+
 ## 2.1.3 — 2026-05-17
 
 ### Audit 12 Phase 1 — invariant violations + latent footguns

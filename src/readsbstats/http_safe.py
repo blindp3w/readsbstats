@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import ipaddress
 import socket
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -35,6 +36,49 @@ except ImportError:  # pragma: no cover — httpx is a runtime dep
 
 
 _USER_AGENT = {"User-Agent": "readsbstats/1.0"}
+
+
+# ---------------------------------------------------------------------------
+# DNS-rebinding TOCTOU guard
+# ---------------------------------------------------------------------------
+# `validate_url` does a fresh DNS lookup and checks every resolved IP is
+# public. The subsequent ``urlopen``/``httpx`` call would normally resolve
+# DNS again — a hostile authoritative server can return a public IP first
+# (passing our validation) and a private IP on the second lookup (the
+# rebinding attack). We close that gap by pinning the validated infos in
+# thread-local storage and installing a process-wide ``socket.getaddrinfo``
+# wrapper that returns the pinned infos for the same host within the same
+# thread.  Other threads, and other hostnames, fall through to the real
+# resolver unchanged.
+
+_real_getaddrinfo = socket.getaddrinfo
+_dns_pin = threading.local()
+
+
+def _pinned_getaddrinfo(host, *args, **kwargs):
+    pins = getattr(_dns_pin, "pins", None)
+    if pins is not None:
+        cached = pins.get(host)
+        if cached is not None:
+            return cached
+    return _real_getaddrinfo(host, *args, **kwargs)
+
+
+socket.getaddrinfo = _pinned_getaddrinfo  # type: ignore[assignment]
+
+
+def _set_dns_pin(host: str, infos) -> None:
+    pins = getattr(_dns_pin, "pins", None)
+    if pins is None:
+        pins = {}
+        _dns_pin.pins = pins
+    pins[host] = infos
+
+
+def _clear_dns_pin() -> None:
+    pins = getattr(_dns_pin, "pins", None)
+    if pins is not None:
+        pins.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -57,7 +101,14 @@ def _ip_is_public(addr: str) -> bool:
 
 
 def validate_url(url: str) -> None:
-    """Raise ``ValueError`` if *url* is not safe to fetch."""
+    """Raise ``ValueError`` if *url* is not safe to fetch.
+
+    On success, pins the validated DNS answer in thread-local storage so
+    the subsequent fetch resolves to the same IPs (closes the rebinding
+    TOCTOU described above). Callers should invoke ``_clear_dns_pin()`` in
+    a ``finally`` block after the fetch — both :func:`safe_urlopen` and
+    :func:`safe_httpx_get` do this for you.
+    """
     parsed = urllib.parse.urlparse(url)
     if parsed.scheme != "https":
         raise ValueError(f"non-https URL rejected: {parsed.scheme!r}")
@@ -66,7 +117,9 @@ def validate_url(url: str) -> None:
         raise ValueError("URL has no host")
     port = parsed.port or 443
     try:
-        infos = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
+        # Go straight to the real resolver — don't read from our own pin
+        # cache or we could re-validate ourselves into a loop.
+        infos = _real_getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
     except socket.gaierror as e:
         raise ValueError(f"DNS resolution failed for {host!r}: {e}") from e
     for info in infos:
@@ -75,6 +128,7 @@ def validate_url(url: str) -> None:
             raise ValueError(
                 f"URL {url!r} resolves to non-public address {addr!r}"
             )
+    _set_dns_pin(host, infos)
 
 
 # ---------------------------------------------------------------------------
@@ -123,17 +177,21 @@ def safe_urlopen(
     if extra_headers:
         headers.update(extra_headers)
     req = urllib.request.Request(url, data=data, headers=headers)
-    with _no_redirect_opener.open(req, timeout=timeout) as resp:
-        # If a future change ever permitted redirects, re-check the response URL.
-        final = getattr(resp, "url", None)
-        if final and final != url:
-            validate_url(final)
-        body = resp.read(max_bytes + 1)
-        if len(body) > max_bytes:
-            raise ValueError(
-                f"response from {url} exceeded max_bytes={max_bytes}"
-            )
-        out_headers = resp.headers
+    try:
+        with _no_redirect_opener.open(req, timeout=timeout) as resp:
+            # If a future change ever permitted redirects, re-check the response URL.
+            final = getattr(resp, "url", None)
+            if final and final != url:
+                validate_url(final)
+            body = resp.read(max_bytes + 1)
+            if len(body) > max_bytes:
+                raise ValueError(
+                    f"response from {url} exceeded max_bytes={max_bytes}"
+                )
+            out_headers = resp.headers
+    finally:
+        # Drop the DNS pin so future calls re-resolve cleanly.
+        _clear_dns_pin()
     return body, out_headers
 
 
@@ -168,15 +226,19 @@ def safe_httpx_get(
     kwargs: dict = {"follow_redirects": False}
     if timeout is not None:
         kwargs["timeout"] = timeout
-    resp = client.get(url, **kwargs)
-    if resp.status_code in _REDIRECT_CODES:
-        raise ValueError(
-            f"redirect blocked: GET {url} -> {resp.status_code} "
-            f"-> {resp.headers.get('Location', '?')!r}"
-        )
-    if len(resp.content) > max_bytes:
-        raise ValueError(
-            f"response from {url} exceeded max_bytes={max_bytes} "
-            f"(got {len(resp.content)})"
-        )
+    try:
+        resp = client.get(url, **kwargs)
+        if resp.status_code in _REDIRECT_CODES:
+            raise ValueError(
+                f"redirect blocked: GET {url} -> {resp.status_code} "
+                f"-> {resp.headers.get('Location', '?')!r}"
+            )
+        if len(resp.content) > max_bytes:
+            raise ValueError(
+                f"response from {url} exceeded max_bytes={max_bytes} "
+                f"(got {len(resp.content)})"
+            )
+    finally:
+        # Drop the DNS pin so future calls re-resolve cleanly.
+        _clear_dns_pin()
     return resp

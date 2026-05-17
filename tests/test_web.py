@@ -802,6 +802,44 @@ class TestApiSettings:
         assert payload["telegram_token"] == "not set"
         assert payload["telegram_chat_id"] == "not set"
 
+    def test_api_settings_does_not_leak_bind_host_port(self, client):
+        """Regression for audit-12 #171 — web_host/web_port are redundant
+        (the client is already at that URL) and shouldn't be in the payload."""
+        r = client.get("/api/settings")
+        payload = r.json()
+        assert "web_host" not in payload
+        assert "web_port" not in payload
+
+    def test_api_settings_masks_airspace_geojson_path(self, client, monkeypatch):
+        """Regression for audit-12 #171 — actual filesystem path must not
+        appear in the response; only a coarse "(set)"/"(bundled)" label."""
+        from readsbstats import config
+        monkeypatch.setattr(config, "AIRSPACE_GEOJSON", "/etc/secret/airspace.geojson")
+        r = client.get("/api/settings")
+        assert "/etc/secret" not in r.text
+        assert "airspace.geojson" not in r.text
+        payload = r.json()
+        # Field still present so the operator UI can show "configured"
+        assert "airspace_geojson" in payload
+        # Bare basename / path must not have made it through
+        assert payload["airspace_geojson"] in {"(set)", "(bundled poland.geojson)"}
+
+    def test_api_settings_masks_stats_json_path(self, client, monkeypatch):
+        from readsbstats import config
+        monkeypatch.setattr(config, "STATS_JSON", "/run/readsb/stats.json")
+        r = client.get("/api/settings")
+        assert "/run/readsb" not in r.text
+        payload = r.json()
+        assert "stats_json" in payload
+        assert payload["stats_json"] in {"(set)", "(default)"}
+
+    def test_api_settings_airspace_geojson_bundled_default(self, client, monkeypatch):
+        from readsbstats import config
+        monkeypatch.setattr(config, "AIRSPACE_GEOJSON", "")
+        r = client.get("/api/settings")
+        payload = r.json()
+        assert payload["airspace_geojson"] == "(bundled poland.geojson)"
+
 
 class TestApiFeeders:
     def test_api_feeders_returns_json(self, client, monkeypatch):
@@ -944,6 +982,35 @@ class TestSpaMount:
             assert not loc.startswith("/\\"), f"{hostile_path} → {loc}"
             assert not loc.startswith("/%5C"), f"{hostile_path} → {loc}"
             assert not loc.startswith("/%2F"), f"{hostile_path} → {loc}"
+
+    def test_v2_compat_strips_crlf_from_rest(self):
+        """Audit-12 #149 defence-in-depth — Starlette validates the path
+        component today and rejects raw CR/LF with 404, but the redirect
+        helper must also strip them locally in case a future ASGI server
+        weakens that guard."""
+        sanitize = web._sanitize_v2_rest
+        # Raw CRLF in `rest` — defensive scrub
+        assert sanitize("foo\r\nSet-Cookie: pwned=1") == "fooSet-Cookie: pwned=1"
+        assert sanitize("foo\rbar") == "foobar"
+        assert sanitize("foo\nbar") == "foobar"
+
+    def test_v2_compat_strips_leading_slash_and_backslash(self):
+        """CodeQL #28 regression — _sanitize_v2_rest strips leading `/` and
+        `\\` so the Location can't become scheme-relative."""
+        sanitize = web._sanitize_v2_rest
+        assert sanitize("/evil.com") == "evil.com"
+        assert sanitize("//evil.com") == "evil.com"
+        assert sanitize("\\evil.com") == "evil.com"
+        assert sanitize("\\\\evil.com") == "evil.com"
+        assert sanitize("/\\evil.com") == "evil.com"
+        # CR/LF is also stripped on top of leading-slash strip
+        assert sanitize("/\r\nevil.com") == "evil.com"
+
+    def test_v2_compat_passes_through_safe_paths(self):
+        sanitize = web._sanitize_v2_rest
+        assert sanitize("flight/123") == "flight/123"
+        assert sanitize("") == ""
+        assert sanitize("aircraft/abc123") == "aircraft/abc123"
 
 
 # ---------------------------------------------------------------------------

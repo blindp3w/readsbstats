@@ -61,9 +61,8 @@ interface SettingsPayload {
   health_range_short_days: number;
   health_range_long_days: number;
   health_range_ratio: number;
-  // Web
-  web_host: string;
-  web_port: number;
+  // Web (web_host / web_port intentionally omitted by the backend — see
+  // audit-12 #171; the client is already at that URL).
   root_path: string;
   // UI
   page_size: number;
@@ -177,8 +176,6 @@ function buildSections(s: SettingsPayload): Section[] {
       title: 'Web server',
       testid: 'settings-section-web',
       rows: [
-        ['Bind host', s.web_host, 'RSBS_WEB_HOST'],
-        ['Bind port', fmt(s.web_port), 'RSBS_WEB_PORT'],
         ['Root path (nginx prefix)', s.root_path, 'RSBS_ROOT_PATH'],
       ],
     },

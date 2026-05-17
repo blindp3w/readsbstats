@@ -73,34 +73,38 @@ class TestValidateUrl:
     def test_https_with_public_ip_passes(self, monkeypatch):
         monkeypatch.setattr(socket, "getaddrinfo",
                             lambda h, p, **kw: _fake_addrinfo("1.1.1.1"))
+        monkeypatch.setattr("readsbstats.http_safe._real_getaddrinfo",
+                            lambda h, p, **kw: _fake_addrinfo("1.1.1.1"))
         photo_sources._validate_url("https://example.com/")
 
     def test_http_rejected(self, monkeypatch):
         monkeypatch.setattr(socket, "getaddrinfo",
                             lambda h, p, **kw: _fake_addrinfo("1.1.1.1"))
+        monkeypatch.setattr("readsbstats.http_safe._real_getaddrinfo",
+                            lambda h, p, **kw: _fake_addrinfo("1.1.1.1"))
         with pytest.raises(ValueError, match="non-https"):
             photo_sources._validate_url("http://example.com/")
 
     def test_loopback_rejected(self, monkeypatch):
-        monkeypatch.setattr(socket, "getaddrinfo",
+        monkeypatch.setattr("readsbstats.http_safe._real_getaddrinfo",
                             lambda h, p, **kw: _fake_addrinfo("127.0.0.1"))
         with pytest.raises(ValueError, match="non-public"):
             photo_sources._validate_url("https://localhost/")
 
     def test_private_rfc1918_rejected(self, monkeypatch):
-        monkeypatch.setattr(socket, "getaddrinfo",
+        monkeypatch.setattr("readsbstats.http_safe._real_getaddrinfo",
                             lambda h, p, **kw: _fake_addrinfo("192.168.1.1"))
         with pytest.raises(ValueError, match="non-public"):
             photo_sources._validate_url("https://example.com/")
 
     def test_link_local_metadata_rejected(self, monkeypatch):
-        monkeypatch.setattr(socket, "getaddrinfo",
+        monkeypatch.setattr("readsbstats.http_safe._real_getaddrinfo",
                             lambda h, p, **kw: _fake_addrinfo("169.254.169.254"))
         with pytest.raises(ValueError, match="non-public"):
             photo_sources._validate_url("https://aws-meta/")
 
     def test_multicast_rejected(self, monkeypatch):
-        monkeypatch.setattr(socket, "getaddrinfo",
+        monkeypatch.setattr("readsbstats.http_safe._real_getaddrinfo",
                             lambda h, p, **kw: _fake_addrinfo("224.0.0.1"))
         with pytest.raises(ValueError, match="non-public"):
             photo_sources._validate_url("https://multicast/")
@@ -108,7 +112,7 @@ class TestValidateUrl:
     def test_dns_failure_rejected(self, monkeypatch):
         def _gai(*a, **kw):
             raise socket.gaierror("nodename nor servname provided")
-        monkeypatch.setattr(socket, "getaddrinfo", _gai)
+        monkeypatch.setattr("readsbstats.http_safe._real_getaddrinfo", _gai)
         with pytest.raises(ValueError, match="DNS resolution failed"):
             photo_sources._validate_url("https://nonexistent.invalid/")
 
