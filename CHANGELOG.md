@@ -1,5 +1,117 @@
 # Changelog
 
+## 2.1.11 — 2026-05-17
+
+### Audit 12 Phase 9 — DNS-rebinding fix redesigned (H1 + H2)
+
+The Phase 2 (v2.1.4) DNS-rebinding TOCTOU fix worked but was brittle: it
+installed a process-wide ``socket.getaddrinfo`` patch at module load that
+checked a thread-local pin. Any test doing the obvious
+``monkeypatch.setattr(socket, "getaddrinfo", ...)`` was silently no-op'd,
+and the design wouldn't naturally cover ``httpx.AsyncClient`` (which
+bypasses ``socket.getaddrinfo`` via ``anyio.getaddrinfo``).
+
+Phase 9 eliminates the global patch entirely. Two distinct mechanisms
+now close the TOCTOU per code path:
+
+**urllib path — custom HTTPSConnection (audit-12 H1)**
+
+`safe_urlopen` now builds a one-shot opener per call (via
+`_build_pinned_opener`) whose HTTPS handler issues every connection
+through a new `_PinnedHTTPSConnection`. The connection:
+
+- Connects to the pre-validated IP directly via `socket.create_connection`
+  — no DNS lookup happens between `validate_url` and the connect.
+- TLS handshake uses the original hostname for SNI AND triggers Python's
+  standard hostname-vs-cert verification.
+- urllib's `Host:` header is set automatically from the URL host.
+
+No reliance on `socket.getaddrinfo` at all between resolve+validate and
+the actual fetch. The rebinding window is closed at the protocol layer.
+
+**httpx path — scoped resolver redirect (audit-12 H1 partial)**
+
+`safe_httpx_get` wraps the call in `_pinned_socket_resolver`, a
+`@contextmanager` that temporarily redirects `socket.getaddrinfo` to
+return the pre-validated info tuple for the duration of the single
+request, then restores the original in `finally`. No module-load global
+patch; the redirection is fully scoped to one fetch.
+
+The redirection is technically still process-wide for the brief window
+inside the `with` block — but unlike Phase 2's permanent patch, tests
+patching `socket.getaddrinfo` outside this narrow window now behave as
+expected. The trade-off is documented at the top of `http_safe.py`.
+
+**Async-httpx guard (audit-12 H2)**
+
+`safe_httpx_get` now raises `RuntimeError` immediately if passed an
+`httpx.AsyncClient`. Async httpx bypasses `socket.getaddrinfo` via
+`anyio.getaddrinfo`, so our scoped pin doesn't protect it. We don't
+currently use async httpx anywhere; the guard is defensive against
+future drift. If you ever need async support, implement a custom
+`httpcore.NetworkBackend` with the resolution baked in.
+
+**Code-shape changes**
+
+Removed (module-level globals):
+
+- `_dns_pin` (thread-local pin storage)
+- `_pinned_getaddrinfo` (the global wrapper)
+- `_set_dns_pin`, `_clear_dns_pin` (pin lifecycle helpers)
+- `_no_redirect_opener` (the module-level opener — replaced by
+  per-call `_build_pinned_opener`)
+- `socket.getaddrinfo = _pinned_getaddrinfo` (the module-load patch)
+
+Added:
+
+- `_PinnedHTTPSConnection` — `http.client.HTTPSConnection` subclass
+  that connects to a pre-validated IP with proper SNI.
+- `_PinnedHTTPSHandler` — `urllib.request.HTTPSHandler` factory using
+  the connection.
+- `_build_pinned_opener(parsed, target_ip, timeout)` — one-shot
+  opener builder.
+- `_pinned_socket_resolver(hostname, infos)` — scoped resolver
+  context-manager for the httpx path.
+- `_resolve_and_validate(url) -> (parsed, infos)` — the shared
+  resolve+validate helper used by both code paths.
+
+Kept (back-compat):
+
+- `validate_url(url)` — still public, still validates URLs, but now
+  discards the addrinfo (callers that want to fetch should use
+  `safe_urlopen` / `safe_httpx_get` which do their own resolution).
+- `_real_getaddrinfo` — captured `socket.getaddrinfo` reference, kept
+  so tests can monkey-patch resolution without fighting the missing
+  global patch.
+
+**Tests**
+
+- New `TestUrllibPinnedConnection` (3 cases) — verifies
+  `_PinnedHTTPSConnection` is constructed with the right IP, both
+  handlers wired into the opener, the resolve helper returns infos.
+- New `TestHttpxScopedResolver` (3 cases) — verifies the resolver
+  redirect only applies inside the `with` block, restores on
+  exception, falls through for other hosts.
+- New `TestHttpxAsyncRejection` (1 case) — `AsyncClient` raises
+  `RuntimeError`.
+- `TestSafeUrlopen` rewritten — now mocks `_build_pinned_opener`
+  factory instead of the deleted `_no_redirect_opener`.
+- `test_photo_sources.py`, `test_db_updater.py` — monkey-patches
+  updated to the new surface.
+
+Two old tests removed (no longer applicable): the `_no_redirect_opener`
+wiring guard (replaced by `test_build_pinned_opener_wires_both_handlers`)
+and four `TestDnsPinning` tests for the removed thread-local pin
+behaviour (replaced by the new redesigned-path tests).
+
+**Test totals**: Python 1314 → 1316 (+2 net). Vitest 90 (unchanged).
+Frontend `npm run build` clean.
+
+**This closes Audit 12.** All High-severity findings now have proper
+fixes. The three large refactors (#193 web.py split, #194 _migrate
+split, #195 page extractions) and a handful of Low-severity cosmetics
+remain as opportunistic future work, but no further phases planned.
+
 ## 2.1.10 — 2026-05-17
 
 ### Audit 12 Phase 8 — self-review follow-up

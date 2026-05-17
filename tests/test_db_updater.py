@@ -388,9 +388,23 @@ class TestFetch:
             def __enter__(self): return self
             def __exit__(self, *a): pass
 
+        # Phase 9 redesign: safe_urlopen builds a fresh opener per call.
+        # Bypass resolve+validate (`_resolve_and_validate`) and replace the
+        # opener factory with one that returns our FakeResp.
+        import urllib.parse as _up
         monkeypatch.setattr(http_safe, "validate_url", lambda url: None)
-        monkeypatch.setattr(http_safe._no_redirect_opener, "open",
-                            lambda req, timeout=None: FakeResp())
+        monkeypatch.setattr(
+            http_safe, "_resolve_and_validate",
+            lambda url: (_up.urlparse(url), [
+                (1, 1, 6, "", ("1.1.1.1", 443))
+            ]),
+        )
+        def _fake_factory(parsed, target_ip, timeout):
+            class _FakeOpener:
+                def open(self, req, timeout=None):
+                    return FakeResp()
+            return _FakeOpener()
+        monkeypatch.setattr(http_safe, "_build_pinned_opener", _fake_factory)
         result = db_updater._fetch("https://raw.githubusercontent.com/example/data")
         assert result == b"hello"
 

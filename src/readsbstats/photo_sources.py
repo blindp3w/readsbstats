@@ -82,10 +82,14 @@ class PhotoResult:
 # even though the implementation lives in ``http_safe``.
 # ---------------------------------------------------------------------------
 _NoRedirectHandler = http_safe._NoRedirectHandler
-_no_redirect_opener = http_safe._no_redirect_opener
 _validate_url = http_safe.validate_url
 _ip_is_public = http_safe._ip_is_public
 _safe_open = http_safe.safe_urlopen
+# Note: pre-Phase-9 we also re-exported ``_no_redirect_opener``, but the
+# Phase 9 redesign of safe_urlopen builds a fresh opener per call (see
+# http_safe._build_pinned_opener) so a module-level singleton no longer
+# exists. Tests that need to intercept the fetch should monkey-patch
+# ``http_safe._build_pinned_opener`` to return a mock.
 
 
 # ---------------------------------------------------------------------------

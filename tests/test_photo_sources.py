@@ -33,21 +33,37 @@ def _mock_resp(body: bytes | str, status: int = 200, url: str | None = None,
 
 
 def _patch_opener(monkeypatch, mock_resp):
-    """Patch the SSRF-safe opener directly so we don't trigger real DNS."""
-    monkeypatch.setattr(
-        http_safe._no_redirect_opener, "open",
-        lambda req, timeout=None: mock_resp,
-    )
+    """Patch the SSRF-safe opener factory so we don't trigger real DNS.
+
+    Phase 9 redesign: safe_urlopen builds a fresh opener per call via
+    ``http_safe._build_pinned_opener``. Stub the factory to return a
+    fake opener with the desired mocked response.
+    """
+    def _fake_factory(parsed, target_ip, timeout):
+        class _FakeOpener:
+            def open(self, req, timeout=None):
+                return mock_resp
+        return _FakeOpener()
+    monkeypatch.setattr(http_safe, "_build_pinned_opener", _fake_factory)
 
 
 def _patch_validate(monkeypatch, allow=True):
     """Bypass DNS/IP checks for source-level tests; failure path tests set allow=False."""
     if allow:
         monkeypatch.setattr(http_safe, "validate_url", lambda url: None)
+        import urllib.parse as _up
+        monkeypatch.setattr(
+            http_safe, "_resolve_and_validate",
+            lambda url: (_up.urlparse(url), [
+                (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP,
+                 "", ("1.1.1.1", 443))
+            ]),
+        )
     else:
         def _reject(url):
             raise ValueError("blocked by test")
         monkeypatch.setattr(http_safe, "validate_url", _reject)
+        monkeypatch.setattr(http_safe, "_resolve_and_validate", _reject)
 
 
 def _patch_safe_open(monkeypatch, body, headers=None):
@@ -161,11 +177,18 @@ class TestSafeOpen:
                                       "https://169.254.169.254/")
 
     def test_post_flight_revalidation_on_url_change(self, monkeypatch):
-        """If the response URL differs from the requested URL, revalidate it."""
+        """If the response URL differs from the requested URL, revalidate it.
+        Phase 9 routes the validation through ``_resolve_and_validate`` (the
+        new internal helper that returns parsed_url + addrinfo) rather than
+        the public ``validate_url``."""
+        import urllib.parse as _up
         calls = []
-        def fake_validate(url):
+        def fake_resolve(url):
             calls.append(url)
-        monkeypatch.setattr(http_safe, "validate_url", fake_validate)
+            return (_up.urlparse(url),
+                    [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP,
+                      "", ("1.1.1.1", 443))])
+        monkeypatch.setattr(http_safe, "_resolve_and_validate", fake_resolve)
         # Response reports a different (assumed public) URL
         _patch_opener(monkeypatch, _mock_resp(b"data",
                                               url="https://example.com/elsewhere"))
