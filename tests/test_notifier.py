@@ -1390,6 +1390,28 @@ class TestWatchlistBotCommands:
         assert db_conn.execute("SELECT COUNT(*) FROM watchlist").fetchone()[0] == 0
         assert "Removed" in sent[0]
 
+    def test_watch_remove_falls_back_to_callsign_prefix(
+        self, db_conn, monkeypatch,
+    ):
+        """Audit-12 P8 follow-up — `_watch_remove`'s usage string promises
+        all three match_types (icao / registration / callsign_prefix), but
+        the original fallback chain only tried icao→registration. A
+        callsign_prefix entry inserted via the HTTP API was orphaned for
+        the Telegram bot. The third fallback fixes that."""
+        sent = []
+        monkeypatch.setattr(notifier, "_send", lambda txt: sent.append(txt))
+        db_conn.execute(
+            "INSERT INTO watchlist (match_type, value, label, created_at) VALUES (?,?,NULL,?)",
+            ("callsign_prefix", "lot", int(time.time())),
+        )
+        db_conn.commit()
+        notifier._watch_remove(db_conn, "lot")
+        # Row removed
+        assert db_conn.execute(
+            "SELECT COUNT(*) FROM watchlist WHERE value='lot'"
+        ).fetchone()[0] == 0
+        assert "Removed" in sent[0]
+
     def test_watch_remove_falls_back_to_registration_for_hex_shape(
         self, db_conn, monkeypatch,
     ):

@@ -29,7 +29,11 @@ const FETCH_STUBS: Record<string, unknown> = {
   // /api/stats → records / aggregates
   '/stats/api/stats': { aggregates: {}, top_airlines: [], top_types: [], top_routes: [], top_airports: [], top_countries: [], hourly: [], daily: [], new_aircraft: [], frequent_aircraft: [], emergency_squawks: [], heatmap: [], records: {} },
   '/stats/api/stats/polar': { points: [] },
-  '/stats/api/flights': { total: 0, items: [] },
+  // Shape must match `FlightsResponse` in pages/History.tsx — not just
+  // an "empty bag with whatever fields" (audit-12 P8 fix). The old stub
+  // returned `{ total, items }` and tests passed only because every page
+  // path is null-safe.
+  '/stats/api/flights': { total: 0, limit: 100, offset: 0, flights: [] },
   '/stats/api/dates': { dates: [] },
   '/stats/api/settings': {
     lat: 52.0, lon: 21.0, max_range: 450, poll_interval: 5, flight_gap: 1800,
@@ -55,8 +59,10 @@ const FETCH_STUBS: Record<string, unknown> = {
   '/stats/api/feeders': [],
   '/stats/api/watchlist': { entries: [] },
   '/stats/api/aircraft/flagged': { total: 0, items: [] },
-  '/stats/api/metrics': { ts: [], series: {} },
-  '/stats/api/metrics/health': { status: 'ok', checks: [] },
+  // MetricsResp shape: { bucket_seconds, metrics: string[], data: number[][] }
+  '/stats/api/metrics': { bucket_seconds: 60, metrics: [], data: [] },
+  // HealthResp shape: { overall, as_of, checks }
+  '/stats/api/metrics/health': { overall: 'ok', as_of: 0, checks: [] },
   '/stats/api/live': { count: 0, aircraft: [] },
   '/stats/api/gallery': { total: 0, items: [] },
 };

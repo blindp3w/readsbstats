@@ -27,6 +27,10 @@ import statistics
 
 from readsbstats import config, database
 
+# Audit-12 #199 — `_new_max_gs` was duplicated here and in
+# purge_bad_gs.py. Aliased to the shared helper.
+from _purge_helpers import new_max_gs as _new_max_gs
+
 
 # ---------------------------------------------------------------------------
 # Core logic
@@ -150,11 +154,6 @@ def scan_orphan_max_gs(conn: sqlite3.Connection) -> dict[int, float | None]:
     return {r["id"]: r["max_stored_gs"] for r in rows}
 
 
-# Audit-12 #199 — `_new_max_gs` was duplicated here and in
-# purge_bad_gs.py. Aliased to the shared helper.
-from _purge_helpers import new_max_gs as _new_max_gs
-
-
 # Commit every N flights — see purge_ghosts._BATCH_SIZE for rationale.
 _BATCH_SIZE = 100
 
@@ -164,7 +163,16 @@ def apply_purge(
     bad: dict[int, list[int]],
     orphans: dict[int, float | None],
 ) -> None:
-    """Null gs for spike positions, recompute max_gs, and fix orphans."""
+    """Null gs for spike positions, recompute max_gs, and fix orphans.
+
+    NOT atomic across the whole run — see ``purge_ghosts.apply_purge``'s
+    docstring for the full rationale (audit-12 Phase 3 trade-off). The
+    script is idempotent: re-run finishes any interrupted purge."""
+    # Audit-12 P8 — `pending` is reset between the two loops so the
+    # orphan-loop's batch boundaries align with "every N orphans"
+    # rather than "every N total writes carrying over from the bad-
+    # flights loop". The counter has identical semantics in both
+    # loops now.
     pending = 0
     for fid, bad_ids in bad.items():
         placeholders = ",".join("?" * len(bad_ids))
@@ -179,6 +187,9 @@ def apply_purge(
         if pending >= _BATCH_SIZE:
             conn.commit()
             pending = 0
+    if pending:
+        conn.commit()
+    pending = 0
     for fid, correct_max in orphans.items():
         if fid not in bad:  # already handled above
             conn.execute(

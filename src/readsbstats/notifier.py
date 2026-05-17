@@ -758,8 +758,6 @@ def _send_watchlist_list(conn: sqlite3.Connection) -> None:
 
 
 def _watch_add(conn: sqlite3.Connection, value_raw: str) -> None:
-    import re
-    from . import database
     value = value_raw.strip().lower()
     if not value:
         _send("Usage: /watch &lt;icao_hex|registration&gt;")
@@ -793,25 +791,22 @@ def _watch_remove(conn: sqlite3.Connection, value_raw: str) -> None:
     # inferred type first to preserve Audit 11 #116 — when both an icao and
     # registration row exist with the same 6-hex literal, /unwatch <hex>
     # removes only the icao row. If that lookup matches nothing, fall back
-    # to the alternate type so a 6-hex-shaped registration (e.g. ABC123)
-    # is still removable via the bot (audit-12 #154).
+    # to other types so a 6-hex-shaped registration (e.g. ABC123, audit-12
+    # #154) or a `callsign_prefix` entry created via the web API (audit-12
+    # P8) is still removable via the bot. Order: primary (inferred) →
+    # alternate base type → callsign_prefix.
     primary = "icao" if re.fullmatch(r"[0-9a-f]{6}", value) else "registration"
-    cur = conn.execute(
-        "DELETE FROM watchlist WHERE match_type = ? AND value = ?",
-        (primary, value),
-    )
-    conn.commit()
-    if cur.rowcount == 0:
-        fallback = "registration" if primary == "icao" else "icao"
+    fallback = "registration" if primary == "icao" else "icao"
+    for match_type in (primary, fallback, "callsign_prefix"):
         cur = conn.execute(
             "DELETE FROM watchlist WHERE match_type = ? AND value = ?",
-            (fallback, value),
+            (match_type, value),
         )
         conn.commit()
-    if cur.rowcount:
-        _send(f"Removed from watchlist: <b>{value.upper()}</b>")
-    else:
-        _send(f"Not in watchlist: {value.upper()}")
+        if cur.rowcount:
+            _send(f"Removed from watchlist: <b>{value.upper()}</b>")
+            return
+    _send(f"Not in watchlist: {value.upper()}")
 
 
 def _handle_update(update: dict, conn: sqlite3.Connection) -> None:
@@ -843,7 +838,6 @@ def _handle_update(update: dict, conn: sqlite3.Connection) -> None:
 
 
 def _listener_loop(db_path: str) -> None:
-    from . import database  # local import to avoid circular dependency at module load
     conn   = database.connect(db_path)
     offset = 0
     log.info("Telegram command listener ready")

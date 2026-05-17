@@ -143,7 +143,21 @@ def apply_purge(
     rlat: float,
     rlon: float,
 ) -> None:
-    """Delete ghost positions and recompute max_distance_nm for affected flights."""
+    """Delete ghost positions and recompute max_distance_nm for affected flights.
+
+    NOT atomic across the whole run. Audit-12 Phase 3 switched from one
+    transaction wrapping the entire flight loop to per-``_BATCH_SIZE``
+    commits — the original blanket transaction held the SQLite write
+    lock long enough to starve the collector on multi-thousand-flight
+    purges. The trade-off: a Ctrl-C / OSError / disk-full mid-run leaves
+    the DB partially purged (some flights have updated
+    ``max_distance_nm``, others still reference deleted position IDs).
+
+    Each *individual* flight's ``DELETE positions`` + ``UPDATE flights``
+    pair is still atomic (one transaction up to the batch boundary).
+    The script is idempotent: re-running it after an interrupted run
+    finishes the work cleanly because the find-phase rescans every flight.
+    """
     pending = 0
     for fid, ghost_ids in ghosts.items():
         placeholders = ",".join("?" * len(ghost_ids))

@@ -831,7 +831,9 @@ class TestApiSettings:
         assert "/run/readsb" not in r.text
         payload = r.json()
         assert "stats_json" in payload
-        assert payload["stats_json"] in {"(set)", "(default)"}
+        # Audit-12 P8 — label is uniform "(configured)" / "(not set)" rather
+        # than comparing against a hardcoded default that could drift.
+        assert payload["stats_json"] in {"(configured)", "(not set)"}
 
     def test_api_settings_airspace_geojson_bundled_default(self, client, monkeypatch):
         from readsbstats import config
@@ -989,8 +991,11 @@ class TestSpaMount:
         helper must also strip them locally in case a future ASGI server
         weakens that guard."""
         sanitize = web._sanitize_v2_rest
-        # Raw CRLF in `rest` — defensive scrub
-        assert sanitize("foo\r\nSet-Cookie: pwned=1") == "fooSet-Cookie: pwned=1"
+        # Raw CR/LF in `rest` — defensive scrub. Note: the audit-12 P8
+        # follow-up added `urllib.parse.quote` on top of the CR/LF strip,
+        # so the remaining `:` / ` ` / `=` characters of the Set-Cookie
+        # smuggle attempt also get percent-encoded — defence-in-depth.
+        assert sanitize("foo\r\nSet-Cookie: pwned=1") == "fooSet-Cookie%3A%20pwned%3D1"
         assert sanitize("foo\rbar") == "foobar"
         assert sanitize("foo\nbar") == "foobar"
 
@@ -1011,6 +1016,22 @@ class TestSpaMount:
         assert sanitize("flight/123") == "flight/123"
         assert sanitize("") == ""
         assert sanitize("aircraft/abc123") == "aircraft/abc123"
+
+    def test_v2_compat_percent_encodes_url_specials(self):
+        """Audit-12 P8 follow-up — the sanitizer must percent-encode
+        characters that would otherwise produce a malformed Location
+        header. The first cut of the fix landed only the CR/LF strip
+        without the URL-quote step."""
+        sanitize = web._sanitize_v2_rest
+        # Spaces become %20
+        assert sanitize("flight 123") == "flight%20123"
+        # Quotes (the smuggling vector if anyone tries header injection
+        # via a non-CRLF byte) get encoded
+        assert sanitize('aircraft/"x"') == "aircraft/%22x%22"
+        # `?` and `#` would otherwise truncate the path at the URL level
+        assert sanitize("flight/123?x=1") == "flight/123%3Fx%3D1"
+        # The `/` is in the safe set so it stays intact
+        assert sanitize("flight/123/positions") == "flight/123/positions"
 
 
 # ---------------------------------------------------------------------------

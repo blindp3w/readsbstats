@@ -45,7 +45,7 @@ const MATCH_TYPE_LABEL: Record<MatchType, string> = {
   callsign_prefix: 'Callsign prefix',
 };
 
-function fmtDate(epoch: number): string {
+function fmtDate(epoch: number | undefined): string {
   if (!epoch) return '';
   return new Date(epoch * 1000).toLocaleString();
 }

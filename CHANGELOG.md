@@ -1,5 +1,105 @@
 # Changelog
 
+## 2.1.10 — 2026-05-17
+
+### Audit 12 Phase 8 — self-review follow-up
+
+Three parallel review agents went through every Audit 12 change. Phase 8
+ships the actionable findings from that review. No new functionality;
+small bug fixes, defence-in-depth additions, and documentation /
+test-correctness fixes.
+
+**Security defence-in-depth**
+
+- **#149 P8** `_v2_compat` sanitizer now `urllib.parse.quote(rest, safe="/")`
+  on top of the CR/LF strip — the audit's original recommendation
+  included this step but only the strip shipped in v2.1.4. A path with
+  literal spaces / quotes / `?` / `#` characters now produces a
+  well-formed (percent-encoded) Location header instead of a potentially
+  malformed one.
+- **#171 P8** `/api/settings` `stats_json` label stopped hardcoding
+  `/run/readsb/stats.json` as the "default" sentinel. The comparison
+  duplicated the default from `config.py` (drift-prone) and leaked one
+  bit ("did the operator customise this path"). Now uniformly reports
+  `(configured)` or `(not set)`.
+
+**Reliability**
+
+- **#154 P8** `_watch_remove` now falls back to `callsign_prefix` as the
+  third match-type. The usage string promised all three (`icao` /
+  `registration` / `callsign_prefix`) but the fallback chain only tried
+  the first two. Telegram-bot users could not remove a callsign_prefix
+  entry without using the HTTP API.
+
+**Type safety / data quality**
+
+- **#P8** `lib/types.ts::WatchlistEntry.created_at` and `airborne`
+  marked optional. The `GET /api/watchlist` endpoint returns all six
+  fields; `POST /api/watchlist` returns only four. Previously the type
+  declared all six as required which would surface as silent
+  `undefined`s if anyone read those fields off a mutation result.
+
+**Test correctness**
+
+- **#P8** `frontend/test/smoke.test.tsx` had stub shapes that didn't
+  match the real response interfaces — pages rendered the empty path by
+  accident rather than by exercising the actual code path. Stubs for
+  `/api/metrics`, `/api/metrics/health`, and `/api/flights` corrected to
+  the real `MetricsResp` / `HealthResp` / `FlightsResponse` shapes.
+
+**Dead code / style cleanup**
+
+- **#P6 follow-up** Removed two duplicate `import re` / `from . import
+  database` inside `notifier._watch_add` and `notifier._listener_loop`
+  that should have been caught in Phase 6's "imports at module top"
+  sweep. (`database` is already imported at module top; the "circular
+  dependency" comment in `_listener_loop` was historical and no longer
+  applies — verified by grep.)
+- **#P6 follow-up** Moved the `from _purge_helpers import` line in both
+  purge scripts to the top import block. Moved `from collections
+  import OrderedDict as _OrderedDict` in `web.py` to the top.
+- **#P6 follow-up** `.claude/rules/python.md` referenced the old
+  `_clamp_int` / `_clamp_float` names — renamed to
+  `_min_or_default_int` / `_min_or_default_float` to match the actual
+  function names. Also documents `_bool()` as the canonical boolean
+  env-var parser.
+
+**Doc clarity**
+
+- Three `apply_purge()` docstrings now document the batched-commit
+  semantics introduced in Phase 3. The old docstrings claimed atomicity
+  that no longer holds; the new text explicitly notes that an
+  interrupted run can leave the DB partially purged, and that the
+  script is idempotent so re-running finishes the work.
+- **#197 P8** CHANGELOG entry for v2.1.8 now explicitly notes the
+  case-sensitivity behaviour change in `_bool` (two flags previously
+  treated `False` as truthy because of case-sensitive comparison).
+
+**Test deltas**
+
+- `tests/test_web.py`: added 1 new test for the `_v2_compat` quote step
+  + 1 updated test for the new CR/LF-then-quote ordering + 1 updated
+  assertion for the new `stats_json` label.
+- `tests/test_notifier.py`: added 1 new test for the
+  `callsign_prefix` fallback.
+
+**Test totals**: Python 1312 → 1314 (+2). Vitest 90 (unchanged).
+
+**Other items from the self-review intentionally not addressed in this
+phase**:
+
+- **H1 / H2** (DNS-pin scope is too broad and doesn't reliably cover
+  async httpx) — would require a per-transport resolver hook, a
+  multi-file refactor of `http_safe.py`. Worth its own dedicated PR.
+- **M8** (three new tests reach across global state in fragile ways) —
+  works today, would surface as flakes only under `pytest-xdist` or
+  reordering. Defer to the next time someone actually wants parallel
+  test execution.
+- **M1** (purge scripts now non-atomic) — addressed via docstring
+  updates rather than restoring atomicity; the Phase 3 trade-off
+  (lock-starvation avoidance) is the right call for the actual
+  workload.
+
 ## 2.1.9 — 2026-05-17
 
 ### Audit 12 Phase 7 — documentation hygiene
@@ -58,6 +158,14 @@ inconsistent env parsing unified, and a few stale names corrected.
   (`WIKIPEDIA_PHOTO`, `ADSBX_ENABLED`, `METRICS_ENABLED`, `USE_DUCKDB`,
   `PREWARM_MAP_CACHE`) that had drifted in their tuple ordering and
   empty-string handling. 13 new tests pin the contract.
+
+  **⚠ Minor behaviour change:** the new helper case-normalises before
+  comparing, where two of the old patterns (`ADSBX_ENABLED`,
+  `PREWARM_MAP_CACHE`) did not. Operators who had `RSBS_ADSBX_ENABLED=False`
+  (capital F) — previously treated as truthy because `"False" != "false"`
+  — will now see those flags correctly recognised as falsy. The fix is
+  to use `0` (or lowercase `false`/`no`/`off`) — the documented falsy
+  values. Audit-12 Phase 8 follow-up documented this explicitly.
 - **#198** `_TransientError` was declared identically in 3 modules
   (`route_enricher`, `adsbx_enricher`, `metrics_collector`). Now a
   single `http_safe.TransientError` aliased into each consumer; tests

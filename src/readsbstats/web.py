@@ -17,9 +17,11 @@ import sqlite3
 import sys
 import threading
 import time
+from collections import OrderedDict as _OrderedDict
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
 from pathlib import Path
+import urllib.parse
 from urllib.parse import urlparse
 
 import httpx
@@ -137,13 +139,18 @@ def _sanitize_v2_rest(rest: str) -> str:
         produce a Location starting with `//` (browsers treat that as
         scheme-relative and follow off-site). We strip leading `/` and `\\`
         characters — some browsers treat the latter as the former in URLs.
-      * Response splitting (audit-12 #149) defence-in-depth: Starlette
-        rejects raw CR/LF in path parameters today, but if a future ASGI
-        server change weakens that we don't want CR/LF to reach the
-        Location header. Strip both characters from `rest` before use.
+      * Response splitting (audit-12 #149): Starlette rejects raw CR/LF in
+        path parameters today, but if a future ASGI server change weakens
+        that we don't want CR/LF reaching the Location header.
+      * Header validity (audit-12 P8 follow-up): percent-encode the remaining
+        path so spaces / quotes / other URL-special characters can't
+        produce a malformed Location. The original ``_sanitize_v2_rest``
+        landed only the strip; the quote step was always part of the
+        audit's recommended fix.
     """
     rest = rest.lstrip("/\\")
-    return rest.replace("\r", "").replace("\n", "")
+    rest = rest.replace("\r", "").replace("\n", "")
+    return urllib.parse.quote(rest, safe="/")
 
 # Note: the SPA root catch-all (`@app.get("/{spa_path:path}")`) is registered
 # at the END of this module — see the bottom of the file. It has to come
@@ -356,8 +363,14 @@ def _settings_payload() -> dict:
     cid_masked = "configured" if config.TELEGRAM_CHAT_ID else "not set"
     # Mask filesystem paths — operator just needs to know whether a custom
     # value was set, not the actual path on disk.
+    #
+    # Audit-12 P8 — stats_json previously compared against a literal
+    # `/run/readsb/stats.json` to label "(default)" vs "(set)". That had two
+    # problems: (1) the literal duplicates the default in config.py, drift-
+    # prone; (2) the comparison leaks one bit (was it customised?). Just
+    # report "(configured)" for any non-empty value.
     airspace_label = "(set)" if config.AIRSPACE_GEOJSON else "(bundled poland.geojson)"
-    stats_json_label = "(set)" if config.STATS_JSON != "/run/readsb/stats.json" else "(default)"
+    stats_json_label = "(configured)" if config.STATS_JSON else "(not set)"
     return {
         # Receiver
         "lat":              config.RECEIVER_LAT,
@@ -775,8 +788,6 @@ def api_flight_detail(flight_id: int) -> dict:
 # Audit-12 #150 — LRU-capped so the dict can't grow without bound across the
 # worker's lifetime. ICAO type designators are ~3k distinct in practice; 1024
 # is comfortable headroom for hot types while still capping memory.
-from collections import OrderedDict as _OrderedDict
-
 _TYPE_LOCKS_MAX = 1024
 _type_fetch_locks: "_OrderedDict[str, asyncio.Lock]" = _OrderedDict()
 

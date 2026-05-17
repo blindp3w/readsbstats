@@ -601,7 +601,7 @@ class TestPoll:
         _poll(self.conn)
         assert self.conn.execute("SELECT COUNT(*) FROM flights").fetchone()[0] == 0
 
-    def test_poll_handles_explicit_null_seen_pos_without_killing_cycle(self):
+    def test_poll_handles_null_seen_pos(self):
         """Regression for audit-12 #146 — `seen_pos: null` in aircraft.json was
         causing `None > 60` TypeError that aborted the whole poll cycle via the
         outer `except Exception`, dropping every aircraft for that tick.

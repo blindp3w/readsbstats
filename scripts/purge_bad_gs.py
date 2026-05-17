@@ -33,6 +33,11 @@ import sqlite3
 
 from readsbstats import config, database, geo
 
+# Audit-12 #199 — `_new_max_gs` was duplicated here and in
+# purge_mlat_gs_spikes.py. Aliased to the shared helper so a fix lands
+# in both places at once.
+from _purge_helpers import new_max_gs as _new_max_gs
+
 haversine_nm = geo.haversine_nm
 
 # Min/max dt (seconds) for cross-validation.
@@ -138,18 +143,16 @@ def scan_flights(
     return bad
 
 
-# Audit-12 #199 — `_new_max_gs` was duplicated here and in
-# purge_mlat_gs_spikes.py. Aliased to the shared helper so a fix lands
-# in both places at once.
-from _purge_helpers import new_max_gs as _new_max_gs
-
-
 # Commit every N flights — see purge_ghosts._BATCH_SIZE for rationale.
 _BATCH_SIZE = 100
 
 
 def apply_purge(conn: sqlite3.Connection, bad: dict[int, list[int]]) -> None:
-    """Null gs for bad positions and recompute max_gs for affected flights."""
+    """Null gs for bad positions and recompute max_gs for affected flights.
+
+    NOT atomic across the whole run — see ``purge_ghosts.apply_purge``'s
+    docstring for the full rationale (audit-12 Phase 3 trade-off). The
+    script is idempotent: re-run finishes any interrupted purge."""
     pending = 0
     for fid, bad_ids in bad.items():
         placeholders = ",".join("?" * len(bad_ids))

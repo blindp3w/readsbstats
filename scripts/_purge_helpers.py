@@ -34,4 +34,7 @@ def new_max_gs(
             "WHERE flight_id = ? AND gs IS NOT NULL",
             (flight_id,),
         ).fetchone()
-    return row[0] if row else None
+    # SQLite's aggregate MAX always returns exactly one row, possibly
+    # `(None,)` when no rows match — `row` is never None here, so the
+    # value flows through directly.
+    return row[0]
