@@ -3,6 +3,7 @@ import { apiJson, apiUrl } from '@/lib/api';
 import { useSearchParam, useSearchParamBatch } from '@/hooks/useSearchParam';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Input } from '@/components/ui/Input';
+import { DatePicker } from '@/components/ui/DatePicker';
 import {
   Select,
   SelectContent,
@@ -143,20 +144,20 @@ export default function HistoryPage() {
             data-testid="history-filters-form"
           >
             <Field label="From" htmlFor="f-date-from">
-              <Input
+              <DatePicker
                 id="f-date-from"
-                type="date"
-                value={dateFrom}
-                onChange={(e) => setDateFrom(e.target.value)}
+                value={String(dateFrom)}
+                onChange={(v) => setDateFrom(v)}
+                ariaLabel="From date"
                 data-testid="history-filter-date-from"
               />
             </Field>
             <Field label="To" htmlFor="f-date-to">
-              <Input
+              <DatePicker
                 id="f-date-to"
-                type="date"
-                value={dateTo}
-                onChange={(e) => setDateTo(e.target.value)}
+                value={String(dateTo)}
+                onChange={(v) => setDateTo(v)}
+                ariaLabel="To date"
                 data-testid="history-filter-date-to"
               />
             </Field>

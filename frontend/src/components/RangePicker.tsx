@@ -2,10 +2,11 @@ import { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { ChevronDownIcon, ChevronUpIcon } from '@radix-ui/react-icons';
 import { ToggleGroupRoot, ToggleGroupItem } from '@/components/ui/ToggleGroup';
-import { Input } from '@/components/ui/Input';
 import { Button } from '@/components/ui/Button';
 import { Label } from '@/components/ui/Label';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/Popover';
+import { DatePicker } from '@/components/ui/DatePicker';
+import { TimePicker } from '@/components/ui/TimePicker';
 import { cn } from '@/lib/cn';
 
 // Range picker — URL-state.
@@ -114,19 +115,27 @@ interface PickerProps {
   allowAll?: boolean;
 }
 
-// datetime-local <input> uses local-time strings shaped "YYYY-MM-DDTHH:mm".
-// Conversion to/from Unix epoch goes through the user's local TZ — matches
-// v1's behaviour.
-function epochToLocalInput(epoch: number): string {
+// Custom range stored as Unix epoch but edited as separate date + time fields
+// in the local timezone (matches v1 + datetime-local <input> semantics).
+function epochToLocalDate(epoch: number): string {
   const d = new Date(epoch * 1000);
   const pad = (n: number) => n.toString().padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
-function localInputToEpoch(s: string): number | null {
-  if (!s) return null;
-  const t = new Date(s).getTime();
-  return Number.isFinite(t) ? Math.floor(t / 1000) : null;
+function epochToLocalTime(epoch: number): string {
+  const d = new Date(epoch * 1000);
+  const pad = (n: number) => n.toString().padStart(2, '0');
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function localDateTimeToEpoch(date: string, time: string): number | null {
+  if (!date) return null;
+  // Empty time defaults to 00:00; partial "HH" gets ":00" suffix.
+  const t = time || '00:00';
+  const iso = `${date}T${t.length === 5 ? t : `${t.padEnd(5, '0')}`}`;
+  const ms = new Date(iso).getTime();
+  return Number.isFinite(ms) ? Math.floor(ms / 1000) : null;
 }
 
 export function RangePicker({
@@ -180,7 +189,7 @@ export function RangePicker({
             {open ? <ChevronUpIcon aria-hidden="true" /> : <ChevronDownIcon aria-hidden="true" />}
           </button>
         </PopoverTrigger>
-        <PopoverContent className="w-[260px]" data-testid="range-custom-panel">
+        <PopoverContent className="w-[320px]" data-testid="range-custom-panel">
           <CustomRangeForm
             initialFrom={state.from ?? Math.floor(Date.now() / 1000) - 86400}
             initialTo={state.to ?? Math.floor(Date.now() / 1000)}
@@ -204,20 +213,24 @@ function CustomRangeForm({
   initialTo: number;
   onApply: (from: number, to: number) => void;
 }) {
-  const [from, setFrom] = useState(() => epochToLocalInput(initialFrom));
-  const [to, setTo] = useState(() => epochToLocalInput(initialTo));
+  const [fromDate, setFromDate] = useState(() => epochToLocalDate(initialFrom));
+  const [fromTime, setFromTime] = useState(() => epochToLocalTime(initialFrom));
+  const [toDate, setToDate] = useState(() => epochToLocalDate(initialTo));
+  const [toTime, setToTime] = useState(() => epochToLocalTime(initialTo));
   const [error, setError] = useState<string | null>(null);
 
   // Reset to current state if the popover re-opens after URL changed.
   useEffect(() => {
-    setFrom(epochToLocalInput(initialFrom));
-    setTo(epochToLocalInput(initialTo));
+    setFromDate(epochToLocalDate(initialFrom));
+    setFromTime(epochToLocalTime(initialFrom));
+    setToDate(epochToLocalDate(initialTo));
+    setToTime(epochToLocalTime(initialTo));
     setError(null);
   }, [initialFrom, initialTo]);
 
   const apply = () => {
-    const a = localInputToEpoch(from);
-    const b = localInputToEpoch(to);
+    const a = localDateTimeToEpoch(fromDate, fromTime);
+    const b = localDateTimeToEpoch(toDate, toTime);
     if (a == null || b == null) {
       setError('Both dates are required.');
       return;
@@ -231,7 +244,7 @@ function CustomRangeForm({
 
   return (
     <form
-      className="space-y-2"
+      className="space-y-3"
       onSubmit={(e) => {
         e.preventDefault();
         apply();
@@ -239,25 +252,43 @@ function CustomRangeForm({
     >
       <div>
         <Label htmlFor="range-custom-from">From</Label>
-        <Input
-          id="range-custom-from"
-          type="datetime-local"
-          value={from}
-          onChange={(e) => setFrom(e.target.value)}
-          className="text-xs"
-          data-testid="range-custom-from"
-        />
+        <div className="flex gap-2">
+          <DatePicker
+            id="range-custom-from"
+            value={fromDate}
+            onChange={setFromDate}
+            ariaLabel="From date"
+            className="flex-1"
+            data-testid="range-custom-from"
+          />
+          <TimePicker
+            value={fromTime}
+            onChange={setFromTime}
+            ariaLabel="From time"
+            className="w-[96px]"
+            data-testid="range-custom-from-time"
+          />
+        </div>
       </div>
       <div>
         <Label htmlFor="range-custom-to">To</Label>
-        <Input
-          id="range-custom-to"
-          type="datetime-local"
-          value={to}
-          onChange={(e) => setTo(e.target.value)}
-          className="text-xs"
-          data-testid="range-custom-to"
-        />
+        <div className="flex gap-2">
+          <DatePicker
+            id="range-custom-to"
+            value={toDate}
+            onChange={setToDate}
+            ariaLabel="To date"
+            className="flex-1"
+            data-testid="range-custom-to"
+          />
+          <TimePicker
+            value={toTime}
+            onChange={setToTime}
+            ariaLabel="To time"
+            className="w-[96px]"
+            data-testid="range-custom-to-time"
+          />
+        </div>
       </div>
       {error && (
         <p className="text-xs text-[var(--color-danger)]" role="alert">
