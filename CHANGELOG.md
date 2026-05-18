@@ -1,5 +1,58 @@
 # Changelog
 
+## 2.1.15 — 2026-05-18
+
+### Stats page — layout restructure + unified TopChart
+
+**Unified bar chart replaces six stat tables.** The six separate
+top-N tiles (top aircraft types, airlines, countries, frequent
+visitors, routes, airports) are replaced by a single `TopChart`
+component — horizontal bars, up to 15 entries, tab-switcher to
+select the dataset. The Frequent visitors tab retains click-through
+navigation to the aircraft detail page.
+
+**Page layout reordered for hierarchy.** Sections now read top to
+bottom in decreasing time-sensitivity:
+
+1. Summary cards (two rows)
+2. Activity by hour + Daily unique aircraft (two-col grid)
+3. Activity heatmap — DOW × hour (full width)
+4. New aircraft + Polar range (two-col grid)
+5. Top statistics bar chart (full width)
+6. Personal records
+
+Previously the heatmap was squashed into a three-col grid alongside
+the polar chart, and TopChart was sandwiched above the New aircraft
+section. Both sections now have room to breathe.
+
+**Summary row 1 restructured (6 cards).** Total flights, Last 24h,
+Last 7 days, Unique aircraft, Position fixes, DB size — on a
+`grid-cols-2 sm:grid-cols-3 lg:grid-cols-6` grid. Last 24h and
+Last 7 days move from row 2 into row 1, immediately after Total
+flights so the three time-aggregate numbers sit together.
+
+**Summary row 2 restructured (6 cards).** Military, Interesting,
+Anonymous, 7700, 7600, 7500 — same grid. Emergency squawks tiles
+migrate from their own card into this row, replacing the old 8-tile
+wide row. Labels shortened to fit the narrower columns: "General
+emergency" → "Emergency".
+
+**TrendCard tooltip.** The "vs prev period" label is removed from
+the inline card text. Hovering either trend card shows a Radix
+Tooltip with the full delta, percentage, and "vs previous period"
+context. When no previous-period data exists the tooltip says "No
+previous period data"; the inline area shows `—`.
+
+### Test count
+
+```
+1317 Python + 103 Vitest = 1420 unit tests
+```
+
+(unchanged — UI-only restructure)
+
+---
+
 ## 2.1.14 — 2026-05-17
 
 ### Documentation refresh

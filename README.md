@@ -14,7 +14,7 @@ Designed to run alongside readsb, tar1090, and feed clients on a **Raspberry Pi 
 | | |
 |---|---|
 | ![Statistics page](docs/screenshots/statistics_1.png) | ![Flight history](docs/screenshots/flights_1.png) |
-| Statistics — date-range filter, hourly activity, top airlines/types/routes/airports | Flight history — filters by callsign, registration, type, date, source, flag |
+| Statistics — date-range filter, summary tiles, heatmap, top-N bar chart (6 datasets) | Flight history — filters by callsign, registration, type, date, source, flag |
 | ![Live map with aircraft sidebar](docs/screenshots/live_1.png) | ![Receiver metrics with health banner](docs/screenshots/metrics_2.png) |
 | Live map — full-screen Leaflet map with aircraft type icons, historical rewind slider, and collapsible aircraft list sidebar | Metrics + health — 9 rule-based and baseline-aware checks above the time-series charts |
 | ![Aircraft gallery](docs/screenshots/gallery_1.png) | ![Feeder services health](docs/screenshots/feeders_1.png) |
