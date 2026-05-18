@@ -1,5 +1,46 @@
 # Changelog
 
+## 2.1.16 — 2026-05-18
+
+### UI/UX polish — audit v2 follow-up
+
+Targeted refinements found by reviewing the v2 SPA screenshots in
+`internal_docs/uiux/audit-v2-2026-05-18.md`:
+
+- **Flag tiles fully clickable.** Military / Interesting / Anonymous
+  cards on the Stats page are now single `<Link>` elements (was a
+  card with a small inner "See in history →" link). Matches the
+  squawk tile pattern next to them. `aria-label` preserves the
+  affordance for screen readers.
+- **TopChart tab labels normalised.** "Frequent visitors" → "Visitors",
+  "Top routes" → "Routes", "Top airports" → "Airports". Cleaner at
+  narrow viewports.
+- **Polar range subtitle deduplicated.** Was `max 706.2 km · Dist (km)`
+  (unit twice). Now just `max 706.2 km`.
+- **Gallery hex vs registration distinction.** Cards without a
+  registration now show the ICAO hex in monospace with a dim `hex`
+  label adjacent, so `SP-LIG` and `0222` no longer look identical.
+- **History ROUTE column hidden when empty.** When no flight in the
+  current filtered result has origin/dest data, the Route column is
+  dropped entirely instead of showing a column full of `—`. Reappears
+  as soon as any row has route data.
+- **Activity heatmap legend.** A small 4-swatch gradient strip is
+  rendered below the DOW × hour grid showing `1` → max `flights/hr`.
+- **Gallery type-photo label lightened.** The `is_type_photo` marker
+  is now dim caption text instead of a full badge; signal preserved,
+  visual weight reduced.
+- **Personal records density.** Each card's ICAO + timestamp now
+  share a single line under the value rather than stacking on two.
+
+### New: `RSBS_TIME_FORMAT` (24h / 12h)
+
+New env var controlling the clock format for UI timestamps across
+the whole app (FlightsTable, Gallery, Aircraft, Flight, Map, Records).
+Accepted values: `24h` (default), `12h`. Invalid values fall back to
+`24h`. Seeded into the browser on first boot via `/api/settings`;
+users can override locally by setting `localStorage.rsbs_clock_format`,
+which then wins over the env var on subsequent loads.
+
 ## 2.1.15 — 2026-05-18
 
 ### Stats page — layout restructure + unified TopChart

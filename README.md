@@ -137,7 +137,7 @@ readsbstats/
 
 | Guide | Contents |
 |---|---|
-| [Configuration](docs/configuration.md) | All 38 `RSBS_*` env vars, logging, DuckDB, airspace config |
+| [Configuration](docs/configuration.md) | All 43 `RSBS_*` env vars, logging, DuckDB, airspace config |
 | [API Reference](docs/api.md) | All API endpoints, SPA routes, database schema |
 | [Integrations](docs/integrations.md) | Telegram setup, bot commands, ghost/GS filtering |
 | [Operations](docs/operations.md) | Updating code, DB sync, useful commands, backups |
