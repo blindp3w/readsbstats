@@ -12,6 +12,7 @@
 // URLs); do NOT call those from render code.
 
 import type { UnitSystem } from '@/store/units';
+import { getClockFormat, type ClockFormat } from '@/store/clockFormat';
 
 const KTS_TO_KMH = 1.852;
 const KTS_TO_MPH = 1.15078;
@@ -55,9 +56,17 @@ export function distLabel(units: UnitSystem): string {
 
 // Time / duration / bytes — port of base.html inline globals. Unit-independent.
 
-export function fmtTs(epoch: number | null | undefined): string {
+// Default clockFormat = getClockFormat() so non-render callers (CSV export,
+// notifier proxies) automatically pick up the user's setting. The reactive
+// path is via useFormat().fmtTs which subscribes to the store.
+export function fmtTs(
+  epoch: number | null | undefined,
+  clockFormat: ClockFormat = getClockFormat(),
+): string {
   if (!epoch) return '—';
-  return new Date(epoch * 1000).toLocaleString();
+  return new Date(epoch * 1000).toLocaleString(undefined, {
+    hour12: clockFormat === '12h',
+  });
 }
 
 export function fmtDur(seconds: number | null | undefined): string {

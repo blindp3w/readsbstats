@@ -22,7 +22,7 @@ import { Badge } from '@/components/ui/Badge';
 import { Table, THead, TBody, TR, TH, TD } from '@/components/ui/Table';
 import { FlagBadge, SourceBadge } from '@/components/FlagBadge';
 import { useFormat } from '@/hooks/useFormat';
-import { fmtTs, fmtDur } from '@/lib/format';
+import { fmtDur } from '@/lib/format';
 import {
   AXIS_PROPS,
   CHART_COLORS,
@@ -200,6 +200,7 @@ export default function FlightPage() {
 }
 
 function OtherFlightsTable({ rows }: { rows: OtherFlight[] }) {
+  const { fmtTs } = useFormat();
   return (
     <Table data-testid="flight-other-flights-table">
       <THead>
@@ -250,7 +251,7 @@ function FlightHeader({
   detail: FlightDetail;
   photoQ: { data: PhotoResp | null | undefined; isLoading: boolean };
 }) {
-  const { fmtAlt, fmtSpd, fmtDist } = useFormat();
+  const { fmtAlt, fmtSpd, fmtDist, fmtTs } = useFormat();
   const f = detail.flight;
   const photoUrl =
     safeUrl(photoQ.data?.large_url ?? null) || safeUrl(photoQ.data?.thumbnail_url ?? null);
@@ -432,7 +433,7 @@ function rssiColor(rssi: number | null): string {
 }
 
 function PositionTable({ positions }: { positions: Position[] }) {
-  const { fmtAlt, fmtSpd } = useFormat();
+  const { fmtAlt, fmtSpd, fmtTs } = useFormat();
   if (positions.length === 0) {
     return <p className="text-sm text-[var(--color-text-dim)]">No positions recorded.</p>;
   }

@@ -20,7 +20,6 @@ import {
 import { Table, THead, TBody, TR, TH, TD } from '@/components/ui/Table';
 import { FlagBadge, SourceBadge } from '@/components/FlagBadge';
 import { useFormat } from '@/hooks/useFormat';
-import { fmtTs } from '@/lib/format';
 import { cn } from '@/lib/cn';
 
 // Leaflet is lazy-loaded — see /v2/flight pattern.
@@ -99,6 +98,8 @@ export default function MapPage() {
   // cost > 384 MB peak on a Pi 4 — see CLAUDE.md "heatmap memory" note.
   const [mapWindow, setMapWindow] = useState<MapWindow>('24h');
   const [sidebarOpen, setSidebarOpen] = useState(false);
+
+  const { fmtTs } = useFormat();
 
   // ── playback ──────────────────────────────────────────────────────────
   const [playing, setPlaying] = useState(false);

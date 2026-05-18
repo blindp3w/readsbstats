@@ -26,9 +26,9 @@ const VIEWS: { key: ViewKey; label: string }[] = [
   { key: 'aircraft', label: 'Aircraft types' },
   { key: 'airlines', label: 'Airlines' },
   { key: 'countries', label: 'Countries' },
-  { key: 'visitors', label: 'Frequent visitors' },
-  { key: 'routes', label: 'Top routes' },
-  { key: 'airports', label: 'Top airports' },
+  { key: 'visitors', label: 'Visitors' },
+  { key: 'routes', label: 'Routes' },
+  { key: 'airports', label: 'Airports' },
 ];
 
 interface Row {

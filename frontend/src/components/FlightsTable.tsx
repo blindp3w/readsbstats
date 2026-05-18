@@ -4,7 +4,7 @@ import { Table, THead, TBody, TR, TH, TD } from '@/components/ui/Table';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { Alert } from '@/components/ui/Alert';
 import { FlagBadge, SourceBadge } from '@/components/FlagBadge';
-import { fmtTs, fmtDur } from '@/lib/format';
+import { fmtDur } from '@/lib/format';
 import { useFormat } from '@/hooks/useFormat';
 import { cn } from '@/lib/cn';
 
@@ -67,7 +67,12 @@ interface Props {
 export function FlightsTable({ flights, isLoading, error, sortBy, sortDir, onSortChange }: Props) {
   // Subscribes to the units store. Every fmtAlt/fmtSpd/fmtDist call below
   // uses these closures; a unit toggle re-renders this component end-to-end.
-  const { fmtAlt, fmtSpd, fmtDist, altLabel, spdLabel, distLabel } = useFormat();
+  const { fmtAlt, fmtSpd, fmtDist, fmtTs, altLabel, spdLabel, distLabel } = useFormat();
+
+  // Header (cols.map below) + body <TD> must be guarded by the same boolean.
+  // When no row in the current result set has route data, drop the column
+  // entirely rather than showing a column full of "—".
+  const hasAnyRoute = (flights ?? []).some((f) => f.origin_icao || f.dest_icao);
 
   const cols: ColDef[] = [
     { key: 'first_seen', label: 'First seen' },
@@ -76,7 +81,7 @@ export function FlightsTable({ flights, isLoading, error, sortBy, sortDir, onSor
     { key: 'callsign', label: 'Callsign' },
     { key: 'registration', label: 'Reg' },
     { key: 'aircraft_type', label: 'Type' },
-    { key: null, label: 'Route', hideOnMobile: true },
+    ...(hasAnyRoute ? ([{ key: null, label: 'Route', hideOnMobile: true }] as ColDef[]) : []),
     { key: 'primary_source', label: 'Source', hideOnMobile: true },
     { key: 'max_alt_baro', label: altLabel(), hideOnMobile: true },
     { key: 'max_gs', label: spdLabel(), hideOnMobile: true },
@@ -184,15 +189,17 @@ export function FlightsTable({ flights, isLoading, error, sortBy, sortDir, onSor
                 <FlagBadge flags={f.flags} />
               </span>
             </TD>
-            <TD className="hidden md:table-cell">
-              {f.origin_icao || f.dest_icao ? (
-                <span className="font-mono text-xs tabnum">
-                  {f.origin_icao ?? '???'}→{f.dest_icao ?? '???'}
-                </span>
-              ) : (
-                '—'
-              )}
-            </TD>
+            {hasAnyRoute && (
+              <TD className="hidden md:table-cell">
+                {f.origin_icao || f.dest_icao ? (
+                  <span className="font-mono text-xs tabnum">
+                    {f.origin_icao ?? '???'}→{f.dest_icao ?? '???'}
+                  </span>
+                ) : (
+                  '—'
+                )}
+              </TD>
+            )}
             <TD className="hidden md:table-cell">
               <SourceBadge source={f.primary_source} />
             </TD>

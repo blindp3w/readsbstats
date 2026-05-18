@@ -7,13 +7,12 @@ import { safeUrl } from '@/lib/safeUrl';
 import { Card, CardContent } from '@/components/ui/Card';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { Alert } from '@/components/ui/Alert';
-import { Badge } from '@/components/ui/Badge';
 import { FlagBadge } from '@/components/FlagBadge';
 import { Pagination } from '@/components/Pagination';
 import { ToggleGroupRoot, ToggleGroupItem } from '@/components/ui/ToggleGroup';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/Popover';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/Tooltip';
-import { fmtTs } from '@/lib/format';
+import { useFormat } from '@/hooks/useFormat';
 import { cn } from '@/lib/cn';
 
 interface FlaggedAircraft {
@@ -63,6 +62,7 @@ export default function GalleryPage() {
   const [sort] = useSearchParam('sort_by', 'last_seen');
   const [offset] = useSearchParam('offset', 0);
   const update = useSearchParamBatch();
+  const { fmtTs } = useFormat();
 
   const qs = new URLSearchParams();
   if (filter) qs.set('flags', filter);
@@ -155,7 +155,16 @@ export default function GalleryPage() {
                 <CardContent className="space-y-1">
                   <div className="flex items-center justify-between gap-2">
                     <div className="font-medium tabnum">
-                      {a.registration || a.icao_hex}
+                      {a.registration ? (
+                        a.registration
+                      ) : (
+                        <span className="inline-flex items-baseline gap-1">
+                          <span className="font-mono">{a.icao_hex}</span>
+                          <span className="text-[10px] font-normal uppercase tracking-wide text-[var(--color-text-dim)]">
+                            hex
+                          </span>
+                        </span>
+                      )}
                     </div>
                     <FlagBadge flags={a.flags} />
                   </div>
@@ -166,9 +175,9 @@ export default function GalleryPage() {
                     {a.flight_count} flights · last {fmtTs(a.last_seen)}
                   </div>
                   {a.is_type_photo && (
-                    <Badge variant="muted" className="mt-1">
-                      Type photo
-                    </Badge>
+                    <div className="mt-1 text-[10px] uppercase tracking-wide text-[var(--color-text-dim)]">
+                      type photo
+                    </div>
                   )}
                 </CardContent>
               </Link>

@@ -86,3 +86,30 @@ describe('fmtTs', () => {
     expect(fmtTs(null)).toBe('—');
   });
 });
+
+describe('fmtTs clockFormat', () => {
+  // 2023-11-14 22:13:20 UTC — an evening hour in UTC so most timezones
+  // (incl. Vitest's default UTC) land in the 13..23 range for 24h.
+  const AFTERNOON_EPOCH = 1_700_000_000;
+
+  it('null/undefined/zero return dash regardless of format', () => {
+    expect(fmtTs(null, '24h')).toBe('—');
+    expect(fmtTs(undefined, '12h')).toBe('—');
+    expect(fmtTs(0, '24h')).toBe('—');
+  });
+
+  it('12h and 24h outputs differ for an afternoon/evening epoch', () => {
+    expect(fmtTs(AFTERNOON_EPOCH, '12h')).not.toBe(fmtTs(AFTERNOON_EPOCH, '24h'));
+  });
+
+  it('24h output contains a two-digit hour 13..23 (locale-robust)', () => {
+    expect(fmtTs(AFTERNOON_EPOCH, '24h')).toMatch(/\b(1[3-9]|2[0-3]):/);
+  });
+
+  it('24h output does not contain a 1..9-then-colon pattern alone', () => {
+    // 12h would emit "10:13:20 PM" or similar; 24h emits "22:13:20".
+    // Negative assertion: 24h should NOT have a single-digit hour followed by colon.
+    const s = fmtTs(AFTERNOON_EPOCH, '24h');
+    expect(s).not.toMatch(/(^|\s)[1-9]:[0-5]\d/);
+  });
+});

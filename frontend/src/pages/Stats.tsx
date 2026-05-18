@@ -4,7 +4,6 @@ import {
   TriangleUpIcon,
   TriangleDownIcon,
   DotFilledIcon,
-  ArrowRightIcon,
 } from '@radix-ui/react-icons';
 import {
   BarChart,
@@ -25,7 +24,7 @@ import { ActivityHeatmap } from '@/components/charts/Heatmap';
 import { PolarRange } from '@/components/charts/PolarRange';
 import { Table, THead, TBody, TR, TH, TD } from '@/components/ui/Table';
 import { useFormat } from '@/hooks/useFormat';
-import { fmtBytes, fmtTs } from '@/lib/format';
+import { fmtBytes } from '@/lib/format';
 import { cn } from '@/lib/cn';
 import { AXIS_PROPS, CHART_COLORS, TOOLTIP_LABEL_STYLE, TOOLTIP_STYLE } from '@/components/charts/theme';
 import { TopChart } from '@/components/charts/TopChart';
@@ -423,19 +422,15 @@ function FlaggedCard({
   testid: string;
 }) {
   return (
-    <Card data-testid={testid}>
-      <CardContent className="space-y-1 pt-4">
-        <Badge variant={variant}>{label}</Badge>
-        <div className="tabnum text-2xl font-bold">{count.toLocaleString()}</div>
-        <Link
-          to={`/history?flags=${label.toLowerCase()}`}
-          className="inline-flex items-center gap-1 text-xs text-[var(--color-accent)] hover:underline"
-        >
-          See in history
-          <ArrowRightIcon aria-hidden="true" />
-        </Link>
-      </CardContent>
-    </Card>
+    <Link
+      to={`/history?flags=${label.toLowerCase()}`}
+      data-testid={testid}
+      aria-label={`View ${label} flights in history`}
+      className="block rounded-lg border border-[var(--color-border-default)] bg-[var(--color-surface-2)]/60 p-4 shadow-[var(--shadow-sm)] transition-colors hover:bg-[var(--color-surface-2)]"
+    >
+      <Badge variant={variant}>{label}</Badge>
+      <div className="tabnum text-2xl font-bold mt-1">{count.toLocaleString()}</div>
+    </Link>
   );
 }
 
@@ -477,7 +472,7 @@ function BarChartBlock({
 // ---------------------------------------------------------------------------
 
 function Records({ q }: { q: { data: RecordsResponse | undefined; isLoading: boolean; isError: boolean } }) {
-  const { fmtAlt, fmtSpd, fmtDist } = useFormat();
+  const { fmtAlt, fmtSpd, fmtDist, fmtTs } = useFormat();
   if (q.isError) return null;
   return (
     <Card data-testid="stats-records-card">
@@ -494,24 +489,28 @@ function Records({ q }: { q: { data: RecordsResponse | undefined; isLoading: boo
               icao={q.data.furthest?.icao_hex}
               value={fmtDist(q.data.furthest?.max_distance_nm ?? null)}
               ts={q.data.furthest?.first_seen}
+              fmtTs={fmtTs}
             />
             <RecordCell
               label="Fastest"
               icao={q.data.fastest?.icao_hex}
               value={fmtSpd(q.data.fastest?.max_gs ?? null)}
               ts={q.data.fastest?.first_seen}
+              fmtTs={fmtTs}
             />
             <RecordCell
               label="Highest"
               icao={q.data.highest?.icao_hex}
               value={fmtAlt(q.data.highest?.max_alt_baro ?? null)}
               ts={q.data.highest?.first_seen}
+              fmtTs={fmtTs}
             />
             <RecordCell
               label="Longest"
               icao={q.data.longest?.icao_hex}
               value={formatLongest(q.data.longest?.duration_sec ?? null)}
               ts={q.data.longest?.first_seen}
+              fmtTs={fmtTs}
             />
           </div>
         )}
@@ -525,25 +524,31 @@ function RecordCell({
   icao,
   value,
   ts,
+  fmtTs,
 }: {
   label: string;
   icao: string | undefined;
   value: string;
   ts: number | undefined;
+  fmtTs: (epoch: number | null | undefined) => string;
 }) {
   return (
     <div className="rounded border border-[var(--color-border-default)] bg-[var(--color-surface-2)]/60 p-3">
       <div className="text-xs uppercase tracking-wide text-[var(--color-text-dim)]">{label}</div>
       <div className="tabnum text-xl font-bold">{value}</div>
-      {icao ? (
-        <Link
-          to={`/aircraft/${icao}`}
-          className="font-mono text-xs text-[var(--color-accent)] hover:underline"
-        >
-          {icao}
-        </Link>
-      ) : null}
-      {ts ? <div className="text-xs text-[var(--color-text-dim)] tabnum">{fmtTs(ts)}</div> : null}
+      {(icao || ts) && (
+        <div className="mt-0.5 flex items-baseline gap-2 text-xs tabnum text-[var(--color-text-dim)]">
+          {icao && (
+            <Link
+              to={`/aircraft/${icao}`}
+              className="font-mono text-[var(--color-accent)] hover:underline"
+            >
+              {icao}
+            </Link>
+          )}
+          {ts && <span>· {fmtTs(ts)}</span>}
+        </div>
+      )}
     </div>
   );
 }
@@ -567,6 +572,7 @@ function NewAircraftList({
     | undefined;
   loading: boolean;
 }) {
+  const { fmtTs } = useFormat();
   return (
     <Card data-testid="stats-new-aircraft">
       <CardHeader>

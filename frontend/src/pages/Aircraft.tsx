@@ -19,7 +19,8 @@ import {
   type SortDir,
 } from '@/components/FlightsTable';
 import { Pagination } from '@/components/Pagination';
-import { fmtTs, fmtDur } from '@/lib/format';
+import { fmtDur } from '@/lib/format';
+import { useFormat } from '@/hooks/useFormat';
 
 interface PhotoResp {
   thumbnail_url: string | null;
@@ -71,6 +72,7 @@ export default function AircraftPage() {
   const update = useSearchParamBatch();
   const sortBy: SortKey = isSortKey(String(sortByRaw)) ? (sortByRaw as SortKey) : 'first_seen';
   const sortDir: SortDir = String(sortDirRaw) === 'asc' ? 'asc' : 'desc';
+  const { fmtTs } = useFormat();
 
   const qs = new URLSearchParams();
   qs.set('sort_by', sortBy);

@@ -1,8 +1,10 @@
 import { useUnitsStore } from '@/store/units';
+import { useClockStore } from '@/store/clockFormat';
 import {
   fmtAlt as _fmtAlt,
   fmtSpd as _fmtSpd,
   fmtDist as _fmtDist,
+  fmtTs as _fmtTs,
   altLabel as _altLabel,
   spdLabel as _spdLabel,
   distLabel as _distLabel,
@@ -15,11 +17,14 @@ import {
 // `lib/format.ts` with an explicit units argument.
 export function useFormat() {
   const units = useUnitsStore((s) => s.units);
+  const clockFormat = useClockStore((s) => s.clockFormat);
   return {
     units,
+    clockFormat,
     fmtAlt: (ft: number | null | undefined, showUnit = true) => _fmtAlt(ft, units, showUnit),
     fmtSpd: (kts: number | null | undefined, showUnit = true) => _fmtSpd(kts, units, showUnit),
     fmtDist: (nm: number | null | undefined, showUnit = true) => _fmtDist(nm, units, showUnit),
+    fmtTs: (epoch: number | null | undefined) => _fmtTs(epoch, clockFormat),
     altLabel: () => _altLabel(units),
     spdLabel: () => _spdLabel(units),
     distLabel: () => _distLabel(units),

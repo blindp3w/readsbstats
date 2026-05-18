@@ -75,11 +75,29 @@ export function ActivityHeatmap({ rows }: { rows: HeatmapRow[] }) {
           </div>
         ))}
       </div>
+      {max > 0 && (
+        <div
+          className="mt-2 flex items-center gap-1.5 text-[10px] text-[var(--color-text-dim)] tabnum"
+          aria-hidden="true"
+          data-testid="activity-heatmap-legend"
+        >
+          <span className="mr-1">1</span>
+          {[0.18, 0.45, 0.72, 1.0].map((a) => (
+            <span
+              key={a}
+              className="inline-block h-2.5 w-5 rounded-sm"
+              style={{ background: `${CHART_COLORS.accent}${alphaHex(a)}` }}
+            />
+          ))}
+          <span className="ml-1">{max.toLocaleString()}</span>
+          <span className="ml-1">flights/hr</span>
+        </div>
+      )}
     </div>
   );
 }
 
-function alphaHex(a: number): string {
+export function alphaHex(a: number): string {
   return Math.round(Math.min(1, Math.max(0, a)) * 255)
     .toString(16)
     .padStart(2, '0');

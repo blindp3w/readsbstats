@@ -25,7 +25,7 @@ interface Props {
 const SIZE_DEFAULT = 320;
 
 export function PolarRange({ buckets, size = SIZE_DEFAULT }: Props) {
-  const { fmtDist, distLabel } = useFormat();
+  const { fmtDist } = useFormat();
   if (!buckets || buckets.length === 0) {
     return (
       <div className="flex h-64 items-center justify-center text-sm text-[var(--color-text-dim)]">
@@ -120,7 +120,7 @@ export function PolarRange({ buckets, size = SIZE_DEFAULT }: Props) {
         })}
       </svg>
       <div className="text-xs text-[var(--color-text-dim)] tabnum">
-        max {fmtDist(max)} · {distLabel()}
+        max {fmtDist(max)}
       </div>
     </div>
   );

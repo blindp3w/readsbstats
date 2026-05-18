@@ -67,6 +67,7 @@ interface SettingsPayload {
   // UI
   page_size: number;
   max_page_size: number;
+  time_format: string;
   // Telegram
   telegram_token: string; // "configured" | "not set"
   telegram_chat_id: string; // "configured" | "not set"
@@ -185,6 +186,7 @@ function buildSections(s: SettingsPayload): Section[] {
       rows: [
         ['Default page size', fmt(s.page_size), 'RSBS_PAGE_SIZE'],
         ['Max page size', fmt(s.max_page_size), 'RSBS_MAX_PAGE_SIZE'],
+        ['Clock format', s.time_format, 'RSBS_TIME_FORMAT'],
       ],
     },
     {
