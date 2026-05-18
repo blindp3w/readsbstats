@@ -1,5 +1,37 @@
 # Changelog
 
+## 2.1.17 — 2026-05-18
+
+### Themed DatePicker + TimePicker replace native date/time inputs
+
+The browser's native calendar and time-picker popups (Chrome's WebKit
+chrome) ignored our dark theme — bright white widgets on dark pages.
+Both replaced with themed components.
+
+- New `components/ui/DatePicker.tsx` — Radix Popover shell wrapping
+  `react-day-picker` (10.0.1), styled with our existing color tokens
+  (`--color-accent`, `--color-surface-2`, `--color-border-default`).
+  Trigger button matches `<Input>` shape so it drops into a `<Field>`
+  without layout shifts. Round-trips ISO date strings (`YYYY-MM-DD`).
+- New `components/ui/TimePicker.tsx` — Radix Popover with two
+  scrollable HH / MM columns, themed identically to DatePicker.
+  Round-trips `HH:MM`. Requires both columns be touched in a single
+  session before committing — guards against partial-edit close races.
+  Minute step defaults to 5; pass `minuteStep={1}` for finer control.
+- `History.tsx` — From / To filters now use `<DatePicker>` (was two
+  `<input type="date">`).
+- `RangePicker.tsx` `CustomRangeForm` — was `<input type="datetime-
+  local">` × 2; now `<DatePicker>` + `<TimePicker>` per field. Serves
+  the Stats and Metrics "Custom" range pickers.
+
+Bundle delta: +1 KB gz on the main chunk (react-day-picker tree-shakes
+cleanly; TimePicker uses only existing primitives).
+
+Tests: `frontend/test/date-picker.test.tsx` (3) and
+`frontend/test/time-picker.test.tsx` (4) smoke-test the
+open-popover → pick → onChange roundtrip and the two-column
+commit-on-both-touched contract.
+
 ## 2.1.16 — 2026-05-18
 
 ### UI/UX polish — audit v2 follow-up
