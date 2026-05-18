@@ -199,6 +199,8 @@ ROOT_PATH          = os.getenv("RSBS_ROOT_PATH", "/stats")          # reverse-pr
 DEFAULT_PAGE_SIZE  = _int("RSBS_PAGE_SIZE",     "100")
 MAX_PAGE_SIZE      = _int("RSBS_MAX_PAGE_SIZE", "500")
 MAX_EXPORT_ROWS    = _int("RSBS_MAX_EXPORT",    "50000")
+_TIME_FORMAT_RAW   = os.getenv("RSBS_TIME_FORMAT", "24h").strip().lower()
+TIME_FORMAT        = _TIME_FORMAT_RAW if _TIME_FORMAT_RAW in ("24h", "12h") else "24h"
 
 # ---------------------------------------------------------------------------
 # Telegram notifications

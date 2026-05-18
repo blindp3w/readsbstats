@@ -437,6 +437,7 @@ def _settings_payload() -> dict:
         # UI
         "page_size":        config.DEFAULT_PAGE_SIZE,
         "max_page_size":    config.MAX_PAGE_SIZE,
+        "time_format":      config.TIME_FORMAT,
         # Telegram
         "telegram_token":        tok_masked,
         "telegram_chat_id":      cid_masked,

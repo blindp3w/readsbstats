@@ -262,3 +262,37 @@ class TestStringNormalization:
         importlib.reload(readsbstats.config)
         assert readsbstats.config.DB_PATH.strip() != ""
         assert "RSBS_DB_PATH" in capsys.readouterr().err
+
+
+class TestTimeFormat:
+    """RSBS_TIME_FORMAT — allow-list (24h | 12h), invalid falls back to 24h."""
+
+    def test_defaults_to_24h(self, monkeypatch):
+        monkeypatch.delenv("RSBS_TIME_FORMAT", raising=False)
+        import readsbstats.config
+        importlib.reload(readsbstats.config)
+        assert readsbstats.config.TIME_FORMAT == "24h"
+
+    def test_accepts_12h(self, monkeypatch):
+        monkeypatch.setenv("RSBS_TIME_FORMAT", "12h")
+        import readsbstats.config
+        importlib.reload(readsbstats.config)
+        assert readsbstats.config.TIME_FORMAT == "12h"
+
+    def test_case_insensitive(self, monkeypatch):
+        monkeypatch.setenv("RSBS_TIME_FORMAT", "12H")
+        import readsbstats.config
+        importlib.reload(readsbstats.config)
+        assert readsbstats.config.TIME_FORMAT == "12h"
+
+    def test_whitespace_stripped(self, monkeypatch):
+        monkeypatch.setenv("RSBS_TIME_FORMAT", "  12h  ")
+        import readsbstats.config
+        importlib.reload(readsbstats.config)
+        assert readsbstats.config.TIME_FORMAT == "12h"
+
+    def test_invalid_falls_back_to_24h(self, monkeypatch):
+        monkeypatch.setenv("RSBS_TIME_FORMAT", "bogus")
+        import readsbstats.config
+        importlib.reload(readsbstats.config)
+        assert readsbstats.config.TIME_FORMAT == "24h"

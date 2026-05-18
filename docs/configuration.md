@@ -42,6 +42,7 @@ Environment="RSBS_FLIGHT_GAP=1200"
 | `RSBS_WEB_PORT` | `8080` | Internal uvicorn port |
 | `RSBS_PAGE_SIZE` | `100` | Default flight list page size |
 | `RSBS_MAX_PAGE_SIZE` | `500` | Maximum allowed page size |
+| `RSBS_TIME_FORMAT` | `24h` | Clock format for UI timestamps. Allowed: `24h`, `12h`. Invalid values fall back to `24h`. Seeded into the browser on first boot; users can override locally via `localStorage.rsbs_clock_format`. |
 | `RSBS_TELEGRAM_TOKEN` | _(empty)_ | Telegram bot token — notifications disabled if unset |
 | `RSBS_TELEGRAM_CHAT_ID` | _(empty)_ | Telegram chat/user ID |
 | `RSBS_SUMMARY_TIME` | `21:00` | Local time (HH:MM) for daily summary; `""` or `"off"` to disable |
