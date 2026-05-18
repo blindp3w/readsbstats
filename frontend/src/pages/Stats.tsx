@@ -24,13 +24,14 @@ import { Badge } from '@/components/ui/Badge';
 import { ActivityHeatmap } from '@/components/charts/Heatmap';
 import { PolarRange } from '@/components/charts/PolarRange';
 import { Table, THead, TBody, TR, TH, TD } from '@/components/ui/Table';
-import { SimpleTooltip } from '@/components/ui/Tooltip';
 import { useFormat } from '@/hooks/useFormat';
 import { fmtBytes, fmtTs } from '@/lib/format';
 import { cn } from '@/lib/cn';
 import { AXIS_PROPS, CHART_COLORS, TOOLTIP_LABEL_STYLE, TOOLTIP_STYLE } from '@/components/charts/theme';
+import { TopChart } from '@/components/charts/TopChart';
+import { SimpleTooltip } from '@/components/ui/Tooltip';
 
-interface StatsResponse {
+export interface StatsResponse {
   total_flights: number;
   total_positions: number;
   unique_aircraft: number;
@@ -160,20 +161,21 @@ export default function StatsPage() {
         </Card>
       </div>
 
-      <div className="grid gap-4 lg:grid-cols-3">
-        <Card className="lg:col-span-2" data-testid="stats-heatmap-card">
-          <CardHeader>
-            <CardTitle>Activity heatmap (DOW × hour)</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {statsQ.isLoading ? (
-              <Skeleton className="h-40 w-full" />
-            ) : (
-              <ActivityHeatmap rows={statsQ.data?.heatmap ?? []} />
-            )}
-          </CardContent>
-        </Card>
+      <Card data-testid="stats-heatmap-card">
+        <CardHeader>
+          <CardTitle>Activity heatmap (DOW × hour)</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {statsQ.isLoading ? (
+            <Skeleton className="h-40 w-full" />
+          ) : (
+            <ActivityHeatmap rows={statsQ.data?.heatmap ?? []} />
+          )}
+        </CardContent>
+      </Card>
 
+      <div className="grid gap-4 lg:grid-cols-2">
+        <NewAircraftList data={statsQ.data?.new_aircraft} loading={statsQ.isLoading} />
         <Card data-testid="stats-polar-card">
           <CardHeader>
             <CardTitle>Polar range</CardTitle>
@@ -188,45 +190,15 @@ export default function StatsPage() {
         </Card>
       </div>
 
-      <div className="grid gap-4 lg:grid-cols-2">
-        <TopList
-          title="Top aircraft types"
-          data={statsQ.data?.top_aircraft_types}
-          loading={statsQ.isLoading}
-          labelKey="type"
-          subLabelKey="type_desc"
-          countKey="flights"
-          testid="stats-top-types"
-        />
-        <TopList
-          title="Top airlines"
-          data={statsQ.data?.top_airlines}
-          loading={statsQ.isLoading}
-          labelKey="airline"
-          subLabelKey="airline_name"
-          countKey="flights"
-          testid="stats-top-airlines"
-        />
-        <TopList
-          title="Top countries"
-          data={statsQ.data?.top_countries}
-          loading={statsQ.isLoading}
-          labelKey="country"
-          countKey="flights"
-          testid="stats-top-countries"
-        />
-        <FrequentAircraft data={statsQ.data?.frequent_aircraft} loading={statsQ.isLoading} />
-      </div>
-
-      <div className="grid gap-4 lg:grid-cols-2">
-        <RouteList data={statsQ.data?.top_routes} loading={statsQ.isLoading} />
-        <AirportList data={statsQ.data?.top_airports} loading={statsQ.isLoading} />
-      </div>
-
-      <div className="grid gap-4 lg:grid-cols-2">
-        <NewAircraftList data={statsQ.data?.new_aircraft} loading={statsQ.isLoading} />
-        <EmergencySquawks data={statsQ.data?.squawk_counts} loading={statsQ.isLoading} />
-      </div>
+      <TopChart
+        loading={statsQ.isLoading}
+        top_aircraft_types={statsQ.data?.top_aircraft_types}
+        top_airlines={statsQ.data?.top_airlines}
+        top_countries={statsQ.data?.top_countries}
+        frequent_aircraft={statsQ.data?.frequent_aircraft}
+        top_routes={statsQ.data?.top_routes}
+        top_airports={statsQ.data?.top_airports}
+      />
 
       <Records q={recordsQ} />
     </div>
@@ -240,10 +212,17 @@ export default function StatsPage() {
 function SummaryCards({ stats, loading }: { stats: StatsResponse | undefined; loading: boolean }) {
   if (loading) {
     return (
-      <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4">
-        {Array.from({ length: 4 }).map((_, i) => (
-          <Skeleton key={i} className="h-24 w-full" />
-        ))}
+      <div className="space-y-3" data-testid="stats-summary-cards">
+        <div className="grid gap-3 grid-cols-2 sm:grid-cols-3 lg:grid-cols-6">
+          {Array.from({ length: 6 }).map((_, i) => (
+            <Skeleton key={i} className="h-24 w-full" />
+          ))}
+        </div>
+        <div className="grid gap-3 grid-cols-2 sm:grid-cols-3 lg:grid-cols-6">
+          {Array.from({ length: 6 }).map((_, i) => (
+            <Skeleton key={i} className="h-24 w-full" />
+          ))}
+        </div>
       </div>
     );
   }
@@ -251,51 +230,19 @@ function SummaryCards({ stats, loading }: { stats: StatsResponse | undefined; lo
   const oldest = stats.oldest_flight
     ? new Date(stats.oldest_flight * 1000).toLocaleDateString()
     : '—';
-  // Plain cards — total counts. v1's trend cards are below as a separate row
-  // so they get the prominent treatment they deserve.
-  const cards: { label: string; value: string; sub?: string; testid: string }[] = [
-    {
-      label: 'Total flights',
-      value: stats.total_flights.toLocaleString(),
-      sub: `since ${oldest}`,
-      testid: 'stat-total-flights',
-    },
-    {
-      label: 'Unique aircraft',
-      value: stats.unique_aircraft.toLocaleString(),
-      sub: `${stats.unique_airlines.toLocaleString()} unique airlines`,
-      testid: 'stat-unique-aircraft',
-    },
-    {
-      label: 'Position fixes',
-      value: stats.total_positions.toLocaleString(),
-      sub: `${stats.source_breakdown.adsb}% ADS-B · ${stats.source_breakdown.mlat}% MLAT`,
-      testid: 'stat-position-fixes',
-    },
-    {
-      label: 'DB size',
-      value: stats.db_size_bytes != null ? fmtBytes(stats.db_size_bytes) : '—',
-      sub: oldest !== '—' ? `oldest ${oldest}` : undefined,
-      testid: 'stat-db-size',
-    },
-  ];
   return (
     <div className="space-y-3" data-testid="stats-summary-cards">
-      <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4">
-        {cards.map((c) => (
-          <Card key={c.label} className="card-hover" data-testid={c.testid}>
-            <CardContent className="space-y-1 pt-4">
-              <div className="text-xs font-medium uppercase tracking-wide text-[var(--color-text-dim)]">
-                {c.label}
-              </div>
-              <div className="tabnum text-2xl font-bold">{c.value}</div>
-              {c.sub ? <div className="text-xs text-[var(--color-text-dim)]">{c.sub}</div> : null}
-            </CardContent>
-          </Card>
-        ))}
-      </div>
-
-      <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5">
+      {/* Row 1: core metrics with trend cards inserted after Total flights */}
+      <div className="grid gap-3 grid-cols-2 sm:grid-cols-3 lg:grid-cols-6">
+        <Card className="card-hover" data-testid="stat-total-flights">
+          <CardContent className="space-y-1 pt-4">
+            <div className="text-xs font-medium uppercase tracking-wide text-[var(--color-text-dim)]">
+              Total flights
+            </div>
+            <div className="tabnum text-2xl font-bold">{stats.total_flights.toLocaleString()}</div>
+            <div className="text-xs text-[var(--color-text-dim)]">since {oldest}</div>
+          </CardContent>
+        </Card>
         <TrendCard
           label="Last 24h"
           value={stats.flights_last_24h}
@@ -308,6 +255,45 @@ function SummaryCards({ stats, loading }: { stats: StatsResponse | undefined; lo
           prev={stats.trends?.flights_7d_prev ?? null}
           testid="stat-last-7d"
         />
+        <Card className="card-hover" data-testid="stat-unique-aircraft">
+          <CardContent className="space-y-1 pt-4">
+            <div className="text-xs font-medium uppercase tracking-wide text-[var(--color-text-dim)]">
+              Unique aircraft
+            </div>
+            <div className="tabnum text-2xl font-bold">{stats.unique_aircraft.toLocaleString()}</div>
+            <div className="text-xs text-[var(--color-text-dim)]">
+              {stats.unique_airlines.toLocaleString()} unique airlines
+            </div>
+          </CardContent>
+        </Card>
+        <Card className="card-hover" data-testid="stat-position-fixes">
+          <CardContent className="space-y-1 pt-4">
+            <div className="text-xs font-medium uppercase tracking-wide text-[var(--color-text-dim)]">
+              Position fixes
+            </div>
+            <div className="tabnum text-2xl font-bold">{stats.total_positions.toLocaleString()}</div>
+            <div className="text-xs text-[var(--color-text-dim)]">
+              {stats.source_breakdown.adsb}% ADS-B · {stats.source_breakdown.mlat}% MLAT
+            </div>
+          </CardContent>
+        </Card>
+        <Card className="card-hover" data-testid="stat-db-size">
+          <CardContent className="space-y-1 pt-4">
+            <div className="text-xs font-medium uppercase tracking-wide text-[var(--color-text-dim)]">
+              DB size
+            </div>
+            <div className="tabnum text-2xl font-bold">
+              {stats.db_size_bytes != null ? fmtBytes(stats.db_size_bytes) : '—'}
+            </div>
+            {oldest !== '—' ? (
+              <div className="text-xs text-[var(--color-text-dim)]">oldest {oldest}</div>
+            ) : null}
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Row 2: flags + squawks */}
+      <div className="grid gap-3 grid-cols-2 sm:grid-cols-3 lg:grid-cols-6">
         <FlaggedCard
           label="Military"
           count={stats.military_flights}
@@ -326,6 +312,37 @@ function SummaryCards({ stats, loading }: { stats: StatsResponse | undefined; lo
           variant="danger"
           testid="stat-anonymous"
         />
+        {(['7700', '7600', '7500'] as const).map((code) => {
+          const count = stats.squawk_counts?.[code] ?? 0;
+          return (
+            <Link
+              key={code}
+              to={`/history?squawk=${code}`}
+              data-testid={`stat-squawk-${code}`}
+              className={cn(
+                'block rounded-lg border border-[var(--color-border-default)]',
+                'bg-[var(--color-surface-2)]/60 p-4 text-center shadow-[var(--shadow-sm)]',
+                'transition-colors',
+                count > 0
+                  ? 'hover:border-[var(--color-danger)] hover:bg-[var(--color-surface-3)]'
+                  : 'hover:bg-[var(--color-surface-2)]',
+              )}
+            >
+              <div className="font-mono text-xs text-[var(--color-text-dim)]">{code}</div>
+              <div
+                className={cn(
+                  'tabnum text-2xl font-bold',
+                  count > 0 ? 'text-[var(--color-danger)]' : 'text-[var(--color-text-dim)]',
+                )}
+              >
+                {count.toLocaleString()}
+              </div>
+              <div className="text-[10px] uppercase tracking-wide text-[var(--color-text-dim)]">
+                {SQUAWK_LABELS[code]}
+              </div>
+            </Link>
+          );
+        })}
       </div>
     </div>
   );
@@ -352,29 +369,45 @@ function TrendCard({
       : delta > 0
         ? 'text-[var(--color-success)]'
         : 'text-[var(--color-danger)]';
+  const tooltipContent =
+    delta == null ? (
+      'No previous period data'
+    ) : (
+      <span className="inline-flex items-center gap-1">
+        {ArrowIcon ? <ArrowIcon aria-hidden="true" /> : null}
+        <span className={tone}>
+          {delta >= 0 ? '+' : '−'}{Math.abs(delta).toLocaleString()}
+          {pct != null ? ` (${pct >= 0 ? '+' : ''}${pct.toFixed(0)}%)` : ''}
+        </span>
+        <span className="text-[var(--color-text-dim)]">vs previous period</span>
+      </span>
+    );
   return (
-    <Card className="card-hover" data-testid={testid}>
-      <CardContent className="space-y-1 pt-4">
-        <div className="text-xs font-medium uppercase tracking-wide text-[var(--color-text-dim)]">
-          {label}
-        </div>
-        <div className="tabnum text-2xl font-bold">{value.toLocaleString()}</div>
-        <div className={`text-xs tabnum ${tone}`}>
-          {delta == null ? (
-            <span className="text-[var(--color-text-dim)]">no previous data</span>
-          ) : (
-            <span className="inline-flex items-center gap-1">
-              {ArrowIcon ? <ArrowIcon aria-hidden="true" /> : null}
-              <span>
-                {Math.abs(delta).toLocaleString()}
-                {pct != null ? ` (${pct >= 0 ? '+' : ''}${pct.toFixed(0)}%)` : ''}
-              </span>
-              <span className="ml-1 text-[var(--color-text-dim)]">vs prev period</span>
-            </span>
-          )}
-        </div>
-      </CardContent>
-    </Card>
+    <SimpleTooltip content={tooltipContent} delayDuration={300}>
+      <div>
+        <Card className="card-hover" data-testid={testid}>
+          <CardContent className="space-y-1 pt-4">
+            <div className="text-xs font-medium uppercase tracking-wide text-[var(--color-text-dim)]">
+              {label}
+            </div>
+            <div className="tabnum text-2xl font-bold">{value.toLocaleString()}</div>
+            <div className={`text-xs tabnum ${tone}`}>
+              {delta == null ? (
+                <span className="text-[var(--color-text-dim)]">—</span>
+              ) : (
+                <span className="inline-flex items-center gap-1">
+                  {ArrowIcon ? <ArrowIcon aria-hidden="true" /> : null}
+                  <span>
+                    {delta >= 0 ? '+' : '−'}{Math.abs(delta).toLocaleString()}
+                    {pct != null ? ` (${pct >= 0 ? '+' : ''}${pct.toFixed(0)}%)` : ''}
+                  </span>
+                </span>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    </SimpleTooltip>
   );
 }
 
@@ -438,126 +471,6 @@ function BarChartBlock({
   );
 }
 
-// ---------------------------------------------------------------------------
-// Top-N lists
-// ---------------------------------------------------------------------------
-
-function TopList<T extends Record<string, unknown>>({
-  title,
-  data,
-  loading,
-  labelKey,
-  subLabelKey,
-  countKey,
-  testid,
-}: {
-  title: string;
-  data: T[] | undefined;
-  loading: boolean;
-  labelKey: keyof T;
-  subLabelKey?: keyof T;
-  countKey: keyof T;
-  testid: string;
-}) {
-  return (
-    <Card data-testid={testid}>
-      <CardHeader>
-        <CardTitle>{title}</CardTitle>
-      </CardHeader>
-      <CardContent>
-        {loading ? (
-          <Skeleton className="h-32 w-full" />
-        ) : !data || data.length === 0 ? (
-          <p className="text-sm text-[var(--color-text-dim)]">No data.</p>
-        ) : (
-          <Table>
-            <TBody>
-              {data.slice(0, 10).map((row, i) => {
-                const primary = row[labelKey];
-                const sub = subLabelKey ? row[subLabelKey] : null;
-                return (
-                  <TR key={i}>
-                    <TD>
-                      <div>
-                        <span className="font-medium">
-                          {primary != null && String(primary) !== '' ? String(primary) : '—'}
-                        </span>
-                        {sub && String(sub) !== '' ? (
-                          <span className="ml-2 text-xs text-[var(--color-text-dim)]">
-                            {String(sub)}
-                          </span>
-                        ) : null}
-                      </div>
-                    </TD>
-                    <TD className="text-right tabnum">
-                      {Number(row[countKey] ?? 0).toLocaleString()}
-                    </TD>
-                  </TR>
-                );
-              })}
-            </TBody>
-          </Table>
-        )}
-      </CardContent>
-    </Card>
-  );
-}
-
-function FrequentAircraft({
-  data,
-  loading,
-}: {
-  data:
-    | {
-        icao_hex: string;
-        registration: string | null;
-        aircraft_type: string | null;
-        flights: number;
-      }[]
-    | undefined;
-  loading: boolean;
-}) {
-  return (
-    <Card data-testid="stats-frequent-aircraft">
-      <CardHeader>
-        <CardTitle>Frequent visitors</CardTitle>
-      </CardHeader>
-      <CardContent>
-        {loading ? (
-          <Skeleton className="h-32 w-full" />
-        ) : !data || data.length === 0 ? (
-          <p className="text-sm text-[var(--color-text-dim)]">No data.</p>
-        ) : (
-          <Table>
-            <THead>
-              <TR>
-                <TH>Aircraft</TH>
-                <TH>Type</TH>
-                <TH className="text-right">Flights</TH>
-              </TR>
-            </THead>
-            <TBody>
-              {data.slice(0, 10).map((row) => (
-                <TR key={row.icao_hex}>
-                  <TD className="font-mono">
-                    <Link
-                      to={`/aircraft/${row.icao_hex}`}
-                      className="text-[var(--color-accent)] hover:underline"
-                    >
-                      {row.registration ?? row.icao_hex}
-                    </Link>
-                  </TD>
-                  <TD>{row.aircraft_type ?? '—'}</TD>
-                  <TD className="text-right tabnum">{row.flights.toLocaleString()}</TD>
-                </TR>
-              ))}
-            </TBody>
-          </Table>
-        )}
-      </CardContent>
-    </Card>
-  );
-}
 
 // ---------------------------------------------------------------------------
 // Records
@@ -635,87 +548,6 @@ function RecordCell({
   );
 }
 
-// ---------------------------------------------------------------------------
-// Top routes, top airports, new aircraft, emergency squawks — sections that
-// were in v1 stats.html and are restored here for parity.
-// ---------------------------------------------------------------------------
-
-function RouteList({
-  data,
-  loading,
-}: {
-  data: { origin_icao: string; dest_icao: string; flights: number }[] | undefined;
-  loading: boolean;
-}) {
-  return (
-    <Card data-testid="stats-top-routes">
-      <CardHeader>
-        <CardTitle>Top routes</CardTitle>
-      </CardHeader>
-      <CardContent>
-        {loading ? (
-          <Skeleton className="h-32 w-full" />
-        ) : !data || data.length === 0 ? (
-          <p className="text-sm text-[var(--color-text-dim)]">No data.</p>
-        ) : (
-          <Table>
-            <TBody>
-              {data.slice(0, 10).map((r, i) => (
-                <TR key={i}>
-                  <TD className="font-mono tabnum">
-                    {(r.origin_icao || '???') + '→' + (r.dest_icao || '???')}
-                  </TD>
-                  <TD className="text-right tabnum">{r.flights.toLocaleString()}</TD>
-                </TR>
-              ))}
-            </TBody>
-          </Table>
-        )}
-      </CardContent>
-    </Card>
-  );
-}
-
-function AirportList({
-  data,
-  loading,
-}: {
-  data: { icao_code: string; name?: string | null; appearances?: number; flights?: number }[] | undefined;
-  loading: boolean;
-}) {
-  return (
-    <Card data-testid="stats-top-airports">
-      <CardHeader>
-        <CardTitle>Top airports</CardTitle>
-      </CardHeader>
-      <CardContent>
-        {loading ? (
-          <Skeleton className="h-32 w-full" />
-        ) : !data || data.length === 0 ? (
-          <p className="text-sm text-[var(--color-text-dim)]">No data.</p>
-        ) : (
-          <Table>
-            <TBody>
-              {data.slice(0, 10).map((r) => (
-                <TR key={r.icao_code}>
-                  <TD>
-                    <span className="font-mono">{r.icao_code}</span>
-                    {r.name ? (
-                      <span className="ml-2 text-xs text-[var(--color-text-dim)]">{r.name}</span>
-                    ) : null}
-                  </TD>
-                  <TD className="text-right tabnum">
-                    {(r.appearances ?? r.flights ?? 0).toLocaleString()}
-                  </TD>
-                </TR>
-              ))}
-            </TBody>
-          </Table>
-        )}
-      </CardContent>
-    </Card>
-  );
-}
 
 function NewAircraftList({
   data,
@@ -796,67 +628,10 @@ function NewAircraftList({
 }
 
 const SQUAWK_LABELS: Record<string, string> = {
-  '7700': 'General emergency',
+  '7700': 'Emergency',
   '7600': 'Radio failure',
   '7500': 'Hijack',
 };
-
-function EmergencySquawks({
-  data,
-  loading,
-}: {
-  data: { '7700'?: number; '7600'?: number; '7500'?: number } | undefined;
-  loading: boolean;
-}) {
-  return (
-    <Card data-testid="stats-emergency-squawks">
-      <CardHeader>
-        <CardTitle>Emergency squawks</CardTitle>
-      </CardHeader>
-      <CardContent>
-        {loading ? (
-          <Skeleton className="h-24 w-full" />
-        ) : (
-          <div className="grid grid-cols-3 gap-2">
-            {(['7700', '7600', '7500'] as const).map((code) => {
-              const count = data?.[code] ?? 0;
-              return (
-                <SimpleTooltip
-                  key={code}
-                  content={`${count.toLocaleString()} flights with squawk ${code}`}
-                >
-                  <Link
-                    to={`/history?squawk=${code}`}
-                    className={cn(
-                      'rounded border border-[var(--color-border-default)] bg-[var(--color-surface-2)]/60 p-3 text-center transition-colors',
-                      count > 0
-                        ? 'hover:border-[var(--color-danger)] hover:bg-[var(--color-surface-3)]'
-                        : 'hover:bg-[var(--color-surface-2)]',
-                    )}
-                    data-testid={`stats-squawk-${code}`}
-                  >
-                    <div className="font-mono text-xs text-[var(--color-text-dim)]">{code}</div>
-                    <div
-                      className={cn(
-                        'tabnum text-2xl font-bold',
-                        count > 0 ? 'text-[var(--color-danger)]' : 'text-[var(--color-text-dim)]',
-                      )}
-                    >
-                      {count.toLocaleString()}
-                    </div>
-                    <div className="text-[10px] uppercase tracking-wide text-[var(--color-text-dim)]">
-                      {SQUAWK_LABELS[code]}
-                    </div>
-                  </Link>
-                </SimpleTooltip>
-              );
-            })}
-          </div>
-        )}
-      </CardContent>
-    </Card>
-  );
-}
 
 function formatLongest(seconds: number | null): string {
   if (seconds == null) return '—';

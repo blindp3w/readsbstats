@@ -26,9 +26,21 @@ import type { ReactNode } from 'react';
 // Every page calls `apiJson` / `apiFetch` which delegate to global `fetch`.
 // Return a tiny per-endpoint shape so the page renders its "empty" state.
 const FETCH_STUBS: Record<string, unknown> = {
-  // /api/stats → records / aggregates
-  '/stats/api/stats': { aggregates: {}, top_airlines: [], top_types: [], top_routes: [], top_airports: [], top_countries: [], hourly: [], daily: [], new_aircraft: [], frequent_aircraft: [], emergency_squawks: [], heatmap: [], records: {} },
-  '/stats/api/stats/polar': { points: [] },
+  // /api/stats — field names must match StatsResponse exactly so TopChart normalisation
+  // doesn't silently receive undefined for every dataset.
+  '/stats/api/stats': {
+    total_flights: 0, total_positions: 0, unique_aircraft: 0, unique_airlines: 0,
+    db_size_bytes: null, oldest_flight: null,
+    flights_last_24h: 0, flights_last_7d: 0,
+    source_breakdown: { adsb: 0, mlat: 0, other: 0 },
+    top_aircraft_types: [], top_airlines: [], top_countries: [],
+    frequent_aircraft: [], top_routes: [], top_airports: [],
+    hourly_distribution: [], daily_unique_aircraft: [], altitude_distribution: [],
+    military_flights: 0, interesting_flights: 0, anonymous_flights: 0,
+    heatmap: [], squawk_counts: {},
+  },
+  '/stats/api/stats/polar': { buckets: [] },
+  '/stats/api/stats/records': { fastest: null, furthest: null, highest: null, longest: null },
   // Shape must match `FlightsResponse` in pages/History.tsx — not just
   // an "empty bag with whatever fields" (audit-12 P8 fix). The old stub
   // returned `{ total, items }` and tests passed only because every page
