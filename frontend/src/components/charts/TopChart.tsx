@@ -5,6 +5,13 @@ import type { StatsResponse } from '@/pages/Stats';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { ToggleGroupRoot, ToggleGroupItem } from '@/components/ui/ToggleGroup';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/Select';
 import { CHART_COLORS, baseOption } from '@/components/charts/theme';
 import { EChart } from '@/components/charts/EChart';
 
@@ -150,21 +157,50 @@ export function TopChart(props: TopChartProps) {
     <Card data-testid="stats-top-chart">
       <CardHeader className="flex flex-col items-start gap-2">
         <CardTitle>Top statistics</CardTitle>
-        <ToggleGroupRoot
-          type="single"
+        {/* < sm: 6 tabs don't fit iPhone portrait (~393 px); fall back to
+            a dropdown. >= sm: ToggleGroup tabs, same as desktop. Both
+            controls share the same `view` state. */}
+        {/* Visibility lives on plain wrapper <div>s. Both SelectTrigger and
+            ToggleGroupRoot set `inline-flex` in their base classes; our cn()
+            is clsx (not tailwind-merge), so `sm:hidden` / `hidden sm:flex`
+            applied directly lose the CSS-order battle to `inline-flex`. */}
+        <Select
           value={view}
-          onValueChange={(v) => {
-            if (!v) return;
-            setView(v as ViewKey);
-          }}
-          aria-label="Statistics view"
+          onValueChange={(v) => setView(v as ViewKey)}
         >
-          {VIEWS.map((v) => (
-            <ToggleGroupItem key={v.key} value={v.key}>
-              {v.label}
-            </ToggleGroupItem>
-          ))}
-        </ToggleGroupRoot>
+          <div className="w-full sm:hidden">
+            <SelectTrigger
+              data-testid="stats-top-chart-select"
+              aria-label="Statistics view"
+            >
+              <SelectValue />
+            </SelectTrigger>
+          </div>
+          <SelectContent>
+            {VIEWS.map((v) => (
+              <SelectItem key={v.key} value={v.key}>
+                {v.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <div className="hidden sm:block">
+          <ToggleGroupRoot
+            type="single"
+            value={view}
+            onValueChange={(v) => {
+              if (!v) return;
+              setView(v as ViewKey);
+            }}
+            aria-label="Statistics view"
+          >
+            {VIEWS.map((v) => (
+              <ToggleGroupItem key={v.key} value={v.key}>
+                {v.label}
+              </ToggleGroupItem>
+            ))}
+          </ToggleGroupRoot>
+        </div>
       </CardHeader>
       <CardContent>
         {props.loading ? (

@@ -1,5 +1,41 @@
 # Changelog
 
+## 2.2.2 — 2026-05-19
+
+### Flight detail page polish
+
+- **Layout**: Route and Altitude+speed are now full-row blocks stacked
+  vertically, replacing the previous `lg:grid-cols-3` (2/3 Route + 1/3
+  chart) layout that left the chart cramped on desktop and squeezed the
+  legend into the axis tick row.
+- **Chart legend** moved from `bottom: 0` to `top: 0` — at the bottom it
+  collided with the x-axis tick labels on narrow viewports (e.g.
+  `21:39 Alt(m) 21:41 Speed(km/h) …`). Y-axis `name` labels dropped since
+  the top legend now carries the series identifiers.
+- **Route map height** bumped at `lg:` to fit the new full-width row.
+
+### Nav bar opacity / z-index
+
+- Sticky nav z-index lifted from `z-40` to `z-[1000]` so it sits above
+  Leaflet's pane stack (max 800 for `.leaflet-control`).
+- Fallback / `supports-[backdrop-filter]` background opacity raised from
+  `/85` and `/70` to `/95` and `/85` — fixes the iOS Safari edge case
+  where satellite tiles on `/flight` bled through the translucent nav
+  during scroll.
+
+### Badge `whitespace-nowrap`
+
+Source / flag badges like `ADS-B` no longer break at the hyphen when
+their parent column is narrow (e.g. the position-log Source column on
+iPhone portrait).
+
+### Top statistics view picker on mobile
+
+The six tabs (`Aircraft types`, `Airlines`, `Countries`, `Visitors`,
+`Routes`, `Airports`) overflowed iPhone portrait into two rows. Mobile
+(`< sm`) now shows a Radix Select dropdown; desktop (`≥ sm`) keeps the
+familiar tab strip. Both controls share the same `view` state.
+
 ## 2.2.1 — 2026-05-19
 
 ### Stats activity heatmap: responsive layout for narrow viewports

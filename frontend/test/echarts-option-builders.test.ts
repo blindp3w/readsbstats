@@ -174,9 +174,16 @@ describe('buildFlightProfileOption (Flight)', () => {
     const opt = buildFlightProfileOption(rows, 'ft', 'kt', fakeFmtAxisTime, fakeFmtTs);
     const yAxis = opt.yAxis as any[];
     expect(yAxis).toHaveLength(2);
-    expect(yAxis[0].name).toBe('ft');
-    expect(yAxis[1].name).toBe('kt');
+    // yAxis[0] uses default left position; yAxis[1] explicitly 'right'.
     expect(yAxis[1].position).toBe('right');
+  });
+
+  it('places the legend at top (avoids overlap with x-axis tick labels)', () => {
+    const opt = buildFlightProfileOption(rows, 'ft', 'kt', fakeFmtAxisTime, fakeFmtTs);
+    const legend = opt.legend as any;
+    expect(legend.top).toBe(0);
+    expect(legend.bottom).toBeUndefined();
+    expect(legend.data).toEqual(['ft', 'kt']);
   });
 
   it('assigns yAxisIndex per series', () => {

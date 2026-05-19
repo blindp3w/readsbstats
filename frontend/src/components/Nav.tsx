@@ -88,7 +88,12 @@ export function Nav() {
   return (
     <nav
       data-testid="app-nav"
-      className="sticky top-0 z-40 border-b border-[var(--color-border-default)] bg-[var(--color-surface)]/85 backdrop-blur supports-[backdrop-filter]:bg-[var(--color-surface)]/70"
+      // z-[1000]: Leaflet's max pane z-index is 800 (.leaflet-control). The
+      // sticky nav must sit above it so the /flight Route map doesn't bleed
+      // through the translucent backdrop on iOS.
+      // bg /95 (fallback) and /85 (with backdrop-blur) lift opacity enough
+      // that the satellite tiles can't show through during scroll.
+      className="sticky top-0 z-[1000] border-b border-[var(--color-border-default)] bg-[var(--color-surface)]/95 backdrop-blur supports-[backdrop-filter]:bg-[var(--color-surface)]/85"
     >
       <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-4 py-2.5 md:py-1.5">
         <Link to="/" className="text-sm font-semibold" data-testid="nav-brand">

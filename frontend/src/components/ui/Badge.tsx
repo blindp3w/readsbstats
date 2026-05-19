@@ -17,7 +17,9 @@ export function Badge({ variant = 'default', className, ...props }: Props) {
   return (
     <span
       className={cn(
-        'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium tabular-nums',
+        // whitespace-nowrap so e.g. "ADS-B" can never break at the hyphen
+        // in a narrow column on mobile.
+        'inline-flex items-center gap-1 whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-medium tabular-nums',
         variantClass[variant],
         className,
       )}

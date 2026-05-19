@@ -127,32 +127,30 @@ export default function FlightPage() {
       {detailQ.data && (
         <>
           <FlightHeader detail={detailQ.data} photoQ={photoQ} />
-          <div className="grid gap-4 lg:grid-cols-3">
-            <Card className="lg:col-span-2" data-testid="flight-map-card">
-              <CardHeader>
-                <CardTitle>Route</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="h-[420px] w-full" data-testid="flight-map">
-                  <Suspense fallback={<Skeleton className="h-full w-full" />}>
-                    <RouteMap
-                      positions={detailQ.data.positions}
-                      receiverLat={detailQ.data.receiver_lat}
-                      receiverLon={detailQ.data.receiver_lon}
-                    />
-                  </Suspense>
-                </div>
-              </CardContent>
-            </Card>
-            <Card data-testid="flight-profile-card">
-              <CardHeader>
-                <CardTitle>Altitude + speed</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <FlightProfile positions={detailQ.data.positions} />
-              </CardContent>
-            </Card>
-          </div>
+          <Card data-testid="flight-map-card">
+            <CardHeader>
+              <CardTitle>Route</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="h-[420px] w-full lg:h-[520px]" data-testid="flight-map">
+                <Suspense fallback={<Skeleton className="h-full w-full" />}>
+                  <RouteMap
+                    positions={detailQ.data.positions}
+                    receiverLat={detailQ.data.receiver_lat}
+                    receiverLon={detailQ.data.receiver_lon}
+                  />
+                </Suspense>
+              </div>
+            </CardContent>
+          </Card>
+          <Card data-testid="flight-profile-card">
+            <CardHeader>
+              <CardTitle>Altitude + speed</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <FlightProfile positions={detailQ.data.positions} />
+            </CardContent>
+          </Card>
           <Card data-testid="flight-positions-card">
             <CardHeader>
               <CardTitle>Position log ({detailQ.data.positions.length})</CardTitle>
@@ -352,12 +350,15 @@ export function buildFlightProfileOption(
   const rightAxis = valueAxis() as any;
   return {
     ...base,
+    // Legend at the top — at `bottom: 0` it collides with the time-axis
+    // tick labels on narrow viewports (and on desktop when the chart is
+    // forced into a 1/3-column grid).
     legend: {
-      bottom: 0,
+      top: 0,
       textStyle: { color: CHART_COLORS.textDim, fontSize: 12 },
       data: [altLabel, spdLabel],
     },
-    grid: { top: 8, right: 40, bottom: 28, left: 44, containLabel: false },
+    grid: { top: 32, right: 40, bottom: 28, left: 44, containLabel: false },
     xAxis: {
       ...tAxis,
       axisLabel: {
@@ -369,10 +370,10 @@ export function buildFlightProfileOption(
         label: { formatter: (p: any) => fmtTs(p.value / 1000) },
       },
     },
-    yAxis: [
-      { ...leftAxis, name: altLabel, nameTextStyle: { color: CHART_COLORS.orange, fontSize: 10 } },
-      { ...rightAxis, position: 'right', name: spdLabel, nameTextStyle: { color: CHART_COLORS.accent, fontSize: 10 } },
-    ],
+    // No yAxis `name` here — the top legend already carries the series
+    // names and adding `name` puts them on the same horizontal strip
+    // (would crowd "Alt (m) | legend | Speed (km/h)" into the top edge).
+    yAxis: [leftAxis, { ...rightAxis, position: 'right' }],
     dataZoom: [{ type: 'inside' }],
     series: [
       {
