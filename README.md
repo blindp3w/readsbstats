@@ -32,7 +32,7 @@ Designed to run alongside readsb, tar1090, and feed clients on a **Raspberry Pi 
 - Live map with historical rewind (up to 24 h), position heatmap, and coverage range overlay
 - Telegram notifications for military/interesting/anonymous/watchlist/emergency-squawk events; interactive bot commands
 - Aircraft watchlist — track by ICAO hex, registration, or callsign prefix
-- Receiver metrics dashboard with 11 time-series charts and 9 health checks
+- Receiver metrics dashboard with 10 time-series charts (Apache ECharts canvas, cross-panel hover sync, wheel/pinch zoom, LTTB downsampling) and 9 health checks
 - Optional [DuckDB](https://duckdb.org/) analytical accelerator for heatmap/coverage (`RSBS_USE_DUCKDB=1`)
 - Unit switching: Aeronautical / Metric / Imperial — persisted in browser
 - SQLite crash-safety (`synchronous=FULL` + WAL) with dirty-shutdown detection and weekly/monthly integrity checks via systemd timers
@@ -147,4 +147,8 @@ readsbstats/
 
 ## License
 
-MIT
+MIT — see [`LICENSE`](LICENSE).
+
+The bundled frontend (`frontend/dist/`) includes Apache ECharts (Apache-2.0)
+and other open-source libraries. Required attribution lives in
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).

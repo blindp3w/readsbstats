@@ -1,5 +1,67 @@
 # Changelog
 
+## 2.2.0 — 2026-05-19
+
+### Frontend chart library: Recharts → Apache ECharts
+
+All four chart surfaces (`/metrics`, `/stats` bars + top-N, `/flight`
+altitude+speed profile) now render via Apache ECharts 6 on a canvas
+backend. See `docs/decisions/0008-apache-echarts-frontend-charts.md` for
+the full rationale.
+
+- **`/metrics`** — Panels share a connected group so hovering on one
+  shows a synchronized vertical guide + axis-pointer label on all of
+  them (`echarts.connect`). Each panel has a `dataZoom: 'inside'`
+  (wheel/pinch) for sub-range exploration without an API round-trip.
+- **Panel layout**: 11 → 10 panels; "Network — feed out" and "Network —
+  feed in" merged into a single two-series "Network" panel (even count
+  pairs cleanly in the 2-column layout at `xl:` breakpoint).
+- **Grid breakpoint**: panels lay out 1-per-row up to `xl:` (1280 px),
+  2-per-row beyond — wider charts at typical laptop / tablet widths,
+  pair-density on wide monitors.
+- **Axis tick formatter**: span-aware. < 36 h shows `HH:MM`; ≥ 36 h
+  shows locale-aware `DD/MM`. On-hover axis-pointer label keeps the
+  full timestamp via `useFormat().fmtTs` (12 h / 24 h respected per
+  `RSBS_TIME_FORMAT`).
+- **LTTB sampling** (`series.sampling: 'lttb'`) on every line series —
+  kicks in when point count exceeds rendered pixel width.
+- **Custom React wrapper** at `frontend/src/components/charts/EChart.tsx`,
+  hand-rolled on `echarts/core` with tree-shaken component imports
+  (`LineChart`, `BarChart`, `GridComponent`, `TooltipComponent`,
+  `DataZoomComponent`, `LegendComponent`, `CanvasRenderer`). No third-
+  party React wrapper — `echarts-for-react@3` was evaluated and rejected
+  because its transitive dep `size-sensor` is flagged as malware in
+  [GHSA-gx6x-v325-85g4](https://github.com/advisories/GHSA-gx6x-v325-85g4).
+- **`Heatmap.tsx` + `PolarRange.tsx`** intentionally remain custom SVG /
+  CSS. The heatmap's per-cell Radix tooltip + keyboard focus +
+  `aria-label` is an a11y win that ECharts canvas would erase.
+- **Bundle**: `charts-*.js` chunk 112 KB gz → 188 KB gz (Recharts SVG →
+  ECharts canvas + zrender). Other chunks unchanged. The chunk is
+  lazy-loaded by stats / metrics / flight only — shell unaffected.
+
+### Licensing
+
+- New `THIRD_PARTY_NOTICES.md` at repo root — verbatim Apache ECharts
+  `NOTICE` block + d3-shape BSD-3 sub-license. `README.md`'s License
+  section links to it. Apache 2.0 attribution requirements now satisfied
+  for the bundled frontend.
+
+### Tests
+
+- **+25 Vitest** (117 → 142). New: `echart-wrapper.test.tsx` (lifecycle:
+  init, setOption, group sync, dispose, events), `echarts-option-builders.test.ts`
+  (pure unit tests on all 4 builders + span-switch HH:MM ↔ DD/MM),
+  `top-chart-click.test.tsx` (visitors-view nav, non-visitors ignore,
+  missing-icao_hex tolerance), `echarts-time-format.test.ts`
+  (`RSBS_TIME_FORMAT` propagation through axis labels).
+- **+1 Playwright assertion**: `metrics-panel-*` count regression guard.
+- **Pre-existing Playwright failures fixed** (unrelated to charts but
+  surfaced during the v2.2.0 test sweep): `stat-squawk-XXXX` testid
+  typo (was `stats-squawk-XXXX`); watchlist add-form tests now use
+  valid 6-hex ICAOs (form validation was added after the test was
+  written); custom-range popover test applies with form defaults
+  instead of `fill()`-ing the themed `DatePicker` DOM.
+
 ## 2.1.19 — 2026-05-19
 
 ### SQLite crash-safety hardening
