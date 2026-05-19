@@ -16,7 +16,7 @@ WATCHLIST_LABEL_MAX = 255
 
 DDL = """
 PRAGMA journal_mode = WAL;
-PRAGMA synchronous  = NORMAL;
+PRAGMA synchronous  = FULL;
 PRAGMA foreign_keys = ON;
 PRAGMA cache_size   = -65536;
 
@@ -220,7 +220,7 @@ def connect(path: str = config.DB_PATH) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.executescript(
         "PRAGMA journal_mode = WAL;"
-        "PRAGMA synchronous  = NORMAL;"
+        "PRAGMA synchronous  = FULL;"
         "PRAGMA foreign_keys = ON;"
         "PRAGMA cache_size   = -65536;"
         "PRAGMA mmap_size    = 268435456;"

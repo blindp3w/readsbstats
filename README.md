@@ -35,6 +35,7 @@ Designed to run alongside readsb, tar1090, and feed clients on a **Raspberry Pi 
 - Receiver metrics dashboard with 11 time-series charts and 9 health checks
 - Optional [DuckDB](https://duckdb.org/) analytical accelerator for heatmap/coverage (`RSBS_USE_DUCKDB=1`)
 - Unit switching: Aeronautical / Metric / Imperial — persisted in browser
+- SQLite crash-safety (`synchronous=FULL` + WAL) with dirty-shutdown detection and weekly/monthly integrity checks via systemd timers
 
 ## Requirements
 

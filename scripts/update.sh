@@ -159,12 +159,17 @@ c.execute('LOAD sqlite_scanner')
 " || echo "WARNING: DuckDB extension pre-cache failed; will be downloaded on first use" >&2
 
 echo "==> Reloading systemd"
-cp "$APP_DIR/systemd/readsbstats-collector.service" /etc/systemd/system/
-cp "$APP_DIR/systemd/readsbstats-web.service"       /etc/systemd/system/
-cp "$APP_DIR/systemd/readsbstats-updater.service"   /etc/systemd/system/
-cp "$APP_DIR/systemd/readsbstats-updater.timer"     /etc/systemd/system/
-cp "$APP_DIR/systemd/notify-telegram@.service"      /etc/systemd/system/
+cp "$APP_DIR/systemd/readsbstats-collector.service"     /etc/systemd/system/
+cp "$APP_DIR/systemd/readsbstats-web.service"           /etc/systemd/system/
+cp "$APP_DIR/systemd/readsbstats-updater.service"       /etc/systemd/system/
+cp "$APP_DIR/systemd/readsbstats-updater.timer"         /etc/systemd/system/
+cp "$APP_DIR/systemd/readsbstats-dbcheck.service"       /etc/systemd/system/
+cp "$APP_DIR/systemd/readsbstats-dbcheck.timer"         /etc/systemd/system/
+cp "$APP_DIR/systemd/readsbstats-dbcheck-full.service"  /etc/systemd/system/
+cp "$APP_DIR/systemd/readsbstats-dbcheck-full.timer"    /etc/systemd/system/
+cp "$APP_DIR/systemd/notify-telegram@.service"          /etc/systemd/system/
 systemctl daemon-reload
+systemctl enable --now readsbstats-dbcheck.timer readsbstats-dbcheck-full.timer
 
 # ---- Reload nginx if the proxy config shipped in this sync ------------------
 # The repo carries nginx-readsbstats.conf — if you keep it included from your

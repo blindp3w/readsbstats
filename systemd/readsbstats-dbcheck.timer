@@ -1,0 +1,10 @@
+[Unit]
+Description=Weekly readsbstats DB quick_check (Sun 03:30)
+Requires=readsbstats-dbcheck.service
+
+[Timer]
+OnCalendar=Sun *-*-* 03:30:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

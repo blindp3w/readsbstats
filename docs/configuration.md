@@ -94,3 +94,16 @@ Environment="RSBS_AIRSPACE_GEOJSON=/opt/readsbstats/my_airspace.geojson"
 ## DuckDB accelerator
 
 `RSBS_USE_DUCKDB=1` enables columnar scans for `/api/map/heatmap` and `/api/map/coverage`. The DuckDB extension binary is pre-fetched by `scripts/update.sh` to avoid a ~5 s download on first hit. SQLite remains the only write path — DuckDB is read-only. Set `RSBS_PREWARM_MAP_CACHE=1` (on by default when DuckDB is available) to keep all 8 cache entries hot at half-TTL.
+
+## Database crash safety
+
+The collector and web server both open the SQLite DB with `journal_mode = WAL` and `synchronous = FULL` (changed from `NORMAL` in v2.1.19 after a power outage). FULL adds one fsync per write commit — negligible at the 5-second poll cadence, and necessary because USB HDDs commonly lie about `SYNCHRONIZE CACHE`.
+
+On startup, the collector writes a sentinel file at `<DB-dir>/.dirty_shutdown` and removes it only on graceful shutdown. If the sentinel is present at the next startup, the collector runs `PRAGMA quick_check(10)` and logs results to journald. Detected corruption is logged CRITICAL but the service continues (degraded) — observability over availability for the unattended Pi.
+
+Two systemd timers run periodic integrity checks (configured via `systemd/readsbstats-dbcheck*.{service,timer}`):
+
+- Weekly `PRAGMA quick_check` — Sunday 03:30 local
+- Monthly `PRAGMA integrity_check` — 1st Sunday 04:00 local
+
+Both fire `OnFailure=notify-telegram@%n.service` on corruption. For manual checks: `python /opt/readsbstats/scripts/check_db.py --mode {quick,full}`.

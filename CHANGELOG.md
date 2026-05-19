@@ -1,5 +1,33 @@
 # Changelog
 
+## 2.1.19 — 2026-05-19
+
+### SQLite crash-safety hardening
+
+After a recent power outage, three reliability gaps were addressed:
+
+- **`synchronous = FULL`** in both `database.DDL` and `database.connect()`.
+  Adds one fsync per write commit, ensuring committed transactions survive
+  power loss. Negligible throughput impact at the 5-second poll cadence.
+- **Dirty-shutdown sentinel** at `<db-dir>/.dirty_shutdown`. The collector
+  writes it on startup and removes it on graceful shutdown. If the sentinel
+  is present at next startup, the collector runs `PRAGMA quick_check(10)` —
+  on success, also `PRAGMA wal_checkpoint(TRUNCATE)` to clean WAL state.
+  On detected corruption, logs CRITICAL and continues degraded rather than
+  refusing to start.
+- **Periodic integrity checks** via two new systemd timers:
+  - `readsbstats-dbcheck.timer` — weekly `quick_check` (Sun 03:30 local)
+  - `readsbstats-dbcheck-full.timer` — monthly `integrity_check`
+    (1st Sun 04:00 local)
+  Both trigger `OnFailure=notify-telegram@%n.service` so corruption
+  detected overnight surfaces immediately. Schedule chosen from 90 days of
+  traffic data (03:00–04:00 = absolute trough, 0.3–0.6 aircraft average).
+- New script `scripts/check_db.py` for manual integrity checks. Opens the
+  DB read-only (`?mode=ro` URI), safe to run while the collector is writing.
+  Exit codes: 0 = OK, 1 = corruption, 2 = open/query error.
+
+See `docs/decisions/0007-sqlite-integrity-checks.md` for the full rationale.
+
 ## 2.1.18 — 2026-05-19
 
 ### UI polish — personal records, watchlist, frontend build info

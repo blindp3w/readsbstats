@@ -97,15 +97,21 @@ else
 fi
 
 # ---- Systemd services --------------------------------------------------------
-cp "$APP_DIR/systemd/readsbstats-collector.service" /etc/systemd/system/
-cp "$APP_DIR/systemd/readsbstats-web.service"       /etc/systemd/system/
-cp "$APP_DIR/systemd/readsbstats-updater.service"   /etc/systemd/system/
-cp "$APP_DIR/systemd/readsbstats-updater.timer"     /etc/systemd/system/
-cp "$APP_DIR/systemd/notify-telegram@.service"      /etc/systemd/system/
+cp "$APP_DIR/systemd/readsbstats-collector.service"     /etc/systemd/system/
+cp "$APP_DIR/systemd/readsbstats-web.service"           /etc/systemd/system/
+cp "$APP_DIR/systemd/readsbstats-updater.service"       /etc/systemd/system/
+cp "$APP_DIR/systemd/readsbstats-updater.timer"         /etc/systemd/system/
+cp "$APP_DIR/systemd/readsbstats-dbcheck.service"       /etc/systemd/system/
+cp "$APP_DIR/systemd/readsbstats-dbcheck.timer"         /etc/systemd/system/
+cp "$APP_DIR/systemd/readsbstats-dbcheck-full.service"  /etc/systemd/system/
+cp "$APP_DIR/systemd/readsbstats-dbcheck-full.timer"    /etc/systemd/system/
+cp "$APP_DIR/systemd/notify-telegram@.service"          /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable --now readsbstats-collector.service
 systemctl enable --now readsbstats-web.service
 systemctl enable --now readsbstats-updater.timer
+systemctl enable --now readsbstats-dbcheck.timer
+systemctl enable --now readsbstats-dbcheck-full.timer
 echo "Services enabled and started"
 
 # ---- nginx -------------------------------------------------------------------

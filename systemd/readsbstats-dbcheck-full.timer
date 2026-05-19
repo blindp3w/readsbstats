@@ -1,0 +1,10 @@
+[Unit]
+Description=Monthly readsbstats DB integrity_check (1st Sun 04:00)
+Requires=readsbstats-dbcheck-full.service
+
+[Timer]
+OnCalendar=Sun *-*-01..07 04:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

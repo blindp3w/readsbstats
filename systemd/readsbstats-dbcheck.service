@@ -1,0 +1,22 @@
+[Unit]
+Description=readsbstats weekly DB quick_check
+OnFailure=notify-telegram@%n.service
+
+[Service]
+Type=oneshot
+User=readsbstats
+Group=readsbstats
+ExecStart=/opt/readsbstats/venv/bin/python /opt/readsbstats/scripts/check_db.py --mode quick
+WorkingDirectory=/opt/readsbstats
+# Security hardening
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/mnt/ext/readsbstats
+TimeoutStartSec=120
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=readsbstats-dbcheck

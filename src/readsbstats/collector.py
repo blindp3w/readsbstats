@@ -13,6 +13,7 @@ import json
 import logging
 import math
 import os
+import pathlib
 import queue
 import signal
 import socket
@@ -23,6 +24,10 @@ import threading
 import time
 
 from . import adsbx_enricher, config, database, enrichment, geo, icao_ranges, metrics_collector, notifier
+
+# Sentinel written at startup, removed only on clean shutdown.
+# Presence on next startup → previous run ended uncleanly → run quick_check.
+_SENTINEL: pathlib.Path = pathlib.Path(config.DB_PATH).parent / ".dirty_shutdown"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -954,13 +959,47 @@ def _check_daily_summary(conn: sqlite3.Connection) -> None:
 # Main entry point
 # ---------------------------------------------------------------------------
 
+def _startup_integrity_check(conn: sqlite3.Connection, sentinel: pathlib.Path) -> None:
+    """Run quick_check when previous shutdown was unclean. Log + checkpoint on pass."""
+    log.warning("Unclean shutdown detected; running PRAGMA quick_check…")
+    try:
+        rows = conn.execute("PRAGMA quick_check(10)").fetchall()
+    except Exception:
+        log.exception("quick_check failed to run")
+        return
+    if len(rows) == 1 and rows[0][0] == "ok":
+        log.info("DB integrity check passed; checkpointing WAL")
+        row = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        if row and row[0] > 0:
+            log.debug("WAL checkpoint partial — %d page(s) pending (busy readers)", row[0])
+        sentinel.unlink(missing_ok=True)
+    else:
+        issues = [r[0] for r in rows]
+        log.critical(
+            "DB CORRUPTION DETECTED after unclean shutdown (%d issue(s)): %s",
+            len(issues), issues,
+        )
+
+
 def main() -> None:
     log.info(
         "Starting collector — DB: %s  source: %s  poll: %ds",
         config.DB_PATH, config.AIRCRAFT_JSON, config.POLL_INTERVAL_SEC,
     )
+
+    _sentinel_existed = False
+    try:
+        _sentinel_existed = _SENTINEL.exists()
+        _SENTINEL.touch()
+    except OSError:
+        log.warning("Cannot write sentinel file %s — skipping crash detection", _SENTINEL)
+
     database.init_db()
     conn = database.connect()
+
+    if _sentinel_existed:
+        _startup_integrity_check(conn, _SENTINEL)
+
     _load_active(conn)
     if notifier.telegram_enabled():
         _load_notified(conn)
@@ -1011,6 +1050,10 @@ def main() -> None:
     except Exception:
         log.exception("Error stopping notification consumer")
     conn.close()
+    try:
+        _SENTINEL.unlink(missing_ok=True)
+    except OSError:
+        pass
     log.info("Collector stopped")
 
 
