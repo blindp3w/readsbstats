@@ -15,7 +15,15 @@ For local development with real data, copy the database from your Pi:
 
 ```bash
 rsync pi@your-pi:/mnt/ext/readsbstats/history.db ./db/
-bash dev.sh
+bash scripts/dev.sh
+```
+
+### Frontend
+
+```bash
+cd frontend && npm install
+npm run dev   # HMR dev server at :5173, proxies /api → :8080
+npm test      # Vitest unit tests
 ```
 
 ## Running tests
@@ -71,15 +79,15 @@ Keep PRs focused — one feature or fix per PR.
 
 ```
 src/readsbstats/   # Python package — collector, web server, enrichment, notifier
+frontend/          # React 19 + Vite 7 SPA (npm run dev / npm run build)
 scripts/           # CLI one-shot tools + deployment shell scripts
-tests/             # pytest test suite (Python) + node --test JS suite
-templates/         # Jinja2 HTML templates
-static/            # CSS, JS, vendor assets (Leaflet, uPlot), airspace GeoJSON
+tests/             # pytest test suite (Python) + Playwright UI tests
 systemd/           # .service / .timer unit files
 docs/              # User-facing docs
 ```
 
 The collector (`collector.py`) runs as a systemd service polling `/run/readsb/aircraft.json`
 every 5 s and writing to SQLite. The web server (`web.py`) is a FastAPI + Uvicorn app bound
-to `127.0.0.1:8080`, fronted by nginx at `/stats/`. Database schema and migrations live in
-`database.py`; all tunables go through `RSBS_*` env vars in `config.py`.
+to `127.0.0.1:8080`, fronted by nginx at `/stats/`, serving a React 19 SPA built with Vite.
+Database schema and migrations live in `database.py`; all tunables go through `RSBS_*` env
+vars in `config.py`.

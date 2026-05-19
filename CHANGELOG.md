@@ -1,5 +1,17 @@
 # Changelog
 
+## 2.2.3 — 2026-05-20
+
+### Documentation refresh
+
+- **README**: v2 UI screenshots replace all v1 images; live map and aircraft
+  gallery lead the grid. Added "Why readsbstats?" paragraph and release badge.
+- **CONTRIBUTING.md**: removed stale v1 references (`templates/`, `static/`,
+  Jinja2, Leaflet, uPlot); added frontend dev setup (npm).
+- **CODE_OF_CONDUCT.md**: new community standards file.
+- **docs/development.md**: test counts updated to current figures.
+- **pyproject.toml**: version field brought in sync with git tags.
+
 ## 2.2.2 — 2026-05-19
 
 ### Flight detail page polish
