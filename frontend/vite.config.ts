@@ -20,9 +20,9 @@ function getFrontendBuild(): string {
 // - `base` differs between dev and prod: dev is root-mounted (Vite at :5173,
 //   no nginx); prod is mounted under /stats/v2/ behind nginx → uvicorn.
 // - React Compiler 1.0 is enabled via Babel plugin (auto-memoization).
-// - Manual chunks split Leaflet (~140 KB raw) and Recharts (~290 KB raw) out
-//   of the shell so pages that don't use them (settings, watchlist, feeders)
-//   don't pay the bytes on first paint.
+// - Manual chunks split Leaflet (~140 KB raw) and ECharts out of the shell
+//   so pages that don't use them (settings, watchlist, feeders) don't pay
+//   the bytes on first paint.
 // - Sourcemaps are OFF — the repo is public and source maps embed absolute
 //   developer paths. For one-off prod debugging, set `sourcemap: 'hidden'`
 //   temporarily and don't commit the change.
@@ -56,7 +56,7 @@ export default defineConfig(({ command }) => ({
       output: {
         manualChunks: {
           leaflet: ['leaflet', 'react-leaflet'],
-          charts: ['recharts'],
+          charts: ['echarts/core', 'echarts/charts', 'echarts/components', 'echarts/renderers'],
           vendor: ['react', 'react-dom', 'react-router-dom'],
           // Radix primitives are 25-30 KB gz total — isolate so settings/
           // history/feeders pages that don't open dialogs/dropdowns still

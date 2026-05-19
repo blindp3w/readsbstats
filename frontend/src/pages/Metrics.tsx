@@ -8,15 +8,7 @@ import {
   CrossCircledIcon,
   InfoCircledIcon,
 } from '@radix-ui/react-icons';
-import {
-  Area,
-  AreaChart,
-  XAxis,
-  YAxis,
-  Tooltip,
-  ResponsiveContainer,
-  CartesianGrid,
-} from 'recharts';
+import type { EChartsOption } from 'echarts';
 import { apiJson } from '@/lib/api';
 import { useRange, RangePicker, type RangeValue } from '@/components/RangePicker';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
@@ -24,13 +16,15 @@ import { Skeleton } from '@/components/ui/Skeleton';
 import { Alert } from '@/components/ui/Alert';
 import { Badge } from '@/components/ui/Badge';
 import { cn } from '@/lib/cn';
+import { EChart } from '@/components/charts/EChart';
 import {
-  AXIS_PROPS,
   CHART_COLORS,
-  TOOLTIP_LABEL_STYLE,
-  TOOLTIP_STYLE,
+  baseOption,
+  timeAxis,
+  valueAxis,
 } from '@/components/charts/theme';
 import { fmtBytes } from '@/lib/format';
+import { useFormat } from '@/hooks/useFormat';
 
 interface MetricsResp {
   bucket_seconds: number;
@@ -112,17 +106,10 @@ const PANELS: Panel[] = [
     ],
   },
   {
-    id: 'network-out',
-    title: 'Network — feed out',
-    metrics: ['remote_bytes_out'],
-    colors: [CHART_COLORS.accent],
-    valueFormat: (v) => fmtBytes(v),
-  },
-  {
-    id: 'network-in',
-    title: 'Network — feed in',
-    metrics: ['remote_bytes_in'],
-    colors: [CHART_COLORS.purple],
+    id: 'network',
+    title: 'Network',
+    metrics: ['remote_bytes_out', 'remote_bytes_in'],
+    colors: [CHART_COLORS.accent, CHART_COLORS.purple],
     valueFormat: (v) => fmtBytes(v),
   },
   {
@@ -220,7 +207,7 @@ export default function MetricsPage() {
         </Alert>
       )}
 
-      <div className="grid gap-4 lg:grid-cols-2">
+      <div className="grid gap-4 xl:grid-cols-2">
         {PANELS.map((panel) => (
           <Card key={panel.id} data-testid={`metrics-panel-${panel.id}`}>
             <CardHeader>
@@ -348,10 +335,75 @@ function HealthBanner({
 }
 
 // ---------------------------------------------------------------------------
-// Metric chart — converts the columnar /api/metrics response into Recharts
-// rows. Skips panels whose metrics aren't in the response (e.g. when the
-// server doesn't collect them).
+// Metric chart — converts the columnar /api/metrics response into one ECharts
+// option object. Skips panels whose metrics aren't in the response (e.g. when
+// the server doesn't collect them).
 // ---------------------------------------------------------------------------
+
+// Exported for unit tests. Format functions are injected so tests don't
+// need to mount a React tree to flip the clock-format store.
+//   fmtAxisTime → short "HH:MM" form for x-axis ticks (sub-day spans)
+//   fmtAxisDate → short locale-aware "DD/MM" for ticks on multi-day spans;
+//                 every tick at midnight reads "00:00" otherwise
+//   fmtTs       → full datetime for the cross-series tooltip / pointer label
+// The builder picks fmtAxisTime vs fmtAxisDate based on the data span.
+const MULTI_DAY_THRESHOLD_S = 36 * 3600; // 36h — wider than 24h to avoid
+                                          // flipping formats on a sub-day
+                                          // jitter inside the 24h preset.
+export function buildPanelOption(
+  resp: MetricsResp | undefined,
+  keys: string[],
+  colors: string[],
+  fmtAxisTime: (epoch: number) => string,
+  fmtAxisDate: (epoch: number) => string,
+  fmtTs: (epoch: number) => string,
+  valueFormat?: ValueFmt,
+): EChartsOption {
+  if (!resp || !resp.data || resp.data.length === 0) return { series: [] };
+  const [tsCol, ...rest] = resp.data;
+  if (!tsCol || tsCol.length === 0) return { series: [] };
+  const spanSeconds = tsCol[tsCol.length - 1] - tsCol[0];
+  const axisFmt = spanSeconds >= MULTI_DAY_THRESHOLD_S ? fmtAxisDate : fmtAxisTime;
+  const valueFmt: ValueFmt = valueFormat ?? ((v: number) => String(v));
+  const series = keys.map((k, i) => {
+    const idx = resp.metrics.indexOf(k);
+    if (idx < 0) return { type: 'line' as const, name: k, data: [] as number[][] };
+    const valuesCol = rest[idx] ?? [];
+    const data: number[][] = valuesCol.map((v, j) => [tsCol[j] * 1000, v]);
+    return {
+      type: 'line' as const,
+      name: k,
+      data,
+      color: colors[i] ?? CHART_COLORS.accent,
+      showSymbol: false,
+      sampling: 'lttb' as const,
+      lineStyle: { width: 1.5 },
+      areaStyle: { opacity: 0.25 },
+    };
+  });
+  const base = baseOption();
+  const tAxis = timeAxis() as Exclude<EChartsOption['xAxis'], undefined | unknown[]>;
+  return {
+    ...base,
+    xAxis: {
+      ...tAxis,
+      axisLabel: {
+        ...(tAxis as any).axisLabel,
+        formatter: (v: number) => axisFmt(v / 1000),
+        hideOverlap: true,
+      },
+      // On-hover x-axis bubble shows the full timestamp (tooltip header
+      // mirrors this format too).
+      axisPointer: {
+        label: { formatter: (p: any) => fmtTs(p.value / 1000) },
+      },
+    },
+    yAxis: valueAxis({ formatter: valueFmt }),
+    tooltip: { ...base.tooltip, valueFormatter: (v: number) => valueFmt(v) },
+    dataZoom: [{ type: 'inside', xAxisIndex: 0, throttle: 50 }],
+    series,
+  };
+}
 
 function MetricChart({
   resp,
@@ -364,74 +416,18 @@ function MetricChart({
   colors: string[];
   valueFormat?: ValueFmt;
 }) {
-  const rows = useMemo(() => {
-    if (!resp || !resp.data || resp.data.length === 0) return [];
-    const [tsCol, ...rest] = resp.data;
-    const keyIndexes = keys.map((k) => resp.metrics.indexOf(k));
-    if (!tsCol) return [];
-    const out: Record<string, number>[] = [];
-    for (let i = 0; i < tsCol.length; i++) {
-      const row: Record<string, number> = { ts: tsCol[i] };
-      keyIndexes.forEach((idx, kIdx) => {
-        if (idx >= 0 && rest[idx] != null) row[keys[kIdx]] = rest[idx][i];
-      });
-      out.push(row);
-    }
-    return out;
-  }, [resp, keys]);
-
-  if (rows.length === 0) {
+  const { fmtTs, fmtAxisTime, fmtAxisDate } = useFormat();
+  const option = useMemo<EChartsOption>(
+    () => buildPanelOption(resp, keys, colors, fmtAxisTime, fmtAxisDate, fmtTs, valueFormat),
+    [resp, keys, colors, valueFormat, fmtAxisTime, fmtAxisDate, fmtTs],
+  );
+  const hasRows = !!resp && resp.data.length > 0 && (resp.data[0]?.length ?? 0) > 0;
+  if (!hasRows) {
     return (
       <div className={cn('flex h-56 items-center justify-center text-sm text-[var(--color-text-dim)]')}>
         no data
       </div>
     );
   }
-  return (
-    <div style={{ width: '100%', height: 220 }}>
-      <ResponsiveContainer>
-        <AreaChart data={rows} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
-          <defs>
-            {keys.map((k, i) => (
-              <linearGradient key={k} id={`grad-${k}`} x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor={colors[i] ?? CHART_COLORS.accent} stopOpacity={0.4} />
-                <stop offset="100%" stopColor={colors[i] ?? CHART_COLORS.accent} stopOpacity={0} />
-              </linearGradient>
-            ))}
-          </defs>
-          <CartesianGrid stroke={CHART_COLORS.grid} strokeDasharray="2 4" vertical={false} />
-          <XAxis
-            dataKey="ts"
-            type="number"
-            domain={['dataMin', 'dataMax']}
-            tickFormatter={(v: number) =>
-              new Date(v * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-            }
-            {...AXIS_PROPS}
-          />
-          <YAxis
-            {...AXIS_PROPS}
-            tickFormatter={valueFormat ? (v: number) => valueFormat(v) : undefined}
-          />
-          <Tooltip
-            labelFormatter={(v) => new Date((v as number) * 1000).toLocaleString()}
-            formatter={valueFormat ? (v: number) => valueFormat(v) : undefined}
-            contentStyle={TOOLTIP_STYLE}
-            labelStyle={TOOLTIP_LABEL_STYLE}
-          />
-          {keys.map((k, i) => (
-            <Area
-              key={k}
-              type="monotone"
-              dataKey={k}
-              stroke={colors[i] ?? CHART_COLORS.accent}
-              fill={`url(#grad-${k})`}
-              strokeWidth={1.5}
-              isAnimationActive={false}
-            />
-          ))}
-        </AreaChart>
-      </ResponsiveContainer>
-    </div>
-  );
+  return <EChart option={option} group="metrics" height={220} />;
 }

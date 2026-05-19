@@ -1,3 +1,4 @@
+import { useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import {
@@ -5,15 +6,7 @@ import {
   TriangleDownIcon,
   DotFilledIcon,
 } from '@radix-ui/react-icons';
-import {
-  BarChart,
-  Bar,
-  XAxis,
-  YAxis,
-  Tooltip,
-  ResponsiveContainer,
-  CartesianGrid,
-} from 'recharts';
+import type { EChartsOption } from 'echarts';
 import { apiJson } from '@/lib/api';
 import { useRange, RangePicker } from '@/components/RangePicker';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
@@ -26,7 +19,8 @@ import { Table, THead, TBody, TR, TH, TD } from '@/components/ui/Table';
 import { useFormat } from '@/hooks/useFormat';
 import { fmtBytes } from '@/lib/format';
 import { cn } from '@/lib/cn';
-import { AXIS_PROPS, CHART_COLORS, TOOLTIP_LABEL_STYLE, TOOLTIP_STYLE } from '@/components/charts/theme';
+import { CHART_COLORS, baseOption, valueAxis } from '@/components/charts/theme';
+import { EChart } from '@/components/charts/EChart';
 import { TopChart } from '@/components/charts/TopChart';
 import { SimpleTooltip } from '@/components/ui/Tooltip';
 
@@ -447,6 +441,31 @@ function FlaggedCard({
 // BarChart wrapper
 // ---------------------------------------------------------------------------
 
+// Exported for unit tests.
+export function buildBarOption(
+  data: Array<Record<string, string | number>>,
+  xKey: string,
+  yKey: string,
+): EChartsOption {
+  return {
+    ...baseOption(),
+    xAxis: {
+      type: 'category',
+      data: data.map((d) => String(d[xKey])),
+      axisLine: { lineStyle: { color: CHART_COLORS.grid } },
+      axisLabel: { color: CHART_COLORS.textDim },
+    },
+    yAxis: valueAxis(),
+    series: [
+      {
+        type: 'bar',
+        data: data.map((d) => Number(d[yKey] ?? 0)),
+        itemStyle: { color: CHART_COLORS.accent, borderRadius: [3, 3, 0, 0] },
+      },
+    ],
+  };
+}
+
 function BarChartBlock({
   data,
   xKey,
@@ -456,23 +475,8 @@ function BarChartBlock({
   xKey: string;
   yKey: string;
 }) {
-  return (
-    <div style={{ width: '100%', height: 220 }}>
-      <ResponsiveContainer>
-        <BarChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
-          <CartesianGrid stroke={CHART_COLORS.grid} strokeDasharray="2 4" vertical={false} />
-          <XAxis dataKey={xKey} {...AXIS_PROPS} />
-          <YAxis allowDecimals={false} {...AXIS_PROPS} />
-          <Tooltip
-            cursor={{ fill: CHART_COLORS.surface }}
-            contentStyle={TOOLTIP_STYLE}
-            labelStyle={TOOLTIP_LABEL_STYLE}
-          />
-          <Bar dataKey={yKey} fill={CHART_COLORS.accent} radius={[3, 3, 0, 0]} />
-        </BarChart>
-      </ResponsiveContainer>
-    </div>
-  );
+  const option = useMemo(() => buildBarOption(data, xKey, yKey), [data, xKey, yKey]);
+  return <EChart option={option} height={220} />;
 }
 
 

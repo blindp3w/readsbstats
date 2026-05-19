@@ -2,17 +2,7 @@ import { lazy, Suspense, useMemo } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { ArrowLeftIcon } from '@radix-ui/react-icons';
-import {
-  ComposedChart,
-  Line,
-  Area,
-  XAxis,
-  YAxis,
-  Tooltip,
-  ResponsiveContainer,
-  CartesianGrid,
-  Legend,
-} from 'recharts';
+import type { EChartsOption } from 'echarts';
 import { apiJson } from '@/lib/api';
 import { safeUrl } from '@/lib/safeUrl';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
@@ -23,12 +13,8 @@ import { Table, THead, TBody, TR, TH, TD } from '@/components/ui/Table';
 import { FlagBadge, SourceBadge } from '@/components/FlagBadge';
 import { useFormat } from '@/hooks/useFormat';
 import { fmtDur } from '@/lib/format';
-import {
-  AXIS_PROPS,
-  CHART_COLORS,
-  TOOLTIP_LABEL_STYLE,
-  TOOLTIP_STYLE,
-} from '@/components/charts/theme';
+import { CHART_COLORS, baseOption, timeAxis, valueAxis } from '@/components/charts/theme';
+import { EChart } from '@/components/charts/EChart';
 
 // Heavy bits (Leaflet) lazy-loaded so other pages don't pay for them.
 const RouteMap = lazy(() => import('@/components/RouteMap'));
@@ -346,18 +332,85 @@ function FlightHeader({
 // Altitude + speed profile chart
 // ---------------------------------------------------------------------------
 
+interface ProfileRow {
+  ts: number;
+  alt: number | null;
+  gs: number | null;
+}
+
+// Exported for unit tests.
+export function buildFlightProfileOption(
+  rows: ProfileRow[],
+  altLabel: string,
+  spdLabel: string,
+  fmtAxisTime: (epoch: number) => string,
+  fmtTs: (epoch: number) => string,
+): EChartsOption {
+  const base = baseOption();
+  const tAxis = timeAxis() as Exclude<EChartsOption['xAxis'], undefined | unknown[]>;
+  const leftAxis = valueAxis() as any;
+  const rightAxis = valueAxis() as any;
+  return {
+    ...base,
+    legend: {
+      bottom: 0,
+      textStyle: { color: CHART_COLORS.textDim, fontSize: 12 },
+      data: [altLabel, spdLabel],
+    },
+    grid: { top: 8, right: 40, bottom: 28, left: 44, containLabel: false },
+    xAxis: {
+      ...tAxis,
+      axisLabel: {
+        ...(tAxis as any).axisLabel,
+        formatter: (v: number) => fmtAxisTime(v / 1000),
+        hideOverlap: true,
+      },
+      axisPointer: {
+        label: { formatter: (p: any) => fmtTs(p.value / 1000) },
+      },
+    },
+    yAxis: [
+      { ...leftAxis, name: altLabel, nameTextStyle: { color: CHART_COLORS.orange, fontSize: 10 } },
+      { ...rightAxis, position: 'right', name: spdLabel, nameTextStyle: { color: CHART_COLORS.accent, fontSize: 10 } },
+    ],
+    dataZoom: [{ type: 'inside' }],
+    series: [
+      {
+        name: altLabel,
+        type: 'line',
+        yAxisIndex: 0,
+        color: CHART_COLORS.orange,
+        data: rows.map((r) => [r.ts * 1000, r.alt]),
+        showSymbol: false,
+        sampling: 'lttb',
+        areaStyle: { opacity: 0.4 },
+      },
+      {
+        name: spdLabel,
+        type: 'line',
+        yAxisIndex: 1,
+        color: CHART_COLORS.accent,
+        data: rows.map((r) => [r.ts * 1000, r.gs]),
+        showSymbol: false,
+        sampling: 'lttb',
+        lineStyle: { width: 1.5 },
+      },
+    ],
+  };
+}
+
 function FlightProfile({ positions }: { positions: Position[] }) {
-  const { altLabel, spdLabel } = useFormat();
-  const rows = useMemo(
+  const { altLabel, spdLabel, fmtTs, fmtAxisTime } = useFormat();
+  const rows = useMemo<ProfileRow[]>(
     () =>
       positions
         .filter((p) => p.alt_baro != null || p.gs != null)
-        .map((p) => ({
-          ts: p.ts,
-          alt: p.alt_baro,
-          gs: p.gs,
-        })),
+        .map((p) => ({ ts: p.ts, alt: p.alt_baro, gs: p.gs })),
     [positions],
+  );
+  const option = useMemo(
+    () => buildFlightProfileOption(rows, altLabel(), spdLabel(), fmtAxisTime, fmtTs),
+    [rows, altLabel, spdLabel, fmtAxisTime, fmtTs],
   );
   if (rows.length === 0) {
     return (
@@ -366,57 +419,7 @@ function FlightProfile({ positions }: { positions: Position[] }) {
       </div>
     );
   }
-  return (
-    <div style={{ width: '100%', height: 260 }}>
-      <ResponsiveContainer>
-        <ComposedChart data={rows} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
-          <defs>
-            <linearGradient id="grad-alt" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor={CHART_COLORS.orange} stopOpacity={0.5} />
-              <stop offset="100%" stopColor={CHART_COLORS.orange} stopOpacity={0} />
-            </linearGradient>
-          </defs>
-          <CartesianGrid stroke={CHART_COLORS.grid} strokeDasharray="2 4" vertical={false} />
-          <XAxis
-            dataKey="ts"
-            type="number"
-            domain={['dataMin', 'dataMax']}
-            tickFormatter={(v: number) =>
-              new Date(v * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-            }
-            {...AXIS_PROPS}
-          />
-          <YAxis yAxisId="alt" orientation="left" {...AXIS_PROPS} label={{ value: altLabel(), angle: -90, position: 'insideLeft', fill: CHART_COLORS.orange, fontSize: 10 }} />
-          <YAxis yAxisId="gs" orientation="right" {...AXIS_PROPS} label={{ value: spdLabel(), angle: 90, position: 'insideRight', fill: CHART_COLORS.accent, fontSize: 10 }} />
-          <Tooltip
-            labelFormatter={(v) => new Date((v as number) * 1000).toLocaleTimeString()}
-            contentStyle={TOOLTIP_STYLE}
-            labelStyle={TOOLTIP_LABEL_STYLE}
-          />
-          <Legend wrapperStyle={{ fontSize: 12 }} />
-          <Area
-            yAxisId="alt"
-            type="monotone"
-            dataKey="alt"
-            name="Altitude"
-            stroke={CHART_COLORS.orange}
-            fill="url(#grad-alt)"
-            isAnimationActive={false}
-          />
-          <Line
-            yAxisId="gs"
-            type="monotone"
-            dataKey="gs"
-            name="Speed"
-            stroke={CHART_COLORS.accent}
-            strokeWidth={1.5}
-            dot={false}
-            isAnimationActive={false}
-          />
-        </ComposedChart>
-      </ResponsiveContainer>
-    </div>
-  );
+  return <EChart option={option} height={260} />;
 }
 
 // ---------------------------------------------------------------------------

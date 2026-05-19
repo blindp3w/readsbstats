@@ -1,24 +1,12 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import {
-  BarChart,
-  Bar,
-  XAxis,
-  YAxis,
-  Tooltip,
-  ResponsiveContainer,
-  CartesianGrid,
-} from 'recharts';
+import type { EChartsOption } from 'echarts';
 import type { StatsResponse } from '@/pages/Stats';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { ToggleGroupRoot, ToggleGroupItem } from '@/components/ui/ToggleGroup';
-import {
-  AXIS_PROPS,
-  CHART_COLORS,
-  TOOLTIP_LABEL_STYLE,
-  TOOLTIP_STYLE,
-} from '@/components/charts/theme';
+import { CHART_COLORS, baseOption } from '@/components/charts/theme';
+import { EChart } from '@/components/charts/EChart';
 
 type ViewKey = 'aircraft' | 'airlines' | 'countries' | 'visitors' | 'routes' | 'airports';
 
@@ -31,7 +19,7 @@ const VIEWS: { key: ViewKey; label: string }[] = [
   { key: 'airports', label: 'Airports' },
 ];
 
-interface Row {
+export interface Row {
   label: string;
   fullLabel: string;
   value: number;
@@ -94,12 +82,69 @@ function buildRows(view: ViewKey, props: TopChartProps): Row[] {
   }
 }
 
+// Exported for unit tests.
+export function buildTopChartOption(rows: Row[], clickable: boolean): EChartsOption {
+  return {
+    ...baseOption(),
+    tooltip: {
+      trigger: 'item',
+      backgroundColor: CHART_COLORS.surface,
+      borderColor: CHART_COLORS.grid,
+      textStyle: { color: CHART_COLORS.text, fontSize: 12 },
+      formatter: (p: any) => `${p.data.fullLabel} — ${p.data.value}`,
+    },
+    grid: { top: 8, right: 32, bottom: 8, left: 110, containLabel: false },
+    xAxis: {
+      type: 'value',
+      axisLabel: { color: CHART_COLORS.textDim },
+      splitLine: { lineStyle: { color: CHART_COLORS.grid, type: 'dashed' } },
+    },
+    yAxis: {
+      type: 'category',
+      data: rows.map((r) => r.label),
+      axisLabel: {
+        color: CHART_COLORS.textDim,
+        formatter: (v: string) => trunc(v, 14),
+        width: 100,
+        overflow: 'truncate',
+      },
+      axisTick: { show: false },
+      inverse: true,
+    },
+    series: [
+      {
+        type: 'bar',
+        cursor: clickable ? 'pointer' : 'default',
+        data: rows.map((r) => ({
+          value: r.value,
+          name: r.label,
+          fullLabel: r.fullLabel,
+          icao_hex: r.icao_hex,
+        })),
+        itemStyle: { color: CHART_COLORS.accent, borderRadius: [0, 3, 3, 0] },
+      },
+    ],
+  };
+}
+
 export function TopChart(props: TopChartProps) {
   const [view, setView] = useState<ViewKey>('aircraft');
   const navigate = useNavigate();
 
   const rows = buildRows(view, props);
-  const labelMap = Object.fromEntries(rows.map((r) => [r.label, r.fullLabel]));
+  const clickable = view === 'visitors';
+  const option = useMemo(() => buildTopChartOption(rows, clickable), [rows, clickable]);
+  const onEvents = useMemo(
+    () => ({
+      click: (...args: unknown[]) => {
+        if (!clickable) return;
+        const p = args[0] as { data?: { icao_hex?: string } } | undefined;
+        const hex = p?.data?.icao_hex;
+        if (hex) navigate('/aircraft/' + hex);
+      },
+    }),
+    [clickable, navigate],
+  );
 
   return (
     <Card data-testid="stats-top-chart">
@@ -129,48 +174,7 @@ export function TopChart(props: TopChartProps) {
             <p className="text-sm text-[var(--color-text-dim)]">No data.</p>
           </div>
         ) : (
-          <div style={{ width: '100%', height: 420 }}>
-            <ResponsiveContainer>
-              <BarChart
-                layout="vertical"
-                data={rows}
-                margin={{ top: 4, right: 32, left: 0, bottom: 4 }}
-              >
-                <CartesianGrid
-                  stroke={CHART_COLORS.grid}
-                  strokeDasharray="2 4"
-                  horizontal={false}
-                />
-                <XAxis type="number" allowDecimals={false} {...AXIS_PROPS} />
-                <YAxis
-                  type="category"
-                  dataKey="label"
-                  width={100}
-                  {...AXIS_PROPS}
-                  tickLine={false}
-                />
-                <Tooltip
-                  cursor={{ fill: CHART_COLORS.surface }}
-                  contentStyle={TOOLTIP_STYLE}
-                  labelStyle={TOOLTIP_LABEL_STYLE}
-                  labelFormatter={(label) => labelMap[String(label)] ?? String(label)}
-                />
-                <Bar
-                  dataKey="value"
-                  fill={CHART_COLORS.accent}
-                  radius={[0, 3, 3, 0]}
-                  cursor={view === 'visitors' ? 'pointer' : 'default'}
-                  onClick={
-                    view === 'visitors'
-                      ? (data: any) => {
-                          if (data?.icao_hex) navigate('/aircraft/' + data.icao_hex);
-                        }
-                      : undefined
-                  }
-                />
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
+          <EChart option={option} height={420} onEvents={onEvents} />
         )}
       </CardContent>
     </Card>

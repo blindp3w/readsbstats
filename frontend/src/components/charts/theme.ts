@@ -1,5 +1,7 @@
-// Shared chart styling tokens — keep Recharts plots looking like the rest
-// of the dark UI without per-chart prop boilerplate.
+// Shared chart styling tokens for ECharts option builders. CHART_COLORS is
+// also consumed by the custom-SVG components (Heatmap.tsx, PolarRange.tsx).
+
+import type { EChartsOption } from 'echarts';
 
 export const CHART_COLORS = {
   accent: '#5b9af9',
@@ -14,23 +16,36 @@ export const CHART_COLORS = {
   surface: '#161a26',
 };
 
-export const TOOLTIP_STYLE: React.CSSProperties = {
-  background: CHART_COLORS.surface,
-  border: `1px solid ${CHART_COLORS.grid}`,
-  borderRadius: 6,
-  fontSize: 12,
-  padding: '6px 8px',
-  color: CHART_COLORS.text,
-};
+export function baseOption(): Partial<EChartsOption> {
+  return {
+    backgroundColor: 'transparent',
+    textStyle: { color: CHART_COLORS.text, fontSize: 11 },
+    tooltip: {
+      trigger: 'axis',
+      backgroundColor: CHART_COLORS.surface,
+      borderColor: CHART_COLORS.grid,
+      textStyle: { color: CHART_COLORS.text, fontSize: 12 },
+    },
+    grid: { top: 8, right: 8, bottom: 24, left: 36, containLabel: false },
+  };
+}
 
-export const TOOLTIP_LABEL_STYLE: React.CSSProperties = {
-  color: CHART_COLORS.textDim,
-  fontSize: 11,
-};
+export function timeAxis(): EChartsOption['xAxis'] {
+  return {
+    type: 'time',
+    axisLine: { lineStyle: { color: CHART_COLORS.grid } },
+    axisLabel: { color: CHART_COLORS.textDim },
+    splitLine: { show: false },
+  };
+}
 
-export const AXIS_PROPS = {
-  stroke: CHART_COLORS.textDim,
-  fontSize: 11,
-  tickLine: { stroke: CHART_COLORS.grid },
-  axisLine: { stroke: CHART_COLORS.grid },
-};
+export function valueAxis(opts?: {
+  formatter?: (v: number) => string;
+}): EChartsOption['yAxis'] {
+  return {
+    type: 'value',
+    axisLine: { show: false },
+    axisLabel: { color: CHART_COLORS.textDim, formatter: opts?.formatter },
+    splitLine: { lineStyle: { color: CHART_COLORS.grid, type: 'dashed' } },
+  };
+}

@@ -69,6 +69,34 @@ export function fmtTs(
   });
 }
 
+// Short HH:MM form for chart axis ticks. Full timestamps from `fmtTs` are too
+// long for time-axis ticks at hourly resolution — ECharts hides overlapping
+// labels and the axis ends up blank. Use this for axes; keep `fmtTs` for
+// tooltips, where the full datetime is welcome.
+export function fmtAxisTime(
+  epoch: number | null | undefined,
+  clockFormat: ClockFormat = getClockFormat(),
+): string {
+  if (epoch == null) return '';
+  return new Date(epoch * 1000).toLocaleTimeString([], {
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: clockFormat === '12h',
+  });
+}
+
+// Locale-aware short date (day + month) for multi-day axis ranges, where
+// every tick at midnight would otherwise read "00:00" via `fmtAxisTime`.
+// Locale picks the order: DD/MM in en-GB / pl-PL / most of EU; MM/DD in
+// en-US. Skip clockFormat — it doesn't apply to date-only ticks.
+export function fmtAxisDate(epoch: number | null | undefined): string {
+  if (epoch == null) return '';
+  return new Date(epoch * 1000).toLocaleDateString([], {
+    day: '2-digit',
+    month: '2-digit',
+  });
+}
+
 export function fmtDur(seconds: number | null | undefined): string {
   if (seconds == null || Number.isNaN(seconds)) return '—';
   if (seconds < 60) return `${Math.round(seconds)}s`;

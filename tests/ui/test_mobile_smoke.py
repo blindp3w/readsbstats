@@ -37,6 +37,18 @@ DEVICES = [
     "lenovo_tab_11",
 ]
 
+# Watchlist add-form validates ICAO entries against ^[0-9a-fA-F]{6}$, so each
+# device parametrization needs its own valid 6-hex value to avoid collisions
+# when tests run in parallel.
+DEVICE_TEST_ICAO = {
+    "iphone_15": "aae001",
+    "iphone_15_pro_max": "aae002",
+    "ipad_pro_11": "aae003",
+    "pixel_7": "aae004",
+    "galaxy_s24": "aae005",
+    "lenovo_tab_11": "aae006",
+}
+
 
 def _new_page(ctx_fixture, v2_server):
     base_url, _flight_id = v2_server
@@ -95,7 +107,9 @@ def test_v2_watchlist_add_and_delete_flow(request, v2_server, device_name):
         expect(page.locator('[data-testid="watchlist-add-form"]')).to_be_visible()
 
         # Use a unique value per-device so parallel runs don't collide.
-        unique_value = f"aa{device_name[:4]}1"
+        # Must be a valid 6-hex ICAO — the form validates ^[0-9a-fA-F]{6}$
+        # client-side and silently rejects anything else.
+        unique_value = DEVICE_TEST_ICAO[device_name]
         # Radix Select isn't a native <select>; open and click the option.
         page.locator('[data-testid="watchlist-match-type"]').click()
         page.get_by_role("option", name="ICAO hex").click()
@@ -228,7 +242,7 @@ def test_v2_stats_emergency_squawks_link(request, v2_server):
     page = ctx.new_page()
     try:
         page.goto(f"{base_url}/", wait_until="networkidle")
-        link = page.locator('[data-testid="stats-squawk-7700"]')
+        link = page.locator('[data-testid="stat-squawk-7700"]')
         expect(link).to_be_visible()
         href = link.get_attribute("href")
         assert href and href.endswith("/history?squawk=7700"), f"unexpected href: {href}"
@@ -305,7 +319,16 @@ def test_v2_stats_page_renders(request, v2_server, device_name):
 
 
 def test_v2_stats_custom_range_popover_apply(request, v2_server):
-    """Custom button opens the Radix Popover; Apply writes from/to to URL."""
+    """Custom button opens the Radix Popover; Apply writes from/to to URL.
+
+    Custom-range editing happens via the themed `<DatePicker>` + `<TimePicker>`
+    components (Radix Popover + react-day-picker + scrollable HH/MM columns —
+    see internal_docs/uiux/stats-page-layout-v2.md). Driving that flow from
+    Playwright would mean opening two nested popovers and clicking calendar
+    cells — out of scope for a smoke test. We instead rely on the form's
+    pre-filled defaults (initialFrom = now-24h, initialTo = now) and assert
+    that Apply persists them to the URL as expected.
+    """
     import re
     ctx = request.getfixturevalue("ctx_iphone_15")
     base_url, page = _new_page(ctx, v2_server)
@@ -315,10 +338,7 @@ def test_v2_stats_custom_range_popover_apply(request, v2_server):
         expect(page.locator('[data-testid="range-custom-panel"]')).not_to_be_visible()
         page.locator('[data-testid="range-custom-toggle"]').click()
         expect(page.locator('[data-testid="range-custom-panel"]')).to_be_visible()
-        # Fill the inputs and apply. Use a recent fixed window so the URL
-        # epoch maths are predictable.
-        page.locator('[data-testid="range-custom-from"]').fill("2026-05-15T00:00")
-        page.locator('[data-testid="range-custom-to"]').fill("2026-05-16T00:00")
+        # Pre-filled defaults are valid (from < to). Just click Apply.
         page.locator('[data-testid="range-custom-apply"]').click()
         # Popover closes after Apply.
         expect(page.locator('[data-testid="range-custom-panel"]')).not_to_be_visible()
@@ -338,6 +358,8 @@ def test_v2_metrics_page_renders(request, v2_server, device_name):
         # The seeded DB has no receiver_stats rows → no-data alert should
         # appear (proves the panels mount + the empty-state path works).
         expect(page.locator('[data-testid="metrics-no-data"]')).to_be_visible()
+        # Panel-count regression guard. Bump when adding/removing panels.
+        expect(page.locator('[data-testid^="metrics-panel-"]')).to_have_count(10)
     finally:
         page.close()
 
