@@ -1,7 +1,19 @@
-// Day-of-week × Hour activity heatmap. CSS-grid based; same approach as
-// v1's stats.js. Each cell's opacity is normalised to the max value in the
-// dataset, with a 0.18 floor so low-but-nonzero cells remain visible (v1
-// improvements.md #11 — addressed the "invisible 1-2 flight cells" gap).
+// Day-of-week × Hour activity heatmap. CSS-grid based; each cell's opacity
+// is normalised to the max value in the dataset, with a 0.18 floor so
+// low-but-nonzero cells remain visible (improvements.md #11 — addressed
+// the "invisible 1-2 flight cells" gap).
+//
+// Two responsive layouts, gated purely by Tailwind:
+//   < sm  (≤ 639 px): hours as ROWS (24), days as COLS (7).
+//                    Fits iPhone 15 portrait (393 px) without horizontal
+//                    scroll. 7 × ~50 px ≈ 350 px.
+//   ≥ sm  (≥ 640 px): hours as COLS (24), days as ROWS (7).
+//                    Original layout — the wider chart reads better at
+//                    laptop / tablet widths.
+//
+// DOM per cell is preserved across both layouts so Radix tooltips,
+// keyboard focus, and per-cell aria-labels keep working (this is the
+// a11y win that kept us off ECharts canvas in ADR-0008).
 
 import { CHART_COLORS } from './theme';
 import { SimpleTooltip } from '@/components/ui/Tooltip';
@@ -15,6 +27,34 @@ interface HeatmapRow {
 const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const HOURS = Array.from({ length: 24 }, (_, i) => i);
 
+function Cell({
+  count,
+  max,
+  day,
+  hour,
+}: {
+  count: number;
+  max: number;
+  day: number;
+  hour: number;
+}) {
+  const opacity = max === 0 ? 0 : count === 0 ? 0 : Math.max(0.18, count / max);
+  const label = `${DOW[day]} ${hour}:00`;
+  return (
+    <SimpleTooltip content={`${label} — ${count} flights`}>
+      <div
+        tabIndex={0}
+        className="h-5 rounded-sm outline outline-1 outline-[var(--color-border-default)]/40 focus:outline-2 focus:outline-[var(--color-accent)]"
+        style={{
+          background:
+            count === 0 ? 'transparent' : `${CHART_COLORS.accent}${alphaHex(opacity)}`,
+        }}
+        aria-label={`${label} ${count} flights`}
+      />
+    </SimpleTooltip>
+  );
+}
+
 export function ActivityHeatmap({ rows }: { rows: HeatmapRow[] }) {
   // Index by [dow][hour] for O(1) lookup; safer than Map for a small grid.
   const grid: number[][] = Array.from({ length: 7 }, () => Array(24).fill(0));
@@ -27,54 +67,64 @@ export function ActivityHeatmap({ rows }: { rows: HeatmapRow[] }) {
   }
 
   return (
-    <div className="overflow-x-auto" data-testid="activity-heatmap">
+    <div data-testid="activity-heatmap">
+      {/* < sm: hours as rows, days as 7 columns. */}
       <div
-        className="grid gap-px rounded border border-[var(--color-border-default)] p-1 text-xs"
-        style={{
-          gridTemplateColumns: 'auto repeat(24, minmax(18px, 1fr))',
-        }}
+        className="grid gap-px rounded border border-[var(--color-border-default)] p-1 text-xs sm:hidden"
+        style={{ gridTemplateColumns: 'auto repeat(7, minmax(0, 1fr))' }}
+        data-layout="mobile"
       >
         <div />
-        {HOURS.map((h) => (
-          <div
-            key={h}
-            className="text-center text-[10px] text-[var(--color-text-dim)] tabnum"
-            style={{ minWidth: 18 }}
-          >
-            {h % 3 === 0 ? h : ''}
-          </div>
-        ))}
-
-        {DOW.map((label, d) => (
+        {DOW.map((label) => (
           <div
             key={label}
-            className="contents"
-            // eslint-disable-next-line react/no-unknown-property
-            data-row={d}
+            className="text-center text-[10px] text-[var(--color-text-dim)]"
           >
-            <div className="pr-1 text-right text-[var(--color-text-dim)]">{label}</div>
-            {HOURS.map((h) => {
-              const count = grid[d][h];
-              const opacity = max === 0 ? 0 : count === 0 ? 0 : Math.max(0.18, count / max);
-              return (
-                <SimpleTooltip key={h} content={`${label} ${h}:00 — ${count} flights`}>
-                  <div
-                    tabIndex={0}
-                    className="h-5 rounded-sm outline outline-1 outline-[var(--color-border-default)]/40 focus:outline-2 focus:outline-[var(--color-accent)]"
-                    style={{
-                      background:
-                        count === 0
-                          ? 'transparent'
-                          : `${CHART_COLORS.accent}${alphaHex(opacity)}`,
-                    }}
-                    aria-label={`${label} ${h}:00 ${count} flights`}
-                  />
-                </SimpleTooltip>
-              );
-            })}
+            {label}
+          </div>
+        ))}
+        {HOURS.map((h) => (
+          <div key={`row-${h}`} className="contents" data-row-hour={h}>
+            <div className="pr-1 text-right text-[10px] text-[var(--color-text-dim)] tabnum">
+              {h % 3 === 0 ? h : ''}
+            </div>
+            {DOW.map((_, d) => (
+              <Cell key={`m-${d}-${h}`} count={grid[d][h]} max={max} day={d} hour={h} />
+            ))}
           </div>
         ))}
       </div>
+
+      {/* ≥ sm: hours as 24 columns, days as 7 rows. Wrap in overflow-x-auto
+          as a defensive fallback if the parent narrows below the
+          minmax(18px) floor on a desktop browser resize. */}
+      <div className="hidden overflow-x-auto sm:block" data-layout="desktop">
+        <div
+          className="grid gap-px rounded border border-[var(--color-border-default)] p-1 text-xs"
+          style={{ gridTemplateColumns: 'auto repeat(24, minmax(18px, 1fr))' }}
+        >
+          <div />
+          {HOURS.map((h) => (
+            <div
+              key={h}
+              className="text-center text-[10px] text-[var(--color-text-dim)] tabnum"
+              style={{ minWidth: 18 }}
+            >
+              {h % 3 === 0 ? h : ''}
+            </div>
+          ))}
+          {DOW.map((label, d) => (
+            // eslint-disable-next-line react/no-unknown-property
+            <div key={label} className="contents" data-row={d}>
+              <div className="pr-1 text-right text-[var(--color-text-dim)]">{label}</div>
+              {HOURS.map((h) => (
+                <Cell key={`d-${d}-${h}`} count={grid[d][h]} max={max} day={d} hour={h} />
+              ))}
+            </div>
+          ))}
+        </div>
+      </div>
+
       {max > 0 && (
         <div
           className="mt-2 flex items-center gap-1.5 text-[10px] text-[var(--color-text-dim)] tabnum"

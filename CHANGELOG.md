@@ -1,5 +1,24 @@
 # Changelog
 
+## 2.2.1 — 2026-05-19
+
+### Stats activity heatmap: responsive layout for narrow viewports
+
+The DOW × hour heatmap on `/stats` overflowed iPhone portrait viewports
+(393 px) because its 24 hour columns needed ~500 px even at the
+`minmax(18px, 1fr)` floor, triggering horizontal scroll. Switched to a
+two-layout design gated purely by Tailwind:
+
+- **< `sm:` (≤ 639 px)**: hours run as **rows** (24), days as **7
+  columns** (Sun … Sat across the top). 7 × ~50 px ≈ 350 px — fits
+  portrait comfortably.
+- **≥ `sm:` (≥ 640 px)**: original layout — 24 hour columns, 7 day rows.
+
+Both layouts share the same `<Cell>` component, so the Radix tooltip,
+keyboard focus, and per-cell `aria-label` from the existing custom-SVG
+design carry over unchanged (the a11y posture documented in ADR-0008
+is preserved).
+
 ## 2.2.0 — 2026-05-19
 
 ### Frontend chart library: Recharts → Apache ECharts
