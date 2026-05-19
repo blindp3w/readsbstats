@@ -1,5 +1,35 @@
 # Changelog
 
+## 2.1.18 — 2026-05-19
+
+### UI polish — personal records, watchlist, frontend build info
+
+- **Personal records tile layout.** Each tile now shows the record label
+  and timestamp on the same top row (label left, date right), the metric
+  value on the second row, and the aircraft identifier on the third row.
+  The identifier shows callsign when available, falling back to ICAO hex
+  in monospace; aircraft type description follows it when known
+  (e.g. `BAW123 · Boeing 737`). Previously only the raw ICAO hex was
+  shown, and the timestamp was inline at the end of the same row.
+- **Watchlist Add button height.** The Add button was taller than the
+  adjacent input fields (Button `md` = 40 px, Input = 36 px). Added
+  `'field'` size to Button (`py-2 text-sm min-h-[36px]`) that matches
+  Input padding exactly. The size is available for other form-inline
+  buttons going forward.
+- **Watchlist ICAO hex validation.** Submitting a value under the
+  "ICAO hex" match type now enforces exactly 6 hexadecimal characters
+  before the network call, with a clear inline error. Registration and
+  callsign prefix remain length-only (formats are too varied
+  internationally to constrain).
+- **Watchlist value placeholder.** The static hint `e.g. 3c4b17 /
+  SP-LRF / LOT` is replaced by a per-match-type placeholder that
+  updates as the match type selector changes.
+- **Frontend build info in Settings.** A "Build info" card at the bottom
+  of the Settings page shows the git short SHA and build date injected
+  at compile time (e.g. `e597b42 · 2026-05-19`). Zero runtime overhead;
+  useful for confirming which frontend build is deployed without mapping
+  a version number to a commit.
+
 ## 2.1.17 — 2026-05-18
 
 ### Themed DatePicker + TimePicker replace native date/time inputs

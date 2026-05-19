@@ -45,6 +45,12 @@ const MATCH_TYPE_LABEL: Record<MatchType, string> = {
   callsign_prefix: 'Callsign prefix',
 };
 
+const VALUE_PLACEHOLDER: Record<MatchType, string> = {
+  icao: 'e.g. 3c4b17',
+  registration: 'e.g. SP-LRF',
+  callsign_prefix: 'e.g. LOT',
+};
+
 function fmtDate(epoch: number | undefined): string {
   if (!epoch) return '';
   return new Date(epoch * 1000).toLocaleString();
@@ -129,6 +135,10 @@ export default function WatchlistPage() {
       setFormError('Value is required.');
       return;
     }
+    if (matchType === 'icao' && !/^[0-9a-fA-F]{6}$/.test(trimmedValue)) {
+      setFormError('ICAO hex must be exactly 6 hexadecimal characters (e.g. 3c4b17).');
+      return;
+    }
     if (trimmedValue.length > VALUE_MAX) {
       setFormError(`Value too long (max ${VALUE_MAX} characters).`);
       return;
@@ -190,7 +200,7 @@ export default function WatchlistPage() {
                 type="text"
                 value={value}
                 onChange={(e) => setValue(e.target.value)}
-                placeholder="e.g. 3c4b17 / SP-LRF / LOT"
+                placeholder={VALUE_PLACEHOLDER[matchType]}
                 autoComplete="off"
                 spellCheck={false}
                 maxLength={VALUE_MAX + 16}
@@ -211,9 +221,10 @@ export default function WatchlistPage() {
             </div>
             <Button
               type="submit"
+              size="field"
               disabled={addMut.isPending}
               data-testid="watchlist-add-submit"
-              className="shrink-0"
+              className="shrink-0 self-end"
             >
               {addMut.isPending ? 'Adding…' : 'Add'}
             </Button>

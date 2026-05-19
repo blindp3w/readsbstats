@@ -81,11 +81,20 @@ interface PolarResponse {
   count?: number;
 }
 
+interface RecordEntry {
+  id?: number;
+  icao_hex: string;
+  callsign: string | null;
+  aircraft_type: string | null;
+  type_desc: string | null;
+  first_seen: number;
+}
+
 interface RecordsResponse {
-  fastest: { id?: number; icao_hex: string; callsign: string | null; max_gs: number | null; first_seen: number } | null;
-  furthest: { id?: number; icao_hex: string; max_distance_nm: number | null; first_seen: number } | null;
-  highest: { id?: number; icao_hex: string; max_alt_baro: number | null; first_seen: number } | null;
-  longest: { id?: number; icao_hex: string; duration_sec: number | null; first_seen: number } | null;
+  fastest:  (RecordEntry & { max_gs: number | null }) | null;
+  furthest: (RecordEntry & { max_distance_nm: number | null }) | null;
+  highest:  (RecordEntry & { max_alt_baro: number | null }) | null;
+  longest:  (RecordEntry & { duration_sec: number | null }) | null;
 }
 
 export default function StatsPage() {
@@ -487,6 +496,9 @@ function Records({ q }: { q: { data: RecordsResponse | undefined; isLoading: boo
             <RecordCell
               label="Furthest"
               icao={q.data.furthest?.icao_hex}
+              callsign={q.data.furthest?.callsign}
+              typeDesc={q.data.furthest?.type_desc}
+              aircraftType={q.data.furthest?.aircraft_type}
               value={fmtDist(q.data.furthest?.max_distance_nm ?? null)}
               ts={q.data.furthest?.first_seen}
               fmtTs={fmtTs}
@@ -494,6 +506,9 @@ function Records({ q }: { q: { data: RecordsResponse | undefined; isLoading: boo
             <RecordCell
               label="Fastest"
               icao={q.data.fastest?.icao_hex}
+              callsign={q.data.fastest?.callsign}
+              typeDesc={q.data.fastest?.type_desc}
+              aircraftType={q.data.fastest?.aircraft_type}
               value={fmtSpd(q.data.fastest?.max_gs ?? null)}
               ts={q.data.fastest?.first_seen}
               fmtTs={fmtTs}
@@ -501,6 +516,9 @@ function Records({ q }: { q: { data: RecordsResponse | undefined; isLoading: boo
             <RecordCell
               label="Highest"
               icao={q.data.highest?.icao_hex}
+              callsign={q.data.highest?.callsign}
+              typeDesc={q.data.highest?.type_desc}
+              aircraftType={q.data.highest?.aircraft_type}
               value={fmtAlt(q.data.highest?.max_alt_baro ?? null)}
               ts={q.data.highest?.first_seen}
               fmtTs={fmtTs}
@@ -508,6 +526,9 @@ function Records({ q }: { q: { data: RecordsResponse | undefined; isLoading: boo
             <RecordCell
               label="Longest"
               icao={q.data.longest?.icao_hex}
+              callsign={q.data.longest?.callsign}
+              typeDesc={q.data.longest?.type_desc}
+              aircraftType={q.data.longest?.aircraft_type}
               value={formatLongest(q.data.longest?.duration_sec ?? null)}
               ts={q.data.longest?.first_seen}
               fmtTs={fmtTs}
@@ -522,31 +543,40 @@ function Records({ q }: { q: { data: RecordsResponse | undefined; isLoading: boo
 function RecordCell({
   label,
   icao,
+  callsign,
+  typeDesc,
+  aircraftType,
   value,
   ts,
   fmtTs,
 }: {
   label: string;
   icao: string | undefined;
+  callsign?: string | null;
+  typeDesc?: string | null;
+  aircraftType?: string | null;
   value: string;
   ts: number | undefined;
   fmtTs: (epoch: number | null | undefined) => string;
 }) {
+  const linkLabel = callsign ?? icao;
+  const typeLabel = typeDesc ?? aircraftType ?? null;
   return (
     <div className="rounded border border-[var(--color-border-default)] bg-[var(--color-surface-2)]/60 p-3">
-      <div className="text-xs uppercase tracking-wide text-[var(--color-text-dim)]">{label}</div>
-      <div className="tabnum text-xl font-bold">{value}</div>
-      {(icao || ts) && (
-        <div className="mt-0.5 flex items-baseline gap-2 text-xs tabnum text-[var(--color-text-dim)]">
-          {icao && (
-            <Link
-              to={`/aircraft/${icao}`}
-              className="font-mono text-[var(--color-accent)] hover:underline"
-            >
-              {icao}
-            </Link>
-          )}
-          {ts && <span>· {fmtTs(ts)}</span>}
+      <div className="flex items-baseline justify-between gap-2">
+        <div className="text-xs uppercase tracking-wide text-[var(--color-text-dim)]">{label}</div>
+        {ts && <div className="tabnum text-xs text-[var(--color-text-dim)]">{fmtTs(ts)}</div>}
+      </div>
+      <div className="tabnum mt-1 text-xl font-bold">{value}</div>
+      {icao && (
+        <div className="mt-0.5 flex items-baseline gap-1.5 text-xs tabnum text-[var(--color-text-dim)]">
+          <Link
+            to={`/aircraft/${icao}`}
+            className={cn('text-[var(--color-accent)] hover:underline', !callsign && 'font-mono')}
+          >
+            {linkLabel}
+          </Link>
+          {typeLabel && <span>· {typeLabel}</span>}
         </div>
       )}
     </div>

@@ -2,7 +2,7 @@ import type { ButtonHTMLAttributes } from 'react';
 import { cn } from '@/lib/cn';
 
 export type ButtonVariant = 'primary' | 'secondary' | 'ghost' | 'danger';
-export type ButtonSize = 'sm' | 'md';
+export type ButtonSize = 'sm' | 'md' | 'field';
 
 interface Props extends ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: ButtonVariant;
@@ -21,8 +21,9 @@ const variantClass: Record<ButtonVariant, string> = {
 };
 
 const sizeClass: Record<ButtonSize, string> = {
-  sm: 'px-2 py-1 text-xs min-h-[32px]',
-  md: 'px-3 py-1.5 text-sm min-h-[40px]',
+  sm:    'px-2 py-1 text-xs min-h-[32px]',
+  md:    'px-3 py-1.5 text-sm min-h-[40px]',
+  field: 'px-3 py-2 text-sm min-h-[36px]', // matches Input height (py-2 text-sm)
 };
 
 // Exposed so non-button elements (e.g. anchor used as a download link) can

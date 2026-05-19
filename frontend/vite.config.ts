@@ -3,6 +3,17 @@ import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 import { visualizer } from 'rollup-plugin-visualizer';
 import path from 'node:path';
+import { execSync } from 'node:child_process';
+
+function getFrontendBuild(): string {
+  try {
+    const sha = execSync('git rev-parse --short HEAD', { encoding: 'utf8' }).trim();
+    const date = new Date().toISOString().slice(0, 10);
+    return `${sha} · ${date}`;
+  } catch {
+    return 'unknown';
+  }
+}
 
 // Vite build config for the readsbstats v2 SPA.
 //
@@ -30,6 +41,9 @@ export default defineConfig(({ command }) => ({
   // Was '/stats/v2/' during the v1 coexistence period; flipped to '/stats/'
   // at v2.0.0 cutover when the Jinja UI was deleted.
   base: command === 'build' ? '/stats/' : '/',
+  define: {
+    __FRONTEND_BUILD__: JSON.stringify(getFrontendBuild()),
+  },
   resolve: {
     alias: { '@': path.resolve(__dirname, './src') },
   },

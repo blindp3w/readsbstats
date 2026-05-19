@@ -282,6 +282,20 @@ export default function SettingsPage() {
             </CardContent>
           </Card>
         ))}
+
+      <Card data-testid="settings-build">
+        <CardHeader>
+          <CardTitle>Build info</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <p className="text-sm text-[var(--color-text-dim)]">
+            Frontend build:{' '}
+            <code className="tabnum rounded bg-[var(--color-surface-2)] px-1 py-0.5 text-xs text-[var(--color-text)]">
+              {__FRONTEND_BUILD__}
+            </code>
+          </p>
+        </CardContent>
+      </Card>
     </div>
   );
 }
