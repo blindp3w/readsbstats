@@ -25,7 +25,12 @@
     "isolatedModules": true,
     "types": ["vitest/globals", "@testing-library/jest-dom"],
     "paths": { "@/*": ["./src/*"] },
-    "baseUrl": "."
+    // TS 6.0 deprecated `baseUrl` in favour of paths-only resolution.
+    // We keep `baseUrl` for now to preserve the existing tsserver UX
+    // (Cmd-click on `@/foo`); silence the deprecation warning until the
+    // wider TS 7 migration.
+    "baseUrl": ".",
+    "ignoreDeprecations": "6.0"
   },
   "include": ["src", "test"]
 }
