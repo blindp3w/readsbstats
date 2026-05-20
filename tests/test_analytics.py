@@ -353,7 +353,7 @@ def test_heatmap_returns_none_when_engine_throws(file_db, monkeypatch):
 def test_close_resets_conn(file_db, monkeypatch):
     """close() must drop the connection so subsequent is_available() either
     re-initialises or stays False (the test exercises the close path that
-    `_reset_for_tests` and shutdown rely on)."""
+    `_reset_for_tests` and shutdown relay on)."""
     monkeypatch.setattr(config, "USE_DUCKDB", True)
     analytics._reset_for_tests()
     assert analytics.is_available() is True
@@ -361,3 +361,38 @@ def test_close_resets_conn(file_db, monkeypatch):
 
     analytics.close()
     assert analytics._CONN is None
+
+
+def test_shutdown_race_no_warning(file_db, monkeypatch, caplog):
+    """Simulate the shutdown race: close() is called while a query is in
+    flight. The in-flight call must return None silently — no WARNING logged,
+    no traceback — because the caller (web.py) will fall through to SQLite
+    and the noisy log during clean shutdown is confusing."""
+    import logging
+
+    monkeypatch.setattr(config, "USE_DUCKDB", True)
+    analytics._reset_for_tests()
+    assert analytics.is_available() is True
+
+    # Patch _CONN so that cursor().execute() raises the same exception
+    # DuckDB raises when the connection is closed mid-query.
+    class _ClosedCursor:
+        def execute(self, *a, **kw):
+            raise Exception("Invalid Input Error: No open result set")
+
+    class _ClosedConn:
+        def cursor(self):
+            return _ClosedCursor()
+
+    monkeypatch.setattr(analytics, "_CONN", _ClosedConn())
+    # Simulate close() having fired (sets _SHUTDOWN before we get to execute)
+    analytics._SHUTDOWN.set()
+
+    with caplog.at_level(logging.WARNING, logger="readsbstats.analytics"):
+        result_h = analytics.heatmap(None, 2)
+        result_c = analytics.coverage(None, 52.0, 21.0, 10)
+
+    assert result_h is None
+    assert result_c is None
+    # No WARNING should appear — shutdown races must be silent
+    assert not caplog.records, f"unexpected log records: {caplog.records}"
