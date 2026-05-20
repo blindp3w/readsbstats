@@ -9,6 +9,7 @@ git clone https://github.com/YOUR_USER/readsbstats.git
 cd readsbstats
 python3 -m venv .venv
 .venv/bin/pip install -r requirements-dev.txt
+.venv/bin/pip install -e .        # makes `from readsbstats import ...` resolve in tests
 ```
 
 For local development with real data, copy the database from your Pi:

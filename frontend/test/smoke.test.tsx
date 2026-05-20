@@ -67,16 +67,25 @@ const FETCH_STUBS: Record<string, unknown> = {
     telegram_token: 'not set', telegram_chat_id: 'not set',
     telegram_summary_time: '21:00', telegram_units: 'metric',
     base_url: 'http://homepi.local/stats',
+    // Audit-13 A13-101: SettingsPayload includes `time_format`. The
+    // missing key meant Settings.tsx rendered `undefined` and App.tsx's
+    // clockFormat-seeding effect never ran during smoke tests.
+    time_format: '24h',
   },
   '/stats/api/feeders': [],
   '/stats/api/watchlist': { entries: [] },
-  '/stats/api/aircraft/flagged': { total: 0, items: [] },
+  // Audit-13 A13-100: Gallery.tsx reads `data.aircraft`, not `data.items`.
+  // The old `{ total, items }` shape silently fed `undefined.length` into
+  // the page, which ErrorBoundary swallowed — masking the page-level break.
+  '/stats/api/aircraft/flagged': { total: 0, aircraft: [] },
   // MetricsResp shape: { bucket_seconds, metrics: string[], data: number[][] }
   '/stats/api/metrics': { bucket_seconds: 60, metrics: [], data: [] },
   // HealthResp shape: { overall, as_of, checks }
   '/stats/api/metrics/health': { overall: 'ok', as_of: 0, checks: [] },
   '/stats/api/live': { count: 0, aircraft: [] },
-  '/stats/api/gallery': { total: 0, items: [] },
+  // Gallery uses /api/aircraft/flagged (above); /api/gallery has no
+  // consumer in v2 but keep an empty stub in case a legacy path remains.
+  '/stats/api/gallery': { total: 0, aircraft: [] },
 };
 
 function setupFetchStub() {

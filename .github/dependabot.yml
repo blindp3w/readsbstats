@@ -1,0 +1,36 @@
+# Audit-13 A13-048: automated security/feature dependency bumps.
+# Grouped weekly so the noise stays bounded. Manual review required on
+# every PR — see CONTRIBUTING.md for the review checklist.
+version: 2
+updates:
+  # First-party actions pinned to SHAs in .github/workflows/test.yml.
+  # Dependabot tracks those pins and proposes bumps with the matching
+  # tag comment refreshed.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+
+  # Python: FastAPI / uvicorn / duckdb / httpx / jinja2 / aiofiles + dev
+  # tooling. Bundled weekly so CVE fixes for the whole stack land in one
+  # PR; we still bump major versions case-by-case.
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      python:
+        patterns: ["*"]
+
+  # Frontend: React / Vite / ECharts / Radix / TanStack. .npmrc pins the
+  # public registry so Dependabot's resolved URLs are reproducible.
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule:
+      interval: weekly
+    groups:
+      frontend:
+        patterns: ["*"]

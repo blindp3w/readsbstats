@@ -244,6 +244,25 @@ class TestApplyToFlights:
         ).fetchone()
         assert row["origin_icao"] is None
 
+    def test_apply_none_does_not_overwrite_existing_origin_dest(self):
+        # Audit-13 A13-003: previously, a flight that had been resolved at
+        # T1 would be silently wiped when adsbdb returned 404 at T2 (route
+        # dropped upstream). _apply_to_flights now skips the UPDATE on
+        # `route is None` — negative results stay in `callsign_routes`
+        # only, never propagate to `flights`.
+        fid = insert_flight(self.conn, callsign="OVER123")
+        self.conn.execute(
+            "UPDATE flights SET origin_icao = 'EPWA', dest_icao = 'EGLL' WHERE id = ?",
+            (fid,),
+        )
+        self.conn.commit()
+        self.re._apply_to_flights(self.conn, "OVER123", None)
+        row = self.conn.execute(
+            "SELECT origin_icao, dest_icao FROM flights WHERE callsign='OVER123'"
+        ).fetchone()
+        assert row["origin_icao"] == "EPWA"
+        assert row["dest_icao"] == "EGLL"
+
 
 # ---------------------------------------------------------------------------
 # _enrich_batch
@@ -707,7 +726,7 @@ class TestRunEnricherLoop:
 
         calls = []
 
-        def fake_enrich(conn):
+        def fake_enrich(conn, *, client=None):
             calls.append(1)
             if len(calls) >= 2:
                 raise KeyboardInterrupt()

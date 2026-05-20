@@ -12,6 +12,10 @@
     "noEmit": true,
     "jsx": "react-jsx",
     "strict": false,
+    // Audit-13 A13-043: enable strictNullChecks first, before flipping
+    // full strict mode. noImplicitAny remains off because LiveMap +
+    // ECharts axisLabel casts need a follow-up cleanup pass.
+    "strictNullChecks": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "erasableSyntaxOnly": false,

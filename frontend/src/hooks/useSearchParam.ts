@@ -53,7 +53,11 @@ export function useSearchParam(
           }
           return out;
         },
-        { replace: false },
+        // Audit-13 A13-010: replace the URL entry rather than push a new
+        // one. Live-filter inputs (callsign, registration, etc.) emit a
+        // setter call on every keystroke; the previous push-mode flooded
+        // browser history so the back button stepped through each char.
+        { replace: true },
       );
     },
     [key, defaultValue, setParams],

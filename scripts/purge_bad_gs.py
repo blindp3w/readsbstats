@@ -190,8 +190,8 @@ def main() -> None:
                              "before --apply (you've made one yourself)")
     args = parser.parse_args()
 
-    conn = sqlite3.connect(args.db)
-    conn.row_factory = sqlite3.Row
+    # Audit-13 A13-056: use database.connect() for WAL + busy_timeout=30s.
+    conn = database.connect(args.db)
 
     print(
         f"Scanning {args.db}\n"

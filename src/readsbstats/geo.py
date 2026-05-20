@@ -25,6 +25,42 @@ def bearing(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     return (math.degrees(math.atan2(x, y)) + 360) % 360
 
 
+def haversine_sql(lat_col: str, lon_col: str,
+                  ref_lat_param: str = ":rlat", ref_lon_param: str = ":rlon") -> str:
+    """Return a SQL expression for great-circle distance in nautical miles.
+
+    Audit-13 A13-076: single source of truth for the inline haversine
+    SQL formula used by `analytics.py` and `web.py`. Both engines
+    (SQLite + DuckDB) parse this identically.
+
+    `lat_col` / `lon_col` are SQL column refs (e.g. ``"p.lat"``).
+    `ref_*_param` are bind-parameter placeholders or numeric literals.
+    """
+    return (
+        f"({EARTH_RADIUS_NM} * 2 * asin(sqrt("
+        f"  sin(radians(({lat_col} - {ref_lat_param}) / 2)) * sin(radians(({lat_col} - {ref_lat_param}) / 2))"
+        f"+ cos(radians({ref_lat_param})) * cos(radians({lat_col}))"
+        f"* sin(radians(({lon_col} - {ref_lon_param}) / 2)) * sin(radians(({lon_col} - {ref_lon_param}) / 2))"
+        f")))"
+    )
+
+
+def bearing_sql(lat_col: str, lon_col: str,
+                ref_lat_param: str = ":rlat", ref_lon_param: str = ":rlon") -> str:
+    """Return a SQL expression for the initial bearing in degrees (0=N).
+
+    Audit-13 A13-076: shared with `haversine_sql`.
+    """
+    return (
+        f"((degrees(atan2("
+        f"  sin(radians({lon_col} - {ref_lon_param})) * cos(radians({lat_col})),"
+        f"  cos(radians({ref_lat_param})) * sin(radians({lat_col}))"
+        f"  - sin(radians({ref_lat_param})) * cos(radians({lat_col}))"
+        f"    * cos(radians({lon_col} - {ref_lon_param}))"
+        f")) + 360) % 360)"
+    )
+
+
 def destination_point(
     lat: float, lon: float, bearing_deg: float, dist_nm: float
 ) -> tuple[float, float]:

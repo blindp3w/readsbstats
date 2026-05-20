@@ -98,7 +98,7 @@ The conf file proxies `/stats/` to uvicorn at `127.0.0.1:8080` and serves the SP
 | Service | CPU quota | Memory limit |
 |---|---|---|
 | collector | 15% | 192 MB |
-| web server | 20% | 1024 MB |
+| web server | 50% | 1024 MB |
 
 Database growth: ~50–150 MB/month at 5-second polling with 90-day position retention.
 
@@ -141,7 +141,7 @@ readsbstats/
 
 | Guide | Contents |
 |---|---|
-| [Configuration](docs/configuration.md) | All 43 `RSBS_*` env vars, logging, DuckDB, airspace config |
+| [Configuration](docs/configuration.md) | All 70 `RSBS_*` env vars, logging, DuckDB, airspace config |
 | [API Reference](docs/api.md) | All API endpoints, SPA routes, database schema |
 | [Integrations](docs/integrations.md) | Telegram setup, bot commands, ghost/GS filtering |
 | [Operations](docs/operations.md) | Updating code, DB sync, useful commands, backups |

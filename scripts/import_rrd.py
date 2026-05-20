@@ -276,8 +276,8 @@ def main() -> None:
     # Ensure DB has the receiver_stats table
     if not args.dry_run:
         database.init_db(args.db)
-        conn = sqlite3.connect(args.db)
-        conn.execute("PRAGMA busy_timeout = 30000")
+        # Audit-13 A13-056: database.connect() already sets WAL + busy_timeout.
+        conn = database.connect(args.db)
     else:
         conn = None
 

@@ -3,6 +3,7 @@ import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 import { visualizer } from 'rollup-plugin-visualizer';
 import path from 'node:path';
+import fs from 'node:fs';
 import { execSync } from 'node:child_process';
 
 function getFrontendBuild(): string {
@@ -10,6 +11,19 @@ function getFrontendBuild(): string {
     const sha = execSync('git rev-parse --short HEAD', { encoding: 'utf8' }).trim();
     const date = new Date().toISOString().slice(0, 10);
     return `${sha} · ${date}`;
+  } catch {
+    return 'unknown';
+  }
+}
+
+function getAppVersion(): string {
+  // Single source of truth: `pyproject.toml`. Cheap regex parse — pulling in
+  // a TOML library just for one field would inflate the dev dep surface for
+  // no real benefit.
+  try {
+    const toml = fs.readFileSync(path.resolve(__dirname, '..', 'pyproject.toml'), 'utf8');
+    const m = toml.match(/^version\s*=\s*"([^"]+)"/m);
+    return m ? m[1] : 'unknown';
   } catch {
     return 'unknown';
   }
@@ -43,6 +57,7 @@ export default defineConfig(({ command }) => ({
   base: command === 'build' ? '/stats/' : '/',
   define: {
     __FRONTEND_BUILD__: JSON.stringify(getFrontendBuild()),
+    __APP_VERSION__: JSON.stringify(getAppVersion()),
   },
   resolve: {
     alias: { '@': path.resolve(__dirname, './src') },

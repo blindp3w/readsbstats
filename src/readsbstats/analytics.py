@@ -185,24 +185,25 @@ def coverage(cutoff_ts: int | None, rlat: float, rlon: float,
     num_buckets = 360 // int(bucket_deg)
     try:
         cur = _CONN.cursor()
-        params: list = [rlon, rlat, rlat, rlon, rlat, rlat, rlat, rlon, rlon]
+        # Audit-13 A13-076: use shared SQL helpers from geo.py. DuckDB
+        # uses positional `?` params; helpers expand to the same shape
+        # the old inline SQL had — bearing references rlon, rlat, rlat,
+        # rlon and haversine references rlat × 3, rlon × 2 (see geo.py).
+        from . import geo
+        bearing_expr = geo.bearing_sql("lat", "lon", "?", "?")
+        dist_expr    = geo.haversine_sql("lat", "lon", "?", "?")
+        # Bearing: (rlon, rlat, rlat, rlon)
+        # Haversine: (rlat, rlat, rlat, rlon, rlon)  (lat-ref × 3, lon-ref × 2)
+        params: list = [rlon, rlat, rlat, rlon,
+                        rlat, rlat, rlat, rlon, rlon]
         time_filter = ""
         if cutoff_ts is not None:
             time_filter = "AND ts > ? "
             params.append(int(cutoff_ts))
         sql = (
             "WITH pos_bearing AS ("
-            " SELECT "
-            "  (degrees(atan2("
-            "    sin(radians(lon - ?)) * cos(radians(lat)),"
-            "    cos(radians(?)) * sin(radians(lat))"
-            "      - sin(radians(?)) * cos(radians(lat)) * cos(radians(lon - ?))"
-            "  )) + 360.0) % 360.0 AS bearing_deg,"
-            "  2.0 * 3440.065 * asin(sqrt("
-            "    sin(radians((lat - ?) / 2.0)) * sin(radians((lat - ?) / 2.0))"
-            "    + cos(radians(?)) * cos(radians(lat))"
-            "    * sin(radians((lon - ?) / 2.0)) * sin(radians((lon - ?) / 2.0))"
-            "  )) AS dist_nm"
+            f" SELECT {bearing_expr} AS bearing_deg,"
+            f"        {dist_expr}    AS dist_nm"
             " FROM hist.positions"
             f" WHERE lat IS NOT NULL AND lon IS NOT NULL {time_filter}"
             ") "

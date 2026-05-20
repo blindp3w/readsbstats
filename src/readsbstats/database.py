@@ -471,28 +471,33 @@ def backfill_bearing(path: str = config.DB_PATH) -> None:
             if not ids:
                 break
             placeholders = ",".join("?" * len(ids))
+            # Audit-13 A13-020: parameterise receiver lat/lon (previously
+            # f-stringed). Both are numeric today but going through bound
+            # params lets SQLite reuse the prepared statement across
+            # batches and removes a latent injection trap.
             conn.execute(
                 f"""
                 UPDATE flights SET max_distance_bearing = (
                     SELECT (degrees(atan2(
-                        sin(radians(p.lon - {rlon})) * cos(radians(p.lat)),
-                        cos(radians({rlat})) * sin(radians(p.lat))
-                            - sin(radians({rlat})) * cos(radians(p.lat))
-                              * cos(radians(p.lon - {rlon}))
+                        sin(radians(p.lon - ?)) * cos(radians(p.lat)),
+                        cos(radians(?)) * sin(radians(p.lat))
+                            - sin(radians(?)) * cos(radians(p.lat))
+                              * cos(radians(p.lon - ?))
                     )) + 360) % 360
                     FROM positions p
                     WHERE p.flight_id = flights.id
                       AND p.lat IS NOT NULL AND p.lon IS NOT NULL
                     ORDER BY (
-                        sin(radians((p.lat - {rlat}) / 2)) * sin(radians((p.lat - {rlat}) / 2))
-                      + cos(radians({rlat})) * cos(radians(p.lat))
-                      * sin(radians((p.lon - {rlon}) / 2)) * sin(radians((p.lon - {rlon}) / 2))
+                        sin(radians((p.lat - ?) / 2)) * sin(radians((p.lat - ?) / 2))
+                      + cos(radians(?)) * cos(radians(p.lat))
+                      * sin(radians((p.lon - ?) / 2)) * sin(radians((p.lon - ?) / 2))
                     ) DESC
                     LIMIT 1
                 )
                 WHERE id IN ({placeholders})
                 """,
-                ids,
+                # Order must match each '?' placeholder above
+                [rlon, rlat, rlat, rlon, rlat, rlat, rlat, rlon, rlon, *ids],
             )
             conn.commit()
             last_id = ids[-1]
@@ -594,7 +599,12 @@ def snapshot_db(src_path: str, dest_path: str | None = None) -> str:
         dest_path = f"{src_path}.backup-{ts}.db"
     if os.path.exists(dest_path):
         raise FileExistsError(dest_path)
-    conn = sqlite3.connect(src_path)
+    # Audit-13 A13-060: previously `sqlite3.connect(src_path)` opened a
+    # connection with `busy_timeout=0`; on a busy receiver the VACUUM
+    # INTO would fail immediately under collector contention. Use the
+    # shared connect() so the snapshot waits up to 30 s for the writer
+    # lock to free.
+    conn = connect(src_path)
     try:
         conn.execute("VACUUM INTO ?", (dest_path,))
     finally:

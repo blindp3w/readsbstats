@@ -18,6 +18,22 @@ ProtectSystem=strict
 ReadWritePaths=/mnt/ext/readsbstats
 TimeoutStartSec=300
 
+# Audit-13 A13-046: kernel + namespace hardening.
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=readsbstats-updater

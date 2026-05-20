@@ -194,8 +194,10 @@ def main() -> None:
                              "before --apply (you've made one yourself)")
     args = parser.parse_args()
 
-    conn = sqlite3.connect(args.db)
-    conn.row_factory = sqlite3.Row
+    # Audit-13 A13-056: use the shared connection helper so the script
+    # inherits WAL mode + busy_timeout=30s — raw sqlite3.connect leaves
+    # busy_timeout at 0 and fails immediately under collector contention.
+    conn = database.connect(args.db)
 
     print(f"Scanning {args.db}  threshold: {args.max_speed} kts  "
           f"({'APPLY' if args.apply else 'dry-run'})")

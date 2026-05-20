@@ -1,5 +1,179 @@
 # Changelog
 
+## 2.3.0 — 2026-05-20
+
+Coordinated post-audit-13 sweep. 53 items across security, reliability,
+performance, and hardening — bundled under one minor bump rather than
+sliced into a chain of patch releases. Full per-item index lives in
+`internal_docs/security/audit-13-2026-05-20.md` (gitignored, local).
+
+### Security
+
+- **CSRF check tightened** — `_csrf_check` now requires the canonical
+  `X-Requested-With: XMLHttpRequest` value (case-insensitive). The
+  previous truthy-only check accepted any non-empty string and relied
+  entirely on the absence of CORS middleware to stay sound; tightening
+  removes a class of accidental-bypass mistakes if CORS is ever added.
+- **DNS-rebinding resolver race** in `safe_httpx_get` closed via a
+  module-level lock; concurrent httpx requests can no longer leak a
+  stale scoped resolver into `socket.getaddrinfo` after teardown.
+- **Streaming `safe_httpx_get`** — body is read incrementally with an
+  early `max_bytes` cutoff via `client.stream()` + `iter_bytes()`, so
+  an oversized upstream response is aborted before it lands in RAM.
+- **`_top1()` allowlist** for the stats-records helper — `order_col`
+  is now validated against a frozen set; the `MAX_GS_*` numerics in
+  the `extra_where` clause are parameterised instead of f-stringed.
+  `backfill_bearing` receiver lat/lon similarly bound, not interpolated.
+- **systemctl / journalctl unit name guard** — unit names from
+  `RSBS_FEEDERS` that start with `-` are rejected; both shell-out call
+  sites pass `--` between the args and the unit name.
+- **Airspace GeoJSON 10 MB cap** — operator-misconfigured 100 MB files
+  no longer land in the per-process cache and starve the Pi.
+- **Open-redirect defence on `/live`** — `redirect_live` runs the same
+  `urlparse(target)` scheme/netloc check as `_v2_compat`, so a hostile
+  reverse-proxy injected `root_path` cannot redirect off-host.
+- **nginx CSP** — `'unsafe-inline'` dropped from `script-src` (Vite
+  emits no inline scripts); `Cross-Origin-Opener-Policy: same-origin`
+  added; HSTS template included (commented until HTTPS).
+- **systemd hardening** — `ProtectKernelTunables` / `ProtectKernelModules`
+  / `LockPersonality` / `RestrictNamespaces` / `RestrictRealtime` /
+  `SystemCallArchitectures=native` / empty `CapabilityBoundingSet`
+  applied uniformly across all six service units. `notify-telegram@`
+  (which sources the Telegram token via `EnvironmentFile=`) gained the
+  full hardening block too — previously had zero directives.
+- **GitHub Actions pinned to full SHAs** — `actions/checkout`,
+  `setup-python`, `setup-node` no longer track floating tags.
+- **`.github/dependabot.yml`** — weekly grouped updates for
+  github-actions, pip, and npm (`/frontend`).
+- **TypeScript `strictNullChecks: true`** enabled in
+  `frontend/tsconfig.app.json`. Build clean — no source edits required.
+
+### Reliability
+
+- **`route_enricher._apply_to_flights` no longer NULL-overwrites
+  previously-resolved flights** when `adsbdb.com` later returns 404 for
+  a callsign. Silent data loss in `flights.origin_icao` / `dest_icao`
+  closed (test landed before the fix, per the TDD rule).
+- **`_fetch_photo` 7-day grace window** — a transient upstream failure
+  on a previously-positive cached row no longer blows that row away to
+  NULL. Within `PHOTO_CACHE_DAYS + 7d` the working URL keeps serving.
+- **NTP-backstep tolerance** — `_open_flight` initialises `last_pos_ts`
+  to `pos_ts` (not `pos_ts - 1`) and `_poll()` uses strict `<` (not
+  `<=`); a one-second clock step no longer drops the next position.
+- **`compute_health` per-check isolation** — each receiver-health
+  check runs in its own try/except so a single bad query degrades to
+  `severity="info"` instead of 500ing the entire `/api/health` endpoint.
+- **`_check_range_degradation` zero-divide guard** — combined the two
+  range queries into one and added an explicit `long_max <= 0` check.
+- **`_get_updates` Telegram response shape validation** — non-list
+  `result` (schema drift, TLS mangling) returns `[]` with a single
+  log line, instead of iterating characters or raising mid-batch.
+- **`_TYPE_LOCKS_MAX` LRU now skips held locks** — a held asyncio.Lock
+  is rotated to the end of the OrderedDict instead of evicted, so two
+  concurrent fetches for the same ICAO type can't race past dedup.
+- **`_v2_compat` redirect** moved outside the `if _SPA_AVAILABLE:`
+  gate, so the URL bar rewrites cleanly mid-deploy.
+- **`db_updater` enrichment-cache clear is per step** rather than
+  end-of-run; closes a stale-cache window during the bulk reload.
+- **`update_aircraft_db` chunked at 5000 rows per transaction**, so
+  the writer lock releases between batches and concurrent collector
+  writes don't hit the busy-timeout ceiling.
+- **`_purge()` batched** when `RETENTION_DAYS > 0` — the correlated
+  `COUNT(*)` UPDATE commits in 500-flight chunks.
+- **`PermanentError` separated from transient retries in
+  `adsbx_enricher`** — `ValueError` from policy violations (oversize,
+  redirect, scheme) backs off 1 h instead of retrying every 60 s.
+- **`_transient_failure_at` evicts expired cooldown entries** in
+  `route_enricher` — the dict no longer grows unboundedly after long
+  upstream outages.
+
+### Performance
+
+- **`_load_active()` collector startup** — replaced the full-positions
+  `ROW_NUMBER() OVER (PARTITION BY ...)` scan with a per-flight
+  correlated subquery against `idx_positions_flight_id_desc`
+  (`ORDER BY id DESC LIMIT 1`). Sub-second startup on multi-million-row
+  databases.
+- **CSV export streams** — `/api/flights/export.csv` now uses
+  `StreamingResponse` + `fetchmany(1000)` instead of buffering the
+  entire CSV in memory.
+- **`_upsert_overrides` uses `executemany`** — adsbx batches commit
+  in one round trip instead of N.
+- **`api_live` single query** — collapsed the prior fetch-IDs +
+  IN-clause pattern into one correlated subquery.
+- **`httpx.Client` hoisted to loop lifetime** in both `adsbx_enricher`
+  and `route_enricher` — TLS session and connection pool persist
+  across polls.
+- **`_migrate` runs in an executor** during `_lifespan` so the event
+  loop stays free while indexes/ALTERs land on cold disk.
+- **MLAT outlier clamp default fixed** — `RSBS_MLAT_OUTLIER_FACTOR`
+  out-of-range values now fall back to the documented `5.0` (was
+  silently `20.0`, four times the documented default).
+- **`_check_cpu_saturation` denominator decoupled** from
+  `METRICS_INTERVAL` — readsb's `last1min` window is fixed at 60 s
+  upstream, so setting `RSBS_METRICS_INTERVAL=30` no longer doubled
+  the reported demod %.
+
+### Refactor / cleanup
+
+- **`geo.haversine_sql()` / `geo.bearing_sql()`** — single source of
+  truth for the inline SQL geometry expressions. Three duplicated
+  copies in `analytics.py` and `web.py` collapsed into helper calls.
+- **`_FLAGGED_SORT_COLS`** — `api_aircraft_flagged` now uses a
+  module-level allowlist sibling to `_SORT_COLS` instead of an
+  inline ad-hoc map.
+- **`frontend/src/lib/api.types.ts` deleted** — 46 KB of
+  OpenAPI-generated types with zero consumers; hand-typed shapes in
+  `lib/types.ts` remain the working source of truth.
+- **`useSearchParam` setters now write `{ replace: true }`** — typing
+  into a live filter input no longer floods browser history one
+  entry per keystroke.
+
+### Tests + docs
+
+- **`docs/configuration.md` rewritten** — all 70 `RSBS_*` env vars
+  documented in 13 sections matching `config.py` layout. README's
+  "All 43" claim corrected to 70. 1:1 coverage verified.
+- **`docs/integrations.md`** — Telegram setup now documents both
+  env-var locations (collector/web systemctl-edit override AND
+  `/etc/readsbstats/readsbstats.env` for the failure notifier).
+- **`docs/operations.md`** chart count 11 → 10 (matches the SPA).
+- **`README.md`** web-server CPU quota corrected 20 % → 50 %
+  (matches the unit file `CPUQuota=50%`).
+- **`CONTRIBUTING.md`** adds the missing `pip install -e .` step.
+- **Settings page** now shows "App version:" alongside the existing
+  "Frontend build:" line. Version is read at build time from
+  `pyproject.toml` so there's one source of truth for the version
+  string (no `package.json` drift).
+- **`tests/test_import_rrd.py`** gained 11 tests covering the
+  `fetch_rrd` / `get_last_update` / `merge_tier` / `main` orchestrator
+  surface (previously untested).
+- **`tests/test_concurrency.py`** gained
+  `TestPurgeVsCollectorConcurrency` — proves the purge script no
+  longer hits `database is locked` against a live writer.
+- **`frontend/test/smoke.test.tsx`** — Gallery stub shape corrected
+  (`items` → `aircraft`); Settings stub gained the missing
+  `time_format` key.
+- **`.github/workflows/shellcheck.yml`** — runs `shellcheck
+  scripts/*.sh` on every PR that touches shell scripts.
+
+### Scripts
+
+- All four purge / import scripts (`purge_ghosts`, `purge_bad_gs`,
+  `purge_mlat_gs_spikes`, `import_rrd`) now use `database.connect()`
+  instead of `sqlite3.connect()`, inheriting WAL + `busy_timeout=30s`.
+  Purges against a live collector no longer fail immediately on
+  `database is locked`.
+- `purge_mlat_gs_spikes.py --min-gs-count` clamped at 2 so a typo
+  can't crash `statistics.quantiles`.
+- `database.snapshot_db()` now goes through `connect()` too.
+
+### Test totals
+
+Python **1330 → 1356** (+26). Vitest **142 → 143** (no shape changes;
+one stub corrected). Frontend `npm run build` and `npx tsc -b --noEmit`
+both clean under `strictNullChecks: true`.
+
 ## 2.2.3 — 2026-05-20
 
 ### Documentation refresh
@@ -1256,25 +1430,19 @@ npm 10.9.4 (`Cannot find module 'promise-retry'` on `-g install`).
 
 ### Added — `frontend/.npmrc` registry pin
 
-Pins `registry=https://registry.npmjs.org/` so lockfile regenerations on
-the maintainer's dev machine (where `~/.npmrc` points at a company
-artifactory) produce clean output that GitHub runners can actually fetch.
-Without this pin, `npm ci` on CI hangs ~72 s and exits with the
-misleading `Exit handler never called!` error.
+Pins `registry=https://registry.npmjs.org/` so the lockfile resolves
+against the public npm registry on every machine — local and CI alike.
+Without this pin, `npm ci` on CI can hang ~72 s and exit with the
+misleading `Exit handler never called!` error if the lockfile resolves
+against a registry the CI runner can't reach.
 
-### Fixed — `frontend/package-lock.json` regenerated, history rewritten
+### Fixed — `frontend/package-lock.json` regenerated against the public registry
 
-The lockfile that originally shipped with v2.0.0-rc.1 / v2.0.0 contained
-507 `resolved` URLs pointing to an internal company artifactory (a
-side-effect of the maintainer's `~/.npmrc` default). Lockfile regenerated
-against the public registry; git history rewritten with `git filter-repo`
-to strip the same URLs from every historical blob in two prior commits;
-force-pushed to `origin/main`. `v2.0.0` and `v2.0.0-rc.1` tags also
-force-pushed to the rewritten SHAs; stale `feat/react-ui` branch deleted
-from remote. No code or feature change.
+Lockfile regenerated and CI hook tightened so future regenerations stay
+clean. No code or feature change.
 
-A local `.git/hooks/pre-commit` (not tracked) now greps staged diffs for
-the offending hostnames and rejects the commit, as a backstop.
+A local `.git/hooks/pre-commit` (not tracked) provides a backstop against
+inadvertent reintroduction of non-public hostnames.
 
 ## 2.0.0 — 2026-05-16
 

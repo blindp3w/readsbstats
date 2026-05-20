@@ -687,7 +687,16 @@ def _get_updates(offset: int, timeout: int = 30) -> list[dict]:
         # long-poll response; cap at 4 MB for headroom.
         max_bytes=4 * 1024 * 1024,
     )
-    return json.loads(body).get("result", [])
+    # Audit-13 A13-009: defensively validate the upstream shape. If
+    # `result` is anything other than a list (schema drift, TLS-
+    # termination mangling, malicious mitm) the for-loop in
+    # `_listener_loop` would either iterate characters or raise mid-
+    # batch — losing the offset advance for the rest of the batch.
+    result = json.loads(body).get("result")
+    if not isinstance(result, list):
+        log.warning("Telegram getUpdates returned non-list result: %r", type(result).__name__)
+        return []
+    return result
 
 
 def _send_status(conn: sqlite3.Connection) -> None:

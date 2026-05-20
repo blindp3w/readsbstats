@@ -200,6 +200,24 @@ class TestUpdateAircraftDb:
         monkeypatch.setattr(db_updater, "_fetch", lambda url: buf.getvalue())
         assert db_updater.update_aircraft_db(conn) == 2
 
+    def test_cache_cleared_immediately_after_write(self, monkeypatch):
+        # Audit-13 A13-018: enrichment cache used to be cleared only at
+        # the end of main() — a stale-cache window opened between the
+        # aircraft_db write and the run-end clear. Now cleared per step.
+        from readsbstats import enrichment
+        conn = self.conn
+        monkeypatch.setattr(db_updater, "_fetch", lambda url: _aircraft_gz(
+            ["488001", "SP-NEW", "B738", "0", ""],
+        ))
+        # Prime the cache (with a missing hex → cached as None).
+        enrichment.lookup_aircraft(conn, "488001")
+        hit_before, _ = enrichment._aircraft_cache.get_cached("488001")
+        assert hit_before is True  # primed
+        # Run the update — cache must be cleared.
+        db_updater.update_aircraft_db(conn)
+        hit_after, _ = enrichment._aircraft_cache.get_cached("488001")
+        assert hit_after is False  # post-clear, key absent
+
 
 # ---------------------------------------------------------------------------
 # update_airlines_db

@@ -287,7 +287,16 @@ export default function SettingsPage() {
         <CardHeader>
           <CardTitle>Build info</CardTitle>
         </CardHeader>
-        <CardContent>
+        <CardContent className="space-y-1">
+          <p className="text-sm text-[var(--color-text-dim)]">
+            App version:{' '}
+            <code
+              data-testid="settings-app-version"
+              className="tabnum rounded bg-[var(--color-surface-2)] px-1 py-0.5 text-xs text-[var(--color-text)]"
+            >
+              {__APP_VERSION__}
+            </code>
+          </p>
           <p className="text-sm text-[var(--color-text-dim)]">
             Frontend build:{' '}
             <code className="tabnum rounded bg-[var(--color-surface-2)] px-1 py-0.5 text-xs text-[var(--color-text)]">

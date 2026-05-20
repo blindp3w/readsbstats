@@ -71,7 +71,7 @@ Enable metrics collection from `/run/readsb/stats.json`:
 Environment="RSBS_METRICS_ENABLED=1"
 ```
 
-The collector polls every 60 s and stores 43 metrics in `receiver_stats`. The `/metrics` page displays 11 time-series charts with automatic downsampling (raw ≤24h, 5-min ≤7d, 15-min ≤30d, 1-hour ≤90d).
+The collector polls every 60 s and stores 43 metrics in `receiver_stats`. The `/metrics` page displays 10 time-series charts with automatic downsampling (raw ≤24h, 5-min ≤7d, 15-min ≤30d, 1-hour ≤90d).
 
 ## Polar range plot tuning
 

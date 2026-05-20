@@ -303,6 +303,9 @@ def safe_urlopen(
 # httpx path — scoped socket.getaddrinfo redirection
 # ---------------------------------------------------------------------------
 
+_RESOLVER_LOCK = threading.Lock()
+
+
 @contextlib.contextmanager
 def _pinned_socket_resolver(hostname: str, infos):
     """Temporarily redirect ``socket.getaddrinfo`` so that lookups for
@@ -313,29 +316,26 @@ def _pinned_socket_resolver(hostname: str, infos):
     httpx path. Restores ``socket.getaddrinfo`` in ``finally`` — no
     module-load global patch.
 
-    Concurrent caveat: the redirection is global to the process for the
-    duration of the ``with`` block. Other threads doing DNS resolution
-    during this short window see the redirected function, but the
-    redirection is a hostname-specific overlay: lookups for hostnames
-    other than *hostname* fall through to the captured original, so the
-    only race risk is two concurrent httpx requests for the same hostname
-    landing in this block simultaneously. In practice both would
-    independently install the same pin for the same IPs, then both unset
-    in their own ``finally`` — and the captured ``original`` is the
-    real ``socket.getaddrinfo`` either way.
+    Audit-13 A13-015: protected by a module-level lock so two concurrent
+    httpx requests can't nest each other's patch — previously a nested
+    capture left the inner resolver stuck as the module-level
+    ``socket.getaddrinfo`` after the outer ``finally`` ran. The lock
+    serializes concurrent pins; urllib is unaffected (it uses
+    ``_PinnedHTTPSConnection``, not the global resolver).
     """
-    original = socket.getaddrinfo
+    with _RESOLVER_LOCK:
+        original = socket.getaddrinfo
 
-    def _resolver(host, *args, **kwargs):
-        if host == hostname:
-            return infos
-        return original(host, *args, **kwargs)
+        def _resolver(host, *args, **kwargs):
+            if host == hostname:
+                return infos
+            return original(host, *args, **kwargs)
 
-    socket.getaddrinfo = _resolver  # type: ignore[assignment]
-    try:
-        yield
-    finally:
-        socket.getaddrinfo = original  # type: ignore[assignment]
+        socket.getaddrinfo = _resolver  # type: ignore[assignment]
+        try:
+            yield
+        finally:
+            socket.getaddrinfo = original  # type: ignore[assignment]
 
 
 _REDIRECT_CODES = {301, 302, 303, 307, 308}
@@ -383,16 +383,43 @@ def safe_httpx_get(
     if timeout is not None:
         kwargs["timeout"] = timeout
 
+    # Audit-13 A13-016: stream the body so we can abort once `max_bytes`
+    # is exceeded, instead of buffering the entire payload before the
+    # size check. A hostile upstream returning a multi-GB body used to
+    # be fully loaded into RAM before the post-call `len(resp.content)`
+    # check rejected it — OOM exposure on the Pi. Test fakes without a
+    # `.stream()` method fall back to `.get()` + post-check.
+    can_stream = hasattr(client, "stream") and callable(getattr(client, "stream", None))
     with _pinned_socket_resolver(hostname, infos):
+        if can_stream:
+            with client.stream("GET", url, **kwargs) as resp:
+                if resp.status_code in _REDIRECT_CODES:
+                    raise ValueError(
+                        f"redirect blocked: GET {url} -> {resp.status_code} "
+                        f"-> {resp.headers.get('Location', '?')!r}"
+                    )
+                buf = bytearray()
+                for chunk in resp.iter_bytes(8192):
+                    buf.extend(chunk)
+                    if len(buf) > max_bytes:
+                        raise ValueError(
+                            f"response from {url} exceeded max_bytes={max_bytes} "
+                            f"(streamed {len(buf)} before cutoff)"
+                        )
+                # iter_bytes consumed the stream; patch the body in for
+                # callers that read .content or .json() afterwards.
+                resp._content = bytes(buf)  # type: ignore[attr-defined]
+            return resp
+        # Compatibility path for test fakes that only mock .get().
         resp = client.get(url, **kwargs)
-    if resp.status_code in _REDIRECT_CODES:
-        raise ValueError(
-            f"redirect blocked: GET {url} -> {resp.status_code} "
-            f"-> {resp.headers.get('Location', '?')!r}"
-        )
-    if len(resp.content) > max_bytes:
-        raise ValueError(
-            f"response from {url} exceeded max_bytes={max_bytes} "
-            f"(got {len(resp.content)})"
-        )
-    return resp
+        if resp.status_code in _REDIRECT_CODES:
+            raise ValueError(
+                f"redirect blocked: GET {url} -> {resp.status_code} "
+                f"-> {resp.headers.get('Location', '?')!r}"
+            )
+        if len(resp.content) > max_bytes:
+            raise ValueError(
+                f"response from {url} exceeded max_bytes={max_bytes} "
+                f"(got {len(resp.content)})"
+            )
+        return resp

@@ -215,8 +215,12 @@ def main() -> None:
     parser.add_argument("--accel-limit",    default=config.MAX_GS_ACCEL_KTS_S,       type=float)
     parser.add_argument("--outlier-factor", default=config.MLAT_OUTLIER_FACTOR,       type=float,
                         help="Null MLAT GS > this × p75 of the flight's GS values (default: %(default)s)")
-    parser.add_argument("--min-gs-count",   default=config.MLAT_OUTLIER_MIN_READINGS, type=int,
-                        help="Min MLAT GS readings required for outlier scan (default: %(default)s)")
+    # Audit-13 A13-022: `statistics.quantiles(data, n=4)` raises if
+    # `len(data) < 2`; clamp the user input so a typo can't crash the
+    # statistical-outlier pass.
+    parser.add_argument("--min-gs-count",   default=config.MLAT_OUTLIER_MIN_READINGS,
+                        type=lambda v: max(2, int(v)),
+                        help="Min MLAT GS readings required for outlier scan (default: %(default)s, floor: 2)")
     parser.add_argument("--apply",          action="store_true",
                         help="Commit changes (default: dry-run)")
     parser.add_argument("--i-have-a-backup", action="store_true",
@@ -224,8 +228,8 @@ def main() -> None:
                              "before --apply (you've made one yourself)")
     args = parser.parse_args()
 
-    conn = sqlite3.connect(args.db)
-    conn.row_factory = sqlite3.Row
+    # Audit-13 A13-056: use database.connect() for WAL + busy_timeout=30s.
+    conn = database.connect(args.db)
 
     print(
         f"Scanning {args.db}\n"

@@ -6,7 +6,9 @@
 
 1. Create a bot via [@BotFather](https://t.me/BotFather) and copy the token.
 2. Get your chat ID: message the bot, then open `https://api.telegram.org/bot<TOKEN>/getUpdates` and copy `result[0].message.chat.id`.
-3. Set the environment variables on the Pi:
+3. Set the environment variables on the Pi — they need to land in **two** files:
+
+**For the collector + web services**, use `systemctl edit`:
 
 ```bash
 systemctl edit readsbstats-collector
@@ -20,6 +22,19 @@ Environment="RSBS_SUMMARY_TIME=21:00"
 Environment="RSBS_TELEGRAM_UNITS=metric"
 Environment="RSBS_TELEGRAM_BASE_URL=http://your-pi.local/stats"
 ```
+
+**For the failure-alert one-shot** (`notify-telegram@.service`, fired by
+`OnFailure=`), put the same values in `/etc/readsbstats/readsbstats.env`
+(root-owned, mode 0600):
+
+```ini
+RSBS_TELEGRAM_TOKEN=123456:ABCdef...
+RSBS_TELEGRAM_CHAT_ID=987654321
+```
+
+The failure unit reads its env from this file via `EnvironmentFile=`,
+not from any `systemctl edit` drop-in. If only the systemctl-edit
+override is present, failure alerts will silently not fire.
 
 Notifications are disabled when the token or chat ID is not set — fully opt-in.
 

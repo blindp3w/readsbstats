@@ -315,9 +315,10 @@ class TestFetchArea:
         with pytest.raises(self.enricher._TransientError):
             self.enricher._fetch_area()
 
-    def test_fetch_raises_transient_on_redirect(self, monkeypatch):
+    def test_fetch_raises_permanent_on_redirect(self, monkeypatch):
         """The airplanes.live API doesn't legitimately redirect; treat a 3xx
-        as transient so we don't silently follow to an attacker-chosen URL."""
+        as PERMANENT (audit-13 A13-021) — retries will hit the same failure.
+        """
         from readsbstats import http_safe
         monkeypatch.setattr(http_safe, "validate_url", lambda url: None)
 
@@ -330,10 +331,11 @@ class TestFetchArea:
         monkeypatch.setattr(httpx, "Client",
                             lambda **kw: _MockClient(lambda *a, **kw: FakeResp()))
 
-        with pytest.raises(self.enricher._TransientError):
+        with pytest.raises(self.enricher._PermanentError):
             self.enricher._fetch_area()
 
-    def test_fetch_raises_transient_on_oversized_response(self, monkeypatch):
+    def test_fetch_raises_permanent_on_oversized_response(self, monkeypatch):
+        # Audit-13 A13-021: size-cap exceeded is a permanent policy error.
         from readsbstats import http_safe
         monkeypatch.setattr(http_safe, "validate_url", lambda url: None)
 
@@ -347,7 +349,7 @@ class TestFetchArea:
         monkeypatch.setattr(httpx, "Client",
                             lambda **kw: _MockClient(lambda *a, **kw: FakeResp()))
 
-        with pytest.raises(self.enricher._TransientError):
+        with pytest.raises(self.enricher._PermanentError):
             self.enricher._fetch_area()
 
 

@@ -1092,6 +1092,35 @@ class TestGetUpdates:
         assert "offset=42" in calls[0]["url"]
         assert "/getUpdates?" in calls[0]["url"]
 
+    def test_non_list_result_returns_empty(self, monkeypatch, caplog):
+        # Audit-13 A13-009: defensive shape check. Telegram schema drift
+        # or man-in-the-middle TLS termination could return a non-list
+        # `result` field; iterating it would either iterate characters
+        # (string) or raise mid-batch.
+        payload = json.dumps({"ok": True, "result": "oops"}).encode()
+        monkeypatch.setattr(config, "TELEGRAM_TOKEN", "tok")
+        monkeypatch.setattr(notifier.http_safe, "safe_urlopen",
+                            _make_safe_urlopen(payload))
+        with caplog.at_level("WARNING"):
+            result = notifier._get_updates(0)
+        assert result == []
+        assert any("non-list" in r.getMessage() for r in caplog.records)
+
+    def test_null_result_returns_empty(self, monkeypatch):
+        # `result` key present but null also produces non-list type.
+        payload = json.dumps({"ok": True, "result": None}).encode()
+        monkeypatch.setattr(config, "TELEGRAM_TOKEN", "tok")
+        monkeypatch.setattr(notifier.http_safe, "safe_urlopen",
+                            _make_safe_urlopen(payload))
+        assert notifier._get_updates(0) == []
+
+    def test_missing_result_key_returns_empty(self, monkeypatch):
+        payload = json.dumps({"ok": True}).encode()
+        monkeypatch.setattr(config, "TELEGRAM_TOKEN", "tok")
+        monkeypatch.setattr(notifier.http_safe, "safe_urlopen",
+                            _make_safe_urlopen(payload))
+        assert notifier._get_updates(0) == []
+
 
 # ---------------------------------------------------------------------------
 # start_command_listener

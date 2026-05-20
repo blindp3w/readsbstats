@@ -435,6 +435,16 @@ class _FakeHttpxClient:
         self.last_kwargs = kw
         return self._resp
 
+    def stream(self, method, url, **kw):
+        # Audit-13 A13-016: safe_httpx_get now streams via
+        # client.stream(...) and consumes resp.iter_bytes().
+        self.last_kwargs = kw
+        resp = self._resp
+        class _Ctx:
+            def __enter__(self_inner): return resp
+            def __exit__(self_inner, *a): return False
+        return _Ctx()
+
 
 class TestSafeHttpxGet:
     def test_passes_follow_redirects_false(self, monkeypatch):

@@ -245,3 +245,97 @@ class TestConcurrentWriteRead:
 
         assert not errors, f"Errors during concurrent access: {errors}"
         assert reader_result.get("found") is True, "Reader was blocked or failed"
+
+
+# ---------------------------------------------------------------------------
+# Audit-13 A13-099 — purge script vs. live collector concurrency
+# ---------------------------------------------------------------------------
+
+class TestPurgeVsCollectorConcurrency:
+    """Run purge_ghosts.main against a file-backed WAL DB while a writer
+    thread inserts positions. Pre-A13-056, purge scripts used raw
+    sqlite3.connect() with `busy_timeout=0`, so any concurrent writer
+    triggered an immediate `OperationalError("database is locked")`.
+    The script now uses `database.connect()` (busy_timeout=30s) and
+    should complete without lock errors.
+    """
+
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.db_path = os.path.join(self.tmpdir, "test.db")
+        # Seed a flight with a few positions so purge has something to scan.
+        conn = _connect(self.db_path)
+        fid = _seed(conn)
+        for i in range(20):
+            conn.execute(
+                "INSERT INTO positions (flight_id, ts, lat, lon, gs) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (fid, 1000000 + i, 52.0, 21.0, 450.0),
+            )
+        conn.commit()
+        conn.close()
+        yield
+        for fn in os.listdir(self.tmpdir):
+            try:
+                os.unlink(os.path.join(self.tmpdir, fn))
+            except FileNotFoundError:
+                pass
+        try:
+            os.rmdir(self.tmpdir)
+        except OSError:
+            pass
+
+    def test_purge_does_not_fail_on_concurrent_writer(self):
+        # Import the purge script after sys.path is set up by tests/.
+        import sys
+        scripts_dir = os.path.join(
+            os.path.dirname(__file__), os.pardir, "scripts"
+        )
+        if scripts_dir not in sys.path:
+            sys.path.insert(0, scripts_dir)
+        import purge_ghosts  # type: ignore
+
+        errors: list[Exception] = []
+        stop = threading.Event()
+
+        def writer():
+            try:
+                w = _connect(self.db_path)
+                fid = w.execute(
+                    "SELECT id FROM flights LIMIT 1"
+                ).fetchone()[0]
+                ts = 2_000_000
+                while not stop.is_set():
+                    with w:
+                        w.execute(
+                            "INSERT INTO positions (flight_id, ts, lat, lon, gs) "
+                            "VALUES (?, ?, ?, ?, ?)",
+                            (fid, ts, 52.0, 21.0, 450.0),
+                        )
+                    ts += 1
+                    time.sleep(0.005)
+                w.close()
+            except Exception as exc:  # noqa: BLE001 — surface to test
+                errors.append(exc)
+                stop.set()
+
+        wt = threading.Thread(target=writer, daemon=True)
+        wt.start()
+
+        try:
+            # purge_ghosts.main reads sys.argv — inject our own args.
+            orig_argv = sys.argv
+            sys.argv = [
+                "purge_ghosts.py", "--db", self.db_path,
+                "--apply", "--i-have-a-backup",
+            ]
+            try:
+                purge_ghosts.main()
+            finally:
+                sys.argv = orig_argv
+        finally:
+            stop.set()
+            wt.join(timeout=5)
+
+        assert not errors, f"writer crashed during purge: {errors}"

@@ -121,9 +121,19 @@ def _store_route(conn: sqlite3.Connection, callsign: str, route: dict | None) ->
 
 
 def _apply_to_flights(conn: sqlite3.Connection, callsign: str, route: dict | None) -> None:
-    """Back-fill origin_icao / dest_icao on all flights sharing this callsign."""
-    origin = route.get("origin_icao") if route else None
-    dest   = route.get("dest_icao")   if route else None
+    """Back-fill origin_icao / dest_icao on all flights sharing this callsign.
+
+    Audit-13 A13-003: when `route is None` (adsbdb returned 404 / negative
+    cache), skip the UPDATE entirely. Previously this wrote NULL,NULL
+    which silently clobbered previously-resolved origin/dest on flights
+    if adsbdb later dropped the route. The negative result is still
+    persisted in `callsign_routes` by the caller; flight rows that were
+    already resolved must remain so.
+    """
+    if route is None:
+        return
+    origin = route.get("origin_icao")
+    dest   = route.get("dest_icao")
     conn.execute(
         "UPDATE flights SET origin_icao = ?, dest_icao = ? WHERE callsign = ?",
         (origin, dest, callsign),
@@ -141,30 +151,40 @@ def _apply_to_flights(conn: sqlite3.Connection, callsign: str, route: dict | Non
 _TransientError = http_safe.TransientError
 
 
-def _fetch_route(callsign: str) -> dict | None:
+def _fetch_route(callsign: str, client: httpx.Client | None = None) -> dict | None:
     """
     Call adsbdb.com; return a parsed route dict or None.
 
     Returns None for a confirmed "route unknown" (404 or empty payload).
     Raises _TransientError for network failures or unexpected HTTP errors so
     callers can skip persisting any result and retry later.
+
+    Audit-13 A13-068: prefer passing in an already-open `httpx.Client`
+    (reused across the loop's lifetime). `client=None` is supported for
+    direct-call tests; the function then opens and closes its own.
     """
+    # Percent-encode the callsign — it ultimately originates from
+    # third-party ADS-B telemetry and could carry path-traversal /
+    # query-injection characters.  Standard callsigns won't be affected.
+    url = _ADSBDB_URL.format(callsign=urllib.parse.quote(callsign, safe=""))
+
+    def _call(c: httpx.Client) -> dict | None:
+        resp = http_safe.safe_httpx_get(
+            c, url, max_bytes=_RESPONSE_MAX_BYTES,
+        )
+        if resp.status_code == 404:
+            return None
+        resp.raise_for_status()
+        return _parse_response(resp.json())
+
     try:
-        # Percent-encode the callsign — it ultimately originates from
-        # third-party ADS-B telemetry and could carry path-traversal /
-        # query-injection characters.  Standard callsigns won't be affected.
-        url = _ADSBDB_URL.format(callsign=urllib.parse.quote(callsign, safe=""))
+        if client is not None:
+            return _call(client)
         with httpx.Client(
             timeout=_TIMEOUT,
             headers={"User-Agent": "readsbstats/1.0"},
-        ) as client:
-            resp = http_safe.safe_httpx_get(
-                client, url, max_bytes=_RESPONSE_MAX_BYTES,
-            )
-            if resp.status_code == 404:
-                return None
-            resp.raise_for_status()
-            return _parse_response(resp.json())
+        ) as own_client:
+            return _call(own_client)
     except httpx.HTTPStatusError as exc:
         log.debug("Route fetch HTTP error for %s: %s", callsign, exc)
         raise _TransientError(str(exc)) from exc
@@ -177,7 +197,7 @@ def _fetch_route(callsign: str) -> dict | None:
 # Background batch enrichment
 # ---------------------------------------------------------------------------
 
-def _enrich_batch(conn: sqlite3.Connection) -> int:
+def _enrich_batch(conn: sqlite3.Connection, client: httpx.Client | None = None) -> int:
     """
     Find up to ROUTE_BATCH_SIZE closed flights with unresolved callsigns,
     fetch from adsbdb.com, and persist results.
@@ -215,8 +235,16 @@ def _enrich_batch(conn: sqlite3.Connection) -> int:
         if last_fail is not None and now - last_fail < _TRANSIENT_COOLDOWN_S:
             cooled_off += 1
             continue
+        # Audit-13 A13-017: prune the cooldown record once it has expired
+        # so the dict doesn't grow unboundedly after long upstream
+        # outages (previously only `pop` was called on success — failed
+        # callsigns lingered forever).
+        if last_fail is not None and now - last_fail >= _TRANSIENT_COOLDOWN_S:
+            _transient_failure_at.pop(cs, None)
         try:
-            route = _fetch_route(cs)
+            # Pass client only when we own one (loop path). Direct test calls
+            # and the no-client path use _fetch_route's own context manager.
+            route = _fetch_route(cs) if client is None else _fetch_route(cs, client=client)
             _store_route(conn, cs, route)
             _apply_to_flights(conn, cs, route)
             # Success clears any prior failure record so future operational
@@ -248,14 +276,22 @@ def _enrich_batch(conn: sqlite3.Connection) -> int:
 
 
 def run_enricher_loop(db_path: str) -> None:
-    """Entry point for the background thread. Runs until process exits."""
+    """Entry point for the background thread. Runs until process exits.
+
+    Audit-13 A13-068: one `httpx.Client` lives for the lifetime of the
+    loop so the TLS session persists across batches.
+    """
     conn = database.connect(db_path)
-    while True:
-        try:
-            _enrich_batch(conn)
-        except Exception:
-            log.exception("Route enricher batch error")
-        time.sleep(config.ROUTE_ENRICH_INTERVAL)
+    with httpx.Client(
+        timeout=_TIMEOUT,
+        headers={"User-Agent": "readsbstats/1.0"},
+    ) as client:
+        while True:
+            try:
+                _enrich_batch(conn, client=client)
+            except Exception:
+                log.exception("Route enricher batch error")
+            time.sleep(config.ROUTE_ENRICH_INTERVAL)
 
 
 def start_background_enricher() -> threading.Thread:

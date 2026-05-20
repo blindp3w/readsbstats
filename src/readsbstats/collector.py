@@ -147,18 +147,27 @@ def _primary_source(adsb: int, mlat: int, total: int) -> str:
 # ---------------------------------------------------------------------------
 
 def _load_active(conn: sqlite3.Connection) -> None:
-    """Reload the in-memory active-flights dict from the DB table."""
+    """Reload the in-memory active-flights dict from the DB table.
+
+    Audit-13 A13-002: previous query window-functioned the entire
+    `positions` table on every startup — seconds-long stall on a
+    multi-million-row table. The replacement uses a per-flight
+    correlated subquery against `idx_positions_flight_id_desc`
+    (which is on `(flight_id, id DESC)`), so each lookup is
+    O(log n) instead of O(n).
+    """
     _active.clear()
     rows = conn.execute(
         """
         SELECT af.icao_hex, af.flight_id, af.last_seen,
-               lp.lat, lp.lon, lp.ts AS pos_ts, lp.gs
+               p.lat, p.lon, p.ts AS pos_ts, p.gs
         FROM active_flights af
-        LEFT JOIN (
-            SELECT flight_id, lat, lon, ts, gs,
-                   ROW_NUMBER() OVER (PARTITION BY flight_id ORDER BY ts DESC) AS rn
-            FROM positions
-        ) lp ON lp.flight_id = af.flight_id AND lp.rn = 1
+        LEFT JOIN positions p ON p.id = (
+            SELECT id FROM positions
+            WHERE flight_id = af.flight_id
+            ORDER BY id DESC
+            LIMIT 1
+        )
         """
     ).fetchall()
     for row in rows:
@@ -251,7 +260,14 @@ def _open_flight(
     _active[icao] = {
         "flight_id": flight_id,
         "last_seen": pos_ts,
-        "last_pos_ts": pos_ts - 1,
+        # Audit-13 A13-012: previously `pos_ts - 1` paired with a `<=` skip
+        # below; that double-counted "no backstep allowed" and silently
+        # dropped the next position whenever readsb's clock stepped back
+        # by 1 s (NTP correction). With `pos_ts` here and strict `<` in
+        # the poll loop, an equal-timestamp sample is treated as a new
+        # observation and a backward step is rejected only when actually
+        # backward.
+        "last_pos_ts": pos_ts,
         "last_lat": lat,
         "last_lon": lon,
         "last_gs": gs,
@@ -628,7 +644,9 @@ def _poll(conn: sqlite3.Connection) -> None:
                 source_type = "mlat"
 
             state = _active.get(icao)
-            if state is not None and pos_ts <= state["last_pos_ts"]:
+            # Audit-13 A13-012: strict `<` (not `<=`) — equal timestamp
+            # is treated as a new observation. See _open_flight comment.
+            if state is not None and pos_ts < state["last_pos_ts"]:
                 continue
 
             # Raw fields from readsb
@@ -856,19 +874,51 @@ def _purge(conn: sqlite3.Connection) -> None:
     if config.RETENTION_DAYS <= 0:
         return
     cutoff = int(time.time()) - config.RETENTION_DAYS * 86400
+
+    # 1) Delete positions older than the cutoff in a single transaction.
     with conn:
         conn.execute("DELETE FROM positions WHERE ts < ?", (cutoff,))
-        conn.execute(
-            """
-            UPDATE flights
-            SET total_positions = (
-                SELECT COUNT(*) FROM positions WHERE flight_id = flights.id
+
+    # 2) Audit-13 A13-013: previously the correlated COUNT(*) UPDATE
+    #    inside `_purge` held the writer lock for minutes on a 200k+
+    #    flights table. Batch the UPDATE so the lock is released
+    #    between chunks and the watchdog/collector poll loop can
+    #    interleave.
+    batch_size = 500
+    last_id = 0
+    while True:
+        ids = [
+            row[0]
+            for row in conn.execute(
+                """
+                SELECT id FROM flights
+                WHERE id > ?
+                  AND last_seen < ?
+                  AND id NOT IN (SELECT flight_id FROM active_flights)
+                ORDER BY id
+                LIMIT ?
+                """,
+                (last_id, cutoff, batch_size),
+            ).fetchall()
+        ]
+        if not ids:
+            break
+        placeholders = ",".join("?" * len(ids))
+        with conn:
+            conn.execute(
+                f"""
+                UPDATE flights
+                SET total_positions = (
+                    SELECT COUNT(*) FROM positions WHERE flight_id = flights.id
+                )
+                WHERE id IN ({placeholders})
+                """,
+                ids,
             )
-            WHERE last_seen < ?
-              AND id NOT IN (SELECT flight_id FROM active_flights)
-            """,
-            (cutoff,),
-        )
+        last_id = ids[-1]
+
+    # 3) Drop flights that now have too few positions to be worth keeping.
+    with conn:
         conn.execute(
             """
             DELETE FROM flights

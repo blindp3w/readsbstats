@@ -14,51 +14,153 @@ Environment="RSBS_FLIGHT_GAP=1200"
 
 ## Environment variables
 
+All 70 `RSBS_*` vars in `config.py`, grouped by section. Numeric values
+that fall below the documented minimum log a stderr warning and fall
+back to the listed default (see `_min_or_default_int`/`_float`).
+Boolean vars accept `1`/`0`, `true`/`false`, `yes`/`no`, `on`/`off`
+(case-insensitive; empty string = off).
+
+### Data source
+
 | Variable | Default | Description |
 |---|---|---|
 | `RSBS_AIRCRAFT_JSON` | `/run/readsb/aircraft.json` | Path to readsb's JSON output |
-| `RSBS_POLL_INTERVAL` | `5` | Seconds between polls |
-| `RSBS_FLIGHT_GAP` | `1800` | Silence gap (seconds) that separates two flights |
-| `RSBS_MIN_POSITIONS` | `2` | Discard flights with fewer positions (ghost tracks) |
-| `RSBS_MAX_SEEN_POS` | `60` | Skip positions older than this many seconds |
-| `RSBS_DB_PATH` | `/mnt/ext/readsbstats/history.db` | SQLite database path |
-| `RSBS_RETENTION_DAYS` | `0` | Days to keep raw positions (0 = keep forever) |
+
+### Collector behaviour
+
+| Variable | Default | Description |
+|---|---|---|
+| `RSBS_POLL_INTERVAL` | `5` | Seconds between polls (min `1`) |
+| `RSBS_FLIGHT_GAP` | `1800` | Silence gap (seconds) that separates two flights (min `1`) |
+| `RSBS_MIN_POSITIONS` | `2` | Discard flights with fewer positions (ghost tracks; min `1`) |
+| `RSBS_MAX_SEEN_POS` | `60` | Skip positions older than this many seconds (min `1`) |
+| `RSBS_MAX_SPEED_KTS` | `2000` | Ghost-position filter: reject positions implying ground speed above this (kts; min `1`) |
+| `RSBS_MAX_GS_CIVIL` | `750` | Null the `gs` field for civil aircraft positions reporting ground speed above this (kts; min `1`) |
+| `RSBS_MAX_GS_MILITARY` | `1800` | Null the `gs` field for military or unknown aircraft positions reporting ground speed above this (kts; min `1`) |
+| `RSBS_MAX_GS_DEVIATION` | `100` | Null the `gs` field when reported ground speed deviates from position-derived speed by more than this (kts; min `1`) |
+| `RSBS_MAX_GS_ACCEL` | `8.0` | Null the `gs` field for MLAT positions when acceleration exceeds this (kts/s; min `0.1`) |
+| `RSBS_MLAT_OUTLIER_FACTOR` | `5.0` | Null MLAT GS when it exceeds this × the flight's p75 GS (min `2.0`) |
+| `RSBS_MLAT_OUTLIER_MIN` | `10` | Minimum MLAT GS readings required to apply the outlier filter (min `3`) |
+
+### Database
+
+| Variable | Default | Description |
+|---|---|---|
+| `RSBS_DB_PATH` | `/mnt/ext/readsbstats/history.db` | SQLite database path. Empty string falls back to the default — an empty path silently creates an in-memory DB. |
+| `RSBS_RETENTION_DAYS` | `0` | Days to keep raw positions (`0` = keep forever) |
+| `RSBS_PURGE_INTERVAL` | `3600` | Seconds between retention-purge passes (min `1`; only fires when `RETENTION_DAYS > 0`) |
+
+### Receiver location
+
+| Variable | Default | Description |
+|---|---|---|
 | `RSBS_LAT` | `52.24199` | Receiver latitude — **set to your location** |
 | `RSBS_LON` | `21.02872` | Receiver longitude — **set to your location** |
-| `RSBS_MAX_RANGE` | `450` | Sanity-check max range in nautical miles |
-| `RSBS_MAX_SPEED_KTS` | `2000` | Ghost-position filter: reject positions implying ground speed above this threshold (kts) |
-| `RSBS_MAX_GS_CIVIL` | `750` | Null the `gs` field for civil aircraft positions reporting ground speed above this (kts) |
-| `RSBS_MAX_GS_MILITARY` | `1800` | Null the `gs` field for military or unknown aircraft positions reporting ground speed above this (kts) |
-| `RSBS_MAX_GS_DEVIATION` | `100` | Null the `gs` field when reported ground speed deviates from position-derived speed by more than this (kts) |
-| `RSBS_MAX_GS_ACCEL` | `8.0` | Null the `gs` field for MLAT positions when acceleration exceeds this (kts/s) |
-| `RSBS_ROUTE_CACHE_DAYS` | `30` | How long to cache adsbdb.com route lookups |
-| `RSBS_ROUTE_INTERVAL` | `60` | Seconds between route enricher batch runs |
-| `RSBS_ROUTE_BATCH` | `20` | Callsigns processed per enricher batch |
-| `RSBS_ROUTE_RATE_LIMIT` | `1.0` | Minimum seconds between adsbdb.com API requests |
-| `RSBS_AIRSPACE_GEOJSON` | _(empty)_ | Path to a custom airspace GeoJSON file; empty = use bundled `static/airspace/poland.geojson` |
+| `RSBS_MAX_RANGE` | `450` | Sanity-check max range in nautical miles (min `1`) |
+
+### Enrichment / photos / routes
+
+| Variable | Default | Description |
+|---|---|---|
 | `RSBS_PHOTO_CACHE_DAYS` | `30` | How long to cache aircraft photo URLs |
 | `RSBS_WIKIPEDIA_PHOTO` | `1` | Wikipedia fallback for type photos (`0` to disable) |
-| `RSBS_ROOT_PATH` | `/stats` | URL prefix for nginx reverse proxy |
+| `RSBS_AIRSPACE_GEOJSON` | _(empty)_ | Path to a custom airspace GeoJSON file; empty = use bundled `static/airspace/poland.geojson`. Files larger than 10 MB are refused (audit-13 A13-041). |
+| `RSBS_ROUTE_CACHE_DAYS` | `30` | How long to cache adsbdb.com route lookups |
+| `RSBS_ROUTE_INTERVAL` | `60` | Seconds between route enricher batch runs (min `1`) |
+| `RSBS_ROUTE_BATCH` | `20` | Callsigns processed per enricher batch (min `1`) |
+| `RSBS_ROUTE_RATE_LIMIT` | `1.0` | Minimum seconds between adsbdb.com API requests |
+
+### External ADS-B enrichment (airplanes.live)
+
+| Variable | Default | Description |
+|---|---|---|
+| `RSBS_ADSBX_ENABLED` | `1` | Enable the background area-poll enricher (`0` to disable) |
+| `RSBS_ADSBX_INTERVAL` | `60` | Seconds between area polls (min `1`) |
+| `RSBS_ADSBX_RANGE` | `250` | Radius in nautical miles around the receiver (min `1`) |
+| `RSBS_ADSBX_URL` | `https://api.airplanes.live/v2` | airplanes.live API base URL |
+
+### Receiver metrics (opt-in)
+
+| Variable | Default | Description |
+|---|---|---|
+| `RSBS_METRICS_ENABLED` | `0` | Enable receiver metrics collection from `/run/readsb/stats.json` |
+| `RSBS_METRICS_INTERVAL` | `60` | Seconds between metrics polls (min `10`). NOTE: readsb's `last1min` stats window is fixed at 60 s upstream — changing the poll cadence does NOT change the CPU/message-rate denominators. |
+| `RSBS_STATS_JSON` | `/run/readsb/stats.json` | Path to readsb's stats.json |
+
+### DuckDB analytical accelerator (web process)
+
+| Variable | Default | Description |
+|---|---|---|
+| `RSBS_USE_DUCKDB` | `0` | Enable DuckDB for heatmap/coverage endpoints (SQLite remains the only write path) |
+| `RSBS_DUCKDB_MEMORY_MB` | `256` | DuckDB working-set cap (MB; min `64`) |
+| `RSBS_DUCKDB_THREADS` | `2` | DuckDB worker threads (min `1`) |
+| `RSBS_DUCKDB_HOME_DIR` | `/mnt/ext/readsbstats/duckdb-home` | DuckDB home directory (extension cache; required because `readsbstats` is a system user with no `/home`) |
+| `RSBS_DUCKDB_TEMP_DIR` | `/mnt/ext/readsbstats/duckdb-tmp` | DuckDB spill directory |
+| `RSBS_PREWARM_MAP_CACHE` | `1` | Background prewarmer for heatmap/coverage caches (`0` to disable; self-disables when DuckDB is unavailable) |
+
+### Receiver health dashboard
+
+Thresholds for the nine receiver-health checks. All effective values are also rendered on the `/settings` page. Each int/float clamps to a stated minimum and falls back to the documented default below it.
+
+| Variable | Default | Description |
+|---|---|---|
+| `RSBS_HEALTH_HEARTBEAT_WARN_S` | `120` | Warn if the last `receiver_stats` row is older than this (seconds; min `30`) |
+| `RSBS_HEALTH_HEARTBEAT_CRIT_S` | `300` | Critical if older than this (min `30`) |
+| `RSBS_HEALTH_AIRCRAFT_GAP_S` | `600` | Critical if 0 aircraft seen for this long (min `60`) |
+| `RSBS_HEALTH_NOISE_WARN_DB` | `-28` | Warn if noise floor (dBFS) is above this (higher = worse) |
+| `RSBS_HEALTH_NOISE_CRIT_DB` | `-25` | Critical noise-floor threshold (dBFS) |
+| `RSBS_HEALTH_CPU_WARN_PCT` | `80` | Warn if demod CPU > this % of one core (min `1.0`) |
+| `RSBS_HEALTH_CPU_CRIT_PCT` | `90` | Critical demod CPU % (min `1.0`) |
+| `RSBS_HEALTH_BASELINE_WEEKS` | `4` | How many same-hour-of-week samples back to average for baseline-aware checks (min `1`) |
+| `RSBS_HEALTH_BASELINE_MIN_SAMPLES` | `3` | Minimum baseline samples required before a comparison fires (min `1`) |
+| `RSBS_HEALTH_MSG_DROP_PCT` | `50` | Warn if recent message rate is below this % of the baseline (min `1.0`) |
+| `RSBS_HEALTH_AIRCRAFT_DROP_PCT` | `25` | Warn if visible-aircraft count is below this % of baseline (min `1.0`) |
+| `RSBS_HEALTH_SIGNAL_DROP_DB` | `3` | Warn if signal level drops by more than this many dB below baseline (min `0.1`) |
+| `RSBS_HEALTH_GAIN_STRONG_PCT` | `5` | Warn if strong-signals share exceeds this % of messages (min `0.1`) |
+| `RSBS_HEALTH_RANGE_SHORT_DAYS` | `7` | Window for the "recent max range" comparison (days; min `1`) |
+| `RSBS_HEALTH_RANGE_LONG_DAYS` | `30` | Window for the "long-term max range" comparison (days; min `1`) |
+| `RSBS_HEALTH_RANGE_RATIO` | `0.85` | Info-level alert if short-window range falls below long-window range × this (min `0.1`) |
+
+### Map / historical replay
+
+| Variable | Default | Description |
+|---|---|---|
+| `RSBS_MAP_HISTORY_HOURS` | `24` | How many hours back the rewind slider can reach (min `1`) |
+
+### Web server
+
+| Variable | Default | Description |
+|---|---|---|
+| `RSBS_WEB_HOST` | `0.0.0.0` | Uvicorn bind address. The systemd unit overrides this to `127.0.0.1`; nginx fronts the port. |
 | `RSBS_WEB_PORT` | `8080` | Internal uvicorn port |
-| `RSBS_PAGE_SIZE` | `100` | Default flight list page size |
-| `RSBS_MAX_PAGE_SIZE` | `500` | Maximum allowed page size |
+| `RSBS_ROOT_PATH` | `/stats` | URL prefix for the nginx reverse proxy (trailing slash stripped) |
+
+### UI / pagination
+
+| Variable | Default | Description |
+|---|---|---|
+| `RSBS_PAGE_SIZE` | `100` | Default flight list page size (min `1`) |
+| `RSBS_MAX_PAGE_SIZE` | `500` | Maximum allowed page size (min `1`); `RSBS_PAGE_SIZE` is clamped down to this |
+| `RSBS_MAX_EXPORT` | `50000` | Hard cap on rows returned by `/api/flights/export.csv` (min `1`). The endpoint streams rows, so memory is no longer the limiting factor. |
 | `RSBS_TIME_FORMAT` | `24h` | Clock format for UI timestamps. Allowed: `24h`, `12h`. Invalid values fall back to `24h`. Seeded into the browser on first boot; users can override locally via `localStorage.rsbs_clock_format`. |
+
+### Telegram notifications
+
+| Variable | Default | Description |
+|---|---|---|
 | `RSBS_TELEGRAM_TOKEN` | _(empty)_ | Telegram bot token — notifications disabled if unset |
 | `RSBS_TELEGRAM_CHAT_ID` | _(empty)_ | Telegram chat/user ID |
 | `RSBS_SUMMARY_TIME` | `21:00` | Local time (HH:MM) for daily summary; `""` or `"off"` to disable |
 | `RSBS_TELEGRAM_UNITS` | `metric` | Units in notification messages: `metric`, `imperial`, or `aeronautical` |
 | `RSBS_TELEGRAM_PHOTOS` | `1` | Send aircraft photo with alerts (`0` to disable) |
 | `RSBS_TELEGRAM_ANONYMOUS_ALERT` | `1` | Fire alerts for anonymous (non-ICAO hex) aircraft (`0` to mute) |
-| `RSBS_TELEGRAM_BASE_URL` | `http://homepi.local/stats` | Base URL for profile links in Telegram messages — **set to your Pi's URL** |
-| `RSBS_MAP_HISTORY_HOURS` | `24` | How many hours back the rewind slider can reach (1–168) |
-| `RSBS_HEALTH_*` | _(see /settings)_ | Health-dashboard thresholds — all effective values listed on the `/settings` page |
-| `RSBS_USE_DUCKDB` | `0` | Enable DuckDB analytical accelerator for heatmap/coverage endpoints |
-| `RSBS_DUCKDB_MEMORY_MB` | `256` | DuckDB working-set cap (MB) |
-| `RSBS_DUCKDB_THREADS` | `2` | DuckDB worker threads |
-| `RSBS_DUCKDB_HOME_DIR` | `/mnt/ext/readsbstats/duckdb-home` | DuckDB home directory (extension cache) |
-| `RSBS_DUCKDB_TEMP_DIR` | `/mnt/ext/readsbstats/duckdb-tmp` | DuckDB spill directory |
-| `RSBS_PREWARM_MAP_CACHE` | `1` | Background prewarmer for heatmap/coverage caches (`0` to disable) |
-| `RSBS_METRICS_ENABLED` | `0` | Enable receiver metrics collection from `/run/readsb/stats.json` |
+| `RSBS_TELEGRAM_BASE_URL` | `http://homepi.local/stats` | Base URL for profile links in Telegram messages — **set to your Pi's URL** (trailing slash stripped) |
+
+### Feeders monitoring
+
+| Variable | Default | Description |
+|---|---|---|
+| `RSBS_FEEDERS` | _(empty → uses 9-feeder default list)_ | JSON array overriding the built-in feeder list shown on `/feeders`. Each entry needs `name` and `unit`; optional keys: `port`, `status_type` (`readsb`/`fr24`/`piaware`/`mlat`), `status_path`, `status_url`. Malformed JSON or missing keys → warn to stderr, fall back to defaults. |
 
 ## Logging
 

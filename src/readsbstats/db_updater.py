@@ -124,13 +124,27 @@ def update_aircraft_db(conn: sqlite3.Connection) -> int:
 
     log.info("Parsed %d aircraft records", len(rows))
 
+    # Audit-13 A13-061: chunk the bulk reload so the writer lock is
+    # released between chunks. The previous single-transaction DELETE +
+    # INSERT held the lock for the entire 620k-row reload (several
+    # seconds on a Pi 4); concurrent collector writes hit the 30 s
+    # busy_timeout. Each chunk commits independently so other writers
+    # can interleave.
+    _CHUNK = 5000
     with conn:
         conn.execute("DELETE FROM aircraft_db")
-        conn.executemany(
-            "INSERT OR IGNORE INTO aircraft_db "
-            "(icao_hex, registration, type_code, type_desc, flags) VALUES (?,?,?,?,?)",
-            rows,
-        )
+    for i in range(0, len(rows), _CHUNK):
+        with conn:
+            conn.executemany(
+                "INSERT OR IGNORE INTO aircraft_db "
+                "(icao_hex, registration, type_code, type_desc, flags) VALUES (?,?,?,?,?)",
+                rows[i:i + _CHUNK],
+            )
+
+    # Audit-13 A13-018: clear cache immediately after the write so
+    # readers don't serve pre-refresh data between the commit here and
+    # the run-end clear in main().
+    enrichment.clear_cache()
 
     log.info("aircraft_db updated (%d rows)", len(rows))
     return len(rows)
@@ -172,6 +186,9 @@ def update_airlines_db(conn: sqlite3.Connection) -> int:
             "(icao_code, name, iata_code, country, active) VALUES (?,?,?,?,?)",
             rows,
         )
+
+    # Audit-13 A13-018: per-step cache invalidation.
+    enrichment.clear_cache()
 
     log.info("airlines updated (%d rows)", len(rows))
     return len(rows)
@@ -220,6 +237,9 @@ def main() -> None:
         update_aircraft_db(conn)
         update_airlines_db(conn)
         backfill_flights(conn)
+        # `clear_cache()` is already called inside `update_aircraft_db` and
+        # `update_airlines_db` (audit-13 A13-018); this final call is a
+        # belt-and-suspenders no-op kept for explicitness.
         enrichment.clear_cache()
         log.info("db_updater complete")
     except Exception:

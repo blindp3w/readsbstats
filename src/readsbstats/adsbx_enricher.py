@@ -95,11 +95,23 @@ def _upsert_overrides(conn: sqlite3.Connection, entries: list[dict]) -> int:
     """
     Upsert parsed entries into adsbx_overrides.
     Returns the number of rows upserted.
+
+    Audit-13 A13-066: previously did N round-trip `conn.execute(...)`
+    calls; an entries batch of a few hundred dominated each poll's
+    write latency. `executemany` with the same UPSERT clause issues
+    one prepared-statement bind per row inside one transaction.
     """
+    if not entries:
+        return 0
     now = int(time.time())
-    count = 0
-    for e in entries:
-        conn.execute(
+    rows = [
+        (e["icao_hex"], e["flags"],
+         e["registration"], e["type_code"], e["type_desc"],
+         now, now)
+        for e in entries
+    ]
+    with conn:
+        conn.executemany(
             """
             INSERT INTO adsbx_overrides
                 (icao_hex, flags, registration, type_code, type_desc, first_seen, last_seen)
@@ -111,16 +123,11 @@ def _upsert_overrides(conn: sqlite3.Connection, entries: list[dict]) -> int:
                 type_desc    = COALESCE(excluded.type_desc,    adsbx_overrides.type_desc),
                 last_seen    = excluded.last_seen
             """,
-            (
-                e["icao_hex"], e["flags"],
-                e["registration"], e["type_code"], e["type_desc"],
-                now, now,
-            ),
+            rows,
         )
+    for e in entries:
         enrichment.invalidate_adsbx(e["icao_hex"])
-        count += 1
-    conn.commit()
-    return count
+    return len(entries)
 
 
 # ---------------------------------------------------------------------------
@@ -131,26 +138,54 @@ def _upsert_overrides(conn: sqlite3.Connection, entries: list[dict]) -> int:
 _TransientError = http_safe.TransientError
 
 
-def _fetch_area() -> dict:
+class _PermanentError(Exception):
+    """Raised when an upstream call hit a non-retryable policy violation.
+
+    Audit-13 A13-021: `safe_httpx_get` raises `ValueError` on size-cap,
+    redirect, or non-HTTPS rejections — all of which indicate an upstream
+    schema/policy change that will not heal with exponential backoff.
+    The previous catch-all `_TransientError` flooded the log with retries
+    forever. The loop now backs off significantly (or skips the cycle)
+    on `_PermanentError` rather than treating it as transient.
+    """
+
+
+def _fetch_area(client: httpx.Client | None = None) -> dict:
     """
     Call airplanes.live area endpoint; return the raw JSON dict.
     Raises _TransientError on any failure.
+
+    Audit-13 A13-068: when called with an already-open `httpx.Client`
+    (loop path), the TLS session and pool persist across polls. When
+    called without (direct tests), open and close a one-shot Client.
     """
     url = (
         f"{config.ADSBX_API_URL}"
         f"/point/{config.RECEIVER_LAT}/{config.RECEIVER_LON}"
         f"/{config.ADSBX_RANGE_NM}"
     )
+
+    def _call(c: httpx.Client) -> dict:
+        resp = http_safe.safe_httpx_get(
+            c, url, max_bytes=_RESPONSE_MAX_BYTES,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
     try:
+        if client is not None:
+            return _call(client)
         with httpx.Client(
             timeout=_TIMEOUT,
             headers={"User-Agent": "readsbstats/1.0"},
-        ) as client:
-            resp = http_safe.safe_httpx_get(
-                client, url, max_bytes=_RESPONSE_MAX_BYTES,
-            )
-            resp.raise_for_status()
-            return resp.json()
+        ) as own_client:
+            return _call(own_client)
+    except ValueError as exc:
+        # Audit-13 A13-021: policy errors (size cap exceeded, redirect
+        # blocked, non-HTTPS) are not transient — retries will hit the
+        # same failure. Surface as permanent so the loop logs once and
+        # backs off significantly.
+        raise _PermanentError(str(exc)) from exc
     except Exception as exc:
         raise _TransientError(str(exc)) from exc
 
@@ -159,12 +194,12 @@ def _fetch_area() -> dict:
 # Background enrichment loop
 # ---------------------------------------------------------------------------
 
-def _poll_area(conn: sqlite3.Connection) -> int:
+def _poll_area(conn: sqlite3.Connection, client: httpx.Client | None = None) -> int:
     """
     Fetch aircraft in range from airplanes.live, parse, and upsert overrides.
     Returns the number of overrides upserted.
     """
-    data = _fetch_area()
+    data = _fetch_area() if client is None else _fetch_area(client)
     entries = _parse_area_response(data)
 
     if not entries:
@@ -180,23 +215,36 @@ def _poll_area(conn: sqlite3.Connection) -> int:
 
 
 def run_enricher_loop(db_path: str) -> None:
-    """Entry point for the background thread. Runs until process exits."""
+    """Entry point for the background thread. Runs until process exits.
+
+    Audit-13 A13-068: one `httpx.Client` lives for the lifetime of the
+    loop, so the TLS session and connection pool persist across polls.
+    """
     if not config.ADSBX_ENABLED:
         log.info("ADSBx enricher disabled")
         return
     conn = database.connect(db_path)
     sleep_time = config.ADSBX_POLL_INTERVAL
-    while True:
-        try:
-            _poll_area(conn)
-            sleep_time = config.ADSBX_POLL_INTERVAL
-        except _TransientError as exc:
-            log.warning("ADSBx poll failed (will retry): %s", exc)
-            sleep_time = min(sleep_time * 2, 300)
-        except Exception:
-            log.exception("ADSBx enricher error")
-            sleep_time = config.ADSBX_POLL_INTERVAL
-        time.sleep(sleep_time)
+    with httpx.Client(
+        timeout=_TIMEOUT,
+        headers={"User-Agent": "readsbstats/1.0"},
+    ) as client:
+        while True:
+            try:
+                _poll_area(conn, client)
+                sleep_time = config.ADSBX_POLL_INTERVAL
+            except _PermanentError as exc:
+                # Audit-13 A13-021: don't burn the upstream with retries
+                # on policy errors — log once, sleep 1 hour, then resume.
+                log.warning("ADSBx permanent error (1h backoff): %s", exc)
+                sleep_time = 3600
+            except _TransientError as exc:
+                log.warning("ADSBx poll failed (will retry): %s", exc)
+                sleep_time = min(sleep_time * 2, 300)
+            except Exception:
+                log.exception("ADSBx enricher error")
+                sleep_time = config.ADSBX_POLL_INTERVAL
+            time.sleep(sleep_time)
 
 
 def start_background_enricher() -> threading.Thread | None:

@@ -4,5 +4,33 @@ Description=Telegram notification for failed service %i
 [Service]
 Type=oneshot
 User=readsbstats
+Group=readsbstats
 EnvironmentFile=/etc/readsbstats/readsbstats.env
 ExecStart=/opt/readsbstats/scripts/notify-telegram-failure.sh %i
+TimeoutStartSec=30
+
+# Audit-13 A13-039: this oneshot sources the Telegram bot token via
+# EnvironmentFile=. Apply the same hardening baseline as the other units
+# so a bug in the shell script / curl cannot pivot beyond the network
+# fetch it needs to do.
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectHome=yes
+ProtectSystem=strict
+RestrictAddressFamilies=AF_INET AF_INET6
+# Audit-13 A13-046: kernel/namespace hardening — curl needs no kernel
+# tunables, no module load, no namespace tricks.
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+CapabilityBoundingSet=

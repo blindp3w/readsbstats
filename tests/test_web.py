@@ -46,7 +46,7 @@ def client(db_conn, monkeypatch):
     monkeypatch.setattr(route_enricher, "start_background_enricher", lambda: None)
     web._cache.clear()
     with TestClient(web.app, raise_server_exceptions=True,
-                    headers={"X-Requested-With": "tests"}) as c:
+                    headers={"X-Requested-With": "XMLHttpRequest"}) as c:
         yield c
 
 
@@ -1922,6 +1922,30 @@ class TestApiFlightPhoto:
         assert r.status_code == 200
         assert r.json() is None
 
+    def test_transient_failure_preserves_stale_positive_row(self, client, db_conn, monkeypatch):
+        # Audit-13 A13-014: a previously-resolved positive cache row must
+        # not be blown away to NULL on a transient upstream failure within
+        # the grace window (cache TTL + 7 days).
+        fid = insert_flight(db_conn, icao="aabbcc")
+        # Seed an expired positive row (1 day past 30d cache TTL).
+        expired_ts = int(time.time()) - (config.PHOTO_CACHE_DAYS * 86400 + 86400)
+        db_conn.execute(
+            "INSERT INTO photos VALUES (?,?,?,?,?,?)",
+            ("aabbcc", "https://kept.example/t.jpg",
+             "https://kept.example/l.jpg", "https://kept.example/p",
+             "Charlie", expired_ts),
+        )
+        db_conn.commit()
+        # Refresh fails — fetcher returns None (transient).
+        monkeypatch.setattr(photo_sources, "fetch_photo", lambda icao: None)
+        r = client.get(f"/api/flights/{fid}/photo")
+        assert r.status_code == 200
+        # Cached row still has the old positive URL — not blown away to NULL.
+        row = db_conn.execute(
+            "SELECT thumbnail_url FROM photos WHERE icao_hex = 'aabbcc'"
+        ).fetchone()
+        assert row["thumbnail_url"] == "https://kept.example/t.jpg"
+
 
 class TestPhotoFallback:
     """Web-layer photo caching behaviour (chain logic is in test_photo_sources.py)."""
@@ -2330,6 +2354,33 @@ class TestApiWatchlist:
             json={"match_type": "icao", "value": "aabbcc"},
         )
         assert r.status_code == 403
+
+    def test_post_with_wrong_xhr_value_returns_403(self, raw_client):
+        # Audit-13 A13-001: any non-empty value used to pass; canonical
+        # value is now required to remove that accidental-bypass class.
+        r = raw_client.post(
+            "/api/watchlist",
+            headers={"X-Requested-With": "bogus"},
+            json={"match_type": "icao", "value": "aabbcc"},
+        )
+        assert r.status_code == 403
+
+    def test_post_with_canonical_xhr_value_succeeds(self, raw_client):
+        r = raw_client.post(
+            "/api/watchlist",
+            headers={"X-Requested-With": "XMLHttpRequest"},
+            json={"match_type": "icao", "value": "aabbcc"},
+        )
+        assert r.status_code == 201
+
+    def test_post_with_mixed_case_xhr_value_succeeds(self, raw_client):
+        # Canonical compare is case-insensitive (XMLHttpRequest vs xmlhttprequest).
+        r = raw_client.post(
+            "/api/watchlist",
+            headers={"X-Requested-With": "xmlhttprequest"},
+            json={"match_type": "icao", "value": "aabbcd"},
+        )
+        assert r.status_code == 201
 
     def test_delete_without_xhr_header_returns_403(self, client, raw_client):
         # Seed an entry via the standard (header-bearing) client.

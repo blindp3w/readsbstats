@@ -151,6 +151,19 @@ class TestCpuSaturation:
         check = health._check_cpu_saturation(conn, now=1_000_000)
         assert check.severity == "critical"
 
+    def test_demod_pct_independent_of_metrics_interval(self, conn, monkeypatch):
+        # Audit-13 A13-007: denominator must be readsb's fixed 60-second
+        # last1min stats window, not config.METRICS_INTERVAL — otherwise
+        # changing the poll cadence silently scales the gauge.
+        insert_metrics_row(conn, ts=1_000_000 - 60, cpu_demod=6000.0)
+        monkeypatch.setattr(config, "METRICS_INTERVAL", 60)
+        v_60 = health._check_cpu_saturation(conn, now=1_000_000).value
+        monkeypatch.setattr(config, "METRICS_INTERVAL", 30)
+        v_30 = health._check_cpu_saturation(conn, now=1_000_000).value
+        monkeypatch.setattr(config, "METRICS_INTERVAL", 15)
+        v_15 = health._check_cpu_saturation(conn, now=1_000_000).value
+        assert v_60 == v_30 == v_15 == 10.0
+
 
 # ---------------------------------------------------------------------------
 # Aggregator
@@ -477,3 +490,35 @@ class TestRangeDegradationCheck:
         check = health._check_range_degradation(conn, NOW)
         assert check.severity == "info"
         assert "antenna" in check.message.lower() or "connector" in check.message.lower()
+
+    def test_long_max_zero_returns_info(self, conn):
+        # Audit-13 A13-011: zero rows in `max_distance_m` used to risk a
+        # ZeroDivisionError downstream. Guard returns severity="info".
+        for day in range(20):
+            insert_metrics_row(conn, ts=NOW - day * 86400, max_distance_m=0)
+        check = health._check_range_degradation(conn, NOW)
+        assert check.severity == "info"
+
+
+# ---------------------------------------------------------------------------
+# Audit-13 A13-008 — per-check exception isolation
+# ---------------------------------------------------------------------------
+
+class TestComputeHealthIsolation:
+    def test_one_failing_check_does_not_break_others(self, conn, monkeypatch):
+        def _broken(_conn, _now):
+            raise RuntimeError("intentional test failure")
+
+        # Replace one entry in _CHECKS with a broken function.
+        new_checks = list(health._CHECKS)
+        new_checks[0] = _broken  # replace heartbeat
+        monkeypatch.setattr(health, "_CHECKS", tuple(new_checks))
+
+        insert_metrics_row(conn, ts=1_000_000 - 30, ac_with_pos=15, noise=-32.0, cpu_demod=1000.0)
+        report = health.compute_health(conn, now=1_000_000)
+        # The broken check degraded to severity="info" with a generic name.
+        broken = next((c for c in report.checks if c.message == "check failed (see server logs)"), None)
+        assert broken is not None
+        assert broken.severity == "info"
+        # The other 8 checks still ran.
+        assert len(report.checks) == 9

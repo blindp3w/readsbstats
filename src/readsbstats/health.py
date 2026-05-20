@@ -9,11 +9,14 @@ Baseline-aware checks, gain hints, and Telegram alerting land in later phases.
 """
 from __future__ import annotations
 
+import logging
 import sqlite3
 import time
 from dataclasses import asdict, dataclass
 
 from . import config
+
+_log = logging.getLogger(__name__)
 
 
 # Severity ordering — higher number is worse, used to pick overall status.
@@ -158,9 +161,17 @@ def _check_noise_floor(conn: sqlite3.Connection, now: int) -> Check:
 
 
 def _check_cpu_saturation(conn: sqlite3.Connection, now: int) -> Check:
-    """Demod CPU is in ms-per-poll-window; convert to % of one core."""
+    """Demod CPU is in ms-per-stats-window; convert to % of one core.
+
+    readsb's `last1min` block aggregates over a fixed 60-second window
+    upstream — independent of how often the collector polls. Audit-13
+    (A13-007) previously divided by `config.METRICS_INTERVAL * 1000`,
+    which double-counted the cadence: setting `RSBS_METRICS_INTERVAL=30`
+    silently doubled the reported demod-%. Use the literal upstream
+    window length here.
+    """
     window = 300
-    interval_ms = max(config.METRICS_INTERVAL * 1000, 1)
+    _READSB_STATS_WINDOW_MS = 60_000  # fixed by readsb's last1min aggregation
     row = conn.execute(
         "SELECT AVG(cpu_demod) AS avg_cpu FROM receiver_stats WHERE ts >= ?",
         (now - window,),
@@ -172,7 +183,7 @@ def _check_cpu_saturation(conn: sqlite3.Connection, now: int) -> Check:
             severity="info",
             message="No CPU measurements in recent window",
         )
-    pct = (avg_ms / interval_ms) * 100
+    pct = (avg_ms / _READSB_STATS_WINDOW_MS) * 100
     pct_r = round(pct, 1)
     if pct >= config.HEALTH_CPU_CRIT_PCT:
         return Check(
@@ -382,19 +393,23 @@ def _check_range_degradation(conn: sqlite3.Connection, now: int) -> Check:
     """
     short_s = config.HEALTH_RANGE_SHORT_DAYS * 86400
     long_s  = config.HEALTH_RANGE_LONG_DAYS * 86400
+    # Audit-13 A13-011: combined into one query; guards `long_max <= 0` to
+    # avoid div-by-zero if receiver_stats contains a zero/NULL row.
     row = conn.execute(
-        "SELECT MAX(max_distance_m) AS short_max FROM receiver_stats WHERE ts >= ?",
-        (now - short_s,),
+        """
+        SELECT MAX(CASE WHEN ts >= ? THEN max_distance_m END) AS short_max,
+               MAX(max_distance_m) AS long_max,
+               MIN(ts) AS first
+        FROM receiver_stats
+        WHERE ts >= ?
+        """,
+        (now - short_s, now - long_s),
     ).fetchone()
     short_max = row["short_max"] if row else None
-    row = conn.execute(
-        "SELECT MAX(max_distance_m) AS long_max, MIN(ts) AS first FROM receiver_stats WHERE ts >= ?",
-        (now - long_s,),
-    ).fetchone()
     long_max = row["long_max"] if row else None
     first_ts = row["first"] if row else None
 
-    if not short_max or not long_max:
+    if not short_max or not long_max or long_max <= 0:
         return Check(name="range_degradation", severity="info", message="No range data yet")
 
     # Need at least 2× the short window of total history before the comparison
@@ -444,9 +459,25 @@ _CHECKS = (
 
 
 def compute_health(conn: sqlite3.Connection, now: int | None = None) -> HealthReport:
-    """Run all enabled checks and return a HealthReport."""
+    """Run all enabled checks and return a HealthReport.
+
+    Audit-13 A13-008: each check is isolated in its own try/except so a
+    single failing check (DB hiccup, unexpected row shape) cannot bring
+    down the entire dashboard. Failures degrade to ``severity="info"``
+    rather than 500.
+    """
     if now is None:
         now = int(time.time())
-    checks = [fn(conn, now) for fn in _CHECKS]
+    checks: list[Check] = []
+    for fn in _CHECKS:
+        try:
+            checks.append(fn(conn, now))
+        except Exception:  # noqa: BLE001 - per-check isolation, must catch all
+            _log.exception("health check %s raised", fn.__name__)
+            checks.append(Check(
+                name=fn.__name__.lstrip("_").removeprefix("check_"),
+                severity="info",
+                message="check failed (see server logs)",
+            ))
     overall = max(checks, key=lambda c: _SEVERITY_RANK.get(c.severity, 0)).severity
     return HealthReport(overall=overall, as_of=now, checks=checks)

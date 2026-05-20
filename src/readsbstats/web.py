@@ -27,7 +27,7 @@ from urllib.parse import urlparse
 import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import JSONResponse, RedirectResponse, Response
+from fastapi.responses import JSONResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -57,7 +57,13 @@ from contextlib import asynccontextmanager
 @asynccontextmanager
 async def _lifespan(app_: FastAPI) -> AsyncIterator[None]:
     log.info("Starting web server — DB: %s", config.DB_PATH)
-    database._migrate(db())
+    # Audit-13 A13-067: `_migrate` may run a handful of ALTER TABLEs and
+    # `CREATE INDEX` statements on cold disk — hundreds of ms on a Pi 4.
+    # Wrap in a thread so the event loop stays free during startup.
+    # Lambda form ensures `db()` opens the connection on the worker
+    # thread (cleanest thread affinity; both forms work because
+    # `database.connect()` uses `check_same_thread=False`).
+    await asyncio.to_thread(lambda: database._migrate(db()))
     # Background migrations (positions indexes, bearing backfill) are owned by
     # the collector so two processes don't fight on the SQLite write lock.
     route_enricher.start_background_enricher()
@@ -118,28 +124,31 @@ if _SPA_AVAILABLE:
             headers={"Cache-Control": "public, max-age=86400"},
         )
 
-    # Compat: /v2/* -> 301 -> /<path>. Anyone with a bookmarked RC URL or a
-    # browser tab open after the cutover lands on the same page. Registered
-    # at the top of the route table because /v2 is a literal prefix — it
-    # won't shadow anything.
-    @app.get("/v2", include_in_schema=False)
-    @app.get("/v2/{rest:path}", include_in_schema=False)
-    def _v2_compat(request: Request, rest: str = "") -> RedirectResponse:
-        root = request.scope.get("root_path", "").rstrip("/")
-        sanitized = _sanitize_v2_rest(rest)
-        target = f"{root}/{sanitized}" if sanitized else f"{root}/"
-        # CodeQL #29 — explicit recognized sanitizer pattern. `_sanitize_v2_rest`
-        # already strips the leading `/` and `\` that produce scheme-relative
-        # URLs, but CodeQL's data-flow analysis doesn't know our custom helper
-        # is safe (CWE-601 / `py/url-redirection`). This urlparse() check is
-        # the pattern CodeQL's own documentation recommends, and serves as a
-        # defence-in-depth catch: a safe redirect target has neither scheme
-        # nor netloc. If anything slips through the sanitizer, fall back to
-        # the SPA root rather than honour the redirect.
-        parsed_target = urllib.parse.urlparse(target)
-        if parsed_target.scheme or parsed_target.netloc:
-            return RedirectResponse(url=f"{root}/", status_code=301)
-        return RedirectResponse(url=target, status_code=301)
+
+# Audit-13 A13-005: /v2 compat redirect lives OUTSIDE the SPA-availability
+# gate. During a mid-rsync deploy the SPA dist may be briefly absent;
+# /v2 bookmarks should still rewrite their URL bar to the canonical
+# scheme even though the target path itself will 404 until the deploy
+# completes. Old `if _SPA_AVAILABLE:`-gated registration meant /v2/...
+# 404'd outright during the same window.
+@app.get("/v2", include_in_schema=False)
+@app.get("/v2/{rest:path}", include_in_schema=False)
+def _v2_compat(request: Request, rest: str = "") -> RedirectResponse:
+    root = request.scope.get("root_path", "").rstrip("/")
+    sanitized = _sanitize_v2_rest(rest)
+    target = f"{root}/{sanitized}" if sanitized else f"{root}/"
+    # CodeQL #29 — explicit recognized sanitizer pattern. `_sanitize_v2_rest`
+    # already strips the leading `/` and `\` that produce scheme-relative
+    # URLs, but CodeQL's data-flow analysis doesn't know our custom helper
+    # is safe (CWE-601 / `py/url-redirection`). This urlparse() check is
+    # the pattern CodeQL's own documentation recommends, and serves as a
+    # defence-in-depth catch: a safe redirect target has neither scheme
+    # nor netloc. If anything slips through the sanitizer, fall back to
+    # the SPA root rather than honour the redirect.
+    parsed_target = urllib.parse.urlparse(target)
+    if parsed_target.scheme or parsed_target.netloc:
+        return RedirectResponse(url=f"{root}/", status_code=301)
+    return RedirectResponse(url=target, status_code=301)
 
 
 def _sanitize_v2_rest(rest: str) -> str:
@@ -302,6 +311,19 @@ _SORT_COLS: dict[str, str] = {
     "dest_icao":      "f.dest_icao",
 }
 
+# Audit-13 A13-077: sibling allowlist for /api/aircraft/flagged. Keys
+# resolve to columns from the GROUP-BY aggregate SELECT in that handler
+# (not the per-flight `f.*` columns above), so we keep this as a
+# separate dict rather than rolling everything into `_SORT_COLS` and
+# leaking aggregate names into the /api/flights surface.
+_FLAGGED_SORT_COLS: dict[str, str] = {
+    "last_seen":     "last_seen",
+    "first_seen":    "first_seen",
+    "flight_count":  "flight_count",
+    "registration":  "registration",
+    "aircraft_type": "aircraft_type",
+}
+
 
 # ---------------------------------------------------------------------------
 # Receiver metrics — column allowlist and aggregation types
@@ -354,8 +376,15 @@ def _metrics_agg(col: str) -> str:
 
 @app.get("/live", include_in_schema=False)
 def redirect_live(request: Request) -> RedirectResponse:
+    # Audit-13 A13-049: defence in depth against a hostile reverse-proxy
+    # injecting an absolute root_path. Use the same urlparse() check
+    # _v2_compat uses (which CodeQL recognises as a recognised sanitiser).
     root = request.scope.get("root_path", "").rstrip("/")
-    return RedirectResponse(url=f"{root}/map", status_code=302)
+    target = f"{root}/map"
+    parsed = urllib.parse.urlparse(target)
+    if parsed.scheme or parsed.netloc:
+        return RedirectResponse(url="/map", status_code=302)
+    return RedirectResponse(url=target, status_code=302)
 
 
 def _settings_payload() -> dict:
@@ -461,17 +490,20 @@ _VALID_MATCH_TYPES = {"icao", "registration", "callsign_prefix"}
 
 def _csrf_check(x_requested_with: str | None = Header(None)) -> None:
     # Browsers cannot set custom headers cross-origin without a CORS preflight,
-    # which this app rejects (no CORS allowlist). Requiring X-Requested-With on
-    # state-changing endpoints blocks simple-form CSRF without needing tokens.
+    # which this app rejects (no CORS allowlist). Requiring X-Requested-With
+    # with the canonical `XMLHttpRequest` value blocks simple-form CSRF
+    # without needing tokens. Audit-13 (A13-001) tightened the check from
+    # "any non-empty value" to the literal canonical value to remove a class
+    # of accidental-bypass mistakes.
     #
     # CRITICAL: this protection assumes there is **no** CORS middleware that
     # whitelists `X-Requested-With` (or `*`) in `allow_headers`.  Adding one
     # would silently disable CSRF protection for every mutating endpoint that
     # uses this dependency.  If you ever introduce `CORSMiddleware`, audit
     # `allow_headers` first and add a token-based CSRF scheme before
-    # weakening it.  See improvements.md #122.
-    if not x_requested_with:
-        raise HTTPException(403, "X-Requested-With header is required")
+    # weakening it.
+    if not x_requested_with or x_requested_with.strip().lower() != "xmlhttprequest":
+        raise HTTPException(403, "X-Requested-With: XMLHttpRequest header is required")
 
 
 class _WatchlistEntry(BaseModel):
@@ -709,35 +741,48 @@ def api_flights_export(
     sort_col = _SORT_COLS.get(sort_by or "", "f.first_seen")
     sort_order = "ASC" if sort_dir == "asc" else "DESC"
 
-    rows = db().execute(
-        f"""
+    # Audit-13 A13-055: stream rows instead of materialising the entire
+    # CSV in memory. On a Pi 4 a 50k-row export previously buffered a
+    # multi-MB StringIO before the first byte hit the wire.
+    sql = f"""
         SELECT {_FLIGHT_COLS}
         FROM flights f {_FLIGHT_JOIN}
         {where}
         ORDER BY {sort_col} {sort_order}
         LIMIT ?
-        """,
-        params + [config.MAX_EXPORT_ROWS],
-    ).fetchall()
+        """
+    bind = params + [config.MAX_EXPORT_ROWS]
+    conn = db()
 
-    buf = io.StringIO()
-    writer = csv.writer(buf)
-    writer.writerow(_CSV_COLS)
-    for r in rows:
-        writer.writerow([
-            _fmt_ts(r["first_seen"]), _fmt_ts(r["last_seen"]), r["duration_sec"],
-            r["icao_hex"], r["callsign"] or "", r["registration"] or "",
-            r["aircraft_type"] or "", r["type_desc"] or "",
-            r["squawk"] or "", r["category"] or "", r["primary_source"] or "",
-            r["max_alt_baro"], r["max_gs"],
-            round(r["max_distance_nm"], 1) if r["max_distance_nm"] is not None else "",
-            r["total_positions"], r["adsb_positions"], r["mlat_positions"],
-            r["origin_icao"] or "", r["dest_icao"] or "",
-        ])
+    def _iter_csv():
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        writer.writerow(_CSV_COLS)
+        yield buf.getvalue()
+        buf.seek(0); buf.truncate(0)
+
+        cursor = conn.execute(sql, bind)
+        while True:
+            chunk = cursor.fetchmany(1000)
+            if not chunk:
+                break
+            for r in chunk:
+                writer.writerow([
+                    _fmt_ts(r["first_seen"]), _fmt_ts(r["last_seen"]), r["duration_sec"],
+                    r["icao_hex"], r["callsign"] or "", r["registration"] or "",
+                    r["aircraft_type"] or "", r["type_desc"] or "",
+                    r["squawk"] or "", r["category"] or "", r["primary_source"] or "",
+                    r["max_alt_baro"], r["max_gs"],
+                    round(r["max_distance_nm"], 1) if r["max_distance_nm"] is not None else "",
+                    r["total_positions"], r["adsb_positions"], r["mlat_positions"],
+                    r["origin_icao"] or "", r["dest_icao"] or "",
+                ])
+            yield buf.getvalue()
+            buf.seek(0); buf.truncate(0)
 
     filename = f"flights_{date}.csv" if date else "flights.csv"
-    return Response(
-        content=buf.getvalue(),
+    return StreamingResponse(
+        _iter_csv(),
         media_type="text/csv",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
@@ -811,8 +856,23 @@ def _type_lock(type_code: str) -> asyncio.Lock:
         return existing
     lock = asyncio.Lock()
     _type_fetch_locks[type_code] = lock
-    if len(_type_fetch_locks) > _TYPE_LOCKS_MAX:
-        _type_fetch_locks.popitem(last=False)
+    # Audit-13 A13-004: skip eviction of locks that are currently held.
+    # Previously, `popitem(last=False)` could remove a held lock; the
+    # next caller for the same type_code would then get a fresh lock
+    # object and race the in-progress fetch.
+    while len(_type_fetch_locks) > _TYPE_LOCKS_MAX:
+        oldest_key = next(iter(_type_fetch_locks))
+        oldest_lock = _type_fetch_locks[oldest_key]
+        if oldest_lock.locked():
+            # Rotate to end so we don't pick it next iteration.
+            _type_fetch_locks.move_to_end(oldest_key)
+            # Safety net: if every lock is held (impossible in practice
+            # with ICAO type designators <~3k), break to avoid infinite
+            # rotation.
+            if all(lk.locked() for lk in _type_fetch_locks.values()):
+                break
+            continue
+        _type_fetch_locks.pop(oldest_key)
     return lock
 
 
@@ -853,12 +913,26 @@ async def _fetch_photo(icao_hex: str) -> dict | None:
         )
     else:
         result = None
-        conn.execute(
-            "INSERT OR REPLACE INTO photos "
-            "(icao_hex, thumbnail_url, large_url, link_url, photographer, fetched_at) "
-            "VALUES (?,NULL,NULL,NULL,NULL,?)",
-            (icao_hex, now),
-        )
+        # Audit-13 A13-014: don't blow away a previously-resolved positive
+        # row on a transient fetch failure. If a stale-but-positive row is
+        # within the grace window (cache TTL + 7 days), leave it untouched
+        # so the cached URL keeps serving requests; the next successful
+        # fetch will refresh it normally. Outside the window, the negative
+        # row signals "confirmed unknown" to subsequent lookups.
+        grace_seconds = 7 * 86400
+        existing = conn.execute(
+            "SELECT thumbnail_url, fetched_at FROM photos WHERE icao_hex = ?",
+            (icao_hex,),
+        ).fetchone()
+        if existing and existing["thumbnail_url"] and existing["fetched_at"] > now - cache_seconds - grace_seconds:
+            pass  # keep stale positive row
+        else:
+            conn.execute(
+                "INSERT OR REPLACE INTO photos "
+                "(icao_hex, thumbnail_url, large_url, link_url, photographer, fetched_at) "
+                "VALUES (?,NULL,NULL,NULL,NULL,?)",
+                (icao_hex, now),
+            )
     conn.commit()
     return result
 
@@ -1030,14 +1104,9 @@ def api_aircraft_flagged(
             f"({flag_expr} & {config.FLAG_MILITARY | config.FLAG_INTERESTING | config.FLAG_ANONYMOUS}) != 0"
         )
 
-    sort_map = {
-        "last_seen": "last_seen",
-        "first_seen": "first_seen",
-        "flight_count": "flight_count",
-        "registration": "registration",
-        "aircraft_type": "aircraft_type",
-    }
-    order_col = sort_map.get(sort_by or "last_seen", "last_seen")
+    # Audit-13 A13-077: shared allowlist at module top so this endpoint
+    # follows the same pattern as /api/flights — no inline ad-hoc maps.
+    order_col = _FLAGGED_SORT_COLS.get(sort_by or "last_seen", "last_seen")
     order_dir = "ASC" if (sort_dir or "").lower() == "asc" else "DESC"
 
     base_joins = """
@@ -1537,7 +1606,14 @@ def api_stats_records() -> dict:
 
     conn = db()
 
-    def _top1(order_col: str, extra_where: str = "") -> dict | None:
+    # Audit-13 A13-040: previously accepted any string as `order_col` and
+    # f-stringed it into SQL — latent SQLi if a future caller forwarded a
+    # query param. Explicit allowlist enforced at function entry.
+    _TOP1_ALLOWLIST = frozenset({"max_distance_nm", "max_gs", "max_alt_baro"})
+
+    def _top1(order_col: str, extra_where: str = "", extra_params: tuple = ()) -> dict | None:
+        if order_col not in _TOP1_ALLOWLIST:
+            raise ValueError(f"unsupported order column: {order_col!r}")
         row = conn.execute(
             f"""
             SELECT {_FLIGHT_COLS}
@@ -1545,15 +1621,18 @@ def api_stats_records() -> dict:
             WHERE f.{order_col} IS NOT NULL {extra_where}
             ORDER BY f.{order_col} DESC
             LIMIT 1
-            """
+            """,
+            extra_params,
         ).fetchone()
         return dict(row) if row else None
 
     furthest = _top1("max_distance_nm")
+    # Audit-13 A13-050: parameterise MAX_GS_* numerics (previously f-stringed).
     fastest  = _top1(
         "max_gs",
-        f"AND f.max_gs <= CASE WHEN (COALESCE(adb.flags, 0) | COALESCE(axo.flags, 0)) & 1 != 0"
-        f" THEN {config.MAX_GS_MILITARY_KTS} ELSE {config.MAX_GS_CIVIL_KTS} END",
+        "AND f.max_gs <= CASE WHEN (COALESCE(adb.flags, 0) | COALESCE(axo.flags, 0)) & 1 != 0"
+        " THEN ? ELSE ? END",
+        (config.MAX_GS_MILITARY_KTS, config.MAX_GS_CIVIL_KTS),
     )
     highest  = _top1("max_alt_baro")
 
@@ -1590,9 +1669,19 @@ def api_airspace() -> dict:
         return cached[1]
 
     path = config.AIRSPACE_GEOJSON or str(BASE_DIR / "static" / "airspace" / "poland.geojson")
+    # Audit-13 A13-041: refuse oversized airspace files. The path comes
+    # from an env var (operator-controlled), but a misconfigured 100 MB
+    # GeoJSON would land in the per-process cache and starve the Pi.
+    _AIRSPACE_MAX_BYTES = 10 * 1024 * 1024
     try:
-        with open(path) as fh:
-            data = json.load(fh)
+        size = os.path.getsize(path)
+        if size > _AIRSPACE_MAX_BYTES:
+            log.warning("Airspace file %s is %d bytes — over %d-byte limit; serving empty",
+                        path, size, _AIRSPACE_MAX_BYTES)
+            data = {"type": "FeatureCollection", "features": []}
+        else:
+            with open(path) as fh:
+                data = json.load(fh)
     except (OSError, json.JSONDecodeError) as exc:
         log.warning("Failed to load airspace from %s: %s", path, exc)
         data = {"type": "FeatureCollection", "features": []}
@@ -1778,20 +1867,15 @@ def _compute_coverage_sync(window: str) -> dict:
             extra = "AND ts > :cutoff"
             params["cutoff"] = cutoff
 
+        # Audit-13 A13-076: shared SQL helpers — single source of truth.
+        bearing_expr = geo.bearing_sql("lat", "lon", ":rlat", ":rlon")
+        dist_expr    = geo.haversine_sql("lat", "lon", ":rlat", ":rlon")
         rows = db().execute(
             f"""
             WITH pos_bearing AS (
                 SELECT
-                    (degrees(atan2(
-                        sin(radians(lon - :rlon)) * cos(radians(lat)),
-                        cos(radians(:rlat)) * sin(radians(lat))
-                        - sin(radians(:rlat)) * cos(radians(lat)) * cos(radians(lon - :rlon))
-                    )) + 360.0) % 360.0 AS bearing_deg,
-                    2.0 * 3440.065 * asin(sqrt(
-                        sin(radians((lat - :rlat) / 2.0)) * sin(radians((lat - :rlat) / 2.0)) +
-                        cos(radians(:rlat)) * cos(radians(lat)) *
-                        sin(radians((lon - :rlon) / 2.0)) * sin(radians((lon - :rlon) / 2.0))
-                    )) AS dist_nm
+                    {bearing_expr} AS bearing_deg,
+                    {dist_expr}    AS dist_nm
                 FROM positions
                 WHERE lat IS NOT NULL AND lon IS NOT NULL
                   {extra}
@@ -1979,29 +2063,13 @@ def _stop_prewarmer() -> None:
 
 @app.get("/api/live")
 def api_live() -> dict:
+    """
+    Audit-13 A13-069: single query (was two — fetch IDs, then bind into an
+    IN-clause). The correlated subquery uses idx_positions_flight_id_desc
+    on (flight_id, id DESC), so each per-flight position lookup is
+    O(log n) without materialising a Python list of active IDs.
+    """
     conn = db()
-    # Get active flight IDs first (small set), then fetch latest positions only for those
-    active_ids = [r[0] for r in conn.execute("SELECT flight_id FROM active_flights").fetchall()]
-
-    if active_ids:
-        placeholders = ",".join("?" * len(active_ids))
-        pos_rows = conn.execute(
-            f"""
-            SELECT flight_id, lat, lon
-            FROM positions
-            WHERE id IN (
-                SELECT MAX(id) FROM positions
-                WHERE flight_id IN ({placeholders})
-                  AND lat IS NOT NULL AND lon IS NOT NULL
-                GROUP BY flight_id
-            )
-            """,
-            active_ids,
-        ).fetchall()
-        latest_pos = {r["flight_id"]: (r["lat"], r["lon"]) for r in pos_rows}
-    else:
-        latest_pos = {}
-
     rows = conn.execute(
         f"""
         SELECT af.icao_hex, af.flight_id, af.last_seen,
@@ -2011,12 +2079,22 @@ def api_live() -> dict:
                {_FLAGS_EXPR_AF}                                            AS flags,
                f.primary_source,
                cr.origin_icao,
-               cr.dest_icao
+               cr.dest_icao,
+               p.lat,
+               p.lon
         FROM active_flights af
         JOIN flights f ON f.id = af.flight_id
         LEFT JOIN aircraft_db      adb ON adb.icao_hex  = af.icao_hex
         LEFT JOIN adsbx_overrides  axo ON axo.icao_hex  = af.icao_hex
         LEFT JOIN callsign_routes  cr  ON cr.callsign   = f.callsign
+        LEFT JOIN positions p ON p.id = (
+            SELECT id FROM positions
+            WHERE flight_id = af.flight_id
+              AND lat IS NOT NULL
+              AND lon IS NOT NULL
+            ORDER BY id DESC
+            LIMIT 1
+        )
         ORDER BY af.last_seen DESC
         """
     ).fetchall()
@@ -2025,9 +2103,6 @@ def api_live() -> dict:
     for r in rows:
         d = dict(r)
         d["seconds_ago"] = now - r["last_seen"]
-        pos = latest_pos.get(r["flight_id"])
-        d["lat"] = pos[0] if pos else None
-        d["lon"] = pos[1] if pos else None
         aircraft.append(d)
     return {
         "now": now,
@@ -2338,11 +2413,18 @@ def api_metrics_health() -> dict:
 # ---------------------------------------------------------------------------
 
 async def _check_systemd_unit(unit: str) -> dict:
-    """Run ``systemctl is-active <unit>`` and return the status string."""
+    """Run ``systemctl is-active <unit>`` and return the status string.
+
+    Audit-13 A13-042: reject unit names that start with ``-`` (would be
+    interpreted as systemctl flags) and pass ``--`` between args and the
+    unit so even a name containing ``--foo`` is treated as positional.
+    """
+    if unit.startswith("-"):
+        return {"systemd": "invalid-unit-name"}
     proc = None
     try:
         proc = await asyncio.create_subprocess_exec(
-            "systemctl", "is-active", unit,
+            "systemctl", "is-active", "--", unit,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -2466,8 +2548,14 @@ def _feeder_details_piaware(status_path: str) -> list[tuple[str, str]]:
 
 
 async def _feeder_details_mlat(unit: str) -> list[tuple[str, str]]:
-    """Parse recent journald output for mlat-client stats."""
+    """Parse recent journald output for mlat-client stats.
+
+    Audit-13 A13-042: reject unit names that start with ``-`` (would be
+    misread as a journalctl flag) before invoking the subprocess.
+    """
     details: list[tuple[str, str]] = []
+    if unit.startswith("-"):
+        return details
     proc = None
     try:
         proc = await asyncio.create_subprocess_exec(
