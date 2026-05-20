@@ -21,10 +21,8 @@ echo "Starting web server → http://127.0.0.1:8080/"
 echo "  DB: $DB"
 VENV="$(pwd)/.venv"
 if [[ -d "$VENV" ]]; then
-    PYTHON="$VENV/bin/python"
     UVICORN="$VENV/bin/uvicorn"
 else
-    PYTHON="python3"
     UVICORN="uvicorn"
 fi
 

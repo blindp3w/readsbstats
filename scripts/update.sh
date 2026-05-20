@@ -61,8 +61,14 @@ if [[ -f "$DB_FILE" ]]; then
   BACKUP="$DB_FILE.backup.$(date +%Y%m%d_%H%M%S)"
   echo "==> Backing up database → $BACKUP"
   cp "$DB_FILE" "$BACKUP"
-  # Keep only the 3 most recent backups
-  ls -1t "$DB_FILE".backup.* 2>/dev/null | tail -n +4 | xargs -r rm --
+  # Keep only the 3 most recent backups. Use find+sort over modification
+  # time instead of parsing `ls` output (shellcheck SC2012 / audit-13).
+  find "$(dirname "$DB_FILE")" -maxdepth 1 -name "$(basename "$DB_FILE").backup.*" \
+    -printf '%T@\t%p\n' 2>/dev/null \
+    | sort -nr \
+    | tail -n +4 \
+    | cut -f2- \
+    | xargs -r rm --
 fi
 
 # ---- Always sync code --------------------------------------------------------
