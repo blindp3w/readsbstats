@@ -1,5 +1,19 @@
 # Changelog
 
+## 2.3.1 — 2026-05-20
+
+### Reliability
+
+- **DuckDB shutdown race eliminated** — `analytics.coverage()` and
+  `analytics.heatmap()` no longer log a spurious WARNING + traceback
+  when the DuckDB connection is closed mid-query during service shutdown.
+  A `_SHUTDOWN` event is set by `close()` before the connection is torn
+  down; in-flight queries that race past the initial availability check
+  detect it and return `None` silently, letting the caller fall through
+  to the SQLite path as intended.
+
+---
+
 ## 2.3.0 — 2026-05-20
 
 Coordinated post-audit-13 sweep. 53 items across security, reliability,

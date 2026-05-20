@@ -36,6 +36,7 @@ _CONN = None
 _INIT_LOCK = threading.Lock()
 _INFRA_OK: bool | None = None
 _LOGGED_INIT = False
+_SHUTDOWN = threading.Event()  # set by close(); suppresses in-flight query warnings
 
 
 def _is_safe_sql_path(p: str) -> bool:
@@ -139,6 +140,8 @@ def is_available() -> bool:
     flag without restarting the process. The expensive infra check
     (extension + ATTACH) only runs once per process.
     """
+    if _SHUTDOWN.is_set():
+        return False
     if not config.USE_DUCKDB:
         return False
     return _ensure_initialised()
@@ -152,6 +155,8 @@ def heatmap(cutoff_ts: int | None, precision: int) -> list[tuple[float, float, i
         return None
     try:
         cur = _CONN.cursor()
+        if _SHUTDOWN.is_set():
+            return None
         if cutoff_ts is None:
             rows = cur.execute(
                 "SELECT round(lat, ?) AS rlat, round(lon, ?) AS rlon, COUNT(*) AS w "
@@ -170,7 +175,10 @@ def heatmap(cutoff_ts: int | None, precision: int) -> list[tuple[float, float, i
             ).fetchall()
         return [(float(r[0]), float(r[1]), int(r[2])) for r in rows]
     except Exception:  # noqa: BLE001 — one bad query must not poison infra
-        log.warning("analytics.heatmap failed; falling back to SQLite", exc_info=True)
+        if _SHUTDOWN.is_set():
+            log.debug("analytics.heatmap interrupted by shutdown")
+        else:
+            log.warning("analytics.heatmap failed; falling back to SQLite", exc_info=True)
         return None
 
 
@@ -185,6 +193,8 @@ def coverage(cutoff_ts: int | None, rlat: float, rlon: float,
     num_buckets = 360 // int(bucket_deg)
     try:
         cur = _CONN.cursor()
+        if _SHUTDOWN.is_set():
+            return None
         # Audit-13 A13-076: use shared SQL helpers from geo.py. DuckDB
         # uses positional `?` params; helpers expand to the same shape
         # the old inline SQL had — bearing references rlon, rlat, rlat,
@@ -218,7 +228,10 @@ def coverage(cutoff_ts: int | None, rlat: float, rlon: float,
         rows = cur.execute(sql, params).fetchall()
         return {int(r[0]): float(r[1]) for r in rows}
     except Exception:  # noqa: BLE001
-        log.warning("analytics.coverage failed; falling back to SQLite", exc_info=True)
+        if _SHUTDOWN.is_set():
+            log.debug("analytics.coverage interrupted by shutdown")
+        else:
+            log.warning("analytics.coverage failed; falling back to SQLite", exc_info=True)
         return None
 
 
@@ -226,6 +239,7 @@ def close() -> None:
     """Close the DuckDB connection and sweep the temp dir. Called from
     FastAPI lifespan shutdown — also safe to call from tests."""
     global _CONN
+    _SHUTDOWN.set()  # signal in-flight queries before closing the connection
     with _INIT_LOCK:
         if _CONN is not None:
             try:
@@ -250,6 +264,7 @@ def _reset_for_tests() -> None:
     """Drop all module state so the next call rebuilds from scratch.
     Tests use this between cases; production code never calls it."""
     global _CONN, _INFRA_OK, _LOGGED_INIT
+    _SHUTDOWN.clear()
     with _INIT_LOCK:
         if _CONN is not None:
             try:
