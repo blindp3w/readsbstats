@@ -25,8 +25,15 @@ TEXT="❌ <b>${UNIT}</b> failed on <b>$(hostname)</b>
 
 <pre>${STATUS}</pre>"
 
-curl -s -X POST \
-    "https://api.telegram.org/bot${RSBS_TELEGRAM_TOKEN}/sendMessage" \
+# improvements.md #123 — keep the bot token out of curl's argv (and therefore
+# out of /proc/<pid>/cmdline).  Write the URL line to a 0600 tmpfile and feed
+# it via --config; the token never appears as a command-line argument.
+CFG=$(mktemp)
+chmod 600 "$CFG"
+trap 'rm -f "$CFG"' EXIT
+printf 'url = "https://api.telegram.org/bot%s/sendMessage"\n' "$RSBS_TELEGRAM_TOKEN" > "$CFG"
+
+curl -s -X POST --config "$CFG" \
     -d "chat_id=${RSBS_TELEGRAM_CHAT_ID}" \
     --data-urlencode "text=${TEXT}" \
     -d "parse_mode=HTML" \

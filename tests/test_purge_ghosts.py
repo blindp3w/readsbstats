@@ -153,9 +153,10 @@ class TestMaxDistanceAfterPurge:
         assert result < 100  # ghost excluded; real positions are ~20-25 nm
 
     def test_empty_ghost_ids_does_not_raise(self):
-        """Regression for audit-12 #143 — empty ghost_ids must not produce
-        `id NOT IN ()` SQL syntax error. apply_purge calls this with [] after
-        DELETE; the dry-run report calls with the real list."""
+        """Regression for audit-12 #143 / improvements.md #118 — empty
+        ghost_ids must not produce `id NOT IN ()` SQL syntax error.
+        apply_purge calls this with [] after DELETE; the dry-run report
+        calls with the real list."""
         fid = insert_flight(self.conn)
         insert_pos(self.conn, fid, 1000, 52.6, 20.75)   # ~23 nm
         insert_pos(self.conn, fid, 1010, 52.5, 20.6)    # ~21 nm
@@ -164,6 +165,26 @@ class TestMaxDistanceAfterPurge:
         result = max_distance_after_purge(self.conn, fid, [], RLAT, RLON)
         assert result is not None
         assert result < 100
+
+    def test_empty_ghost_ids_query_omits_not_in_clause(self):
+        """Regression guard for improvements.md #118 — confirm the helper
+        takes the no-IN branch (not just that it doesn't crash) so a
+        future port to a stricter SQL engine doesn't silently regress."""
+        captured: list[str] = []
+
+        class _SpyConn:
+            def __init__(self, inner):
+                self._inner = inner
+
+            def execute(self, sql, *args, **kw):
+                captured.append(sql)
+                return self._inner.execute(sql, *args, **kw)
+
+        fid = insert_flight(self.conn)
+        insert_pos(self.conn, fid, 1000, 52.6, 20.75)
+        max_distance_after_purge(_SpyConn(self.conn), fid, [], RLAT, RLON)
+        assert any("NOT IN" not in s and "FROM positions" in s for s in captured)
+        assert not any("NOT IN ()" in s for s in captured)
 
     def test_empty_ghost_ids_with_no_positions_returns_none(self):
         fid = insert_flight(self.conn)

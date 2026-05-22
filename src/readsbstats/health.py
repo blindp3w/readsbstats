@@ -9,6 +9,7 @@ Baseline-aware checks, gain hints, and Telegram alerting land in later phases.
 """
 from __future__ import annotations
 
+import datetime as _dt
 import logging
 import sqlite3
 import time
@@ -225,25 +226,42 @@ def _baseline_avg(
     local DOW+hour as `now`, sampled across the past `lookback_weeks` weeks
     (excluding the current hour).  None if no samples found.
 
-    Uses SQLite's strftime to match the local DOW+hour — robust across DST and
-    independent of Python locale.
+    improvements.md A13-057: builds an OR-of-narrow-BETWEEN clause from
+    per-week target windows computed in Python.  Each week's window is
+    one local hour wide (the hour containing the target wall-clock time),
+    so the planner can use ``idx_receiver_stats_ts`` instead of scanning
+    the full lookback range and filtering with strftime per row.  DST is
+    handled correctly because Python's naive ``datetime`` + ``timedelta``
+    arithmetic on local time, followed by ``.timestamp()``, accounts for
+    the offset in effect at the historical wall-clock time.
     """
     if column not in _BASELINE_ALLOWED_COLS:
         raise ValueError(f"column {column!r} not allowed for baseline avg")
-    earliest = now - lookback_weeks * 7 * 86400
-    # Exclude the current hour so the baseline is "what's normal at this time
-    # of week historically", not contaminated by the value we're comparing to.
-    current_hour_start = now - (now % 3600)
+    if lookback_weeks < 1:
+        return None, 0
+
+    target = _dt.datetime.fromtimestamp(now).replace(
+        minute=0, second=0, microsecond=0
+    )
+    # One narrow window per week back.  Same DOW+hour is guaranteed because
+    # we subtract whole weeks of local wall-clock time, so the strftime
+    # filter from the old implementation is no longer needed.
+    windows: list[tuple[int, int]] = []
+    for w in range(1, lookback_weeks + 1):
+        start_dt = target - _dt.timedelta(weeks=w)
+        end_dt = start_dt + _dt.timedelta(hours=1)
+        windows.append((int(start_dt.timestamp()), int(end_dt.timestamp())))
+
+    clause = " OR ".join("(ts BETWEEN ? AND ?)" for _ in windows)
+    params: list = [v for win in windows for v in win]
     row = conn.execute(
         f"""
         SELECT AVG({column}) AS avg, COUNT({column}) AS n
         FROM receiver_stats
-        WHERE ts BETWEEN ? AND ?
-          AND ts < ?
-          AND strftime('%w-%H', ts, 'unixepoch', 'localtime') =
-              strftime('%w-%H', ?, 'unixepoch', 'localtime')
+        WHERE ({clause})
+          AND {column} IS NOT NULL
         """,
-        (earliest, now, current_hour_start, now),
+        params,
     ).fetchone()
     if not row or row["n"] == 0:
         return None, 0

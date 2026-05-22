@@ -22,6 +22,7 @@ Options:
 """
 
 import argparse
+import itertools
 import sqlite3
 import statistics
 
@@ -43,35 +44,36 @@ def scan_mlat_spikes(
     """
     Scan all flights for MLAT GS spikes.
     Returns {flight_id: [position_ids with spike gs]}.
+
+    improvements.md #126: streams one ordered query through
+    ``itertools.groupby`` instead of one SELECT per flight.
+
+    Note: the WHERE filter keeps every position with a non-null GS (not
+    just MLAT) so non-MLAT readings can advance ``prev_gs`` between MLAT
+    samples — the per-row branch below preserves the original semantics.
+    Flights that have no MLAT GS at all still appear here but never
+    produce bad_ids, so the result set is unchanged.
     """
-    flight_ids = [
-        r[0] for r in conn.execute(
-            "SELECT DISTINCT flight_id FROM positions "
-            "WHERE gs IS NOT NULL AND source_type = 'mlat' ORDER BY flight_id"
-        ).fetchall()
-    ]
+    cursor = conn.execute(
+        "SELECT flight_id, id, ts, gs, source_type FROM positions "
+        "WHERE gs IS NOT NULL ORDER BY flight_id, ts"
+    )
 
     bad: dict[int, list[int]] = {}
 
-    for fid in flight_ids:
-        positions = conn.execute(
-            "SELECT id, ts, gs, source_type FROM positions "
-            "WHERE flight_id = ? ORDER BY ts",
-            (fid,),
-        ).fetchall()
-
+    for fid, group in itertools.groupby(cursor, key=lambda r: r["flight_id"]):
         bad_ids: list[int] = []
         prev_gs = None
         prev_ts = None
 
-        for pos in positions:
-            pid, ts, gs, source_type = pos
+        for pos in group:
+            pid, ts, gs, source_type = pos["id"], pos["ts"], pos["gs"], pos["source_type"]
 
-            if gs is None or source_type != "mlat":
-                # Non-MLAT positions and NULL gs: advance reference normally
-                if gs is not None:
-                    prev_gs = gs
-                    prev_ts = ts
+            if source_type != "mlat":
+                # Non-MLAT positions: advance reference normally (gs is non-null
+                # by virtue of the WHERE filter).
+                prev_gs = gs
+                prev_ts = ts
                 continue
 
             if prev_gs is not None and prev_ts is not None:
@@ -108,30 +110,26 @@ def scan_statistical_outliers(
 
     Returns {flight_id: [position_ids with outlier gs]}.
     """
-    flight_ids = [
-        r[0] for r in conn.execute(
-            "SELECT DISTINCT flight_id FROM positions "
-            "WHERE gs IS NOT NULL AND source_type = 'mlat' ORDER BY flight_id"
-        ).fetchall()
-    ]
+    # improvements.md #126: stream one ordered query through
+    # ``itertools.groupby`` instead of one SELECT per flight.
+    cursor = conn.execute(
+        "SELECT flight_id, id, gs FROM positions "
+        "WHERE gs IS NOT NULL AND source_type = 'mlat' ORDER BY flight_id"
+    )
 
     bad: dict[int, list[int]] = {}
 
-    for fid in flight_ids:
-        rows = conn.execute(
-            "SELECT id, gs FROM positions "
-            "WHERE flight_id = ? AND gs IS NOT NULL AND source_type = 'mlat'",
-            (fid,),
-        ).fetchall()
+    for fid, group in itertools.groupby(cursor, key=lambda r: r["flight_id"]):
+        rows = list(group)
 
         if len(rows) < min_readings:
             continue
 
-        gs_sorted = sorted(r[1] for r in rows)   # r[0]=id, r[1]=gs
+        gs_sorted = sorted(r["gs"] for r in rows)
         p75 = statistics.quantiles(gs_sorted, n=4)[2]
         threshold = p75 * outlier_factor
 
-        bad_ids = [r[0] for r in rows if r[1] > threshold]  # collect ids of outliers
+        bad_ids = [r["id"] for r in rows if r["gs"] > threshold]
         if bad_ids:
             bad[fid] = bad_ids
 

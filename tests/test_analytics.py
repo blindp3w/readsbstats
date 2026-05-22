@@ -168,6 +168,30 @@ def test_heatmap_parity_30d_coarse_grid(file_db, monkeypatch):
     assert s_cells == d_cells
 
 
+def test_heatmap_parity_at_exact_half_decimal_boundary(file_db, monkeypatch):
+    """improvements.md A13-019 — coords sitting exactly on the half-decimal
+    rounding boundary (lat=52.05, precision=1) used to land in different
+    buckets across engines: SQLite's round() is half-away-from-zero
+    (→ 52.1), DuckDB's is banker's (→ 52.0).  The explicit FLOOR(x*10+0.5)
+    pattern in both heatmap paths must now yield the same bucket."""
+    now = int(time.time())
+    fid = _insert_flight(file_db)
+    # 52.05 / 21.05 — every digit lands on a 0.1° boundary at precision=1.
+    for _ in range(5):
+        _insert_position(file_db, fid, lat=52.05, lon=21.05, ts=now)
+
+    sqlite_result = _run_heatmap_with_engine("24h", monkeypatch=monkeypatch, use_duckdb=False)
+    duck_result   = _run_heatmap_with_engine("24h", monkeypatch=monkeypatch, use_duckdb=True)
+
+    assert sqlite_result["count"] == duck_result["count"] == 5
+    s_cells = {(round(p[0], 6), round(p[1], 6)) for p in sqlite_result["points"]}
+    d_cells = {(round(p[0], 6), round(p[1], 6)) for p in duck_result["points"]}
+    assert s_cells == d_cells, (
+        f"Engines disagree on bucket at exact half-decimal boundary: "
+        f"SQLite={s_cells} DuckDB={d_cells}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # 4. Coverage parity — 24h window with known bearings + distances
 # ---------------------------------------------------------------------------
