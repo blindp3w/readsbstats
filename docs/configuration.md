@@ -161,6 +161,7 @@ Thresholds for the nine receiver-health checks. All effective values are also re
 | Variable | Default | Description |
 |---|---|---|
 | `RSBS_FEEDERS` | _(empty → uses 9-feeder default list)_ | JSON array overriding the built-in feeder list shown on `/feeders`. Each entry needs `name` and `unit`; optional keys: `port`, `status_type` (`readsb`/`fr24`/`piaware`/`mlat`), `status_path`, `status_url`. Malformed JSON or missing keys → warn to stderr, fall back to defaults. |
+| `RSBS_FEEDER_STATUS_ROOT` | `/run` | Filesystem root that `status_path` entries in `RSBS_FEEDERS` must resolve under — paths escaping the root are rejected (defence-in-depth against path traversal). Override only for testing; production should leave this at the default. |
 
 ## Logging
 

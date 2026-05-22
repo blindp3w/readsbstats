@@ -254,6 +254,11 @@ def _parse_feeders(raw: str) -> list[dict]:
 
 FEEDERS = _parse_feeders(os.getenv("RSBS_FEEDERS", ""))
 
+# improvements.md #136: filesystem root the feeder status-path guard accepts.
+# Always `/run` in production; tests override via monkeypatch.setattr so they
+# don't need a writable /run.
+FEEDER_STATUS_ROOT = os.getenv("RSBS_FEEDER_STATUS_ROOT", "/run").rstrip("/") or "/"
+
 # ---------------------------------------------------------------------------
 # Range validation — clamp values that would cause busy loops, data loss,
 # or broken filtering.  Warn to stderr and fall back to defaults.

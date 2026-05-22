@@ -14,7 +14,116 @@ SCHEMA_VERSION = 5
 WATCHLIST_VALUE_MAX = 64    # ICAO=6, reg ≤10, callsign ≤8 — 64 is generous
 WATCHLIST_LABEL_MAX = 255
 
-DDL = """
+# improvements.md A13-079: single source of truth for tables that were
+# previously declared twice — once in the top-of-file DDL block (used by
+# fresh DBs via `executescript(DDL)`) and once again inside `_migrate()`
+# (so the web server, which only calls `_migrate()`, picks them up on
+# existing DBs).  Each constant ends without trailing semicolon so it can
+# be passed straight to `conn.execute()`; `DDL` joins them with `;`.
+_DDL_WATCHLIST = """
+CREATE TABLE IF NOT EXISTS watchlist (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    match_type TEXT NOT NULL,   -- 'icao' | 'registration' | 'callsign_prefix'
+    value      TEXT NOT NULL,   -- stored lowercase
+    label      TEXT,
+    created_at INTEGER NOT NULL
+)
+"""
+
+_DDL_ADSBX_OVERRIDES = """
+CREATE TABLE IF NOT EXISTS adsbx_overrides (
+    icao_hex     TEXT PRIMARY KEY,
+    flags        INTEGER DEFAULT 0,   -- dbFlags bitmask (military=1, interesting=2, PIA=4, LADD=8)
+    registration TEXT,
+    type_code    TEXT,
+    type_desc    TEXT,
+    first_seen   INTEGER NOT NULL,
+    last_seen    INTEGER NOT NULL
+)
+"""
+
+_DDL_TYPE_PHOTOS = """
+CREATE TABLE IF NOT EXISTS type_photos (
+    type_code     TEXT PRIMARY KEY,
+    thumbnail_url TEXT,
+    large_url     TEXT,
+    link_url      TEXT,
+    photographer  TEXT,
+    fetched_at    INTEGER NOT NULL
+)
+"""
+
+_DDL_AIRPORTS = """
+CREATE TABLE IF NOT EXISTS airports (
+    icao_code   TEXT PRIMARY KEY,
+    iata_code   TEXT,
+    name        TEXT,
+    country     TEXT,
+    latitude    REAL,
+    longitude   REAL,
+    fetched_at  INTEGER NOT NULL
+)
+"""
+
+_DDL_CALLSIGN_ROUTES = """
+CREATE TABLE IF NOT EXISTS callsign_routes (
+    callsign    TEXT PRIMARY KEY,
+    origin_icao TEXT,
+    dest_icao   TEXT,
+    fetched_at  INTEGER NOT NULL
+)
+"""
+
+_DDL_RECEIVER_STATS = """
+CREATE TABLE IF NOT EXISTS receiver_stats (
+    ts                  INTEGER PRIMARY KEY,
+    ac_with_pos         INTEGER,
+    ac_without_pos      INTEGER,
+    ac_adsb             INTEGER,
+    ac_mlat             INTEGER,
+    signal              REAL,
+    noise               REAL,
+    peak_signal         REAL,
+    strong_signals      INTEGER,
+    local_modes         INTEGER,
+    local_bad           INTEGER,
+    local_unknown_icao  INTEGER,
+    local_accepted_0    INTEGER,
+    local_accepted_1    INTEGER,
+    samples_dropped     REAL,
+    samples_lost        REAL,
+    messages            INTEGER,
+    positions_total     INTEGER,
+    positions_adsb      INTEGER,
+    positions_mlat      INTEGER,
+    max_distance_m      REAL,
+    tracks_new          INTEGER,
+    tracks_single       INTEGER,
+    cpu_demod           REAL,
+    cpu_reader          REAL,
+    cpu_background      REAL,
+    cpu_aircraft_json   REAL,
+    cpu_heatmap         REAL,
+    remote_modes        INTEGER,
+    remote_bad          INTEGER,
+    remote_accepted     INTEGER,
+    remote_bytes_in     INTEGER,
+    remote_bytes_out    INTEGER,
+    cpr_airborne        INTEGER,
+    cpr_global_ok       INTEGER,
+    cpr_global_bad      INTEGER,
+    cpr_global_range    INTEGER,
+    cpr_global_speed    INTEGER,
+    cpr_global_skipped  INTEGER,
+    cpr_local_ok        INTEGER,
+    cpr_local_range     INTEGER,
+    cpr_local_speed     INTEGER,
+    cpr_filtered        INTEGER,
+    altitude_suppressed INTEGER
+)
+"""
+
+DDL = f"""
 PRAGMA journal_mode = WAL;
 PRAGMA synchronous  = FULL;
 PRAGMA foreign_keys = ON;
@@ -100,24 +209,12 @@ CREATE TABLE IF NOT EXISTS airlines (
 );
 
 -- Airport metadata populated by route_enricher.py via adsbdb.com
-CREATE TABLE IF NOT EXISTS airports (
-    icao_code   TEXT PRIMARY KEY,
-    iata_code   TEXT,
-    name        TEXT,
-    country     TEXT,
-    latitude    REAL,
-    longitude   REAL,
-    fetched_at  INTEGER NOT NULL
-);
+{_DDL_AIRPORTS.strip()};
 
 -- Route cache: callsign → origin/dest airport ICAO codes
 -- NULL origin_icao + NULL dest_icao means "confirmed unknown, don't retry until fetched_at expires"
-CREATE TABLE IF NOT EXISTS callsign_routes (
-    callsign    TEXT PRIMARY KEY,
-    origin_icao TEXT,
-    dest_icao   TEXT,
-    fetched_at  INTEGER NOT NULL
-);
+-- (DDL inlined from _DDL_CALLSIGN_ROUTES below)
+{_DDL_CALLSIGN_ROUTES.strip()};
 
 -- Cached photo URLs from Planespotters.net (keyed by ICAO hex)
 CREATE TABLE IF NOT EXISTS photos (
@@ -130,82 +227,16 @@ CREATE TABLE IF NOT EXISTS photos (
 );
 
 -- Cached representative photo per aircraft type code (type-level fallback)
-CREATE TABLE IF NOT EXISTS type_photos (
-    type_code     TEXT PRIMARY KEY,
-    thumbnail_url TEXT,
-    large_url     TEXT,
-    link_url      TEXT,
-    photographer  TEXT,
-    fetched_at    INTEGER NOT NULL
-);
+{_DDL_TYPE_PHOTOS.strip()};
 
 -- User-defined aircraft watchlist (Telegram alerts on new flight)
-CREATE TABLE IF NOT EXISTS watchlist (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    match_type TEXT NOT NULL,   -- 'icao' | 'registration' | 'callsign_prefix'
-    value      TEXT NOT NULL,   -- stored lowercase
-    label      TEXT,
-    created_at INTEGER NOT NULL
-);
+{_DDL_WATCHLIST.strip()};
 
 -- ADSBexchange-confirmed flags & enrichment (survives weekly tar1090-db refresh)
-CREATE TABLE IF NOT EXISTS adsbx_overrides (
-    icao_hex     TEXT PRIMARY KEY,
-    flags        INTEGER DEFAULT 0,   -- dbFlags bitmask (military=1, interesting=2, PIA=4, LADD=8)
-    registration TEXT,
-    type_code    TEXT,
-    type_desc    TEXT,
-    first_seen   INTEGER NOT NULL,
-    last_seen    INTEGER NOT NULL
-);
+{_DDL_ADSBX_OVERRIDES.strip()};
 
 -- Receiver metrics time-series (metrics_collector.py)
-CREATE TABLE IF NOT EXISTS receiver_stats (
-    ts                  INTEGER PRIMARY KEY,
-    ac_with_pos         INTEGER,
-    ac_without_pos      INTEGER,
-    ac_adsb             INTEGER,
-    ac_mlat             INTEGER,
-    signal              REAL,
-    noise               REAL,
-    peak_signal         REAL,
-    strong_signals      INTEGER,
-    local_modes         INTEGER,
-    local_bad           INTEGER,
-    local_unknown_icao  INTEGER,
-    local_accepted_0    INTEGER,
-    local_accepted_1    INTEGER,
-    samples_dropped     REAL,
-    samples_lost        REAL,
-    messages            INTEGER,
-    positions_total     INTEGER,
-    positions_adsb      INTEGER,
-    positions_mlat      INTEGER,
-    max_distance_m      REAL,
-    tracks_new          INTEGER,
-    tracks_single       INTEGER,
-    cpu_demod           REAL,
-    cpu_reader          REAL,
-    cpu_background      REAL,
-    cpu_aircraft_json   REAL,
-    cpu_heatmap         REAL,
-    remote_modes        INTEGER,
-    remote_bad          INTEGER,
-    remote_accepted     INTEGER,
-    remote_bytes_in     INTEGER,
-    remote_bytes_out    INTEGER,
-    cpr_airborne        INTEGER,
-    cpr_global_ok       INTEGER,
-    cpr_global_bad      INTEGER,
-    cpr_global_range    INTEGER,
-    cpr_global_speed    INTEGER,
-    cpr_global_skipped  INTEGER,
-    cpr_local_ok        INTEGER,
-    cpr_local_range     INTEGER,
-    cpr_local_speed     INTEGER,
-    cpr_filtered        INTEGER,
-    altitude_suppressed INTEGER
-);
+{_DDL_RECEIVER_STATS.strip()};
 
 CREATE TABLE IF NOT EXISTS schema_version (
     version    INTEGER PRIMARY KEY,
@@ -292,76 +323,24 @@ def _migrate(conn: sqlite3.Connection) -> None:
 
     # New tables added after initial schema — created here so the web server
     # (which only calls _migrate, not the full DDL) picks them up on existing DBs.
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS watchlist (
-            id         INTEGER PRIMARY KEY AUTOINCREMENT,
-            match_type TEXT NOT NULL,
-            value      TEXT NOT NULL,
-            label      TEXT,
-            created_at INTEGER NOT NULL
-        )
-        """
-    )
+    # improvements.md A13-079: each `_DDL_*` constant is the single source of
+    # truth, used here and inlined into `DDL` above for fresh installs.
+    conn.execute(_DDL_WATCHLIST)
     conn.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_watchlist_type_value "
         "ON watchlist(match_type, value)"
     )
 
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS adsbx_overrides (
-            icao_hex     TEXT PRIMARY KEY,
-            flags        INTEGER DEFAULT 0,
-            registration TEXT,
-            type_code    TEXT,
-            type_desc    TEXT,
-            first_seen   INTEGER NOT NULL,
-            last_seen    INTEGER NOT NULL
-        )
-        """
-    )
+    conn.execute(_DDL_ADSBX_OVERRIDES)
 
     # Type-level photo cache (fallback when no specific aircraft photo exists)
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS type_photos (
-            type_code     TEXT PRIMARY KEY,
-            thumbnail_url TEXT,
-            large_url     TEXT,
-            link_url      TEXT,
-            photographer  TEXT,
-            fetched_at    INTEGER NOT NULL
-        )
-        """
-    )
+    conn.execute(_DDL_TYPE_PHOTOS)
 
     # Airport metadata (populated by route_enricher via adsbdb.com)
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS airports (
-            icao_code   TEXT PRIMARY KEY,
-            iata_code   TEXT,
-            name        TEXT,
-            country     TEXT,
-            latitude    REAL,
-            longitude   REAL,
-            fetched_at  INTEGER NOT NULL
-        )
-        """
-    )
+    conn.execute(_DDL_AIRPORTS)
 
     # Route cache: callsign → origin/dest airport ICAO codes
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS callsign_routes (
-            callsign    TEXT PRIMARY KEY,
-            origin_icao TEXT,
-            dest_icao   TEXT,
-            fetched_at  INTEGER NOT NULL
-        )
-        """
-    )
+    conn.execute(_DDL_CALLSIGN_ROUTES)
 
     # Index for type-based photo lookups (photos JOIN aircraft_db WHERE type_code = ?)
     # Guard: aircraft_db may not exist in very old test/minimal schemas
@@ -372,56 +351,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
         )
 
     # Receiver metrics time-series (metrics_collector.py)
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS receiver_stats (
-            ts                  INTEGER PRIMARY KEY,
-            ac_with_pos         INTEGER,
-            ac_without_pos      INTEGER,
-            ac_adsb             INTEGER,
-            ac_mlat             INTEGER,
-            signal              REAL,
-            noise               REAL,
-            peak_signal         REAL,
-            strong_signals      INTEGER,
-            local_modes         INTEGER,
-            local_bad           INTEGER,
-            local_unknown_icao  INTEGER,
-            local_accepted_0    INTEGER,
-            local_accepted_1    INTEGER,
-            samples_dropped     REAL,
-            samples_lost        REAL,
-            messages            INTEGER,
-            positions_total     INTEGER,
-            positions_adsb      INTEGER,
-            positions_mlat      INTEGER,
-            max_distance_m      REAL,
-            tracks_new          INTEGER,
-            tracks_single       INTEGER,
-            cpu_demod           REAL,
-            cpu_reader          REAL,
-            cpu_background      REAL,
-            cpu_aircraft_json   REAL,
-            cpu_heatmap         REAL,
-            remote_modes        INTEGER,
-            remote_bad          INTEGER,
-            remote_accepted     INTEGER,
-            remote_bytes_in     INTEGER,
-            remote_bytes_out    INTEGER,
-            cpr_airborne        INTEGER,
-            cpr_global_ok       INTEGER,
-            cpr_global_bad      INTEGER,
-            cpr_global_range    INTEGER,
-            cpr_global_speed    INTEGER,
-            cpr_global_skipped  INTEGER,
-            cpr_local_ok        INTEGER,
-            cpr_local_range     INTEGER,
-            cpr_local_speed     INTEGER,
-            cpr_filtered        INTEGER,
-            altitude_suppressed INTEGER
-        )
-        """
-    )
+    conn.execute(_DDL_RECEIVER_STATS)
 
     conn.commit()
 
