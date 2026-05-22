@@ -29,6 +29,7 @@ Options:
 """
 
 import argparse
+import itertools
 import sqlite3
 
 from readsbstats import config, database, geo
@@ -69,44 +70,50 @@ def scan_flights(
 ) -> dict[int, list[int]]:
     """
     Scan all flights and return {flight_id: [position_ids with bad gs]}.
+
+    improvements.md #126: streams one ordered ``positions`` query through
+    ``itertools.groupby`` instead of one SELECT per flight, eliminating
+    ~35 k round trips on a typical DB.  The per-flight icao lookup is
+    also batched into a single query.
     """
     # Load military flags once per ICAO to avoid per-position lookups.
     flags_by_icao: dict[str, int] = {
         row[0]: row[1]
         for row in conn.execute("SELECT icao_hex, flags FROM aircraft_db").fetchall()
     }
+    # Bulk-load (flight_id → icao_hex) so we don't query flights once per
+    # flight inside the loop.
+    icao_by_fid: dict[int, str] = {
+        row[0]: row[1]
+        for row in conn.execute("SELECT id, icao_hex FROM flights").fetchall()
+    }
 
-    flight_ids = [
-        r[0] for r in conn.execute(
-            "SELECT DISTINCT flight_id FROM positions WHERE gs IS NOT NULL ORDER BY flight_id"
-        ).fetchall()
-    ]
+    cursor = conn.execute(
+        "SELECT flight_id, id, ts, lat, lon, gs, source_type FROM positions "
+        "WHERE gs IS NOT NULL ORDER BY flight_id, ts"
+    )
 
     bad: dict[int, list[int]] = {}
 
-    for fid in flight_ids:
-        icao = conn.execute(
-            "SELECT icao_hex FROM flights WHERE id = ?", (fid,)
-        ).fetchone()
-        if icao is None:
+    for fid, group in itertools.groupby(cursor, key=lambda r: r["flight_id"]):
+        icao_hex = icao_by_fid.get(fid)
+        if icao_hex is None:
             continue
-        icao_hex = icao[0]
         flags = flags_by_icao.get(icao_hex, -1)   # -1 = not in aircraft_db
         found_in_db = flags >= 0
         is_mil = _is_military(flags) if found_in_db else False
         gs_hard_limit = military_limit if (is_mil or not found_in_db) else civil_limit
 
-        positions = conn.execute(
-            "SELECT id, ts, lat, lon, gs, source_type FROM positions "
-            "WHERE flight_id = ? ORDER BY ts",
-            (fid,),
-        ).fetchall()
+        positions = list(group)
 
         bad_ids: list[int] = []
         prev = None
 
         for pos in positions:
-            pid, ts, lat, lon, gs, source_type = pos
+            # Row keys: flight_id, id, ts, lat, lon, gs, source_type
+            pid, ts, lat, lon, gs, source_type = (
+                pos["id"], pos["ts"], pos["lat"], pos["lon"], pos["gs"], pos["source_type"],
+            )
 
             if gs is None:
                 prev = pos
@@ -122,7 +129,7 @@ def scan_flights(
             # Skipped for slow aircraft (gs < _MIN_GS_XVAL) to avoid false
             # positives from turns where displacement < gs*dt.
             if not flagged and prev is not None and gs >= _MIN_GS_XVAL:
-                pts, plat, plon = prev[1], prev[2], prev[3]
+                pts, plat, plon = prev["ts"], prev["lat"], prev["lon"]
                 dt = ts - pts
                 is_adsb = (source_type or "").startswith("adsb")
                 min_dt = _MIN_DT_ADSB if is_adsb else _MIN_DT_OTHER

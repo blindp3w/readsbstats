@@ -1693,22 +1693,29 @@ def api_airspace() -> dict:
         return cached[1]
 
     path = config.AIRSPACE_GEOJSON or str(BASE_DIR / "static" / "airspace" / "poland.geojson")
-    # Audit-13 A13-041: refuse oversized airspace files. The path comes
-    # from an env var (operator-controlled), but a misconfigured 100 MB
-    # GeoJSON would land in the per-process cache and starve the Pi.
+    # improvements.md #73: env-set paths must resolve to a regular file so a
+    # misconfiguration can't make us read /dev/random or follow a symlink to
+    # an unintended target.  A13-041 size cap stays in place below.
     _AIRSPACE_MAX_BYTES = 10 * 1024 * 1024
+    data = {"type": "FeatureCollection", "features": []}
     try:
-        size = os.path.getsize(path)
-        if size > _AIRSPACE_MAX_BYTES:
-            log.warning("Airspace file %s is %d bytes — over %d-byte limit; serving empty",
-                        path, size, _AIRSPACE_MAX_BYTES)
-            data = {"type": "FeatureCollection", "features": []}
+        resolved = Path(path).resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        log.warning("Airspace path %r could not be resolved (%s); serving empty", path, exc)
+    else:
+        if not resolved.is_file():
+            log.warning("Airspace path %s is not a regular file; serving empty", resolved)
         else:
-            with open(path) as fh:
-                data = json.load(fh)
-    except (OSError, json.JSONDecodeError) as exc:
-        log.warning("Failed to load airspace from %s: %s", path, exc)
-        data = {"type": "FeatureCollection", "features": []}
+            try:
+                size = resolved.stat().st_size
+                if size > _AIRSPACE_MAX_BYTES:
+                    log.warning("Airspace file %s is %d bytes — over %d-byte limit; serving empty",
+                                resolved, size, _AIRSPACE_MAX_BYTES)
+                else:
+                    with open(resolved) as fh:
+                        data = json.load(fh)
+            except (OSError, json.JSONDecodeError) as exc:
+                log.warning("Failed to load airspace from %s: %s", resolved, exc)
 
     _cache["airspace"] = (time.time(), data)
     return data
@@ -1800,17 +1807,26 @@ def _compute_heatmap_sync(window: str) -> dict:
         if cutoff is not None:
             extra = "AND ts > ?"
             params.append(cutoff)
+        # improvements.md A13-019: GROUP BY integer bucket (FLOOR(x*10^p + 0.5))
+        # and divide in Python so this path agrees bucket-for-bucket with the
+        # DuckDB heatmap.  Raw `round()` differs across engines (SQLite is
+        # half-away-from-zero, DuckDB is banker's) and even an explicit
+        # `FLOOR/scale` on the SQL side picks up a per-engine float drift on
+        # the divide step.
+        scale = 10 ** precision
         sqlite_rows = db().execute(
             f"""
-            SELECT round(lat, {precision}) AS rlat, round(lon, {precision}) AS rlon, COUNT(*) AS w
+            SELECT CAST(FLOOR(lat * {scale} + 0.5) AS INTEGER) AS lat_bucket,
+                   CAST(FLOOR(lon * {scale} + 0.5) AS INTEGER) AS lon_bucket,
+                   COUNT(*) AS w
             FROM positions
             WHERE lat IS NOT NULL AND lon IS NOT NULL
               {extra}
-            GROUP BY rlat, rlon
+            GROUP BY lat_bucket, lon_bucket
             """,
             params,
         ).fetchall()
-        rows = [(r["rlat"], r["rlon"], r["w"]) for r in sqlite_rows]
+        rows = [(r["lat_bucket"] / scale, r["lon_bucket"] / scale, r["w"]) for r in sqlite_rows]
 
     if not rows:
         return {"points": [], "window": window, "count": 0}

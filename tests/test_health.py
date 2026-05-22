@@ -273,6 +273,28 @@ class TestBaselineAvg:
         assert n == 1
         assert avg == 200.0
 
+    def test_query_uses_indexed_ts_range_not_strftime(self, conn):
+        # improvements.md A13-057 regression guard: the query must filter on
+        # narrow `ts BETWEEN ? AND ?` windows (sargable, can use
+        # idx_receiver_stats_ts) rather than a `strftime(...)` predicate that
+        # forces a full-range scan.  We intercept by wrapping the connection
+        # in a small proxy — sqlite3.Connection.execute is read-only and
+        # can't be monkeypatched directly.
+        captured: list[str] = []
+
+        class _SpyConn:
+            def __init__(self, inner):
+                self._inner = inner
+
+            def execute(self, sql, *args, **kw):
+                captured.append(sql)
+                return self._inner.execute(sql, *args, **kw)
+
+        health._baseline_avg(_SpyConn(conn), "messages", NOW, lookback_weeks=4)
+        baseline_sql = next(s for s in captured if "AVG(messages)" in s)
+        assert "ts BETWEEN" in baseline_sql
+        assert "strftime" not in baseline_sql
+
 
 # ---------------------------------------------------------------------------
 # Column allowlist (audit-12 #169)

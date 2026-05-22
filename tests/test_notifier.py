@@ -638,6 +638,18 @@ class TestNotifyAnonymous:
         # only occurrence is the entity, never a bare "&B".
         assert "&B" not in sent[0].replace("&amp;B", "")
 
+    def test_html_entities_in_icao_escaped_in_url(self, monkeypatch):
+        # #110 defence-in-depth: collector guarantees 6-char lowercase hex,
+        # but if that contract ever loosens, every {icao} interpolated into
+        # an <a href> must flow through _h() so it can't break parse_mode=HTML.
+        sent = []
+        monkeypatch.setattr(notifier, "_send", lambda txt: sent.append(txt))
+        monkeypatch.setattr(config, "TELEGRAM_BASE_URL", "http://test/stats")
+        notifier.notify_anonymous("bad<ico&", None, None, None, None, 1.0)
+        # The icao landed inside an href; it must be HTML-escaped, not raw.
+        assert "bad&lt;ico&amp;" in sent[0]
+        assert "bad<ico&" not in sent[0]
+
 
 # ---------------------------------------------------------------------------
 # notify_squawk

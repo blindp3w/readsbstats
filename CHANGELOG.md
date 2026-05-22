@@ -1,5 +1,55 @@
 # Changelog
 
+## 2.3.4 — 2026-05-22
+
+### Security defence-in-depth
+
+- **`icao_hex` HTML-escaped in every `notify_*` Telegram URL.** All five
+  alert helpers in `notifier.py` (`notify_military`, `notify_interesting`,
+  `notify_anonymous`, `notify_watchlist`, `notify_squawk`) now wrap
+  `{icao}` with `_h(icao)` before interpolating into `<a href="…">`. The
+  collector still guarantees 6-char lowercase hex; this is purely defensive.
+- **Telegram bot token removed from `curl` argv.** `notify-telegram-failure.sh`
+  now writes the URL line (containing the token) to a 0600 tmpfile, feeds
+  it to `curl --config`, and removes it on `trap EXIT`. The token no longer
+  appears in `/proc/<pid>/cmdline`.
+- **`RSBS_AIRSPACE_GEOJSON` path verified to be a regular file.** `api_airspace`
+  resolves the configured path with `Path.resolve(strict=True)` and rejects
+  anything that isn't a regular file — blocks device files (`/dev/random`),
+  symlinks-to-dirs, and missing paths. Path is not pinned to `static/airspace/`
+  so operators can keep airspace data on external storage; the existing 10 MB
+  size cap stays.
+
+### Performance / correctness
+
+- **Purge scripts no longer issue per-flight SELECTs.** `purge_ghosts`,
+  `purge_bad_gs`, and `purge_mlat_gs_spikes` now stream one ordered
+  `positions` query through `itertools.groupby` instead of fanning out to a
+  `SELECT … WHERE flight_id = ?` per flight. On a 35 k-flight DB that
+  eliminates ~35 k round trips per scan; `purge_bad_gs` also bulk-loads the
+  `(flight_id → icao_hex)` mapping.
+- **`_baseline_avg` is now sargable.** Builds an OR-of-narrow-BETWEEN clause
+  from per-week target windows computed in Python, replacing the `strftime`
+  filter that forced a full-range scan. DST is handled correctly via
+  `datetime.fromtimestamp` + `timedelta(weeks=N)` round-trip; same DOW+hour
+  is guaranteed by construction so the `strftime` predicate is no longer
+  needed.
+- **Heatmap rounding now agrees across DuckDB and SQLite.** Both engines
+  GROUP BY an integer bucket (`CAST(FLOOR(lat * 10^p + 0.5) AS INTEGER)`)
+  and divide in Python on the way out, removing both the per-engine
+  `round()` divergence (SQLite is half-away-from-zero, DuckDB is banker's)
+  and a residual per-engine float drift on the divide step. The 24h fine-
+  grid heatmap parity test now passes even on exact-half decimal
+  coordinates (`lat=52.05, lon=21.05, precision=1`).
+
+### Regression guards (no behaviour change)
+
+- Explicit assertion in `test_purge_ghosts.py` that
+  `max_distance_after_purge` takes the no-`IN ()` branch when `ghost_ids=[]`
+  (originally fixed by audit-12 #143; now pinned with a SQL-shape test).
+
+---
+
 ## 2.3.3 — 2026-05-22
 
 ### Bug fixes

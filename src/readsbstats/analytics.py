@@ -164,23 +164,35 @@ def heatmap(cutoff_ts: int | None, precision: int) -> list[tuple[float, float, i
         cur = _CONN.cursor()
         if _SHUTDOWN.is_set():
             return None
+        # improvements.md A13-019: SQLite's `round()` is half-away-from-zero
+        # but DuckDB's is banker's (half-to-even).  For values like
+        # `lat=53.05, precision=1`, the two engines would land in different
+        # buckets.  Group on an explicit integer bucket
+        # (`FLOOR(x * 10^p + 0.5)`) and divide in Python so both engines
+        # produce the same bucket assignment without floating-point drift
+        # on the divide step.
+        scale = 10 ** precision
         if cutoff_ts is None:
             rows = cur.execute(
-                "SELECT round(lat, ?) AS rlat, round(lon, ?) AS rlon, COUNT(*) AS w "
+                "SELECT CAST(FLOOR(lat * ? + 0.5) AS INTEGER) AS lat_bucket, "
+                "       CAST(FLOOR(lon * ? + 0.5) AS INTEGER) AS lon_bucket, "
+                "       COUNT(*) AS w "
                 "FROM hist.positions "
                 "WHERE lat IS NOT NULL AND lon IS NOT NULL "
-                "GROUP BY rlat, rlon",
-                [precision, precision],
+                "GROUP BY lat_bucket, lon_bucket",
+                [scale, scale],
             ).fetchall()
         else:
             rows = cur.execute(
-                "SELECT round(lat, ?) AS rlat, round(lon, ?) AS rlon, COUNT(*) AS w "
+                "SELECT CAST(FLOOR(lat * ? + 0.5) AS INTEGER) AS lat_bucket, "
+                "       CAST(FLOOR(lon * ? + 0.5) AS INTEGER) AS lon_bucket, "
+                "       COUNT(*) AS w "
                 "FROM hist.positions "
                 "WHERE lat IS NOT NULL AND lon IS NOT NULL AND ts > ? "
-                "GROUP BY rlat, rlon",
-                [precision, precision, int(cutoff_ts)],
+                "GROUP BY lat_bucket, lon_bucket",
+                [scale, scale, int(cutoff_ts)],
             ).fetchall()
-        return [(float(r[0]), float(r[1]), int(r[2])) for r in rows]
+        return [(r[0] / scale, r[1] / scale, int(r[2])) for r in rows]
     except Exception:  # noqa: BLE001 — one bad query must not poison infra
         if _SHUTDOWN.is_set():
             log.debug("analytics.heatmap interrupted by shutdown")

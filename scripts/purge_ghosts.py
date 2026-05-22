@@ -18,6 +18,7 @@ Pass --apply to commit the changes.
 """
 
 import argparse
+import itertools
 import sqlite3
 
 from readsbstats import config, database, geo
@@ -75,20 +76,20 @@ def find_ghost_ids(
     Uses a forward velocity pass.  If only one position survives (meaning the
     very first position was a bad anchor that poisoned all comparisons), falls
     back to a backward pass which correctly identifies the opening ghost.
+
+    improvements.md #126: streams one ordered query through ``itertools.groupby``
+    instead of issuing ``SELECT DISTINCT flight_id`` followed by one
+    per-flight SELECT.  On a 35 k-flight DB that's ~35 k round trips
+    eliminated.
     """
-    flight_ids = [
-        r[0] for r in conn.execute(
-            "SELECT DISTINCT flight_id FROM positions ORDER BY flight_id"
-        ).fetchall()
-    ]
+    cursor = conn.execute(
+        "SELECT flight_id, id, ts, lat, lon FROM positions ORDER BY flight_id, ts"
+    )
 
     ghosts: dict[int, list[int]] = {}
 
-    for fid in flight_ids:
-        positions = conn.execute(
-            "SELECT id, ts, lat, lon FROM positions WHERE flight_id = ? ORDER BY ts",
-            (fid,),
-        ).fetchall()
+    for fid, group in itertools.groupby(cursor, key=lambda r: r["flight_id"]):
+        positions = list(group)
 
         ghost_ids, survivors = _velocity_pass(positions, max_speed_kts, reverse=False)
 

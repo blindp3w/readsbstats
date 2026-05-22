@@ -2261,6 +2261,24 @@ class TestAirspaceEndpoint:
         r2 = client.get("/api/airspace")
         assert r1.json() == r2.json()
 
+    def test_non_regular_file_returns_empty_collection(self, client, monkeypatch):
+        # improvements.md #73: a path that resolves but isn't a regular file
+        # (device, FIFO, directory) must be rejected with an empty result.
+        # /dev/null is portable and definitely not a regular file.
+        monkeypatch.setattr(config, "AIRSPACE_GEOJSON", "/dev/null")
+        web._cache.clear()
+        r = client.get("/api/airspace")
+        assert r.status_code == 200
+        assert r.json() == {"type": "FeatureCollection", "features": []}
+
+    def test_directory_path_returns_empty_collection(self, client, monkeypatch, tmp_path):
+        # A path that exists but is a directory, not a file.
+        monkeypatch.setattr(config, "AIRSPACE_GEOJSON", str(tmp_path))
+        web._cache.clear()
+        r = client.get("/api/airspace")
+        assert r.status_code == 200
+        assert r.json() == {"type": "FeatureCollection", "features": []}
+
 
 # ---------------------------------------------------------------------------
 # API: /api/watchlist
