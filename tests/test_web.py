@@ -1500,6 +1500,18 @@ class TestFeederDetailParsers:
         assert not web._is_safe_status_path("")
         assert not web._is_safe_status_path(None)  # type: ignore[arg-type]
 
+    def test_is_safe_status_path_honours_env_override(self, tmp_path, monkeypatch):
+        # improvements.md #136: tests should be able to set the root via
+        # config.FEEDER_STATUS_ROOT (backed by RSBS_FEEDER_STATUS_ROOT)
+        # rather than depending on the production /run path.
+        sub = tmp_path / "readsb"
+        sub.mkdir()
+        monkeypatch.setattr(config, "FEEDER_STATUS_ROOT", str(tmp_path))
+        assert web._is_safe_status_path(str(sub / "stats.json"))
+        assert web._is_safe_status_path(str(tmp_path))
+        # /run is no longer the root, so a real /run path is now rejected
+        assert not web._is_safe_status_path("/run/readsb/stats.json")
+
     def test_is_safe_status_url_accepts_loopback_http(self):
         assert web._is_safe_status_url("http://127.0.0.1:8754/monitor.json")
         assert web._is_safe_status_url("http://localhost:8754/")

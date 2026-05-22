@@ -1,5 +1,27 @@
 # Changelog
 
+## 2.3.5 — 2026-05-22
+
+### Refactor (no behaviour change)
+
+- **`config.FEEDER_STATUS_ROOT` is now env-overridable** (`RSBS_FEEDER_STATUS_ROOT`,
+  default `/run`). Previously hardcoded as `_FEEDER_STATUS_PATH_ROOT` in
+  `web.py`. Lets tests pin the root via `monkeypatch` without depending on a
+  writable `/run`. Operators should leave the default; documented under
+  `RSBS_FEEDERS` in `docs/configuration.md`.
+- **Single source of truth for shared-table DDL.** The six tables that were
+  declared twice in `database.py` (top-of-file `DDL` and again inside
+  `_migrate()`) — `watchlist`, `adsbx_overrides`, `type_photos`, `airports`,
+  `callsign_routes`, `receiver_stats` — are now each defined once as a
+  module-level `_DDL_*` constant referenced from both sites.
+- **`_settings_payload()` decomposed by domain** into seven small helpers
+  (`_settings_receiver`, `_settings_collector`, `_settings_database`,
+  `_settings_enrichment`, `_settings_metrics`, `_settings_health`,
+  `_settings_ui`, `_settings_telegram`). The flat 50-key payload shape is
+  unchanged.
+
+---
+
 ## 2.3.4 — 2026-05-22
 
 ### Security defence-in-depth
