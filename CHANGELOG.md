@@ -1,5 +1,37 @@
 # Changelog
 
+## 2.3.2 — 2026-05-22
+
+### Reliability
+
+- **DNS failures no longer permanently blacklist the ADSBx enricher** — a
+  transient DNS outage in `_fetch_area()` previously wrapped the
+  `socket.gaierror` in a plain `ValueError`, which `_fetch_area`'s exception
+  handler mis-classified as a permanent policy error. The enricher would then
+  back off forever for that process lifetime. Fixed by introducing
+  `http_safe.UnsafeURLError` (a `ValueError` subclass) for genuine policy
+  violations (non-HTTPS scheme, private destination IP, redirect, body size
+  cap). DNS failures remain plain `ValueError` and are correctly routed to
+  the transient-error retry path.
+- **Background workers are now idempotent** — `route_enricher`,
+  `adsbx_enricher`, and `metrics_collector` each held a module-level thread
+  handle but lacked an `is_alive()` guard on their `start_*` functions.
+  Repeated calls (test lifecycle, future hot-reload) silently spawned
+  duplicate threads, leading to redundant API polling and duplicate SQLite
+  writes. Each function now returns the existing thread if it is still alive.
+- **Startup SQLite connection no longer leaks** — the `_lifespan` startup
+  lambda called `db()` to obtain a connection for `_migrate()`, which stored
+  it in the `asyncio.to_thread` worker's `threading.local`. That connection
+  stayed open for the worker thread's lifetime, contradicting the
+  per-request thread-local design. The startup path now opens and closes an
+  explicit connection.
+- **DuckDB `INSTALL sqlite_scanner` is best-effort** — the extension
+  download step is now wrapped in a silent `try/except`; `LOAD` is the real
+  gate. This prevents a network timeout at startup from permanently disabling
+  the DuckDB analytics engine when the extension is already cached locally.
+
+---
+
 ## 2.3.1 — 2026-05-20
 
 ### Reliability

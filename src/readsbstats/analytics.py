@@ -98,7 +98,14 @@ def _init_connection() -> None:
         # Home directory MUST be set before INSTALL — DuckDB resolves it on
         # first use and the readsbstats system user has no /home.
         conn.execute(f"SET home_directory={_quote_sql_string(home_dir)}")
-        conn.execute("INSTALL sqlite_scanner")
+        # INSTALL is best-effort: it's a no-op if the extension is already
+        # present and fails gracefully when there is no network. LOAD is the
+        # real gate — if the extension is not available it raises here and the
+        # outer except disables the engine with a single warning.
+        try:
+            conn.execute("INSTALL sqlite_scanner")
+        except Exception:  # noqa: BLE001 — no network / already installed
+            pass
         conn.execute("LOAD sqlite_scanner")
         conn.execute(f"SET memory_limit='{int(config.DUCKDB_MEMORY_MB)}MB'")
         conn.execute(f"SET threads={int(config.DUCKDB_THREADS)}")

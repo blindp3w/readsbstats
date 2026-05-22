@@ -294,14 +294,21 @@ def run_enricher_loop(db_path: str) -> None:
             time.sleep(config.ROUTE_ENRICH_INTERVAL)
 
 
+_enricher_thread: threading.Thread | None = None
+
+
 def start_background_enricher() -> threading.Thread:
-    """Start the route enricher as a daemon thread. Call once at web startup."""
+    """Idempotently start the route enricher daemon thread."""
+    global _enricher_thread
+    if _enricher_thread is not None and _enricher_thread.is_alive():
+        return _enricher_thread
     t = threading.Thread(
         target=run_enricher_loop,
         args=(config.DB_PATH,),
         daemon=True,
         name="route-enricher",
     )
+    _enricher_thread = t
     t.start()
     log.info("Route enricher background thread started")
     return t

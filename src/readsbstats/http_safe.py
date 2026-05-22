@@ -79,6 +79,19 @@ class TransientError(Exception):
     """
 
 
+class UnsafeURLError(ValueError):
+    """Raised when a URL or response violates a security policy.
+
+    Distinct from DNS/network failures so callers can classify this as a
+    permanent error (retrying the same URL will hit the same rejection).
+    Examples: non-HTTPS scheme, destination IP not public, redirect
+    detected, response body exceeded max_bytes.
+
+    DNS resolution failures are plain ``ValueError`` — they are transient
+    and should not be treated as permanent.
+    """
+
+
 # Captured at import so test monkey-patches of ``socket.getaddrinfo``
 # can't accidentally feed the validator faked data. Tests patch this
 # name directly when they want to inject resolution results.
@@ -107,19 +120,25 @@ def _ip_is_public(addr: str) -> bool:
 def _resolve_and_validate(
     url: str,
 ) -> tuple[urllib.parse.ParseResult, list]:
-    """Return ``(parsed_url, addrinfo_list)`` for *url*. Raises ``ValueError``
-    if the URL violates policy (non-HTTPS, no host, any resolved IP is
-    non-public, or DNS resolution fails).
+    """Return ``(parsed_url, addrinfo_list)`` for *url*.
 
-    Used by both the urllib and httpx code paths so the validation +
-    resolution happens exactly once per request.
+    Raises ``UnsafeURLError`` (a ``ValueError`` subclass) for policy
+    violations: non-HTTPS scheme, missing host, or a resolved IP that is
+    not globally routable.
+
+    Raises plain ``ValueError`` for DNS resolution failures — these are
+    transient and callers should treat them differently from permanent
+    policy rejections.
+
+    Used by both the urllib and httpx code paths so validation + resolution
+    happens exactly once per request.
     """
     parsed = urllib.parse.urlparse(url)
     if parsed.scheme != "https":
-        raise ValueError(f"non-https URL rejected: {parsed.scheme!r}")
+        raise UnsafeURLError(f"non-https URL rejected: {parsed.scheme!r}")
     host = parsed.hostname
     if not host:
-        raise ValueError("URL has no host")
+        raise UnsafeURLError("URL has no host")
     port = parsed.port or 443
     try:
         infos = _real_getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
@@ -128,14 +147,16 @@ def _resolve_and_validate(
     for info in infos:
         addr = info[4][0]
         if not _ip_is_public(addr):
-            raise ValueError(
+            raise UnsafeURLError(
                 f"URL {url!r} resolves to non-public address {addr!r}"
             )
     return parsed, infos
 
 
 def validate_url(url: str) -> None:
-    """Raise ``ValueError`` if *url* is not safe to fetch.
+    """Raise ``UnsafeURLError`` (a ``ValueError`` subclass) for policy
+    violations (non-HTTPS, private/loopback destination IP), or plain
+    ``ValueError`` for DNS resolution failures.
 
     Performs the same DNS + IP-publicness check as
     :func:`_resolve_and_validate` but discards the resolution result.
@@ -365,9 +386,11 @@ def safe_httpx_get(
     surface the limitation loudly so a future use doesn't silently
     bypass the rebinding guard.
 
-    Returns the response on success.  Raises ``ValueError`` on policy
-    violation; the caller is responsible for ``raise_for_status()`` on the
-    returned response if it cares about non-2xx.
+    Returns the response on success.  Raises ``UnsafeURLError`` (a
+    ``ValueError`` subclass) on policy violations (non-HTTPS, private IP,
+    redirect detected, body over max_bytes).  The caller is responsible
+    for ``raise_for_status()`` on the returned response if it cares about
+    non-2xx status codes.
     """
     if httpx is not None and isinstance(client, httpx.AsyncClient):
         raise RuntimeError(
@@ -394,7 +417,7 @@ def safe_httpx_get(
         if can_stream:
             with client.stream("GET", url, **kwargs) as resp:
                 if resp.status_code in _REDIRECT_CODES:
-                    raise ValueError(
+                    raise UnsafeURLError(
                         f"redirect blocked: GET {url} -> {resp.status_code} "
                         f"-> {resp.headers.get('Location', '?')!r}"
                     )
@@ -402,7 +425,7 @@ def safe_httpx_get(
                 for chunk in resp.iter_bytes(8192):
                     buf.extend(chunk)
                     if len(buf) > max_bytes:
-                        raise ValueError(
+                        raise UnsafeURLError(
                             f"response from {url} exceeded max_bytes={max_bytes} "
                             f"(streamed {len(buf)} before cutoff)"
                         )
@@ -413,12 +436,12 @@ def safe_httpx_get(
         # Compatibility path for test fakes that only mock .get().
         resp = client.get(url, **kwargs)
         if resp.status_code in _REDIRECT_CODES:
-            raise ValueError(
+            raise UnsafeURLError(
                 f"redirect blocked: GET {url} -> {resp.status_code} "
                 f"-> {resp.headers.get('Location', '?')!r}"
             )
         if len(resp.content) > max_bytes:
-            raise ValueError(
+            raise UnsafeURLError(
                 f"response from {url} exceeded max_bytes={max_bytes} "
                 f"(got {len(resp.content)})"
             )

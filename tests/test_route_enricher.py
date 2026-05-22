@@ -576,10 +576,17 @@ class TestFetchRoute:
         yield
 
     def _bypass_validate(self, monkeypatch):
-        """Skip the real DNS / IP-class check from http_safe.validate_url so
-        the test never hits the network."""
+        """Return a fake DNS result so safe_httpx_get skips real DNS lookup."""
+        import socket
+        import urllib.parse
         from readsbstats import http_safe
-        monkeypatch.setattr(http_safe, "validate_url", lambda url: None)
+
+        def fake_resolve(url):
+            parsed = urllib.parse.urlparse(url)
+            infos = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("1.1.1.1", 443))]
+            return parsed, infos
+
+        monkeypatch.setattr(http_safe, "_resolve_and_validate", fake_resolve)
 
     def test_returns_parsed_route_on_200(self, monkeypatch):
         import httpx
@@ -739,3 +746,39 @@ class TestRunEnricherLoop:
         with pytest.raises(KeyboardInterrupt):
             route_enricher.run_enricher_loop(db_path)
         assert len(calls) == 2
+
+
+# ---------------------------------------------------------------------------
+# start_background_enricher — idempotency
+# ---------------------------------------------------------------------------
+
+class TestStartBackgroundEnricher:
+    @pytest.fixture(autouse=True)
+    def setup(self, monkeypatch):
+        import importlib
+        from readsbstats import route_enricher
+        importlib.reload(route_enricher)
+        self.enricher = route_enricher
+        self.monkeypatch = monkeypatch
+        yield
+
+    def test_starts_daemon_thread(self):
+        import threading
+        stop = threading.Event()
+        self.monkeypatch.setattr(self.enricher, "run_enricher_loop", lambda db_path: stop.wait())
+        t = self.enricher.start_background_enricher()
+        assert t is not None
+        assert t.daemon is True
+        assert t.name == "route-enricher"
+        stop.set()
+        t.join(timeout=2)
+
+    def test_idempotent_returns_same_thread(self):
+        import threading
+        stop = threading.Event()
+        self.monkeypatch.setattr(self.enricher, "run_enricher_loop", lambda db_path: stop.wait())
+        t1 = self.enricher.start_background_enricher()
+        t2 = self.enricher.start_background_enricher()
+        assert t1 is t2
+        stop.set()
+        t1.join(timeout=2)

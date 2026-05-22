@@ -141,7 +141,7 @@ _TransientError = http_safe.TransientError
 class _PermanentError(Exception):
     """Raised when an upstream call hit a non-retryable policy violation.
 
-    Audit-13 A13-021: `safe_httpx_get` raises `ValueError` on size-cap,
+    Audit-13 A13-021: `safe_httpx_get` raises `UnsafeURLError` on size-cap,
     redirect, or non-HTTPS rejections — all of which indicate an upstream
     schema/policy change that will not heal with exponential backoff.
     The previous catch-all `_TransientError` flooded the log with retries
@@ -153,7 +153,8 @@ class _PermanentError(Exception):
 def _fetch_area(client: httpx.Client | None = None) -> dict:
     """
     Call airplanes.live area endpoint; return the raw JSON dict.
-    Raises _TransientError on any failure.
+    Raises _TransientError on network/DNS/HTTP failures, _PermanentError on
+    policy violations (redirect, size cap, non-HTTPS, private IP).
 
     Audit-13 A13-068: when called with an already-open `httpx.Client`
     (loop path), the TLS session and pool persist across polls. When
@@ -180,13 +181,12 @@ def _fetch_area(client: httpx.Client | None = None) -> dict:
             headers={"User-Agent": "readsbstats/1.0"},
         ) as own_client:
             return _call(own_client)
-    except ValueError as exc:
-        # Audit-13 A13-021: policy errors (size cap exceeded, redirect
-        # blocked, non-HTTPS) are not transient — retries will hit the
-        # same failure. Surface as permanent so the loop logs once and
-        # backs off significantly.
+    except http_safe.UnsafeURLError as exc:
+        # Policy errors (size cap, redirect, non-HTTPS, private IP) are
+        # permanent — retries will hit the same rejection every time.
         raise _PermanentError(str(exc)) from exc
     except Exception as exc:
+        # Includes DNS failures (plain ValueError), network errors, 5xx, etc.
         raise _TransientError(str(exc)) from exc
 
 
@@ -247,17 +247,24 @@ def run_enricher_loop(db_path: str) -> None:
             time.sleep(sleep_time)
 
 
+_enricher_thread: threading.Thread | None = None
+
+
 def start_background_enricher() -> threading.Thread | None:
-    """Start the ADSBx enricher as a daemon thread. Returns None if disabled."""
+    """Idempotently start the ADSBx enricher daemon thread. Returns None if disabled."""
+    global _enricher_thread
     if not config.ADSBX_ENABLED:
         log.info("ADSBx enricher disabled (RSBS_ADSBX_ENABLED=0)")
         return None
+    if _enricher_thread is not None and _enricher_thread.is_alive():
+        return _enricher_thread
     t = threading.Thread(
         target=run_enricher_loop,
         args=(config.DB_PATH,),
         daemon=True,
         name="adsbx-enricher",
     )
+    _enricher_thread = t
     t.start()
     log.info("ADSBx enricher background thread started (source: %s)", config.ADSBX_API_URL)
     return t

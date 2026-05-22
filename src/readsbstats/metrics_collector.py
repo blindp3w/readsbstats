@@ -241,17 +241,24 @@ def run_metrics_loop(db_path: str) -> None:
         time.sleep(sleep_time)
 
 
+_collector_thread: threading.Thread | None = None
+
+
 def start_metrics_collector() -> threading.Thread | None:
-    """Start the metrics collector as a daemon thread.  Returns None if disabled."""
+    """Idempotently start the metrics collector daemon thread. Returns None if disabled."""
+    global _collector_thread
     if not config.METRICS_ENABLED:
         log.info("Metrics collector disabled (RSBS_METRICS_ENABLED not set)")
         return None
+    if _collector_thread is not None and _collector_thread.is_alive():
+        return _collector_thread
     t = threading.Thread(
         target=run_metrics_loop,
         args=(config.DB_PATH,),
         daemon=True,
         name="metrics-collector",
     )
+    _collector_thread = t
     t.start()
     log.info(
         "Metrics collector started (source: %s, interval: %ds)",
