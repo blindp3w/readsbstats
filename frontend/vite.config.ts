@@ -100,7 +100,7 @@ export default defineConfig(({ command }) => ({
     outDir: 'dist',
     assetsDir: 'assets',
     sourcemap: false,
-    chunkSizeWarningLimit: 250,
+    chunkSizeWarningLimit: 600,
     rollupOptions: {
       output: {
         manualChunks: chunkFor,

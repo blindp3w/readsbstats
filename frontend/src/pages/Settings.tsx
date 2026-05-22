@@ -97,7 +97,7 @@ function buildSections(s: SettingsPayload): Section[] {
       rows: [
         ['Latitude', fmt(s.lat), 'RSBS_LAT'],
         ['Longitude', fmt(s.lon), 'RSBS_LON'],
-        ['Max range (NM)', fmt(s.max_range), 'RSBS_MAX_RANGE_NM'],
+        ['Max range (NM)', fmt(s.max_range), 'RSBS_MAX_RANGE'],
       ],
     },
     {
@@ -106,7 +106,7 @@ function buildSections(s: SettingsPayload): Section[] {
       rows: [
         ['Poll interval (s)', fmt(s.poll_interval), 'RSBS_POLL_INTERVAL'],
         ['Flight gap (s)', fmt(s.flight_gap), 'RSBS_FLIGHT_GAP'],
-        ['Min positions kept', fmt(s.min_positions), 'RSBS_MIN_POSITIONS_KEEP'],
+        ['Min positions kept', fmt(s.min_positions), 'RSBS_MIN_POSITIONS'],
         ['Max seen position (s)', fmt(s.max_seen_pos), 'RSBS_MAX_SEEN_POS'],
         ['Max speed (kts)', fmt(s.max_speed_kts), 'RSBS_MAX_SPEED_KTS'],
       ],
@@ -128,7 +128,7 @@ function buildSections(s: SettingsPayload): Section[] {
         ['Airspace GeoJSON', s.airspace_geojson, 'RSBS_AIRSPACE_GEOJSON'],
         ['Route cache (days)', fmt(s.route_cache_days), 'RSBS_ROUTE_CACHE_DAYS'],
         ['Route enrich interval (s)', fmt(s.route_interval), 'RSBS_ROUTE_ENRICH_INTERVAL'],
-        ['Route batch size', fmt(s.route_batch), 'RSBS_ROUTE_BATCH_SIZE'],
+        ['Route batch size', fmt(s.route_batch), 'RSBS_ROUTE_BATCH'],
         ['Route rate limit (s)', fmt(s.route_rate_limit), 'RSBS_ROUTE_RATE_LIMIT'],
       ],
     },
@@ -137,9 +137,9 @@ function buildSections(s: SettingsPayload): Section[] {
       testid: 'settings-section-adsbx',
       rows: [
         ['Enabled', toggle(s.adsbx_enabled), 'RSBS_ADSBX_ENABLED'],
-        ['Poll interval (s)', fmt(s.adsbx_interval), 'RSBS_ADSBX_POLL_INTERVAL'],
-        ['Range (NM)', fmt(s.adsbx_range), 'RSBS_ADSBX_RANGE_NM'],
-        ['API URL', s.adsbx_url, 'RSBS_ADSBX_API_URL'],
+        ['Poll interval (s)', fmt(s.adsbx_interval), 'RSBS_ADSBX_INTERVAL'],
+        ['Range (NM)', fmt(s.adsbx_range), 'RSBS_ADSBX_RANGE'],
+        ['API URL', s.adsbx_url, 'RSBS_ADSBX_URL'],
       ],
     },
     {

@@ -71,8 +71,6 @@ type Mode = 'live' | 'rewind';
 type MapWindow = '24h' | '7d' | '30d' | 'all';
 type PlaybackSpeed = 1 | 2 | 5 | 10;
 
-const MAX_REWIND_HOURS = 24;
-const MAX_REWIND_SEC = MAX_REWIND_HOURS * 3600;
 const PLAYBACK_TICK_MS = 1000; // 1 s real time per tick
 
 const WINDOW_OPTIONS: { value: MapWindow; label: string }[] = [
@@ -85,6 +83,15 @@ const WINDOW_OPTIONS: { value: MapWindow; label: string }[] = [
 const PLAYBACK_SPEEDS: PlaybackSpeed[] = [1, 2, 5, 10];
 
 export default function MapPage() {
+  // ── settings (map_history_hours) ──────────────────────────────────────
+  const { data: settings } = useQuery({
+    queryKey: ['settings'],
+    queryFn: () => apiJson<{ map_history_hours?: number }>('settings'),
+    staleTime: 60_000,
+  });
+  const MAX_REWIND_HOURS = settings?.map_history_hours ?? 24;
+  const MAX_REWIND_SEC = MAX_REWIND_HOURS * 3600;
+
   // ── core state ─────────────────────────────────────────────────────────
   const [mode, setMode] = useState<Mode>('live');
   const [rewindOffsetSec, setRewindOffsetSec] = useState(0);

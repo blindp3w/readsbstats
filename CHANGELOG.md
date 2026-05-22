@@ -1,5 +1,36 @@
 # Changelog
 
+## 2.3.3 — 2026-05-22
+
+### Bug fixes
+
+- **Map rewind slider now respects `RSBS_MAP_HISTORY_HOURS`** — the rewind
+  cap was hardcoded to 24 h in the frontend regardless of the backend config.
+  The frontend now reads `map_history_hours` from `/api/settings` (also newly
+  added to the settings payload) and uses it as the slider bound.
+- **History date filters now use browser-local midnight** — `/api/flights`
+  was receiving `date_from`/`date_to` as UTC date strings, causing off-by-
+  a-timezone-offset errors for users outside UTC. The History page now sends
+  `from`/`to` as Unix timestamps anchored to the user's local midnight.
+  The backend `/api/flights` endpoint accepts both forms; the old
+  `date_from`/`date_to` string params remain for backward compatibility.
+- **Settings page env-var hints corrected** — six labels on the Settings page
+  showed env-var names that didn't exist (`RSBS_MAX_RANGE_NM`,
+  `RSBS_MIN_POSITIONS_KEEP`, `RSBS_ROUTE_BATCH_SIZE`,
+  `RSBS_ADSBX_POLL_INTERVAL`, `RSBS_ADSBX_RANGE_NM`, `RSBS_ADSBX_API_URL`).
+  Corrected to match the actual names in `config.py`.
+
+### Developer tooling
+
+- **`npm run lint` now works** — `@eslint/js` was imported by `eslint.config.mjs`
+  but absent from `devDependencies`, causing ESLint to exit before linting any
+  source. Package added at `^10.0.1`.
+- **ECharts chunk size warning silenced** — `chunkSizeWarningLimit` raised from
+  250 KB to 600 KB to reflect the intentionally isolated ECharts chunk (~193 KB
+  gzip). No change to the bundle split strategy.
+
+---
+
 ## 2.3.2 — 2026-05-22
 
 ### Reliability

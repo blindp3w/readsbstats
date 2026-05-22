@@ -475,9 +475,10 @@ def _settings_payload() -> dict:
         # the bind host (0.0.0.0) would be misleading anyway.
         "root_path":        config.ROOT_PATH,
         # UI
-        "page_size":        config.DEFAULT_PAGE_SIZE,
-        "max_page_size":    config.MAX_PAGE_SIZE,
-        "time_format":      config.TIME_FORMAT,
+        "page_size":            config.DEFAULT_PAGE_SIZE,
+        "max_page_size":        config.MAX_PAGE_SIZE,
+        "time_format":          config.TIME_FORMAT,
+        "map_history_hours":    config.MAP_HISTORY_HOURS,
         # Telegram
         "telegram_token":        tok_masked,
         "telegram_chat_id":      cid_masked,
@@ -584,13 +585,16 @@ def _build_flight_filter(
     squawk: str | None = None,
     date_from: str | None = None,
     date_to:   str | None = None,
+    from_ts: int | None = None,
+    to_ts:   int | None = None,
 ) -> tuple[str, list]:
     """Return (WHERE clause, params list) for the shared flight filter params.
 
     Date filtering supports either:
-      - `date=YYYY-MM-DD`           — single calendar day
-      - `date_from=YYYY-MM-DD` and/or `date_to=YYYY-MM-DD` — inclusive range
-        (either bound may be omitted for an open-ended range)
+      - `date=YYYY-MM-DD`           — single calendar day (UTC)
+      - `from`/`to` epoch seconds   — browser-local midnight boundaries (preferred)
+      - `date_from=YYYY-MM-DD` and/or `date_to=YYYY-MM-DD` — UTC date strings
+        (kept for backward compat; epoch params take priority when both are sent)
 
     If `date` is set, the range params are ignored — single-day takes priority
     because that's what the old single-`date` UI sent, and we don't want to
@@ -608,6 +612,13 @@ def _build_flight_filter(
         day_end = day_start + 86400
         conditions.append("f.first_seen >= ? AND f.first_seen < ?")
         params += [day_start, day_end]
+    elif from_ts is not None or to_ts is not None:
+        if from_ts is not None:
+            conditions.append("f.first_seen >= ?")
+            params.append(from_ts)
+        if to_ts is not None:
+            conditions.append("f.first_seen < ?")
+            params.append(to_ts)
     elif date_from or date_to:
         if date_from:
             try:
@@ -670,8 +681,10 @@ def _build_flight_filter(
 @app.get("/api/flights")
 def api_flights(
     date: str | None = Query(None, description="YYYY-MM-DD (UTC)"),
-    date_from: str | None = Query(None, description="YYYY-MM-DD inclusive range start"),
-    date_to:   str | None = Query(None, description="YYYY-MM-DD inclusive range end"),
+    date_from: str | None = Query(None, description="YYYY-MM-DD inclusive range start (UTC)"),
+    date_to:   str | None = Query(None, description="YYYY-MM-DD inclusive range end (UTC)"),
+    from_ts: int | None = Query(None, alias="from", description="Unix timestamp range start (browser-local midnight)"),
+    to_ts:   int | None = Query(None, alias="to",   description="Unix timestamp range end (browser-local midnight of next day)"),
     icao: str | None = Query(None),
     callsign: str | None = Query(None),
     registration: str | None = Query(None),
@@ -686,7 +699,7 @@ def api_flights(
 ) -> dict:
     where, params = _build_flight_filter(
         date, icao, callsign, registration, aircraft_type, source, flags, squawk,
-        date_from=date_from, date_to=date_to,
+        date_from=date_from, date_to=date_to, from_ts=from_ts, to_ts=to_ts,
     )
     conn = db()
 
