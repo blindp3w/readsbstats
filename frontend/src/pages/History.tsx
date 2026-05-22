@@ -52,6 +52,12 @@ function isSortKey(s: string): s is SortKey {
   return (SORT_KEYS as string[]).includes(s);
 }
 
+function localMidnightEpoch(dateStr: string): number {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateStr);
+  if (!m) return 0;
+  return Math.floor(new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])).getTime() / 1000);
+}
+
 export default function HistoryPage() {
   // URL-state — all filters / sort / page survive refresh + back button.
   const [dateFrom, setDateFrom] = useSearchParam('date_from', '');
@@ -72,8 +78,8 @@ export default function HistoryPage() {
   const sortDir: SortDir = String(sortDirRaw) === 'asc' ? 'asc' : 'desc';
 
   const queryParams = new URLSearchParams();
-  if (dateFrom) queryParams.set('date_from', dateFrom);
-  if (dateTo) queryParams.set('date_to', dateTo);
+  if (dateFrom) queryParams.set('from', String(localMidnightEpoch(dateFrom)));
+  if (dateTo)   queryParams.set('to',   String(localMidnightEpoch(dateTo) + 86400));
   if (icao) queryParams.set('icao', icao);
   if (callsign) queryParams.set('callsign', callsign);
   if (registration) queryParams.set('registration', registration);

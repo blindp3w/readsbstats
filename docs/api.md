@@ -6,7 +6,7 @@ The web server exposes a JSON API at `http://YOUR_PI_IP/stats/api/`.
 
 | Method | Path | Description |
 |---|---|---|
-| GET | `/api/flights` | Flight list. Filters: `date`, `date_from`, `date_to` (YYYY-MM-DD), `icao`, `callsign`, `reg`, `type`, `source`, `flags`, `squawk`. Sortable, paginated. |
+| GET | `/api/flights` | Flight list. Filters: `from`/`to` (Unix epoch, preferred — browser-local midnight), `date`, `date_from`/`date_to` (YYYY-MM-DD UTC, backward compat), `icao`, `callsign`, `reg`, `type`, `source`, `flags`, `squawk`. Sortable, paginated. |
 | GET | `/api/flights/export.csv` | CSV export of flight list (same filters as above, no pagination) |
 | GET | `/api/flights/{id}` | Full flight detail + all positions |
 | GET | `/api/flights/{id}/photo` | Aircraft photo via 6-step ladder: specific-ICAO cache → type cache → DB join → Planespotters/airport-data/hexdb fetch → type probe → Wikipedia. `is_type_photo: bool` in response. |
@@ -60,7 +60,7 @@ The web server exposes a JSON API at `http://YOUR_PI_IP/stats/api/`.
 | GET | `/api/health` | Liveness probe (DB ping) |
 | GET | `/api/metrics` | Receiver metrics time-series. `range`: `1h`/`6h`/`24h`/`48h`/`7d`/`30d`/`90d` or custom. Auto-downsamples. |
 | GET | `/api/metrics/health` | 9 rule-based and baseline-aware health checks over `receiver_stats`. Cached 60 s. |
-| GET | `/api/settings` | Read-only runtime settings dict (secrets masked) |
+| GET | `/api/settings` | Read-only runtime settings dict (secrets masked). Includes `map_history_hours` (rewind slider cap), `time_format`, `page_size`, and all `RSBS_*` tunables. |
 | GET | `/api/feeders` | Feeder service status + log/Mode-S details |
 
 ## SPA routes
