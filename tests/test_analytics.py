@@ -249,7 +249,23 @@ def test_fallback_when_duckdb_unavailable(file_db, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+def _stub_init_connection() -> None:
+    """Patch target: replaces _init_connection with a plain in-memory DuckDB
+    connection (no sqlite_scanner) so tests that only need is_available()=True
+    work offline without the extension."""
+    if not analytics._DUCKDB_IMPORT_OK:
+        analytics._INFRA_OK = False
+        return
+    try:
+        import duckdb as _duckdb
+        analytics._CONN = _duckdb.connect(":memory:")
+        analytics._INFRA_OK = True
+    except Exception:  # noqa: BLE001
+        analytics._INFRA_OK = False
+
+
 def test_engine_selection_via_env_no_restart(file_db, monkeypatch):
+    monkeypatch.setattr(analytics, "_init_connection", _stub_init_connection)
     monkeypatch.setattr(config, "USE_DUCKDB", True)
     analytics._reset_for_tests()
     assert analytics.is_available() is True
@@ -331,6 +347,7 @@ def test_init_connection_duckdb_exception_disables_engine(file_db, monkeypatch, 
 def test_heatmap_returns_none_when_engine_throws(file_db, monkeypatch):
     """Per-query exception path: the cursor execute raises, the function
     swallows it and returns None so the caller falls back to SQLite."""
+    monkeypatch.setattr(analytics, "_init_connection", _stub_init_connection)
     monkeypatch.setattr(config, "USE_DUCKDB", True)
     analytics._reset_for_tests()
     # Force engine initialised
@@ -354,6 +371,7 @@ def test_close_resets_conn(file_db, monkeypatch):
     """close() must drop the connection so subsequent is_available() either
     re-initialises or stays False (the test exercises the close path that
     `_reset_for_tests` and shutdown relay on)."""
+    monkeypatch.setattr(analytics, "_init_connection", _stub_init_connection)
     monkeypatch.setattr(config, "USE_DUCKDB", True)
     analytics._reset_for_tests()
     assert analytics.is_available() is True
@@ -370,6 +388,7 @@ def test_shutdown_race_no_warning(file_db, monkeypatch, caplog):
     and the noisy log during clean shutdown is confusing."""
     import logging
 
+    monkeypatch.setattr(analytics, "_init_connection", _stub_init_connection)
     monkeypatch.setattr(config, "USE_DUCKDB", True)
     analytics._reset_for_tests()
     assert analytics.is_available() is True

@@ -470,6 +470,17 @@ class TestStartMetricsCollector:
         assert t.name == "metrics-collector"
         t.join(timeout=2)
 
+    def test_idempotent_returns_same_thread(self):
+        import threading
+        stop = threading.Event()
+        self.monkeypatch.setattr(config, "METRICS_ENABLED", True)
+        self.monkeypatch.setattr(self.mc, "run_metrics_loop", lambda db_path: stop.wait())
+        t1 = self.mc.start_metrics_collector()
+        t2 = self.mc.start_metrics_collector()
+        assert t1 is t2
+        stop.set()
+        t1.join(timeout=2)
+
 
 # ---------------------------------------------------------------------------
 # API — /api/metrics

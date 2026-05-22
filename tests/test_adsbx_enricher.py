@@ -295,23 +295,24 @@ class TestFetchArea:
         yield
 
     def test_fetch_raises_transient_on_network_error(self, monkeypatch):
-        def mock_get(*args, **kwargs):
+        from readsbstats import http_safe
+
+        def fake_safe_get(client, url, **kwargs):
             raise ConnectionError("network down")
 
-        import httpx
-        monkeypatch.setattr(httpx, "Client", lambda **kw: _MockClient(mock_get))
-
+        monkeypatch.setattr(http_safe, "safe_httpx_get", fake_safe_get)
         with pytest.raises(self.enricher._TransientError):
             self.enricher._fetch_area()
 
     def test_fetch_raises_transient_on_http_error(self, monkeypatch):
-        def mock_get(*args, **kwargs):
+        import httpx
+        from readsbstats import http_safe
+
+        def fake_safe_get(client, url, **kwargs):
             resp = httpx.Response(429, request=httpx.Request("GET", "http://test"))
             raise httpx.HTTPStatusError("rate limited", request=resp.request, response=resp)
 
-        import httpx
-        monkeypatch.setattr(httpx, "Client", lambda **kw: _MockClient(mock_get))
-
+        monkeypatch.setattr(http_safe, "safe_httpx_get", fake_safe_get)
         with pytest.raises(self.enricher._TransientError):
             self.enricher._fetch_area()
 
@@ -320,35 +321,26 @@ class TestFetchArea:
         as PERMANENT (audit-13 A13-021) — retries will hit the same failure.
         """
         from readsbstats import http_safe
-        monkeypatch.setattr(http_safe, "validate_url", lambda url: None)
 
-        class FakeResp:
-            status_code = 302
-            content = b""
-            headers = {"Location": "https://attacker.example/"}
+        def fake_safe_get(client, url, **kwargs):
+            raise http_safe.UnsafeURLError(
+                f"redirect blocked: GET {url} -> 302 -> 'https://attacker.example/'"
+            )
 
-        import httpx
-        monkeypatch.setattr(httpx, "Client",
-                            lambda **kw: _MockClient(lambda *a, **kw: FakeResp()))
-
+        monkeypatch.setattr(http_safe, "safe_httpx_get", fake_safe_get)
         with pytest.raises(self.enricher._PermanentError):
             self.enricher._fetch_area()
 
     def test_fetch_raises_permanent_on_oversized_response(self, monkeypatch):
         # Audit-13 A13-021: size-cap exceeded is a permanent policy error.
         from readsbstats import http_safe
-        monkeypatch.setattr(http_safe, "validate_url", lambda url: None)
 
-        class FakeResp:
-            status_code = 200
-            content = b"x" * (10 * 1024 * 1024)  # 10 MB, over our 4 MB cap
-            def raise_for_status(self): pass
-            def json(self): return {"ac": []}
+        def fake_safe_get(client, url, **kwargs):
+            raise http_safe.UnsafeURLError(
+                f"response from {url} exceeded max_bytes=4194304 (got 10485760)"
+            )
 
-        import httpx
-        monkeypatch.setattr(httpx, "Client",
-                            lambda **kw: _MockClient(lambda *a, **kw: FakeResp()))
-
+        monkeypatch.setattr(http_safe, "safe_httpx_get", fake_safe_get)
         with pytest.raises(self.enricher._PermanentError):
             self.enricher._fetch_area()
 
@@ -438,6 +430,17 @@ class TestStartBackgroundEnricher:
         assert t.daemon is True
         assert t.name == "adsbx-enricher"
         t.join(timeout=2)
+
+    def test_idempotent_returns_same_thread(self, monkeypatch):
+        import threading
+        stop = threading.Event()
+        monkeypatch.setattr(config, "ADSBX_ENABLED", True)
+        monkeypatch.setattr(self.enricher, "run_enricher_loop", lambda db_path: stop.wait())
+        t1 = self.enricher.start_background_enricher()
+        t2 = self.enricher.start_background_enricher()
+        assert t1 is t2
+        stop.set()
+        t1.join(timeout=2)
 
 
 # ---------------------------------------------------------------------------

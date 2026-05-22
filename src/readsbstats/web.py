@@ -60,10 +60,21 @@ async def _lifespan(app_: FastAPI) -> AsyncIterator[None]:
     # Audit-13 A13-067: `_migrate` may run a handful of ALTER TABLEs and
     # `CREATE INDEX` statements on cold disk — hundreds of ms on a Pi 4.
     # Wrap in a thread so the event loop stays free during startup.
-    # Lambda form ensures `db()` opens the connection on the worker
-    # thread (cleanest thread affinity; both forms work because
-    # `database.connect()` uses `check_same_thread=False`).
-    await asyncio.to_thread(lambda: database._migrate(db()))
+    # Open and close an explicit connection rather than using db() so the
+    # worker thread does not leave a thread-local connection open for its
+    # lifetime (fixing A14-004 startup connection leak).
+    # When a test has injected _db, use it directly (in-memory DBs can't be
+    # reopened) and skip the close — the test owns the connection.
+    def _startup_migrate() -> None:
+        if _db is not None:
+            database._migrate(_db)
+            return
+        conn = database.connect()
+        try:
+            database._migrate(conn)
+        finally:
+            conn.close()
+    await asyncio.to_thread(_startup_migrate)
     # Background migrations (positions indexes, bearing backfill) are owned by
     # the collector so two processes don't fight on the SQLite write lock.
     route_enricher.start_background_enricher()
