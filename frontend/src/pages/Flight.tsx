@@ -16,7 +16,7 @@ import { fmtDur } from '@/lib/format';
 import { CHART_COLORS, baseOption, timeAxis, valueAxis } from '@/components/charts/theme';
 import { EChart } from '@/components/charts/EChart';
 
-// Heavy bits (Leaflet) lazy-loaded so other pages don't pay for them.
+// Heavy bits (MapLibre GL) lazy-loaded so other pages don't pay for them.
 const RouteMap = lazy(() => import('@/components/RouteMap'));
 
 interface Position {

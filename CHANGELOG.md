@@ -1,5 +1,86 @@
 # Changelog
 
+## 2.4.0 — 2026-05-23
+
+### SPA map stack: react-leaflet → MapLibre GL
+
+Frontend map library swap across the live `/stats/map` view and the
+per-flight route map. The Leaflet stack (`react-leaflet@5` + `leaflet@1.9`
++ `leaflet.heat@0.2`) is fully replaced by `maplibre-gl@5.24` +
+`react-map-gl@8.1` (`react-map-gl/maplibre` endpoint). See
+`docs/decisions/0009-maplibre-gl-frontend-map.md` for the full rationale.
+
+User-visible changes:
+
+- **Heatmap is finally legible.** Native MapLibre `heatmap` layer with a
+  6-stop inferno-derived ramp (perceptually uniform, monotonically
+  increasing luminance, colorblind-safe). Replaces the royal-blue
+  `leaflet.heat` overlay that previously flooded the basemap at any
+  meaningful density.
+- **Receiver marker pulses.** A static ring + animated pulse + center
+  dot driven by `requestAnimationFrame` and `setPaintProperty` on the
+  MapLibre `circle` layer. 1.8s period, 12→36px radius, 0.6→0 stroke
+  opacity.
+- **Dark basemap.** Tiles served from CartoDB Dark Matter — a native
+  dark raster basemap (CC-BY 4.0, no API key). The previous
+  `.map-tiles-dark` CSS filter chain (`brightness(0.7) saturate(0.85)
+  invert(0.92) hue-rotate(180deg)`) is dropped; labels stay crisp at
+  all zoom levels.
+- **Smoother pan/zoom**, particularly on iPad Safari when both heatmap
+  and aircraft markers are active. MapLibre's WebGL renderer is
+  GPU-accelerated where Leaflet's CPU/SVG renderer was the bottleneck.
+
+Internal:
+
+- **`aircraftIcon.ts` → `aircraftIcon.tsx`.** API surface changed from
+  `aircraftIcon(track, flags, type): L.DivIcon` to
+  `aircraftIconSvg(flags, type): React.ReactElement`. Rotation moved
+  from a CSS `transform:rotate(${deg}deg)` string interpolation to the
+  typed `Marker.rotation` prop with `rotationAlignment="map"`. The
+  string-template surface flagged by audit-12 #176 is eliminated by
+  construction (the API can no longer route a string through this
+  path).
+- **`(L as any).heatLayer` cast gone.** Closes audit-13 A13-089. The
+  heatmap is now a declarative `<Source><Layer/></Source>` pair with
+  typed paint properties throughout.
+- **CSP updated for MapLibre.** `worker-src 'self' blob:` added (tile
+  decoder Web Workers bootstrap from blob URLs), `connect-src` and
+  `img-src` extended for `*.basemaps.cartocdn.com` (MapLibre fetches
+  raster tiles via `fetch()`, not `<img>`). The previously-overlooked
+  inline theme bootstrap script in `frontend/index.html` (left
+  unenforced after audit-13 dropped `'unsafe-inline'`) is now allowed
+  via a SHA-256 hash in `script-src`.
+
+Bundle delta (gzipped, lazy-loaded by `/stats/map` and
+`/stats/flight/:id` only):
+
+- `maps` chunk: previously **45 KB gz** (Leaflet stack) → **283 KB gz**
+  (MapLibre stack)
+- Net +238 KB gz on the two affected pages on first visit. Shell,
+  vendor, radix, and charts chunks are untouched.
+- `chunkSizeWarningLimit` in `vite.config.ts` raised from 600 → 1500
+  (KB raw) — both `maps` and `charts` are intentionally large lazy
+  chunks; the warning's signal is gone.
+
+Migration shipped as three commits on `main`: PR #1 ported `RouteMap.tsx`
++ added deps + nginx CSP, PR #2 ported `LiveMap.tsx` + native heatmap +
+receiver pulse + dropped `leaflet.heat`, PR #3 dropped the remaining
+`leaflet` / `react-leaflet` / `@types/leaflet*` deps, wrote ADR-0009,
+and updated `THIRD_PARTY_NOTICES.md`.
+
+Test count unchanged at **143 Vitest** (rotation-coercion tests in
+`aircraftIcon.test.ts` replaced 1:1 with fill/viewbox tests on the new
+JSX surface).
+
+Deploy notes:
+
+- nginx must reload after pulling the updated `nginx-readsbstats.conf`
+  to pick up the new CSP directives.
+- No backend changes; all map data comes from existing API endpoints
+  unchanged.
+
+---
+
 ## 2.3.5 — 2026-05-22
 
 ### Refactor (no behaviour change)

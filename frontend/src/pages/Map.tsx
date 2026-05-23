@@ -22,7 +22,7 @@ import { FlagBadge, SourceBadge } from '@/components/FlagBadge';
 import { useFormat } from '@/hooks/useFormat';
 import { cn } from '@/lib/cn';
 
-// Leaflet is lazy-loaded — see /v2/flight pattern.
+// MapLibre is lazy-loaded — see /v2/flight pattern.
 const LiveMap = lazy(() => import('@/components/LiveMap'));
 
 interface Aircraft {

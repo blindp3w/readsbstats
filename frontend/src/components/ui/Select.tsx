@@ -50,8 +50,8 @@ export function SelectContent({
         position="popper"
         sideOffset={4}
         className={cn(
-          // Above Leaflet panes (which max at z-700). Otherwise nav unit-selector
-          // dropdown is clipped by the map on /v2/map.
+          // Held at z-[1100] so the nav unit-selector dropdown on /map
+          // sits above MapLibre's canvas (otherwise it'd be clipped).
           'z-[1100] overflow-hidden rounded border bg-[var(--color-surface)] shadow-lg',
           'border-[var(--color-border-default)]',
           // Width matches trigger via Radix; min-w prevents jitter

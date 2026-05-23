@@ -16,7 +16,8 @@ export const DropdownMenuContent = forwardRef<
       sideOffset={sideOffset}
       collisionPadding={collisionPadding}
       className={cn(
-        // Above Leaflet panes (z-700) so the mobile nav stays on top on /map.
+        // Held at z-[1100] so the mobile nav dropdown stays above the map
+        // on /map regardless of MapLibre overlay z-indices.
         'z-[1100] min-w-[200px] overflow-hidden rounded border bg-[var(--color-surface)] p-1 shadow-lg',
         'border-[var(--color-border-default)]',
         'data-[state=open]:animate-in data-[state=closed]:animate-out',
