@@ -1,13 +1,16 @@
 // Aircraft icon shapes, lifted from tar1090 (MIT) — same source v1 used.
-// Each icon is an inline SVG strung into a Leaflet divIcon so we don't
-// have to ship PNGs.
+// Each icon is an inline SVG returned as a JSX element. The caller mounts
+// it as the child of a MapLibre <Marker>; rotation is handled by Marker's
+// typed `rotation` prop, not by any string interpolation here. This
+// eliminates by construction the XSS edge from audit-12 #176 (which had
+// to be guarded via numeric coercion when rotation lived in a CSS
+// transform string).
 //
 // FLAG_MILITARY rendering: red fill with darker stroke (matches v1).
 
-import L from 'leaflet';
 import { FLAG_MILITARY } from '@/lib/flags';
 
-type IconType = 'jet' | 'light' | 'heli' | 'glider';
+export type IconType = 'jet' | 'light' | 'heli' | 'glider';
 
 interface Shape {
   viewBox: string;
@@ -64,34 +67,36 @@ export function getIconType(
   return 'jet';
 }
 
-// Build a Leaflet divIcon for an aircraft. Cheap: just string templating.
-// Re-creating per-update beats marker mutation when there are 100-300 a/c.
-export function aircraftIcon(
-  track: number | null | undefined,
+// Returns an inline SVG element for an aircraft marker. Rotation is the
+// caller's responsibility (Marker.rotation prop) — keeping rotation off
+// this surface means no string template ever touches an attacker-influenced
+// numeric here.
+export function aircraftIconSvg(
   flags: number | null | undefined,
   iconType: IconType,
-): L.DivIcon {
+): React.ReactElement {
   const isMilitary = ((flags ?? 0) & FLAG_MILITARY) !== 0;
   const fill = isMilitary ? '#ef4444' : '#ffffff';
   const stroke = isMilitary ? '#7f1d1d' : '#1d4ed8';
-  // Hard-coerce `track` to an integer degree value. TypeScript declares
-  // `track` as `number | null | undefined`, but API schema drift or a
-  // hostile feed could deliver a string here. Without coercion the value
-  // would be interpolated straight into the inline `style` attribute —
-  // letting something like "0;}<script>" break out of the CSS context.
-  const trackNum = Number(track);
-  const deg = Number.isFinite(trackNum) ? Math.round(trackNum) : 0;
   const shape = ICON_SHAPES[iconType] ?? ICON_SHAPES.jet;
-  return L.divIcon({
-    className: 'ac-icon-wrap',
-    html:
-      `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${shape.viewBox}" width="30" height="30" ` +
-      `style="transform:rotate(${deg}deg);transform-origin:center;display:block;` +
-      `filter:drop-shadow(0 1px 3px rgba(0,0,0,.55))">` +
-      `<path d="${shape.path}" fill="${fill}" stroke="${stroke}" stroke-width="${shape.sw}" stroke-linejoin="round"/>` +
-      `</svg>`,
-    iconSize: [30, 30],
-    iconAnchor: [15, 15],
-    popupAnchor: [0, -18],
-  });
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox={shape.viewBox}
+      width={30}
+      height={30}
+      style={{
+        display: 'block',
+        filter: 'drop-shadow(0 1px 3px rgba(0,0,0,.55))',
+      }}
+    >
+      <path
+        d={shape.path}
+        fill={fill}
+        stroke={stroke}
+        strokeWidth={shape.sw}
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
 }

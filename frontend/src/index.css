@@ -89,11 +89,6 @@
 }
 
 @layer components {
-  /* Soft-darken OSM tiles to match the rest of the dark UI. */
-  .map-tiles-dark {
-    filter: brightness(0.7) saturate(0.85) invert(0.92) hue-rotate(180deg);
-  }
-
   /* Map rewind slider — visible thumb + branded track. WebKit and Firefox
      use different pseudo-elements so both have to be styled. */
   .map-rewind-range {
