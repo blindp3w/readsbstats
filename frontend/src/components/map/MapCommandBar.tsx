@@ -131,16 +131,18 @@ export function MapCommandBar(props: Props) {
   }
 
   // Measure height and surface to the parent so MapLibre's bottom controls
-  // can be shifted out from under the bar.
+  // can be shifted out from under the bar. We use getBoundingClientRect()
+  // (border-box, includes padding) rather than ResizeObserverEntry.contentRect
+  // (content-box only) — the bar has pb-[env(safe-area-inset-bottom)], so
+  // contentRect undercounts by the safe-area inset and the zoom +/− buttons
+  // end up sitting partially under the bar.
   useEffect(() => {
     const el = rootRef.current;
     if (!el || !onHeightChange) return;
-    const ro = new ResizeObserver((entries) => {
-      const h = entries[0]?.contentRect.height ?? 0;
-      onHeightChange(h);
-    });
+    const measure = () => onHeightChange(el.getBoundingClientRect().height);
+    const ro = new ResizeObserver(measure);
     ro.observe(el);
-    onHeightChange(el.getBoundingClientRect().height);
+    measure();
     return () => ro.disconnect();
   }, [onHeightChange]);
 
