@@ -1,23 +1,32 @@
 import { useEffect, useMemo, useRef } from 'react';
 import {
-  MapContainer,
-  TileLayer,
-  CircleMarker,
+  Map,
+  Source,
+  Layer,
   Marker,
-  Polyline,
-  Polygon,
-  ZoomControl,
-  useMap,
-} from 'react-leaflet';
-import L from 'leaflet';
-import 'leaflet/dist/leaflet.css';
-import 'leaflet.heat';
-import { aircraftIcon, getIconType } from '@/lib/aircraftIcon';
+  AttributionControl,
+  NavigationControl,
+  type MapRef,
+  type MarkerEvent,
+} from 'react-map-gl/maplibre';
+import type { StyleSpecification } from 'maplibre-gl';
+import 'maplibre-gl/dist/maplibre-gl.css';
+import { aircraftIconSvg, getIconType } from '@/lib/aircraftIcon';
 
 // Live aircraft layer for /v2/map. Receives the latest snapshot from the
-// parent; renders aircraft as SVG divIcons + an optional trail polyline.
+// parent; renders aircraft as HTML <Marker>s with inline SVG, plus
+// data-driven layers for the trail, coverage polygon, heatmap, and
+// animated receiver pulse.
 //
-// Heavy: lazy-loaded by Map.tsx so other pages don't import Leaflet.
+// Heavy: lazy-loaded by Map.tsx so other pages don't import MapLibre.
+//
+// PR #2 of the v2.4 MapLibre migration. Stack:
+//   - maplibre-gl 5 + react-map-gl/maplibre 8
+//   - CartoDB Dark Matter raster basemap (no CSS filter chain)
+//   - Inferno heatmap palette via native `heatmap` layer
+//   - Receiver pulse via static-ring + animated-pulse circle layers
+//   - Aircraft markers via Marker.rotation + Marker.rotationAlignment="map"
+//     (eliminates the audit-12 #176 string-template surface entirely)
 
 export interface Aircraft {
   flight_id: number;
@@ -51,45 +60,64 @@ interface Props {
   // around mid-pan.
   initialCenter: [number, number] | null;
   // Optional overlays — when undefined / empty the layer doesn't render.
+  // Coordinates use Leaflet convention [lat, lon, weight]; swapped to
+  // GeoJSON [lng, lat] inside this component (single boundary).
   heatmapPoints?: [number, number, number][];
   coveragePolygon?: [number, number][];
 }
 
-// Leaflet.heat injects L.heatLayer onto the L global. Wrapper that mounts the
-// layer once, updates on data change, removes on unmount.
-function HeatmapLayer({ points }: { points: [number, number, number][] }) {
-  const map = useMap();
-  const layerRef = useRef<L.Layer | null>(null);
-  useEffect(() => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const heat = (L as any).heatLayer(points, {
-      radius: 18,
-      blur: 25,
-      maxZoom: 12,
-      minOpacity: 0.25,
-    });
-    heat.addTo(map);
-    layerRef.current = heat;
-    return () => {
-      if (layerRef.current) {
-        map.removeLayer(layerRef.current);
-        layerRef.current = null;
-      }
-    };
-  }, [map, points]);
-  return null;
-}
+// CartoDB Dark Matter raster basemap — free, no API key, CC-BY 4.0.
+// MapLibre does not expand Leaflet's `{s}` subdomain placeholder; list
+// the four subdomains explicitly. Background layer fills the canvas
+// between tile loads so there is no white flash.
+const DARK_STYLE: StyleSpecification = {
+  version: 8,
+  sources: {
+    'carto-dark': {
+      type: 'raster',
+      tiles: [
+        'https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png',
+        'https://b.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png',
+        'https://c.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png',
+        'https://d.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png',
+      ],
+      tileSize: 256,
+      minzoom: 0,
+      maxzoom: 20,
+      attribution:
+        '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> ' +
+        'contributors, © <a href="https://carto.com/attributions">CARTO</a>',
+    },
+  },
+  layers: [
+    { id: 'bg', type: 'background', paint: { 'background-color': '#0b0b0d' } },
+    { id: 'carto-dark', type: 'raster', source: 'carto-dark' },
+  ],
+};
 
-function FirstFitOnce({ center }: { center: [number, number] | null }) {
-  const map = useMap();
-  const done = useRef(false);
-  useEffect(() => {
-    if (done.current || !center) return;
-    map.setView(center, 8);
-    done.current = true;
-  }, [center, map]);
-  return null;
-}
+// Inferno-derived 6-stop heatmap ramp. Perceptually uniform, monotonically
+// increasing luminance — colorblind-safe (encodes density via brightness
+// not hue alone, per CLAUDE_DESIGN_BRIEF.md §M4.2 / §M1.2). Replaces today's
+// near-monochromatic blue ramp from leaflet.heat.
+const HEATMAP_PAINT = {
+  'heatmap-weight': ['coalesce', ['get', 'weight'], 1] as unknown as number,
+  'heatmap-color': [
+    'interpolate', ['linear'], ['heatmap-density'],
+    0,    'rgba(0,0,0,0)',
+    0.1,  '#1b0c41',
+    0.3,  '#781c6d',
+    0.5,  '#bb3754',
+    0.7,  '#ed6925',
+    1,    '#fcffa4',
+  ] as unknown as string,
+  'heatmap-radius': 18,
+  'heatmap-intensity': ['interpolate', ['linear'], ['zoom'], 0, 1, 9, 3] as unknown as number,
+  'heatmap-opacity': ['interpolate', ['linear'], ['zoom'], 7, 0.85, 15, 0.4] as unknown as number,
+};
+
+const RECEIVER_COLOR = '#5b9af9';
+const TRAIL_COLOR = '#5b9af9';
+const COVERAGE_COLOR = '#a855f7';
 
 export default function LiveMap({
   aircraft,
@@ -101,122 +129,230 @@ export default function LiveMap({
   heatmapPoints,
   coveragePolygon,
 }: Props) {
-  const fallback: [number, number] = useMemo(
-    () => (receiverLat != null && receiverLon != null ? [receiverLat, receiverLon] : [52, 21]),
-    [receiverLat, receiverLon],
-  );
+  const mapRef = useRef<MapRef | null>(null);
+
+  // ─── First-fit-once ────────────────────────────────────────────────────
+  // Today's <FirstFitOnce> set the view exactly once when a non-null
+  // center first arrived. <Map initialViewState> only applies on mount —
+  // if the receiver location arrives late, mirror the prior behavior with
+  // an effect + `done` ref guard.
+  const firstFitDone = useRef(false);
+  useEffect(() => {
+    if (firstFitDone.current || !initialCenter) return;
+    const map = mapRef.current;
+    if (!map) return;
+    // initialCenter is [lat, lon] (Leaflet convention); MapLibre wants
+    // [lng, lat] for jumpTo.
+    map.jumpTo({ center: [initialCenter[1], initialCenter[0]], zoom: 8 });
+    firstFitDone.current = true;
+  }, [initialCenter]);
+
+  // ─── Heatmap source (GeoJSON Points with weight property) ──────────────
+  const heatmapGeoJSON = useMemo<GeoJSON.FeatureCollection>(() => {
+    if (!heatmapPoints || heatmapPoints.length === 0) {
+      return { type: 'FeatureCollection', features: [] };
+    }
+    return {
+      type: 'FeatureCollection',
+      features: heatmapPoints.map(([lat, lon, weight]) => ({
+        type: 'Feature',
+        properties: { weight },
+        geometry: { type: 'Point', coordinates: [lon, lat] },
+      })),
+    };
+  }, [heatmapPoints]);
+
+  // ─── Coverage polygon ──────────────────────────────────────────────────
+  // Backend returns [lat, lon][] (Leaflet); swap once at the boundary.
+  // GeoJSON Polygon's outer ring must be closed (first point == last).
+  const coverageGeoJSON = useMemo<GeoJSON.Feature | null>(() => {
+    if (!coveragePolygon || coveragePolygon.length < 3) return null;
+    const ring: [number, number][] = coveragePolygon.map(([lat, lon]) => [lon, lat]);
+    if (
+      ring.length > 0 &&
+      (ring[0][0] !== ring[ring.length - 1][0] || ring[0][1] !== ring[ring.length - 1][1])
+    ) {
+      ring.push([ring[0][0], ring[0][1]]);
+    }
+    return {
+      type: 'Feature',
+      properties: {},
+      geometry: { type: 'Polygon', coordinates: [ring] },
+    };
+  }, [coveragePolygon]);
+
+  // ─── Selected aircraft trail ───────────────────────────────────────────
+  // trail tuples are [lat, lon, ts]; convert + swap. Only the selected
+  // aircraft gets a trail — drawing trails for all 30 markers spikes the
+  // JS thread on every poll (audit-12 perf).
+  const trailGeoJSON = useMemo<GeoJSON.Feature | null>(() => {
+    if (selectedFlightId == null) return null;
+    const sel = aircraft.find((a) => a.flight_id === selectedFlightId);
+    if (!sel || sel.trail.length < 2) return null;
+    return {
+      type: 'Feature',
+      properties: {},
+      geometry: {
+        type: 'LineString',
+        coordinates: sel.trail.map(([lat, lon]) => [lon, lat]),
+      },
+    };
+  }, [aircraft, selectedFlightId]);
+
+  // ─── Receiver marker (GeoJSON Point) ───────────────────────────────────
+  const receiverGeoJSON = useMemo<GeoJSON.Feature | null>(() => {
+    if (receiverLat == null || receiverLon == null) return null;
+    return {
+      type: 'Feature',
+      properties: {},
+      geometry: { type: 'Point', coordinates: [receiverLon, receiverLat] },
+    };
+  }, [receiverLat, receiverLon]);
+
+  // ─── Receiver pulse animation (rAF tied to map lifecycle) ──────────────
+  // Mutates the `receiver-pulse` layer's circle-radius and
+  // circle-stroke-opacity on every frame. CLAUDE_DESIGN_BRIEF M4.3:
+  // 1.8s period, radius 12→36, stroke-opacity 0.6→0.
+  useEffect(() => {
+    if (receiverGeoJSON == null) return;
+    let raf = 0;
+    const PERIOD_MS = 1800;
+    const start = performance.now();
+    const tick = (now: number) => {
+      const map = mapRef.current?.getMap();
+      const t = ((now - start) % PERIOD_MS) / PERIOD_MS; // 0..1
+      const radius = 12 + (36 - 12) * t;
+      const opacity = 0.6 * (1 - t);
+      if (map && map.isStyleLoaded() && map.getLayer('receiver-pulse')) {
+        map.setPaintProperty('receiver-pulse', 'circle-radius', radius);
+        map.setPaintProperty('receiver-pulse', 'circle-stroke-opacity', opacity);
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [receiverGeoJSON]);
+
+  const initialView = useMemo(() => {
+    const fallback: [number, number] =
+      receiverLat != null && receiverLon != null ? [receiverLat, receiverLon] : [52, 21];
+    const [lat, lon] = initialCenter ?? fallback;
+    return { longitude: lon, latitude: lat, zoom: 8 };
+  }, [initialCenter, receiverLat, receiverLon]);
 
   return (
-    <MapContainer
-      center={initialCenter ?? fallback}
-      zoom={8}
-      preferCanvas={true}
-      className="h-full w-full"
-      data-testid="map-container"
-      // Leaflet's default zoom control sits at top-left and overlaps our
-      // Live/Rewind overlay. Reposition to the bottom-right corner — visible
-      // but out of the way of every other overlay.
-      zoomControl={false}
+    <Map
+      ref={mapRef}
+      mapStyle={DARK_STYLE}
+      initialViewState={initialView}
+      style={{ width: '100%', height: '100%' }}
+      attributionControl={false}
     >
+      <AttributionControl compact position="bottom-left" />
+      <NavigationControl position="bottom-right" showCompass={false} />
 
-      <ZoomControl position="bottomright" />
-      <TileLayer
-        attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
-        url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-        className="map-tiles-dark"
-      />
-
-      {heatmapPoints && heatmapPoints.length > 0 && <HeatmapLayer points={heatmapPoints} />}
-
-      {coveragePolygon && coveragePolygon.length >= 3 && (
-        <Polygon
-          positions={coveragePolygon as L.LatLngExpression[]}
-          pathOptions={{
-            color: '#a855f7',
-            weight: 2,
-            fillColor: '#a855f7',
-            fillOpacity: 0.08,
-          }}
-        />
+      {/* Heatmap below all other overlays so polygons + markers paint on top. */}
+      {heatmapGeoJSON.features.length > 0 && (
+        <Source id="heatmap" type="geojson" data={heatmapGeoJSON}>
+          {/* @ts-expect-error MapLibre paint expression types are looser than our tuples */}
+          <Layer id="heatmap-layer" type="heatmap" paint={HEATMAP_PAINT} />
+        </Source>
       )}
 
-      {receiverLat != null && receiverLon != null && (
-        <CircleMarker
-          center={[receiverLat, receiverLon]}
-          radius={6}
-          pathOptions={{
-            color: '#fff',
-            weight: 2,
-            fillColor: '#5b9af9',
-            fillOpacity: 1,
-          }}
-        />
+      {/* Coverage polygon — purple outline + 8% fill. */}
+      {coverageGeoJSON && (
+        <Source id="coverage" type="geojson" data={coverageGeoJSON}>
+          <Layer
+            id="coverage-fill"
+            type="fill"
+            paint={{ 'fill-color': COVERAGE_COLOR, 'fill-opacity': 0.08 }}
+          />
+          <Layer
+            id="coverage-line"
+            type="line"
+            paint={{ 'line-color': COVERAGE_COLOR, 'line-width': 2 }}
+          />
+        </Source>
       )}
 
+      {/* Selected aircraft trail. */}
+      {trailGeoJSON && (
+        <Source id="trail" type="geojson" data={trailGeoJSON}>
+          <Layer
+            id="trail-line"
+            type="line"
+            paint={{ 'line-color': TRAIL_COLOR, 'line-width': 2, 'line-opacity': 0.8 }}
+            layout={{ 'line-cap': 'round', 'line-join': 'round' }}
+          />
+        </Source>
+      )}
+
+      {/* Receiver: animated pulse + static ring + filled dot, in that order. */}
+      {receiverGeoJSON && (
+        <Source id="receiver" type="geojson" data={receiverGeoJSON}>
+          <Layer
+            id="receiver-pulse"
+            type="circle"
+            paint={{
+              'circle-radius': 12,
+              'circle-color': 'transparent',
+              'circle-stroke-width': 1.5,
+              'circle-stroke-color': RECEIVER_COLOR,
+              'circle-stroke-opacity': 0.6,
+            }}
+          />
+          <Layer
+            id="receiver-ring"
+            type="circle"
+            paint={{
+              'circle-radius': 12,
+              'circle-color': 'transparent',
+              'circle-stroke-width': 2,
+              'circle-stroke-color': RECEIVER_COLOR,
+            }}
+          />
+          <Layer
+            id="receiver-dot"
+            type="circle"
+            paint={{
+              'circle-radius': 3,
+              'circle-color': RECEIVER_COLOR,
+            }}
+          />
+        </Source>
+      )}
+
+      {/* Aircraft markers — one Marker per craft. The component re-uses
+          its DOM element across re-renders keyed by flight_id, so changing
+          position / rotation / selection just diffs props. */}
       {aircraft.map((ac) => {
         if (ac.lat == null || ac.lon == null) return null;
-        const icon = aircraftIcon(
-          ac.track,
-          ac.flags,
-          getIconType(ac.category, ac.aircraft_type),
-        );
+        const iconType = getIconType(ac.category, ac.aircraft_type);
         const isSelected = ac.flight_id === selectedFlightId;
         return (
-          <AircraftMarker
+          <Marker
             key={ac.flight_id}
-            ac={ac}
-            icon={icon}
-            isSelected={isSelected}
-            onSelect={onSelect}
-          />
+            longitude={ac.lon}
+            latitude={ac.lat}
+            // Hard-coerce to a number — TS says `track: number | null` but
+            // upstream JSON could drift. NaN → 0 keeps the marker upright
+            // and never reaches a CSS string interpolation (the API is
+            // now a typed number prop).
+            rotation={Number.isFinite(Number(ac.track)) ? Number(ac.track) : 0}
+            rotationAlignment="map"
+            anchor="center"
+            onClick={(e: MarkerEvent<MouseEvent>) => {
+              // Stop the click from also being a map click (which would
+              // deselect via the page-level handler if we ever add one).
+              e.originalEvent.stopPropagation();
+              onSelect(ac);
+            }}
+            style={{ cursor: 'pointer', zIndex: isSelected ? 10 : 'auto' }}
+          >
+            {aircraftIconSvg(ac.flags, iconType)}
+          </Marker>
         );
       })}
-
-      {/* Trail for selected aircraft only — drawing trails for all 300
-          markers spikes the JS thread on every poll. */}
-      {selectedFlightId != null &&
-        (() => {
-          const sel = aircraft.find((a) => a.flight_id === selectedFlightId);
-          if (!sel || sel.trail.length < 2) return null;
-          const pts: L.LatLngExpression[] = sel.trail.map(([lat, lon]) => [lat, lon]);
-          return (
-            <Polyline
-              positions={pts}
-              pathOptions={{ color: '#5b9af9', weight: 2, opacity: 0.8 }}
-            />
-          );
-        })()}
-
-      <FirstFitOnce center={initialCenter ?? fallback} />
-    </MapContainer>
-  );
-}
-
-function AircraftMarker({
-  ac,
-  icon,
-  isSelected,
-  onSelect,
-}: {
-  ac: Aircraft;
-  icon: L.DivIcon;
-  isSelected: boolean;
-  onSelect: (a: Aircraft) => void;
-}) {
-  // useMemo on event handler avoids creating fresh closures every render —
-  // Marker re-binds events when handlers change identity.
-  const handlers = useMemo(
-    () => ({
-      click: () => onSelect(ac),
-    }),
-    [ac, onSelect],
-  );
-  return (
-    <Marker
-      position={[ac.lat as number, ac.lon as number]}
-      icon={icon}
-      eventHandlers={handlers}
-      zIndexOffset={isSelected ? 1000 : 0}
-    />
+    </Map>
   );
 }

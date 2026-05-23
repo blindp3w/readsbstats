@@ -1,51 +1,50 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
+import { renderToStaticMarkup } from 'react-dom/server';
 
-// Stub Leaflet — we only inspect the `html` field the icon factory produces.
-vi.mock('leaflet', () => {
-  return {
-    default: {
-      divIcon: (opts: { html: string }) => opts,
-    },
-  };
-});
+import { aircraftIconSvg, getIconType } from '@/lib/aircraftIcon';
+import { FLAG_MILITARY } from '@/lib/flags';
 
-import { aircraftIcon, getIconType } from '@/lib/aircraftIcon';
+// audit-12 #176 — track rotation used to live in a CSS transform string
+// inside this module, which required numeric coercion to be safe. With the
+// MapLibre migration (v2.4), rotation is handled by Marker's typed
+// `rotation` prop and no longer touches this module. The string-template
+// surface is gone by construction. What stays load-bearing here is the
+// military fill/stroke discrimination and getIconType()'s shape selection.
 
-describe('aircraftIcon — track coercion (audit-12 #176)', () => {
-  it('numeric track renders as degrees in transform attribute', () => {
-    const icon = aircraftIcon(45, 0, 'jet') as unknown as { html: string };
-    expect(icon.html).toContain('rotate(45deg)');
+describe('aircraftIconSvg', () => {
+  it('renders a non-military aircraft with the default white fill', () => {
+    const html = renderToStaticMarkup(aircraftIconSvg(0, 'jet'));
+    expect(html).toContain('fill="#ffffff"');
+    expect(html).toContain('stroke="#1d4ed8"');
+    expect(html).not.toContain('#ef4444');
   });
 
-  it('null track defaults to 0deg', () => {
-    const icon = aircraftIcon(null, 0, 'jet') as unknown as { html: string };
-    expect(icon.html).toContain('rotate(0deg)');
+  it('renders a military aircraft with the red fill', () => {
+    const html = renderToStaticMarkup(aircraftIconSvg(FLAG_MILITARY, 'jet'));
+    expect(html).toContain('fill="#ef4444"');
+    expect(html).toContain('stroke="#7f1d1d"');
   });
 
-  it('undefined track defaults to 0deg', () => {
-    const icon = aircraftIcon(undefined, 0, 'jet') as unknown as { html: string };
-    expect(icon.html).toContain('rotate(0deg)');
+  it('preserves the military fill when other flags are also set', () => {
+    const html = renderToStaticMarkup(aircraftIconSvg(FLAG_MILITARY | 0x4, 'heli'));
+    expect(html).toContain('fill="#ef4444"');
   });
 
-  it('coerces a string-typed track to a numeric degrees value', () => {
-    // Hostile / drift scenario: API drift sends a string for `track`.
-    // The previous code passed it straight into the style attribute, so
-    // a value like "0;}<script>alert(1)</script>" would break out of the
-    // CSS context. Today: hard-coerced to a number, with NaN → 0.
-    const icon = aircraftIcon('0;}<script>x</script>' as unknown as number, 0, 'jet') as unknown as { html: string };
-    expect(icon.html).toContain('rotate(0deg)');
-    expect(icon.html).not.toContain('<script');
+  it('handles null / undefined flags as non-military', () => {
+    expect(renderToStaticMarkup(aircraftIconSvg(null, 'jet'))).toContain('fill="#ffffff"');
+    expect(renderToStaticMarkup(aircraftIconSvg(undefined, 'jet'))).toContain('fill="#ffffff"');
   });
 
-  it('coerces NaN track to 0deg', () => {
-    const icon = aircraftIcon(Number.NaN, 0, 'jet') as unknown as { html: string };
-    expect(icon.html).toContain('rotate(0deg)');
+  it('picks the viewBox by iconType', () => {
+    expect(renderToStaticMarkup(aircraftIconSvg(0, 'jet'))).toContain('viewBox="-1 -2 34 34"');
+    expect(renderToStaticMarkup(aircraftIconSvg(0, 'heli'))).toContain('viewBox="-13 -13 90 90"');
+    expect(renderToStaticMarkup(aircraftIconSvg(0, 'glider'))).toContain('viewBox="-5.8 -10 76 76"');
   });
 
-  it('rounds fractional degrees to integers', () => {
-    const icon = aircraftIcon(123.456, 0, 'jet') as unknown as { html: string };
-    expect(icon.html).toContain('rotate(123deg)');
-    expect(icon.html).not.toContain('123.456');
+  it('does not embed any rotate() string — rotation is the Marker prop now', () => {
+    const html = renderToStaticMarkup(aircraftIconSvg(0, 'jet'));
+    expect(html).not.toMatch(/rotate\(/);
+    expect(html).not.toMatch(/transform/);
   });
 });
 

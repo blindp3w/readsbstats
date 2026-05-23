@@ -29,7 +29,6 @@
     "@types/leaflet.heat": "^0.2.5",
     "echarts": "^6.1.0",
     "leaflet": "^1.9.4",
-    "leaflet.heat": "^0.2.0",
     "maplibre-gl": "^5.24.0",
     "react": "^19.1.0",
     "react-day-picker": "^10.0.1",
