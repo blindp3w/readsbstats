@@ -13,6 +13,7 @@ import { Input } from '@/components/ui/Input';
 import { Label } from '@/components/ui/Label';
 import { Button } from '@/components/ui/Button';
 import { Skeleton } from '@/components/ui/Skeleton';
+import { fmtTs } from '@/lib/format';
 import { Alert } from '@/components/ui/Alert';
 import { Badge } from '@/components/ui/Badge';
 import {
@@ -53,7 +54,10 @@ const VALUE_PLACEHOLDER: Record<MatchType, string> = {
 
 function fmtDate(epoch: number | undefined): string {
   if (!epoch) return '';
-  return new Date(epoch * 1000).toLocaleString();
+  // Use the project's fmtTs so the 12h/24h preference (Settings → time_format)
+  // is respected. The bare toLocaleString() picks the OS locale, which gives
+  // 12h on macOS regardless of the user's app setting.
+  return fmtTs(epoch);
 }
 
 export default function WatchlistPage() {
@@ -173,10 +177,7 @@ export default function WatchlistPage() {
           >
             <div className="w-[160px] shrink-0">
               <Label htmlFor="match-type">Match</Label>
-              <Select
-                value={matchType}
-                onValueChange={(v) => setMatchType(v as MatchType)}
-              >
+              <Select value={matchType} onValueChange={(v) => setMatchType(v as MatchType)}>
                 <SelectTrigger
                   id="match-type"
                   data-testid="watchlist-match-type"
@@ -249,7 +250,10 @@ export default function WatchlistPage() {
           )}
           {list.isLoading && <Skeleton className="h-24 w-full" />}
           {list.data && list.data.entries.length === 0 && (
-            <p className="py-6 text-center text-sm text-[var(--color-text-dim)]" data-testid="watchlist-empty">
+            <p
+              className="py-6 text-center text-sm text-[var(--color-text-dim)]"
+              data-testid="watchlist-empty"
+            >
               No entries yet. Use the form above to add one.
             </p>
           )}
@@ -277,7 +281,11 @@ export default function WatchlistPage() {
                       {fmtDate(e.created_at)}
                     </TD>
                     <TD>
-                      {e.airborne ? <Badge variant="success">airborne</Badge> : <Badge variant="muted">—</Badge>}
+                      {e.airborne ? (
+                        <Badge variant="success">airborne</Badge>
+                      ) : (
+                        <Badge variant="muted">—</Badge>
+                      )}
                     </TD>
                     <TD className="text-right">
                       <Button
