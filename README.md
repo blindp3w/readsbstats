@@ -16,7 +16,7 @@ readsb and tar1090 give you a great live view — readsbstats adds the other hal
 
 | | |
 |---|---|
-| ![Live map](docs/screenshots/v2/map_v2_1.png) | ![Aircraft gallery](docs/screenshots/v2/gallery_v2_1.png) |
+| ![Live map](docs/screenshots/v2/map_v2_2.png) | ![Aircraft gallery](docs/screenshots/v2/gallery_v2_1.png) |
 | Live map — full-screen map with position heatmap, coverage overlay, and 24 h rewind slider | Gallery — military, interesting, and anonymous (non-ICAO hex) aircraft with photos |
 | ![Statistics](docs/screenshots/v2/statistics_v2_1.png) | ![Flight details](docs/screenshots/v2/flight_details_v2_1.png) |
 | Statistics — summary tiles, hourly activity chart, DOW×hour heatmap, top-N datasets | Flight detail — photo, route, altitude/speed chart, full position log |

@@ -65,7 +65,21 @@ const DARK_STYLE = {
   },
   layers: [
     { id: 'bg', type: 'background' as const, paint: { 'background-color': '#0b0b0d' } },
-    { id: 'carto-dark', type: 'raster' as const, source: 'carto-dark' },
+    // Lift the blacks on Dark Matter — its default range bottoms out at near-
+    // pitch-black which is hard to read at any zoom. raster-brightness-min
+    // pushes the floor up to a mid-charcoal; raster-contrast pulls back a
+    // touch so the lift doesn't wash the basemap out. Data layers paint on
+    // top of the raster layer with their own paint properties and are
+    // unaffected.
+    {
+      id: 'carto-dark',
+      type: 'raster' as const,
+      source: 'carto-dark',
+      paint: {
+        'raster-brightness-min': 0.18,
+        'raster-contrast': -0.1,
+      },
+    },
   ],
 };
 
