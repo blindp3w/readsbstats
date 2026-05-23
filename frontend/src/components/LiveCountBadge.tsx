@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { apiJson } from '@/lib/api';
 import { cn } from '@/lib/cn';
 import { SimpleTooltip } from '@/components/ui/Tooltip';
+import { useFormat } from '@/hooks/useFormat';
 
 // V1 parity: polls /api/live every 15 s and shows the active-aircraft count
 // in the nav. A green dot means the receiver is actively tracking aircraft;
@@ -17,6 +18,7 @@ interface LiveResponse {
 }
 
 export function LiveCountBadge() {
+  const { clockFormat } = useFormat();
   const q = useQuery<LiveResponse>({
     queryKey: ['live-nav'],
     queryFn: () => apiJson<LiveResponse>('live'),
@@ -29,10 +31,15 @@ export function LiveCountBadge() {
   const count = q.data?.count;
   const ts = q.data?.now;
   const isActive = count != null && count > 0;
+  // Respect the user's 12h/24h preference (Settings → time_format). The
+  // default toLocaleTimeString() picks the OS locale, which gives 12h on
+  // macOS even when the project setting is 24h.
   const title = q.isError
     ? `Live poll failed: ${(q.error as Error).message}`
     : ts
-      ? `Active aircraft — updated ${new Date(ts * 1000).toLocaleTimeString()}`
+      ? `Active aircraft — updated ${new Date(ts * 1000).toLocaleTimeString(undefined, {
+          hour12: clockFormat === '12h',
+        })}`
       : 'Active aircraft';
 
   return (
