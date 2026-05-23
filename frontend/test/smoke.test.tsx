@@ -76,6 +76,17 @@ const FETCH_STUBS: Record<string, unknown> = {
   },
   '/stats/api/feeders': [],
   '/stats/api/watchlist': { entries: [] },
+  // Map endpoints — LiveMap itself is globally mocked (see test/setup.ts),
+  // but the surrounding page still issues these fetches.
+  '/stats/api/map/snapshot': {
+    at: 0,
+    is_live: true,
+    receiver_lat: null,
+    receiver_lon: null,
+    aircraft: [],
+  },
+  '/stats/api/map/heatmap': { points: [], window: '24h', count: 0 },
+  '/stats/api/map/coverage': { polygon: [], max_range_nm: 0, window: '24h' },
   // Audit-13 A13-100: Gallery.tsx reads `data.aircraft`, not `data.items`.
   // The old `{ total, items }` shape silently fed `undefined.length` into
   // the page, which ErrorBoundary swallowed — masking the page-level break.
@@ -208,7 +219,101 @@ const PAGES: PageCase[] = [
   { name: 'Metrics', route: '/metrics', importPath: '@/pages/Metrics' },
   { name: 'Aircraft', route: '/aircraft/aabbcc', importPath: '@/pages/Aircraft', routeTemplate: '/aircraft/:icao' },
   { name: 'Flight', route: '/flight/1', importPath: '@/pages/Flight', routeTemplate: '/flight/:id' },
+  // Map: LiveMap is mocked in test/setup.ts so the page is now safe to smoke.
+  { name: 'Map', route: '/map', importPath: '@/pages/Map' },
 ];
+
+// ---------------------------------------------------------------------------
+// Map page — milestone-4 redesign assertions
+// ---------------------------------------------------------------------------
+
+describe('Map page — command bar', () => {
+  // The bar renders desktop + mobile variants in parallel (the unused one is
+  // hidden via Tailwind's responsive classes at runtime; in jsdom there is
+  // no compiled CSS so both are in the DOM). All assertions therefore use
+  // queryAllByTestId and inspect the first match.
+  it('renders all three mode toggles', async () => {
+    const { default: MapPage } = await import('@/pages/Map');
+    const orig = console.error;
+    console.error = vi.fn();
+    try {
+      const result = render(
+        wrap(
+          <Routes>
+            <Route path="/map" element={<MapPage />} />
+          </Routes>,
+          '/map',
+        ),
+      );
+      await waitFor(() => {
+        expect(result.queryAllByTestId('map-mode-live').length).toBeGreaterThan(0);
+        expect(result.queryAllByTestId('map-mode-rewind').length).toBeGreaterThan(0);
+        expect(result.queryAllByTestId('map-mode-hist').length).toBeGreaterThan(0);
+      });
+    } finally {
+      console.error = orig;
+    }
+  });
+
+  it('reveals scrubber after switching to Rewind', async () => {
+    const { default: MapPage } = await import('@/pages/Map');
+    const { fireEvent } = await import('@testing-library/react');
+    const orig = console.error;
+    console.error = vi.fn();
+    try {
+      const result = render(
+        wrap(
+          <Routes>
+            <Route path="/map" element={<MapPage />} />
+          </Routes>,
+          '/map',
+        ),
+      );
+      const rewindBtn = await waitFor(() => {
+        const els = result.queryAllByTestId('map-mode-rewind');
+        if (els.length === 0) throw new Error('mode toggle not ready');
+        return els[0];
+      });
+      // Scrubber is gone in Live mode.
+      expect(result.queryAllByTestId('map-rewind-slider').length).toBe(0);
+      fireEvent.click(rewindBtn);
+      await waitFor(() => {
+        expect(result.queryAllByTestId('map-rewind-slider').length).toBeGreaterThan(0);
+      });
+    } finally {
+      console.error = orig;
+    }
+  });
+
+  it('reveals HIST date picker chip when switching to HIST', async () => {
+    const { default: MapPage } = await import('@/pages/Map');
+    const { fireEvent } = await import('@testing-library/react');
+    const orig = console.error;
+    console.error = vi.fn();
+    try {
+      const result = render(
+        wrap(
+          <Routes>
+            <Route path="/map" element={<MapPage />} />
+          </Routes>,
+          '/map',
+        ),
+      );
+      const histBtn = await waitFor(() => {
+        const els = result.queryAllByTestId('map-mode-hist');
+        if (els.length === 0) throw new Error('mode toggle not ready');
+        return els[0];
+      });
+      expect(result.queryAllByTestId('map-hist-date-picker').length).toBe(0);
+      fireEvent.click(histBtn);
+      await waitFor(() => {
+        expect(result.queryAllByTestId('map-hist-date-picker').length).toBeGreaterThan(0);
+      });
+    } finally {
+      console.error = orig;
+    }
+  });
+});
 
 describe('Page smoke — renders without throwing', () => {
   for (const page of PAGES) {

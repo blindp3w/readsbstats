@@ -1,14 +1,11 @@
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { PlayIcon, PauseIcon, ArrowRightIcon } from '@radix-ui/react-icons';
+import { ArrowRightIcon } from '@radix-ui/react-icons';
 import { apiJson } from '@/lib/api';
-import { SimpleTooltip } from '@/components/ui/Tooltip';
 import { Button } from '@/components/ui/Button';
 import { Alert } from '@/components/ui/Alert';
-import { Badge } from '@/components/ui/Badge';
 import { Skeleton } from '@/components/ui/Skeleton';
-import { ToggleGroupRoot, ToggleGroupItem } from '@/components/ui/ToggleGroup';
 import {
   Sheet,
   SheetClose,
@@ -21,6 +18,9 @@ import { Table, THead, TBody, TR, TH, TD } from '@/components/ui/Table';
 import { FlagBadge, SourceBadge } from '@/components/FlagBadge';
 import { useFormat } from '@/hooks/useFormat';
 import { cn } from '@/lib/cn';
+import { MapCommandBar, type MapWindow } from '@/components/map/MapCommandBar';
+import { type Mode } from '@/components/map/MapModeControl';
+import { type PlaybackSpeed } from '@/components/map/MapRewindControls';
 
 // MapLibre is lazy-loaded — see /v2/flight pattern.
 const LiveMap = lazy(() => import('@/components/LiveMap'));
@@ -67,20 +67,11 @@ interface CoverageResp {
   window: string;
 }
 
-type Mode = 'live' | 'rewind';
-type MapWindow = '24h' | '7d' | '30d' | 'all';
-type PlaybackSpeed = 1 | 2 | 5 | 10;
-
 const PLAYBACK_TICK_MS = 1000; // 1 s real time per tick
 
-const WINDOW_OPTIONS: { value: MapWindow; label: string }[] = [
-  { value: '24h', label: '24h' },
-  { value: '7d', label: '7d' },
-  { value: '30d', label: '30d' },
-  { value: 'all', label: 'All' },
-];
-
-const PLAYBACK_SPEEDS: PlaybackSpeed[] = [1, 2, 5, 10];
+// HIST default time-of-day when the user picks a date without touching the
+// time picker. Noon catches the busy mid-day window for most receivers.
+const HIST_DEFAULT_HOUR = 12;
 
 export default function MapPage() {
   // ── settings (map_history_hours) ──────────────────────────────────────
@@ -95,6 +86,7 @@ export default function MapPage() {
   // ── core state ─────────────────────────────────────────────────────────
   const [mode, setMode] = useState<Mode>('live');
   const [rewindOffsetSec, setRewindOffsetSec] = useState(0);
+  const [histAt, setHistAt] = useState<number | null>(null);
   const [selectedFlightId, setSelectedFlightId] = useState<number | null>(null);
 
   // ── overlays ──────────────────────────────────────────────────────────
@@ -114,8 +106,13 @@ export default function MapPage() {
 
   const at = useMemo(() => {
     if (mode === 'live') return null;
+    if (mode === 'hist') return histAt;
     return Math.floor(Date.now() / 1000) - rewindOffsetSec;
-  }, [mode, rewindOffsetSec]);
+  }, [mode, rewindOffsetSec, histAt]);
+
+  // In HIST mode with no date picked, don't fire a snapshot fetch — `at == null`
+  // would otherwise be interpreted as Live by the backend.
+  const snapshotEnabled = mode !== 'hist' || histAt != null;
 
   const snapshot = useQuery<SnapshotResp>({
     queryKey: ['map-snapshot', at ?? 'live'],
@@ -128,6 +125,7 @@ export default function MapPage() {
     refetchIntervalInBackground: false,
     placeholderData: (prev) => prev,
     staleTime: 5_000,
+    enabled: snapshotEnabled,
   });
 
   // Overlay data — only fetched when toggled on. Window changes invalidate
@@ -146,43 +144,37 @@ export default function MapPage() {
     staleTime: 60_000,
   });
 
-  // ── playback tick — advance time forward by `speed × tick` per real sec ─
+  // ── playback tick — advance scrub forward per real second ──────────────
   useEffect(() => {
-    if (!playing || mode !== 'rewind') return;
+    if (!playing) return;
+    if (mode === 'live') return;
     const id = window.setInterval(() => {
-      setRewindOffsetSec((v) => {
-        const next = Math.max(0, v - speed * (PLAYBACK_TICK_MS / 1000));
-        if (next === 0) {
-          // Reached now — switch back to live and stop the timer.
-          setPlaying(false);
-          setMode('live');
-        }
-        return next;
-      });
+      if (mode === 'rewind') {
+        setRewindOffsetSec((v) => {
+          const next = Math.max(0, v - speed * (PLAYBACK_TICK_MS / 1000));
+          if (next === 0) {
+            // Reached now — switch back to live and stop the timer.
+            setPlaying(false);
+            setMode('live');
+          }
+          return next;
+        });
+      } else {
+        // HIST: advance histAt forward toward now.
+        setHistAt((v) => {
+          if (v == null) return v;
+          const nowSec = Math.floor(Date.now() / 1000);
+          const next = v + speed * (PLAYBACK_TICK_MS / 1000);
+          if (next >= nowSec) {
+            setPlaying(false);
+            return nowSec;
+          }
+          return next;
+        });
+      }
     }, PLAYBACK_TICK_MS);
     return () => window.clearInterval(id);
   }, [playing, mode, speed]);
-
-  // <input type="range"> + React + React-Compiler quirk: once the input is
-  // "dirty" from user interaction, React's controlled-input commit no longer
-  // reliably touches the underlying DOM `.value` property, only the `value`
-  // attribute. The thumb position (and Playwright's `input_value()`) reads
-  // the property, so during playback the slider visually freezes even though
-  // `rewindOffsetSec` advances correctly in state. The fix uses the prototype
-  // setter directly (sidesteps React's tracked setter) to push the value onto
-  // the DOM node after every state change.
-  const sliderRef = useRef<HTMLInputElement | null>(null);
-  useEffect(() => {
-    const el = sliderRef.current;
-    if (el && el.value !== String(rewindOffsetSec)) {
-      const setter = Object.getOwnPropertyDescriptor(
-        window.HTMLInputElement.prototype,
-        'value',
-      )?.set;
-      if (setter) setter.call(el, String(rewindOffsetSec));
-      else el.value = String(rewindOffsetSec);
-    }
-  }, [rewindOffsetSec]);
 
   const aircraft = snapshot.data?.aircraft ?? [];
 
@@ -194,10 +186,117 @@ export default function MapPage() {
 
   const selectedAircraft = aircraft.find((a) => a.flight_id === selectedFlightId) ?? null;
 
+  // ── mode-transition side effects ──────────────────────────────────────
+  const handleModeChange = (next: Mode) => {
+    if (next === mode) return;
+    const nowSec = Math.floor(Date.now() / 1000);
+
+    if (next === 'live') {
+      setRewindOffsetSec(0);
+      setHistAt(null);
+      setPlaying(false);
+      setMode('live');
+      return;
+    }
+
+    if (next === 'rewind') {
+      // If coming from HIST with a chosen time, preserve it as an offset.
+      if (mode === 'hist' && histAt != null) {
+        setRewindOffsetSec(Math.max(0, nowSec - histAt));
+        setHistAt(null);
+      }
+      setPlaying(false);
+      setMode('rewind');
+      return;
+    }
+
+    // next === 'hist'
+    if (mode === 'rewind' && rewindOffsetSec > 0) {
+      setHistAt(nowSec - rewindOffsetSec);
+      setRewindOffsetSec(0);
+    } else {
+      // Default to 1h ago so the map renders immediately on entry.
+      setHistAt(nowSec - 3600);
+    }
+    setPlaying(false);
+    setMode('hist');
+  };
+
+  // ── HIST date/time derivation ─────────────────────────────────────────
+  const histDateISO = histAt != null ? unixToISO(histAt) : '';
+  const histTimeHHMM = histAt != null ? unixToHHMM(histAt) : '';
+
+  const onHistDateChange = (nextISO: string) => {
+    const time = histAt != null ? unixToHHMM(histAt) : `${pad2(HIST_DEFAULT_HOUR)}:00`;
+    const composed = composeUnix(nextISO, time);
+    if (composed != null) setHistAt(clampHist(composed));
+  };
+  const onHistTimeChange = (nextHHMM: string) => {
+    const date = histAt != null ? unixToISO(histAt) : unixToISO(Math.floor(Date.now() / 1000));
+    const composed = composeUnix(date, nextHHMM);
+    if (composed != null) setHistAt(clampHist(composed));
+  };
+
+  const nowSecForBounds = Math.floor(Date.now() / 1000);
+  function clampHist(v: number): number {
+    return Math.max(nowSecForBounds - MAX_REWIND_SEC, Math.min(nowSecForBounds, v));
+  }
+
+  // ── Scrubber bounds + label per mode ──────────────────────────────────
+  const { scrubMin, scrubMax, scrubValue, rewindLabel } = useMemo(() => {
+    if (mode === 'hist' && histAt != null) {
+      const dayStart = startOfDayLocal(histAt);
+      const dayEnd = dayStart + 86400 - 1;
+      const min = Math.max(dayStart, nowSecForBounds - MAX_REWIND_SEC);
+      const max = Math.min(dayEnd, nowSecForBounds);
+      return {
+        scrubMin: min,
+        scrubMax: max,
+        scrubValue: Math.max(min, Math.min(max, histAt)),
+        rewindLabel: fmtTs(histAt),
+      };
+    }
+    // rewind (or hist with no date — won't show Row 2 but compute anyway)
+    return {
+      scrubMin: 0,
+      scrubMax: MAX_REWIND_SEC,
+      scrubValue: rewindOffsetSec,
+      rewindLabel: describeRewind(rewindOffsetSec),
+    };
+  }, [mode, histAt, rewindOffsetSec, MAX_REWIND_SEC, nowSecForBounds, fmtTs]);
+
+  // ── Bar callbacks ─────────────────────────────────────────────────────
+  const onScrubChange = (next: number) => {
+    if (mode === 'rewind') {
+      setRewindOffsetSec(next);
+    } else if (mode === 'hist') {
+      setHistAt(clampHist(next));
+    }
+    setPlaying(false);
+  };
+  const onSeek = (deltaSec: number) => {
+    if (mode === 'rewind') {
+      // delta>0 = go back; delta<0 = advance
+      setRewindOffsetSec((v) => Math.max(0, Math.min(MAX_REWIND_SEC, v + deltaSec)));
+    } else if (mode === 'hist') {
+      setHistAt((v) => (v == null ? v : clampHist(v - deltaSec)));
+    }
+  };
+  const onJumpNow = () => {
+    setRewindOffsetSec(0);
+    setHistAt(null);
+    setMode('live');
+    setPlaying(false);
+  };
+
+  // ── --map-bar-height for MapLibre control offset ──────────────────────
+  const [barHeight, setBarHeight] = useState(0);
+
   return (
     <div
-      className="relative h-[calc(100dvh-57px)] w-full overflow-hidden"
+      className="map-with-bar relative h-[calc(100dvh-57px)] w-full overflow-hidden"
       data-testid="page-map"
+      style={{ ['--map-bar-height' as string]: `${barHeight}px` }}
     >
       {/* Map fills viewport below nav */}
       <div className="h-full w-full" data-testid="map-container">
@@ -215,241 +314,63 @@ export default function MapPage() {
         </Suspense>
       </div>
 
-      {/* Top overlay strip */}
-      <div
-        className="pointer-events-none absolute left-3 right-3 top-3 z-[400] flex flex-wrap items-start justify-between gap-2"
-        data-testid="map-controls-overlay"
-      >
-        <div className="pointer-events-auto flex flex-col gap-2">
-          {/* Row 1: mode toggle + count */}
-          <div className="flex flex-wrap items-center gap-2 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-surface)]/95 px-3 py-2 shadow-[var(--shadow-md)] backdrop-blur">
-            <ToggleGroupRoot
-              type="single"
-              value={mode}
-              onValueChange={(v) => {
-                if (!v) return;
-                setMode(v as Mode);
-                if (v === 'live') {
-                  setRewindOffsetSec(0);
-                  setPlaying(false);
-                }
-              }}
-              aria-label="Map mode"
-            >
-              <ToggleGroupItem value="live" data-testid="map-mode-live">
-                Live
-              </ToggleGroupItem>
-              <ToggleGroupItem value="rewind" data-testid="map-mode-rewind">
-                Rewind
-              </ToggleGroupItem>
-            </ToggleGroupRoot>
-            <Badge variant={mode === 'live' ? 'success' : 'warn'} data-testid="map-mode-badge">
-              {mode === 'live' ? 'LIVE' : 'HIST'}
-            </Badge>
-            <span className="tabnum text-xs text-[var(--color-text-dim)]">
-              {aircraft.length} aircraft
-            </span>
-          </div>
-
-          {/* Row 2: layer toggles + sidebar toggle */}
-          <div
-            className="flex flex-wrap items-center gap-2 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-surface)]/95 px-3 py-1.5 shadow-[var(--shadow-md)] backdrop-blur"
-            data-testid="map-layers-overlay"
-          >
-            <LayerToggle
-              testid="map-toggle-heatmap"
-              label="Heatmap"
-              active={showHeatmap}
-              loading={showHeatmap && heatmapQ.isLoading}
-              onClick={() => setShowHeatmap((v) => !v)}
-            />
-            <LayerToggle
-              testid="map-toggle-coverage"
-              label="Coverage"
-              active={showCoverage}
-              loading={showCoverage && coverageQ.isLoading}
-              onClick={() => setShowCoverage((v) => !v)}
-            />
-            <LayerToggle
-              testid="map-toggle-list"
-              label="List"
-              active={sidebarOpen}
-              onClick={() => setSidebarOpen((v) => !v)}
-            />
-            {(showHeatmap || showCoverage) && (
-              <div className="flex items-center gap-1 border-l border-[var(--color-border-default)] pl-2">
-                <ToggleGroupRoot
-                  type="single"
-                  value={mapWindow}
-                  onValueChange={(v) => v && setMapWindow(v as MapWindow)}
-                  aria-label="Window"
-                  data-testid="map-window-selector"
-                >
-                  {WINDOW_OPTIONS.map((w) => (
-                    <ToggleGroupItem key={w.value} value={w.value} data-testid={`map-window-${w.value}`}>
-                      {w.label}
-                    </ToggleGroupItem>
-                  ))}
-                </ToggleGroupRoot>
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* Top-right snapshot timestamp */}
-        <div className="pointer-events-auto">
-          <div
-            className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-surface)]/95 px-3 py-2 text-xs tabnum text-[var(--color-text)] shadow-[var(--shadow-md)] backdrop-blur"
-            data-testid="map-snapshot-ts"
-          >
-            <span className="mr-1 text-[var(--color-text-dim)] uppercase tracking-wide">
-              Snapshot
-            </span>
-            {snapshot.data ? fmtTs(snapshot.data.at) : '—'}
-            {/*
-              Audit-12 #158 — `placeholderData: (prev) => prev` keeps the
-              previous moment's data visible across rewind fetches so the
-              map doesn't flicker. On a failed fetch this means we're
-              showing stale aircraft positions; surface that explicitly so
-              the user knows the displayed time is not the requested time.
-            */}
-            {snapshot.isError && snapshot.data && (
-              <SimpleTooltip content="The requested moment failed to load — showing the previous snapshot">
-                <span
-                  tabIndex={0}
-                  className="ml-2 rounded bg-[var(--color-warn-bg,_#7c2d12)]/40 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-[var(--color-warn-fg,_#fed7aa)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)]"
-                  data-testid="map-snapshot-stale"
-                >
-                  stale
-                </span>
-              </SimpleTooltip>
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* Rewind pill with playback controls */}
-      {mode === 'rewind' && (
+      {/* Placeholder when HIST mode has no date picked yet */}
+      {mode === 'hist' && histAt == null && (
         <div
-          className="pointer-events-none absolute inset-x-0 bottom-4 z-[400] flex justify-center px-3"
-          data-testid="map-rewind-wrap"
+          className="pointer-events-none absolute inset-x-0 top-1/3 z-[10] flex justify-center px-3"
+          data-testid="map-hist-pickdate-hint"
         >
-          <div
-            className="pointer-events-auto flex w-full max-w-2xl flex-wrap items-center gap-2 rounded-full border border-[var(--color-border-default)] bg-[var(--color-surface)]/95 py-2 pl-4 pr-2 shadow-[var(--shadow-md)] backdrop-blur"
-            data-testid="map-rewind-controls"
-          >
-            <span className="tabnum min-w-[5ch] whitespace-nowrap text-xs text-[var(--color-text-dim)]">
-              {describeRewind(rewindOffsetSec)}
-            </span>
-            <button
-              type="button"
-              onClick={() => setPlaying((v) => !v)}
-              aria-label={playing ? 'Pause playback' : 'Play playback'}
-              data-testid="map-play-toggle"
-              className={cn(
-                'flex h-9 w-9 items-center justify-center rounded-full transition-colors',
-                playing
-                  ? 'bg-[var(--color-accent)] text-white hover:bg-[var(--color-accent-hover)]'
-                  : 'border border-[var(--color-border-default)] hover:bg-[var(--color-surface-2)]',
-              )}
-            >
-              {playing ? <PauseIcon /> : <PlayIcon />}
-            </button>
-            <input
-              ref={sliderRef}
-              type="range"
-              min={0}
-              max={MAX_REWIND_SEC}
-              // step=1 (not 60). The playback tick decrements by
-              // `speed × tick-seconds`, which can produce non-60-multiple
-              // values; with step=60 the browser silently snaps them back
-              // to the nearest 60-multiple and the slider thumb stops
-              // moving until the next "valid" tick. 1-second precision is
-              // fine — users dragging the slider don't need 60s detents
-              // over a 24-hour range.
-              step={1}
-              value={rewindOffsetSec}
-              onChange={(e) => {
-                setRewindOffsetSec(Number(e.target.value));
-                setPlaying(false);
-              }}
-              className="map-rewind-range flex-1 min-w-[120px]"
-              aria-label="Rewind offset in seconds"
-              data-testid="map-rewind-slider"
-            />
-            <div className="flex items-center gap-1">
-              <JumpButton
-                label="−1h"
-                testid="map-jump-back-1h"
-                onClick={() =>
-                  setRewindOffsetSec((v) => Math.min(MAX_REWIND_SEC, v + 3600))
-                }
-              />
-              <JumpButton
-                label="−10m"
-                testid="map-jump-back-10m"
-                onClick={() =>
-                  setRewindOffsetSec((v) => Math.min(MAX_REWIND_SEC, v + 600))
-                }
-              />
-              <JumpButton
-                label="+10m"
-                testid="map-jump-fwd-10m"
-                onClick={() => setRewindOffsetSec((v) => Math.max(0, v - 600))}
-              />
-              <JumpButton
-                label="+1h"
-                testid="map-jump-fwd-1h"
-                onClick={() => setRewindOffsetSec((v) => Math.max(0, v - 3600))}
-              />
-              <button
-                type="button"
-                onClick={() => {
-                  setRewindOffsetSec(0);
-                  setMode('live');
-                  setPlaying(false);
-                }}
-                className="rounded-full bg-[var(--color-accent)] px-3 py-1 text-xs text-white hover:bg-[var(--color-accent-hover)]"
-                data-testid="map-jump-now"
-              >
-                Now
-              </button>
-            </div>
-            <div
-              className="flex items-center gap-0.5 rounded-full border border-[var(--color-border-default)] p-0.5"
-              role="group"
-              aria-label="Playback speed"
-              data-testid="map-speed-group"
-            >
-              {PLAYBACK_SPEEDS.map((s) => (
-                <button
-                  key={s}
-                  type="button"
-                  onClick={() => setSpeed(s)}
-                  aria-pressed={speed === s}
-                  data-testid={`map-speed-${s}x`}
-                  className={cn(
-                    'tabnum rounded-full px-2 py-0.5 text-xs',
-                    speed === s
-                      ? 'bg-[var(--color-accent)] text-white'
-                      : 'text-[var(--color-text-dim)] hover:bg-[var(--color-surface-2)] hover:text-[var(--color-text)]',
-                  )}
-                >
-                  {s}×
-                </button>
-              ))}
-            </div>
+          <div className="pointer-events-auto rounded-lg border border-[var(--color-border-default)] bg-[var(--color-surface)]/95 px-4 py-2 text-sm text-[var(--color-text-dim)] shadow-[var(--shadow-md)] backdrop-blur">
+            Pick a date and time to view history.
           </div>
         </div>
       )}
 
       {snapshot.isError && (
-        <div className="pointer-events-auto absolute inset-x-3 top-32 z-[400]">
+        <div className="pointer-events-auto absolute inset-x-3 top-3 z-[10]">
           <Alert variant="error">
             Failed to load snapshot: {(snapshot.error as Error).message}
           </Alert>
         </div>
       )}
+
+      {/* Bottom command bar */}
+      <MapCommandBar
+        mode={mode}
+        onModeChange={handleModeChange}
+        mapWindow={mapWindow}
+        onMapWindowChange={setMapWindow}
+        showHeatmap={showHeatmap}
+        onToggleHeatmap={() => setShowHeatmap((v) => !v)}
+        heatmapLoading={showHeatmap && heatmapQ.isLoading}
+        showCoverage={showCoverage}
+        onToggleCoverage={() => setShowCoverage((v) => !v)}
+        coverageLoading={showCoverage && coverageQ.isLoading}
+        sidebarOpen={sidebarOpen}
+        onToggleSidebar={() => setSidebarOpen((v) => !v)}
+        snapshotAt={snapshot.data?.at ?? null}
+        snapshotIsError={snapshot.isError}
+        snapshotIsStale={snapshot.isError && snapshot.data != null}
+        aircraftCount={aircraft.length}
+        scrubMin={scrubMin}
+        scrubMax={scrubMax}
+        scrubValue={scrubValue}
+        onScrubChange={onScrubChange}
+        onSeek={onSeek}
+        onJumpNow={onJumpNow}
+        rewindLabel={rewindLabel}
+        playing={playing}
+        onPlayToggle={() => setPlaying((v) => !v)}
+        speed={speed}
+        onSpeedChange={setSpeed}
+        histDateISO={histDateISO}
+        histTimeHHMM={histTimeHHMM}
+        onHistDateChange={onHistDateChange}
+        onHistTimeChange={onHistTimeChange}
+        histMinSec={nowSecForBounds - MAX_REWIND_SEC}
+        histMaxSec={nowSecForBounds}
+        onHeightChange={setBarHeight}
+      />
 
       {/* Sidebar — aircraft list (slides in from the left). */}
       <Sheet open={sidebarOpen} onOpenChange={setSidebarOpen}>
@@ -457,7 +378,7 @@ export default function MapPage() {
           <SheetHeader>
             <SheetTitle>
               Aircraft
-              <span className="ml-2 text-xs font-normal text-[var(--color-text-dim)] tabnum">
+              <span className="tabnum ml-2 text-xs font-normal text-[var(--color-text-dim)]">
                 {aircraft.length}
               </span>
             </SheetTitle>
@@ -488,68 +409,8 @@ export default function MapPage() {
 }
 
 // ---------------------------------------------------------------------------
-// Small subcomponents
+// Helpers
 // ---------------------------------------------------------------------------
-
-function LayerToggle({
-  label,
-  active,
-  loading,
-  onClick,
-  testid,
-}: {
-  label: string;
-  active: boolean;
-  loading?: boolean;
-  onClick: () => void;
-  testid: string;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      aria-pressed={active}
-      data-testid={testid}
-      className={cn(
-        'inline-flex items-center gap-1.5 rounded px-2.5 py-1 text-xs font-medium transition-colors min-h-[28px]',
-        active
-          ? 'bg-[var(--color-accent)] text-white'
-          : 'text-[var(--color-text-dim)] hover:bg-[var(--color-surface-2)] hover:text-[var(--color-text)]',
-      )}
-    >
-      <span
-        aria-hidden="true"
-        className={cn(
-          'inline-block h-1.5 w-1.5 rounded-full',
-          active ? 'bg-white' : 'bg-[var(--color-text-dim)]',
-          loading && 'animate-pulse',
-        )}
-      />
-      {label}
-    </button>
-  );
-}
-
-function JumpButton({
-  label,
-  onClick,
-  testid,
-}: {
-  label: string;
-  onClick: () => void;
-  testid: string;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      data-testid={testid}
-      className="rounded-full border border-[var(--color-border-default)] px-2 py-1 text-xs hover:bg-[var(--color-surface-2)]"
-    >
-      {label}
-    </button>
-  );
-}
 
 function describeRewind(sec: number): string {
   if (sec === 0) return 'Now';
@@ -560,6 +421,42 @@ function describeRewind(sec: number): string {
   if (m > 0) parts.push(`${m}m`);
   if (parts.length === 0) parts.push(`${Math.round(sec)}s`);
   return `${parts.join(' ')} ago`;
+}
+
+function pad2(n: number): string {
+  return n.toString().padStart(2, '0');
+}
+
+function unixToISO(sec: number): string {
+  const d = new Date(sec * 1000);
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+}
+
+function unixToHHMM(sec: number): string {
+  const d = new Date(sec * 1000);
+  return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+}
+
+function composeUnix(dateISO: string, timeHHMM: string): number | null {
+  const dm = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateISO);
+  const tm = /^(\d{1,2}):(\d{2})$/.exec(timeHHMM);
+  if (!dm || !tm) return null;
+  const d = new Date(
+    Number(dm[1]),
+    Number(dm[2]) - 1,
+    Number(dm[3]),
+    Number(tm[1]),
+    Number(tm[2]),
+    0,
+    0,
+  );
+  return Math.floor(d.getTime() / 1000);
+}
+
+function startOfDayLocal(sec: number): number {
+  const d = new Date(sec * 1000);
+  d.setHours(0, 0, 0, 0);
+  return Math.floor(d.getTime() / 1000);
 }
 
 // ---------------------------------------------------------------------------
@@ -608,7 +505,7 @@ function AircraftListTable({
               className="cursor-pointer"
               data-testid={`map-list-row-${a.flight_id}`}
             >
-              <TD className="font-mono text-xs tabnum">{a.icao_hex}</TD>
+              <TD className="tabnum font-mono text-xs">{a.icao_hex}</TD>
               <TD className="font-mono text-xs">{a.callsign ?? '—'}</TD>
               <TD className="text-xs">{a.registration ?? '—'}</TD>
               <TD className="text-xs">{a.aircraft_type ?? '—'}</TD>
@@ -663,7 +560,7 @@ function AircraftDetail({ ac }: { ac: Aircraft }) {
         <dt className="text-[var(--color-text-dim)]">Track</dt>
         <dd className="tabnum">{ac.track != null ? `${Math.round(ac.track)}°` : '—'}</dd>
         <dt className="text-[var(--color-text-dim)]">Position</dt>
-        <dd className="font-mono tabnum text-xs">
+        <dd className="tabnum font-mono text-xs">
           {ac.lat != null && ac.lon != null ? `${ac.lat.toFixed(4)}, ${ac.lon.toFixed(4)}` : '—'}
         </dd>
         <dt className="text-[var(--color-text-dim)]">Source</dt>
