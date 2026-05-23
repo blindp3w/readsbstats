@@ -1,5 +1,18 @@
 # Changelog
 
+## 2.4.1 — 2026-05-23
+
+### Wire React Compiler
+
+`babel-plugin-react-compiler` was already installed but not active — `@vitejs/plugin-react@6`
+dropped the inline `babel.plugins` escape hatch in favour of `reactCompilerPreset` wired
+through `@rolldown/plugin-babel`. Both `vite.config.ts` and `vitest.config.ts` now use
+this path so production builds and test runs apply automatic memoisation.
+
+No user-visible behaviour changes. Performance improvement expected on chart-heavy pages
+(`/stats`, `/metrics`, `/flight`) where ECharts option objects were previously recomputed
+on every render.
+
 ## 2.4.0 — 2026-05-23
 
 ### SPA map stack: react-leaflet → MapLibre GL
