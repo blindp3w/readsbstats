@@ -17,7 +17,7 @@ readsb and tar1090 give you a great live view — readsbstats adds the other hal
 | | |
 |---|---|
 | ![Live map](docs/screenshots/v2/map_v2_2.png) | ![Aircraft gallery](docs/screenshots/v2/gallery_v2_1.png) |
-| Live map — full-screen map with position heatmap, coverage overlay, and 24 h rewind slider | Gallery — military, interesting, and anonymous (non-ICAO hex) aircraft with photos |
+| Live map — Live / Rewind / HIST modes, bottom command bar, position heatmap, coverage overlay | Gallery — military, interesting, and anonymous (non-ICAO hex) aircraft with photos |
 | ![Statistics](docs/screenshots/v2/statistics_v2_1.png) | ![Flight details](docs/screenshots/v2/flight_details_v2_1.png) |
 | Statistics — summary tiles, hourly activity chart, DOW×hour heatmap, top-N datasets | Flight detail — photo, route, altitude/speed chart, full position log |
 | ![Receiver metrics](docs/screenshots/v2/metrics_v2_2.png) | ![Polar range and top statistics](docs/screenshots/v2/statistics_v2_2.png) |
@@ -32,7 +32,7 @@ readsb and tar1090 give you a great live view — readsbstats adds the other hal
 - Aircraft photos: Planespotters.net → airport-data.com → hexdb.io → Wikipedia type fallback; cached 30 days
 - Military, interesting & anonymous (non-ICAO hex) aircraft detection, badges, and gallery
 - Route enrichment via [adsbdb.com](https://www.adsbdb.com/) — origin/destination airport per flight
-- Live map with historical rewind (up to 24 h), position heatmap, and coverage range overlay
+- Live map with **Live / Rewind / HIST** modes — rewind from "now" or jump to any moment within `map_history_hours` via a date+time picker; bottom command bar with playback scrubber, range pills, position heatmap, and coverage range overlay; responsive down to iPhone
 - Telegram notifications for military/interesting/anonymous/watchlist/emergency-squawk events; interactive bot commands
 - Aircraft watchlist — track by ICAO hex, registration, or callsign prefix
 - Receiver metrics dashboard with 10 time-series charts (Apache ECharts canvas, cross-panel hover sync, wheel/pinch zoom, LTTB downsampling) and 9 health checks

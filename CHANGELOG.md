@@ -1,5 +1,59 @@
 # Changelog
 
+## 2.5.0 — 2026-05-24
+
+### Live map redesign — bottom command bar + HIST mode
+
+The `/stats/map` page's three floating UI islands — top-left mode card,
+top-right snapshot timestamp pill, bottom rewind scrubber — collapse into
+a single bottom command bar that overlays the map. Frees the top corners
+of the map entirely and gives the controls a single coherent home.
+
+User-visible changes:
+
+- **New HIST mode.** A third entry in the Live / Rewind / HIST segmented
+  control. Pick any date + time within `map_history_hours` and jump
+  directly to that moment, instead of only scrubbing backward from "now".
+  The date picker disables out-of-range days (using `react-day-picker`'s
+  `disabled={[{before}, {after}]}` matchers) so users can't accidentally
+  request a moment older than the DB keeps. Playback in HIST advances
+  `histAt` forward at `speed × tick` and auto-stops on reaching the live
+  edge.
+- **Bottom command bar.** Two rows: controls on top (mode, range pills,
+  layer toggles, snapshot timestamp + aircraft count), playback on
+  bottom (seek, scrubber, play/pause, speed). Row 2 collapses in Live
+  mode. 95% paper alpha + backdrop blur.
+- **Phone-aware condensed bar.** Below the `sm` breakpoint, the bar
+  shrinks to mode-toggle + chevron; tapping the chevron expands the
+  rest. Auto-expands when the user switches to Rewind/HIST so the
+  scrubber is reachable in one tap. Scrubber thumb bumps from 16px to
+  24px on small screens for reliable finger-scrubbing.
+- **Layers Popover at narrow widths.** Below `lg`, the Heatmap /
+  Coverage / List toggles fold into a single icon Popover with an
+  active-count badge — keeps Row 1 on a single line at iPad portrait
+  widths.
+- **MapLibre native controls lifted above the bar.** The zoom +/− stack
+  (bottom-right) and attribution (bottom-left) now sit above the bar
+  rather than under it. NavigationControl is hidden on phones — pinch
+  covers it.
+
+Internal:
+
+- New `frontend/src/components/map/` directory: `MapCommandBar`,
+  `MapModeControl`, `MapLayersControl`, `MapHistDatePicker`,
+  `MapRewindControls`.
+- `components/ui/DatePicker.tsx` and `TimePicker.tsx` grew optional
+  `disabledMatcher`, `defaultOpen`, and `popoverSide` props — all
+  backward-compatible; existing History / RangePicker call sites are
+  unchanged.
+- The bar measures its own height via `ResizeObserver`
+  (`getBoundingClientRect().height`, **not** `contentRect.height` — the
+  latter excludes safe-area padding) and writes `--map-bar-height` on
+  the `.map-with-bar` container. The MapLibre control wrappers read
+  that variable. Hoisted out of `@layer components` because cascade-layer
+  ordering otherwise lets maplibre-gl's unlayered `bottom: 0` rule win
+  regardless of specificity.
+
 ## 2.4.1 — 2026-05-23
 
 ### Wire React Compiler
