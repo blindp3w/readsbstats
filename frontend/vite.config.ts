@@ -33,9 +33,11 @@ function getAppVersion(): string {
 //
 // - `base` differs between dev and prod: dev is root-mounted (Vite at :5173,
 //   no nginx); prod is mounted under /stats/v2/ behind nginx → uvicorn.
-// - Manual chunks split Leaflet (~140 KB raw) and ECharts out of the shell
-//   so pages that don't use them (settings, watchlist, feeders) don't pay
-//   the bytes on first paint.
+// - Manual chunks split the map stack (MapLibre + Leaflet during the
+//   v2.4 migration) and ECharts out of the shell so pages that don't use
+//   them (settings, watchlist, feeders) don't pay the bytes on first paint.
+//   The `maps` chunk carries both libs simultaneously until PR #3, which
+//   removes Leaflet once LiveMap.tsx is also ported.
 // - Sourcemaps are OFF — the repo is public and source maps embed absolute
 //   developer paths. For one-off prod debugging, set `sourcemap: 'hidden'`
 //   temporarily and don't commit the change.
@@ -51,7 +53,14 @@ function getAppVersion(): string {
 // dict-or-function to function-only). Same matching semantics — split by
 // substring against the resolved module id.
 const _MANUAL_CHUNK_GROUPS: Record<string, readonly string[]> = {
-  leaflet: ['leaflet', 'react-leaflet'],
+  maps: [
+    'maplibre-gl',
+    '@vis.gl/react-maplibre',
+    'react-map-gl',
+    // Leaflet entries removed in PR #3 once LiveMap.tsx is also on MapLibre.
+    'leaflet',
+    'react-leaflet',
+  ],
   charts: ['echarts/core', 'echarts/charts', 'echarts/components', 'echarts/renderers'],
   vendor: ['react', 'react-dom', 'react-router-dom'],
   // Radix primitives are 25-30 KB gz total — isolate so settings/
@@ -100,7 +109,13 @@ export default defineConfig(({ command }) => ({
     outDir: 'dist',
     assetsDir: 'assets',
     sourcemap: false,
-    chunkSizeWarningLimit: 600,
+    // Bumped from 600 → 1500 (KB raw) at v2.4.0 — two lazy-loaded chunks
+    // legitimately exceed the default: `charts` (ECharts core, 572 KB raw /
+    // 192 KB gz, since v2.2.0) and `maps` (maplibre-gl + react-map-gl, ~1.2
+    // MB raw / 327 KB gz). Both are gated behind page-specific dynamic
+    // imports and never load on Stats/History/Settings/Watchlist/Feeders/
+    // Gallery first paint. The warning's signal is gone for these two.
+    chunkSizeWarningLimit: 1500,
     rollupOptions: {
       output: {
         manualChunks: chunkFor,

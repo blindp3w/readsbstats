@@ -1,14 +1,19 @@
 import { useEffect, useMemo, useRef } from 'react';
-import { MapContainer, TileLayer, CircleMarker, Polyline, useMap } from 'react-leaflet';
-import L from 'leaflet';
-import 'leaflet/dist/leaflet.css';
+import { Map, Source, Layer, Marker, type MapRef } from 'react-map-gl/maplibre';
+import { LngLatBounds } from 'maplibre-gl';
+import 'maplibre-gl/dist/maplibre-gl.css';
 
 // Flight route map. Each position becomes a vertex of a polyline; ADS-B vs
 // MLAT segments are colored differently so users can spot multilateration
 // gaps. Receiver location shown as a fixed marker.
 //
 // This module is lazy-loaded by Flight.tsx so other pages don't pull in
-// Leaflet (~140 KB raw).
+// MapLibre (~200 KB gz).
+//
+// PR #1 of the MapLibre migration (v2.4). Stack:
+//   - maplibre-gl 5 + react-map-gl/maplibre 8
+//   - CartoDB Dark Matter raster tiles (native dark, no CSS filter chain)
+//   - GeoJSON line layer with data-driven color per segment
 
 interface Position {
   ts: number;
@@ -26,6 +31,7 @@ interface Props {
 const ADSB_COLOR = '#22c55e';
 const MLAT_COLOR = '#eab308';
 const MIXED_COLOR = '#5b9af9';
+const RECEIVER_COLOR = '#5b9af9';
 
 function colorForSource(src: string | null | undefined): string {
   if (!src) return MIXED_COLOR;
@@ -34,44 +40,102 @@ function colorForSource(src: string | null | undefined): string {
   return MIXED_COLOR;
 }
 
-function FitBounds({ points }: { points: [number, number][] }) {
-  const map = useMap();
-  const last = useRef<string | null>(null);
-  useEffect(() => {
-    if (points.length === 0) return;
-    const key = `${points.length}-${points[0][0]}-${points[points.length - 1][0]}`;
-    if (key === last.current) return;
-    last.current = key;
-    const bounds = L.latLngBounds(points.map(([lat, lon]) => L.latLng(lat, lon)));
-    map.fitBounds(bounds, { padding: [20, 20] });
-  }, [points, map]);
-  return null;
-}
+// CartoDB Dark Matter raster basemap — free, no API key, CC-BY 4.0.
+// MapLibre does not expand Leaflet's `{s}` subdomain placeholder; list
+// the four subdomains explicitly. Background color fills the canvas
+// during tile load so there is no white flash.
+const DARK_STYLE = {
+  version: 8 as const,
+  sources: {
+    'carto-dark': {
+      type: 'raster' as const,
+      tiles: [
+        'https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png',
+        'https://b.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png',
+        'https://c.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png',
+        'https://d.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png',
+      ],
+      tileSize: 256,
+      minzoom: 0,
+      maxzoom: 20,
+      attribution:
+        '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> ' +
+        'contributors, © <a href="https://carto.com/attributions">CARTO</a>',
+    },
+  },
+  layers: [
+    { id: 'bg', type: 'background' as const, paint: { 'background-color': '#0b0b0d' } },
+    { id: 'carto-dark', type: 'raster' as const, source: 'carto-dark' },
+  ],
+};
 
 export default function RouteMap({ positions, receiverLat, receiverLon }: Props) {
+  const mapRef = useRef<MapRef | null>(null);
+
   // Split positions into contiguous segments where source_type is constant —
-  // gives us per-segment color without one polyline per pair-of-points.
-  const segments = useMemo(() => {
-    const segs: { points: [number, number][]; color: string }[] = [];
-    let cur: { points: [number, number][]; color: string } | null = null;
+  // gives per-segment color via one GeoJSON FeatureCollection rather than one
+  // Source per pair-of-points. The line layer reads the color from each
+  // feature's `properties.color` (data-driven expression below).
+  //
+  // Coordinate-order swap: backend returns `[lat, lon]`, MapLibre/GeoJSON
+  // uses `[lng, lat]`. Apply here, exactly once, at the API boundary.
+  const segmentsGeoJSON = useMemo(() => {
+    const features: GeoJSON.Feature[] = [];
+    let curCoords: [number, number][] = [];
+    let curColor: string | null = null;
     for (const p of positions) {
       if (p.lat == null || p.lon == null) continue;
       const color = colorForSource(p.source_type);
-      if (!cur || cur.color !== color) {
-        if (cur) segs.push(cur);
-        cur = { points: [[p.lat, p.lon]], color };
-      } else {
-        cur.points.push([p.lat, p.lon]);
+      if (curColor === null) curColor = color;
+      if (color !== curColor) {
+        if (curCoords.length >= 2) {
+          features.push({
+            type: 'Feature',
+            properties: { color: curColor },
+            geometry: { type: 'LineString', coordinates: curCoords },
+          });
+        }
+        curCoords = [curCoords[curCoords.length - 1] ?? [p.lon, p.lat]];
+        curColor = color;
       }
+      curCoords.push([p.lon, p.lat]);
     }
-    if (cur) segs.push(cur);
-    return segs;
+    if (curColor && curCoords.length >= 2) {
+      features.push({
+        type: 'Feature',
+        properties: { color: curColor },
+        geometry: { type: 'LineString', coordinates: curCoords },
+      });
+    }
+    return { type: 'FeatureCollection' as const, features };
   }, [positions]);
 
-  const allPoints = useMemo(
-    () => segments.flatMap((s) => s.points),
-    [segments],
-  );
+  // Flat [lng, lat] array used for both the initial view center and the
+  // post-load fitBounds. Computed once, then referenced.
+  const allPoints = useMemo(() => {
+    const out: [number, number][] = [];
+    for (const p of positions) {
+      if (p.lat == null || p.lon == null) continue;
+      out.push([p.lon, p.lat]);
+    }
+    return out;
+  }, [positions]);
+
+  // fitBounds replaces today's react-leaflet `FitBounds` useEffect. Runs
+  // whenever the track changes shape; a key derived from length + endpoints
+  // skips redundant fits on prop identity churn.
+  const lastFitKey = useRef<string | null>(null);
+  useEffect(() => {
+    if (allPoints.length === 0) return;
+    const key = `${allPoints.length}-${allPoints[0][0]}-${allPoints[allPoints.length - 1][0]}`;
+    if (key === lastFitKey.current) return;
+    lastFitKey.current = key;
+    const bounds = allPoints.reduce(
+      (b, [lng, lat]) => b.extend([lng, lat]),
+      new LngLatBounds(allPoints[0], allPoints[0]),
+    );
+    mapRef.current?.fitBounds(bounds, { padding: 20, duration: 0 });
+  }, [allPoints]);
 
   if (allPoints.length === 0 && receiverLat == null) {
     return (
@@ -81,43 +145,48 @@ export default function RouteMap({ positions, receiverLat, receiverLon }: Props)
     );
   }
 
-  const center: [number, number] =
+  const initialCenter: [number, number] =
     allPoints[0] ??
-    (receiverLat != null && receiverLon != null ? [receiverLat, receiverLon] : [0, 0]);
+    (receiverLat != null && receiverLon != null ? [receiverLon, receiverLat] : [0, 0]);
 
   return (
-    <MapContainer
-      center={center}
-      zoom={9}
-      scrollWheelZoom={false}
-      className="h-full w-full rounded"
+    <Map
+      ref={mapRef}
+      mapStyle={DARK_STYLE}
+      initialViewState={{ longitude: initialCenter[0], latitude: initialCenter[1], zoom: 9 }}
+      scrollZoom={false}
+      style={{ width: '100%', height: '100%', borderRadius: '0.25rem' }}
     >
-      <TileLayer
-        attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
-        url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-        // CSS filter darkens the tiles to match the dark UI.
-        className="map-tiles-dark"
-      />
-      {segments.map((s, i) => (
-        <Polyline
-          key={i}
-          positions={s.points as L.LatLngExpression[]}
-          pathOptions={{ color: s.color, weight: 2, opacity: 0.85 }}
-        />
-      ))}
-      {receiverLat != null && receiverLon != null && (
-        <CircleMarker
-          center={[receiverLat, receiverLon]}
-          radius={6}
-          pathOptions={{
-            color: '#fff',
-            weight: 2,
-            fillColor: '#5b9af9',
-            fillOpacity: 1,
-          }}
-        />
+      {segmentsGeoJSON.features.length > 0 && (
+        <Source id="route" type="geojson" data={segmentsGeoJSON}>
+          <Layer
+            id="route-line"
+            type="line"
+            paint={{
+              'line-color': ['get', 'color'],
+              'line-width': 2,
+              'line-opacity': 0.85,
+            }}
+            layout={{ 'line-cap': 'round', 'line-join': 'round' }}
+          />
+        </Source>
       )}
-      {allPoints.length > 0 && <FitBounds points={allPoints} />}
-    </MapContainer>
+
+      {receiverLat != null && receiverLon != null && (
+        <Marker longitude={receiverLon} latitude={receiverLat} anchor="center">
+          <div
+            aria-hidden="true"
+            style={{
+              width: 12,
+              height: 12,
+              borderRadius: '50%',
+              backgroundColor: RECEIVER_COLOR,
+              border: '2px solid #fff',
+              boxSizing: 'border-box',
+            }}
+          />
+        </Marker>
+      )}
+    </Map>
   );
 }

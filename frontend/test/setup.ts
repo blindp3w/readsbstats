@@ -10,6 +10,17 @@ vi.mock('@/components/charts/EChart', () => ({
   EChart: () => null,
 }));
 
+// jsdom has no WebGL2 context, so a real MapLibre instance would throw on
+// init. Globally stub the lazy map wrappers — symmetric with the EChart
+// mock above. Affects the Flight smoke test (which lazy-imports RouteMap)
+// and any future smoke coverage of Map.tsx (which lazy-imports LiveMap).
+vi.mock('@/components/RouteMap', () => ({
+  default: () => null,
+}));
+vi.mock('@/components/LiveMap', () => ({
+  default: () => null,
+}));
+
 // jsdom doesn't implement Element.scrollIntoView / hasPointerCapture, which
 // Radix Select calls when opening its listbox. Stub them so the dropdown
 // can render in test runs.
