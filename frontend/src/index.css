@@ -148,24 +148,28 @@
       height: 6px;
     }
   }
+}
 
-  /* Map command bar pushes MapLibre's native control containers up so the
-     zoom buttons (bottom-right) and attribution (bottom-left) don't sit under
-     the bar. `--map-bar-height` is set on the map container by pages/Map.tsx
-     and changes between Live (one row) and Rewind/HIST (two rows). The
-     bottom-left attribution is shrunk slightly so it doesn't squeeze the bar
-     contents when wrapping. */
-  .map-with-bar .maplibregl-ctrl-bottom-left,
-  .map-with-bar .maplibregl-ctrl-bottom-right {
-    bottom: calc(var(--map-bar-height, 0px) + 8px);
-    transition: bottom 150ms ease-out;
-  }
-  /* Hide the zoom +/− stack on phone-sized screens — pinch-to-zoom covers it,
-     and the stack collides with the condensed command bar's expand chevron. */
-  @media (max-width: 639px) {
-    .map-with-bar .maplibregl-ctrl-bottom-right .maplibregl-ctrl-group {
-      display: none;
-    }
+/* Map command bar pushes MapLibre's native control containers up so the
+   zoom buttons (bottom-right) and attribution (bottom-left) don't sit under
+   the bar. `--map-bar-height` is set on the map container by pages/Map.tsx
+   and changes between Live (one row) and Rewind/HIST (two rows).
+
+   IMPORTANT: these rules must live OUTSIDE @layer components.
+   maplibre-gl ships its own CSS unlayered. In CSS cascade-layer ordering,
+   unlayered rules win over any layered rule regardless of specificity, so
+   if these were inside @layer components MapLibre's `bottom: 0` would
+   silently beat us. Keep this block at the top level. */
+.map-with-bar .maplibregl-ctrl-bottom-left,
+.map-with-bar .maplibregl-ctrl-bottom-right {
+  bottom: calc(var(--map-bar-height, 0px) + 8px);
+  transition: bottom 150ms ease-out;
+}
+/* Hide the zoom +/− stack on phone-sized screens — pinch-to-zoom covers it,
+   and the stack collides with the condensed command bar's expand chevron. */
+@media (max-width: 639px) {
+  .map-with-bar .maplibregl-ctrl-bottom-right .maplibregl-ctrl-group {
+    display: none;
   }
 }
 
