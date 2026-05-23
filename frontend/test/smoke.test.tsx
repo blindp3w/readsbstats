@@ -9,9 +9,11 @@
  * before reaching prod.
  *
  * Heavy pages skipped here:
- *   - Map.tsx          — Leaflet does aggressive DOM mutation that jsdom
- *                        doesn't fully support; smoke-tested in production
- *                        via the Playwright mobile suite under tests/ui/.
+ *   - Map.tsx          — owns LiveMap (MapLibre); LiveMap is globally
+ *                        mocked in setup.ts so Map.tsx could now be added
+ *                        to the PAGES array if desired. Smoke-tested in
+ *                        production via the Playwright suite under
+ *                        tests/ui/ in the meantime.
  *   - Hello.tsx        — Phase-0 PoC, not routed (see Audit 12 Phase 6).
  */
 
@@ -216,8 +218,8 @@ describe('Page smoke — renders without throwing', () => {
       const path = page.routeTemplate ?? page.route;
       const orig = console.error;
       // Some pages emit harmless console errors from React Query retry
-      // attempts or imperative Leaflet calls that aren't fully shimmed in
-      // jsdom; suppress for the duration so test output stays readable.
+      // attempts that bubble during the first paint; suppress for the
+      // duration so test output stays readable.
       console.error = vi.fn();
       try {
         const result = render(

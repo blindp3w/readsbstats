@@ -23,7 +23,8 @@ export const TooltipContent = forwardRef<
       sideOffset={sideOffset}
       collisionPadding={collisionPadding}
       className={cn(
-        // Above Leaflet panes (z-700) so tooltips on /map render correctly.
+        // Held at z-[1100] so tooltips on /map render above MapLibre's
+        // canvas + controls.
         'z-[1100] max-w-xs rounded border px-2 py-1 text-xs leading-tight shadow-lg',
         'border-[var(--color-border-default)] bg-[var(--color-surface)] text-[var(--color-text)]',
         'data-[state=delayed-open]:animate-in data-[state=closed]:animate-out',

@@ -21,8 +21,8 @@ export const PopoverContent = forwardRef<HTMLDivElement, ContentProps>(
         align={align}
         collisionPadding={collisionPadding}
         className={cn(
-          // Above Leaflet (z-700) so a popover anchored to a button on /v2/map
-          // (if we ever surface one there) renders correctly.
+          // Held at z-[1050] so popovers anchored to controls on /map sit
+          // above MapLibre's canvas and any future map-overlay UI.
           'z-[1050] rounded-lg border border-[var(--color-border-default)] bg-[var(--color-surface)] p-3 shadow-[var(--shadow-lg)]',
           'data-[state=open]:animate-in data-[state=closed]:animate-out',
           'focus:outline-none',

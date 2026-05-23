@@ -31,9 +31,9 @@ interface ContentProps extends React.ComponentPropsWithoutRef<typeof Dlg.Content
 export const SheetContent = forwardRef<HTMLDivElement, ContentProps>(
   ({ className, side = 'right', children, ...props }, ref) => (
     <Dlg.Portal>
-      {/* z-index above Leaflet's max (popup pane = 700). Tailwind's z-50 = 50
-          which is well below — without this the side panel rendered BEHIND
-          the map tiles on /v2/map. */}
+      {/* Held at z-[999]/[1000] (well above Tailwind's z-50 = 50) so the
+          left/right sheets on /map render over MapLibre's controls and
+          markers. Same margin used by Nav. */}
       <Dlg.Overlay className="fixed inset-0 z-[999] bg-black/40 backdrop-blur-sm data-[state=open]:animate-in data-[state=closed]:animate-out" />
       <Dlg.Content
         ref={ref}
