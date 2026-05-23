@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { CalendarIcon, ChevronLeftIcon, ChevronRightIcon } from '@radix-ui/react-icons';
-import { DayPicker } from 'react-day-picker';
+import { DayPicker, type Matcher } from 'react-day-picker';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/Popover';
 import { cn } from '@/lib/cn';
 
@@ -25,6 +25,15 @@ interface DatePickerProps {
   // it into a Field works without layout shifts.
   ariaLabel?: string;
   'data-testid'?: string;
+  // Forwarded to DayPicker's `disabled` prop. Lets callers restrict
+  // selectable dates (e.g. the map's HIST mode caps to map_history_hours).
+  disabledMatcher?: Matcher | Matcher[];
+  // Opens the popover on first mount. Used by the map's HIST mode so
+  // switching to HIST surfaces the date picker without an extra tap.
+  defaultOpen?: boolean;
+  // Anchor side for the popover. Default 'bottom'. The map's bottom-fixed
+  // command bar passes 'top' so the calendar opens upward.
+  popoverSide?: 'top' | 'bottom' | 'left' | 'right';
 }
 
 function parseISO(v: string): Date | undefined {
@@ -64,8 +73,11 @@ export function DatePicker({
   className,
   ariaLabel,
   'data-testid': testid,
+  disabledMatcher,
+  defaultOpen = false,
+  popoverSide = 'bottom',
 }: DatePickerProps) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(defaultOpen);
   const selected = parseISO(value);
 
   return (
@@ -87,13 +99,15 @@ export function DatePicker({
           )}
         >
           <span className="truncate tabnum">{formatDisplay(selected, placeholder)}</span>
-          <CalendarIcon
-            aria-hidden="true"
-            className="shrink-0 text-[var(--color-text-dim)]"
-          />
+          <CalendarIcon aria-hidden="true" className="shrink-0 text-[var(--color-text-dim)]" />
         </button>
       </PopoverTrigger>
-      <PopoverContent className="w-auto p-2" align="start" data-testid="date-picker-popover">
+      <PopoverContent
+        className="w-auto p-2"
+        align="start"
+        side={popoverSide}
+        data-testid="date-picker-popover"
+      >
         <DayPicker
           mode="single"
           selected={selected}
@@ -104,6 +118,7 @@ export function DatePicker({
               setOpen(false);
             }
           }}
+          disabled={disabledMatcher}
           showOutsideDays
           weekStartsOn={1}
           components={{

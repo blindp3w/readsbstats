@@ -21,6 +21,9 @@ interface TimePickerProps {
   ariaLabel?: string;
   minuteStep?: number;
   'data-testid'?: string;
+  // Anchor side for the popover. Default 'bottom'. The map's bottom-fixed
+  // command bar passes 'top' so the columns open upward.
+  popoverSide?: 'top' | 'bottom' | 'left' | 'right';
 }
 
 function pad2(n: number): string {
@@ -45,6 +48,7 @@ export function TimePicker({
   ariaLabel,
   minuteStep = 5,
   'data-testid': testid,
+  popoverSide = 'bottom',
 }: TimePickerProps) {
   const [open, setOpen] = useState(false);
   const parsed = parseTime(value);
@@ -117,6 +121,7 @@ export function TimePicker({
       <PopoverContent
         className="w-auto p-2"
         align="start"
+        side={popoverSide}
         data-testid="time-picker-popover"
       >
         <div className="flex gap-1">
@@ -157,9 +162,7 @@ function ScrollColumn({
   const ref = useRef<HTMLUListElement>(null);
   useEffect(() => {
     if (selected == null || !ref.current) return;
-    const el = ref.current.querySelector<HTMLElement>(
-      `[data-value="${selected}"]`,
-    );
+    const el = ref.current.querySelector<HTMLElement>(`[data-value="${selected}"]`);
     el?.scrollIntoView({ block: 'center' });
   }, [selected]);
 

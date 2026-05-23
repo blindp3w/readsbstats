@@ -30,8 +30,7 @@
   --shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.45);
 
   --font-sans:
-    'Inter', 'Segoe UI', system-ui, -apple-system, BlinkMacSystemFont, 'Helvetica Neue',
-    sans-serif;
+    'Inter', 'Segoe UI', system-ui, -apple-system, BlinkMacSystemFont, 'Helvetica Neue', sans-serif;
   --font-mono:
     ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, Consolas, 'Liberation Mono', monospace;
 }
@@ -127,6 +126,47 @@
     background: var(--color-surface-3);
     border-radius: 999px;
   }
+
+  /* Phone-sized screens: bigger thumb + track so finger-scrubbing is reliable.
+     The 24px thumb is still under the 44px tap target Apple HIG recommends
+     for buttons, but slider thumbs are an explicit exception in the guide
+     because the line drags with the finger. Tracked in NOTES.md if we want
+     to revisit. */
+  @media (max-width: 639px) {
+    .map-rewind-range {
+      height: 6px;
+    }
+    .map-rewind-range::-webkit-slider-thumb {
+      width: 24px;
+      height: 24px;
+    }
+    .map-rewind-range::-moz-range-thumb {
+      width: 24px;
+      height: 24px;
+    }
+    .map-rewind-range::-moz-range-track {
+      height: 6px;
+    }
+  }
+
+  /* Map command bar pushes MapLibre's native control containers up so the
+     zoom buttons (bottom-right) and attribution (bottom-left) don't sit under
+     the bar. `--map-bar-height` is set on the map container by pages/Map.tsx
+     and changes between Live (one row) and Rewind/HIST (two rows). The
+     bottom-left attribution is shrunk slightly so it doesn't squeeze the bar
+     contents when wrapping. */
+  .map-with-bar .maplibregl-ctrl-bottom-left,
+  .map-with-bar .maplibregl-ctrl-bottom-right {
+    bottom: calc(var(--map-bar-height, 0px) + 8px);
+    transition: bottom 150ms ease-out;
+  }
+  /* Hide the zoom +/− stack on phone-sized screens — pinch-to-zoom covers it,
+     and the stack collides with the condensed command bar's expand chevron. */
+  @media (max-width: 639px) {
+    .map-with-bar .maplibregl-ctrl-bottom-right .maplibregl-ctrl-group {
+      display: none;
+    }
+  }
 }
 
 @layer utilities {
@@ -143,7 +183,10 @@
 
   /* Subtle "card lifts on hover" — applied per element where appropriate. */
   .card-hover {
-    transition: transform 120ms ease, box-shadow 120ms ease, border-color 120ms ease;
+    transition:
+      transform 120ms ease,
+      box-shadow 120ms ease,
+      border-color 120ms ease;
   }
   .card-hover:hover {
     transform: translateY(-1px);

@@ -35,3 +35,18 @@ if (typeof window !== 'undefined') {
     Element.prototype.releasePointerCapture = () => {};
   }
 }
+
+// jsdom has no ResizeObserver. The map command bar uses one to track its
+// rendered height so MapLibre's native controls can be shifted above the
+// bar; in tests we just need a no-op shim so the component doesn't throw.
+if (typeof window !== 'undefined' && typeof window.ResizeObserver === 'undefined') {
+  class ResizeObserverShim {
+    observe(): void {}
+    unobserve(): void {}
+    disconnect(): void {}
+  }
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (window as any).ResizeObserver = ResizeObserverShim;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (globalThis as any).ResizeObserver = ResizeObserverShim;
+}
