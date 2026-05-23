@@ -309,6 +309,78 @@ class TestMigrate:
         database._build_positions_indexes("/nonexistent.db")
         database.backfill_bearing("/nonexistent.db")
 
+    def test_migrate_does_not_add_watchlist_alerted(self, tmp_path):
+        """_migrate() must not re-introduce the dead watchlist_alerted column.
+        Dedup is handled by ``is_new_flight`` in the collector, so the column
+        was never read or written. Removed to keep the schema honest."""
+        db_path = str(tmp_path / "test.db")
+        conn = database.connect(db_path)
+        conn.execute("""
+            CREATE TABLE flights (
+                id INTEGER PRIMARY KEY, icao_hex TEXT, callsign TEXT,
+                registration TEXT, aircraft_type TEXT,
+                first_seen INTEGER, last_seen INTEGER,
+                max_distance_nm REAL, max_alt_baro REAL, max_gs REAL,
+                total_positions INTEGER DEFAULT 0,
+                adsb_positions INTEGER DEFAULT 0,
+                mlat_positions INTEGER DEFAULT 0,
+                primary_source TEXT
+            )
+        """)
+        conn.execute("CREATE TABLE IF NOT EXISTS positions (id INTEGER PRIMARY KEY, flight_id INTEGER)")
+        conn.execute("CREATE TABLE IF NOT EXISTS active_flights (icao_hex TEXT PRIMARY KEY, flight_id INTEGER NOT NULL, last_seen INTEGER NOT NULL)")
+        conn.commit()
+
+        database._migrate(conn)
+
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(flights)")}
+        assert "watchlist_alerted" not in cols
+        conn.close()
+
+    def test_background_migration_drops_watchlist_alerted(self, tmp_path):
+        """Existing DBs that already had the column added by past _migrate()
+        runs should converge to the clean schema. The drop is in
+        run_background_migrations() because ALTER TABLE DROP COLUMN rewrites
+        the entire table — too slow for _migrate() on a busy receiver."""
+        db_path = str(tmp_path / "test.db")
+        database.init_db(db_path)
+        conn = database.connect(db_path)
+        conn.execute("ALTER TABLE flights ADD COLUMN watchlist_alerted INTEGER DEFAULT 0")
+        conn.execute(
+            "INSERT INTO flights (icao_hex, first_seen, last_seen, watchlist_alerted) "
+            "VALUES ('aabbcc', 1000, 2000, 1)"
+        )
+        conn.commit()
+        conn.close()
+
+        database.run_background_migrations(db_path)
+
+        conn = database.connect(db_path)
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(flights)")}
+        assert "watchlist_alerted" not in cols
+        # Row survived the column drop
+        count = conn.execute("SELECT COUNT(*) FROM flights").fetchone()[0]
+        assert count == 1
+        conn.close()
+
+    def test_background_migration_drop_is_noop_when_column_absent(self, tmp_path):
+        """If the column was never added (fresh install post-fix), the drop
+        step is a clean no-op — no exception, no side effects."""
+        db_path = str(tmp_path / "test.db")
+        database.init_db(db_path)
+        # Sanity: fresh DBs don't have the column.
+        conn = database.connect(db_path)
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(flights)")}
+        assert "watchlist_alerted" not in cols
+        conn.close()
+
+        database.run_background_migrations(db_path)  # must not raise
+
+        conn = database.connect(db_path)
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(flights)")}
+        assert "watchlist_alerted" not in cols
+        conn.close()
+
 
 class TestBackgroundMigrationsConcurrency:
     """The collector spawns `run_background_migrations` while still actively

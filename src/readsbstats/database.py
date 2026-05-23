@@ -273,7 +273,6 @@ def _migrate(conn: sqlite3.Connection) -> None:
         "primary_source":    "TEXT",
         "origin_icao":       "TEXT",
         "dest_icao":         "TEXT",
-        "watchlist_alerted": "INTEGER DEFAULT 0",
         "max_distance_bearing": "REAL",
     }
     for col, defn in new_cols.items():
@@ -510,6 +509,30 @@ def _backfill_primary_source(path: str = config.DB_PATH) -> None:
             conn.close()
 
 
+def _drop_dead_watchlist_alerted_column(path: str = config.DB_PATH) -> None:
+    """Drop the legacy watchlist_alerted column from existing DBs.
+
+    The column was added by an earlier _migrate() but never read or written —
+    watchlist dedup is handled by ``is_new_flight`` in the collector. Lives in
+    background migrations because SQLite rewrites the entire flights table on
+    DROP COLUMN, which is too slow for _migrate()."""
+    _log = logging.getLogger(__name__)
+    conn: sqlite3.Connection | None = None
+    try:
+        conn = connect(path)
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(flights)")}
+        if "watchlist_alerted" not in cols:
+            return
+        conn.execute("PRAGMA busy_timeout = 10000")
+        conn.execute("ALTER TABLE flights DROP COLUMN watchlist_alerted")
+        conn.commit()
+    except Exception:
+        _log.exception("_drop_dead_watchlist_alerted_column failed")
+    finally:
+        if conn is not None:
+            conn.close()
+
+
 def run_background_migrations(path: str = config.DB_PATH) -> None:
     """Run slow one-time migrations in a background thread (after READY=1).
     Builds positions indexes, backfills max_distance_bearing, and sets
@@ -517,6 +540,7 @@ def run_background_migrations(path: str = config.DB_PATH) -> None:
     _build_positions_indexes(path)
     backfill_bearing(path)
     _backfill_primary_source(path)
+    _drop_dead_watchlist_alerted_column(path)
 
 
 def snapshot_db(src_path: str, dest_path: str | None = None) -> str:
