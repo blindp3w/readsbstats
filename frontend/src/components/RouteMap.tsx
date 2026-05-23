@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef } from 'react';
-import { Map, Source, Layer, Marker, type MapRef } from 'react-map-gl/maplibre';
+import { Map, Source, Layer, Marker, AttributionControl, type MapRef } from 'react-map-gl/maplibre';
 import { LngLatBounds } from 'maplibre-gl';
+import type { StyleSpecification } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 
 // Flight route map. Each position becomes a vertex of a polyline; ADS-B vs
@@ -44,11 +45,11 @@ function colorForSource(src: string | null | undefined): string {
 // MapLibre does not expand Leaflet's `{s}` subdomain placeholder; list
 // the four subdomains explicitly. Background color fills the canvas
 // during tile load so there is no white flash.
-const DARK_STYLE = {
-  version: 8 as const,
+const DARK_STYLE: StyleSpecification = {
+  version: 8,
   sources: {
     'carto-dark': {
-      type: 'raster' as const,
+      type: 'raster',
       tiles: [
         'https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png',
         'https://b.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png',
@@ -64,7 +65,7 @@ const DARK_STYLE = {
     },
   },
   layers: [
-    { id: 'bg', type: 'background' as const, paint: { 'background-color': '#0b0b0d' } },
+    { id: 'bg', type: 'background', paint: { 'background-color': '#0b0b0d' } },
     // Lift the blacks on Dark Matter — its default range bottoms out at near-
     // pitch-black which is hard to read at any zoom. raster-brightness-min
     // pushes the floor up to a mid-charcoal; raster-contrast pulls back a
@@ -73,7 +74,7 @@ const DARK_STYLE = {
     // unaffected.
     {
       id: 'carto-dark',
-      type: 'raster' as const,
+      type: 'raster',
       source: 'carto-dark',
       paint: {
         'raster-brightness-min': 0.18,
@@ -169,8 +170,10 @@ export default function RouteMap({ positions, receiverLat, receiverLon }: Props)
       mapStyle={DARK_STYLE}
       initialViewState={{ longitude: initialCenter[0], latitude: initialCenter[1], zoom: 9 }}
       scrollZoom={false}
+      attributionControl={false}
       style={{ width: '100%', height: '100%', borderRadius: '0.25rem' }}
     >
+      <AttributionControl compact position="bottom-right" />
       {segmentsGeoJSON.features.length > 0 && (
         <Source id="route" type="geojson" data={segmentsGeoJSON}>
           <Layer

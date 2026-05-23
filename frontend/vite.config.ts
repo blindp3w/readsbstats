@@ -1,5 +1,6 @@
 import { defineConfig } from 'vite';
-import react from '@vitejs/plugin-react';
+import react, { reactCompilerPreset } from '@vitejs/plugin-react';
+import babel from '@rolldown/plugin-babel';
 import tailwindcss from '@tailwindcss/vite';
 import { visualizer } from 'rollup-plugin-visualizer';
 import path from 'node:path';
@@ -40,12 +41,9 @@ function getAppVersion(): string {
 //   developer paths. For one-off prod debugging, set `sourcemap: 'hidden'`
 //   temporarily and don't commit the change.
 // - `ANALYZE=1 npm run build` emits dist/stats.html for bundle inspection.
-// - React Compiler integration: @vitejs/plugin-react@6 dropped the inline
-//   `babel.plugins` escape hatch (oxc/rolldown by default in vite 8). The
-//   replacement path is the `reactCompilerPreset` export wired through
-//   @rolldown/plugin-babel. Tracked as a follow-up; the compiler's value
-//   is purely automatic memoisation, so its absence is a perf regression
-//   on chart-heavy pages but not a correctness change.
+// - React Compiler: @vitejs/plugin-react@6 uses Oxc (no Babel). Wire the
+//   compiler via `reactCompilerPreset` + `@rolldown/plugin-babel` — the
+//   explicit opt-in path documented for v6+.
 //
 // Manual-chunks declared as a function (Rollup 4 tightened the type from
 // dict-or-function to function-only). Same matching semantics — split by
@@ -80,6 +78,7 @@ function chunkFor(id: string): string | undefined {
 export default defineConfig(({ command }) => ({
   plugins: [
     react(),
+    babel({ presets: [reactCompilerPreset()] }),
     tailwindcss(),
     process.env.ANALYZE
       ? visualizer({ filename: 'dist/stats.html', gzipSize: true, brotliSize: true })
