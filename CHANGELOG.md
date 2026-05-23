@@ -1,5 +1,42 @@
 # Changelog
 
+## 2.5.1 — 2026-05-24
+
+### Time format and schema cleanup
+
+Two `toLocaleTimeString()`/`toLocaleString()` call sites that ignored the
+project's 12h/24h preference (Settings → time_format) and silently fell
+back to the OS locale — giving 12h on macOS even when the user picked
+24h — now route through `useFormat()` / `lib/format.ts::fmtTs`.
+
+User-visible changes:
+
+- **LiveCountBadge tooltip.** "Active aircraft — updated HH:MM:SS" in
+  the nav now matches the user's selected clock format instead of the
+  OS locale.
+- **Watchlist entry timestamps.** Per-row "added on" dates likewise
+  honour the user setting.
+
+Internal:
+
+- **Dead `watchlist_alerted` column removed.** An earlier `_migrate()`
+  added an `INTEGER DEFAULT 0` column on `flights` that no code ever
+  read or wrote — watchlist dedup is handled by `is_new_flight` in
+  `collector._poll()`. Removed from `_migrate()`'s `new_cols` dict and
+  dropped from existing DBs via `_drop_dead_watchlist_alerted_column()`
+  in `run_background_migrations()`. The drop lives in the background
+  path because `ALTER TABLE DROP COLUMN` rewrites the entire `flights`
+  table — too slow for `_migrate()`'s pre-`READY=1` window. Conditional
+  on column presence and wrapped in `try/except`, so it's a clean
+  no-op on fresh DBs. Three regression tests cover the matrix.
+- **v2.5.0 audit closeout.** The full-codebase audit run after the
+  v2.5.0 cut flagged this column as its only finding (Low); no
+  Critical/High/Medium issues. All security non-negotiables (SSRF
+  guard, CSRF, Telegram escaping, sort whitelist, open-redirect
+  sanitisation), reliability rules (watchdog placement, slow ops
+  outside `_migrate()`), and SQLite invariants (per-thread connections,
+  WAL, correlated-subquery `registration` fix) verified clean.
+
 ## 2.5.0 — 2026-05-24
 
 ### Live map redesign — bottom command bar + HIST mode
