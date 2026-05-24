@@ -57,7 +57,15 @@ function UnitsSelect() {
     <Select
       value={units}
       onValueChange={(v) => setUnits(v as UnitSystem)}
-      onOpenChange={setSelectOpen}
+      onOpenChange={(o) => {
+        setSelectOpen(o);
+        // Force-close the tooltip when the Select closes — otherwise
+        // Radix Tooltip's internal hover state (still active because the
+        // trigger element never lost the pointer) re-fires it the moment
+        // we release the open-gate, producing a brief flicker on every
+        // dropdown dismissal.
+        if (!o) setTipOpen(false);
+      }}
     >
       <Tooltip open={tipOpen && !selectOpen} onOpenChange={setTipOpen} delayDuration={300}>
         <TooltipTrigger asChild>

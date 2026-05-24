@@ -27,10 +27,11 @@ User-visible changes:
   next poll" alert so the failure is visible.
 - **Units selector tooltip + per-option subtitles** (M9). Hovering or
   focusing the `Aeronautical ▾` selector in the nav now reveals a
-  three-row tooltip listing what each system means (`Aeronautical —
-  nm · ft · kts`, `Metric — km · m · km/h`, `Imperial — mi · ft · mph`).
-  Touch users get the same content as inline subtitles inside each
-  dropdown option, since Radix tooltips don't fire on tap.
+  three-row tooltip — system name on the left, units on the right
+  (`Aeronautical · nm · ft · kts`, `Metric · km · m · km/h`,
+  `Imperial · mi · ft · mph`). Touch users get the same units as
+  inline subtitles inside each dropdown option, since Radix tooltips
+  don't fire on tap.
 - **Nav clears the iPhone notch** (M10.3). The sticky top bar now
   respects `env(safe-area-inset-top)`; on desktop the offset resolves
   to `0` so layout is unchanged. The `--rsbs-nav-h` CSS variable used

@@ -105,4 +105,28 @@ describe('Nav', () => {
     expect(text).toContain('Imperial');
     expect(text).toContain('mi · ft · mph');
   });
+
+  it('open units dropdown also shows unit-list subtitles (touch fallback)', async () => {
+    // Radix Tooltip + Select hover handling on tap doesn't fire on mobile,
+    // so the brief mandates "same content via the dropdown's open state".
+    // This test guards the touch-fallback path independently of the
+    // desktop tooltip path above — if anyone deletes `subtitle={o.units}`
+    // from Nav.tsx, this assertion catches it.
+    const { getByTestId } = renderNav();
+    const trigger = getByTestId('nav-units-select');
+    // Radix Select opens on Enter / Space / pointer; jsdom doesn't fire
+    // pointerdown for click, so use keyboard.
+    trigger.focus();
+    fireEvent.keyDown(trigger, { key: 'Enter' });
+    await waitFor(() => {
+      const items = document.querySelectorAll('[role="option"]');
+      if (items.length === 0) throw new Error('dropdown not open');
+    });
+    const allText = Array.from(document.querySelectorAll('[role="option"]'))
+      .map((el) => el.textContent ?? '')
+      .join(' | ');
+    expect(allText).toContain('nm · ft · kts');
+    expect(allText).toContain('km · m · km/h');
+    expect(allText).toContain('mi · ft · mph');
+  });
 });

@@ -190,7 +190,9 @@ export function HealthStripe({ q }: Props) {
               className="inline-flex min-h-11 min-w-11 items-center justify-center rounded text-[var(--color-text-dim)] hover:text-[var(--color-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)] disabled:cursor-not-allowed disabled:opacity-50"
             >
               {open ? <ChevronUpIcon aria-hidden /> : <ChevronDownIcon aria-hidden />}
-              <span className="sr-only">Toggle health detail</span>
+              <span className="sr-only">
+                {checks.length === 0 ? 'No checks available' : 'Toggle health detail'}
+              </span>
             </button>
           </div>
         </div>
