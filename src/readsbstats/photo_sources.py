@@ -132,9 +132,19 @@ def _fetch_airport_data(icao_hex: str) -> PhotoResult | None:
     img = item.get("image")
     if not img:
         return None
+    # The API returns the thumbnail URL on the `/thumbnails/` subpath
+    # (typically ~150 px wide). The full-resolution image lives at the
+    # same path WITHOUT `/thumbnails/`. Derive the larger variant so
+    # the photo lightbox isn't a blurry upscale.
+    if "/images/aircraft/thumbnails/" in img:
+        large = img.replace(
+            "/images/aircraft/thumbnails/", "/images/aircraft/", 1
+        )
+    else:
+        large = img
     return PhotoResult(
         thumbnail_url=img,
-        large_url=img,
+        large_url=large,
         link_url=item.get("link"),
         photographer=item.get("photographer"),
     )
