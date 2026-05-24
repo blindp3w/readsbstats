@@ -12,12 +12,8 @@ import { Skeleton } from '@/components/ui/Skeleton';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { FlagBadge } from '@/components/FlagBadge';
-import {
-  FlightsTable,
-  type Flight,
-  type SortKey,
-  type SortDir,
-} from '@/components/FlightsTable';
+import { PhotoLightbox } from '@/components/PhotoLightbox';
+import { FlightsTable, type Flight, type SortKey, type SortDir } from '@/components/FlightsTable';
 import { Pagination } from '@/components/Pagination';
 import { fmtDur } from '@/lib/format';
 import { useFormat } from '@/hooks/useFormat';
@@ -266,9 +262,16 @@ function PhotoBox({ q }: { q: { data: PhotoResp | null | undefined; isLoading: b
   }
   return (
     <div className="space-y-1">
-      <div className="aspect-[4/3] overflow-hidden rounded bg-[var(--color-surface-2)]">
-        <img src={url} alt="" loading="lazy" className="h-full w-full object-cover" />
-      </div>
+      <PhotoLightbox photo={q.data} alt="">
+        <button
+          type="button"
+          aria-label="Enlarge photo"
+          data-testid="aircraft-photo-trigger"
+          className="block aspect-[4/3] w-full overflow-hidden rounded bg-[var(--color-surface-2)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)]"
+        >
+          <img src={url} alt="" loading="lazy" className="h-full w-full object-cover" />
+        </button>
+      </PhotoLightbox>
       {q.data.photographer && (
         <p className="text-xs text-[var(--color-text-dim)]">
           © {q.data.photographer}
