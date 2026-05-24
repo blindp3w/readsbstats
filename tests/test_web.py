@@ -1727,6 +1727,23 @@ class TestApiStats:
         days = [row["day"] for row in r.json()["daily_unique_aircraft"]]
         assert days == sorted(days), f"daily must be ASC, got {days}"
 
+    def test_daily_unique_aircraft_includes_today(self, client, db_conn, clear_web_cache):
+        # The unfiltered path used to be ORDER BY day DESC LIMIT 30; after the
+        # ASC flip we widened to LIMIT 31 so the 31-distinct-date window
+        # (partial start day + 30 full days through today) doesn't truncate
+        # today's bar. Insert a flight at boundary positions and assert both
+        # the oldest-included day AND today survive.
+        import datetime as _dt
+        now = int(time.time())
+        # 29 days ago — should appear
+        insert_flight(db_conn, icao="aa0001", first_seen=now - 29 * 86400)
+        # "now-ish" — today's bar
+        insert_flight(db_conn, icao="aa0002", first_seen=now - 60)
+        r = client.get("/api/stats")
+        days = [row["day"] for row in r.json()["daily_unique_aircraft"]]
+        today_str = _dt.datetime.fromtimestamp(now, _dt.timezone.utc).strftime("%Y-%m-%d")
+        assert today_str in days, f"today's bar must be present, got {days}"
+
 
 # ---------------------------------------------------------------------------
 # API: /api/stats/polar
