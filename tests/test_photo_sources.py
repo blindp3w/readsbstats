@@ -261,12 +261,13 @@ class TestFetchAirportData:
         assert result.large_url == "https://ad.com/t.jpg"
         assert result.photographer == "Bob"
 
-    def test_derives_full_resolution_url_by_stripping_thumbnails_path(self, monkeypatch):
+    def test_derives_full_resolution_url_from_cdn_host(self, monkeypatch):
         # Airport-data.com's API returns the thumbnail URL on a
         # /images/aircraft/thumbnails/ subpath. The full-resolution
-        # image lives at the same path WITHOUT /thumbnails/. v2.9.1
-        # polish: derive that larger URL so the photo lightbox isn't a
-        # blurry upscale of the ~150 px thumbnail.
+        # image is NOT served from the same host with /thumbnails/
+        # stripped (that path 404s — verified against the live API);
+        # it lives on a separate CDN host: image.airport-data.com,
+        # at /aircraft/<basename>. v2.9.1 follow-up fix.
         payload = {
             "status": 200,
             "data": [
@@ -287,8 +288,30 @@ class TestFetchAirportData:
             "https://www.airport-data.com/images/aircraft/thumbnails/000/281/281683.jpg"
         )
         assert result.large_url == (
-            "https://www.airport-data.com/images/aircraft/000/281/281683.jpg"
+            "https://image.airport-data.com/aircraft/281683.jpg"
         )
+
+    def test_large_url_falls_back_to_thumbnail_when_filename_unparseable(
+        self, monkeypatch
+    ):
+        # The thumbnail URL must end in /<basename>.<ext> for us to
+        # derive a CDN URL. If the API ever returns an unexpected path
+        # shape, we fall back to using the thumbnail as the large URL
+        # rather than constructing a 404.
+        payload = {
+            "status": 200,
+            "data": [
+                {
+                    "image": "https://airport-data.com/images/aircraft/thumbnails/",
+                    "link": "https://airport-data.com/aircraft/p",
+                    "photographer": "X",
+                }
+            ],
+        }
+        _patch_safe_open(monkeypatch, json.dumps(payload))
+        result = photo_sources._fetch_airport_data("aabbcc")
+        assert result is not None
+        assert result.large_url == result.thumbnail_url
 
     def test_status_not_200_returns_none(self, monkeypatch):
         _patch_safe_open(monkeypatch, json.dumps({"status": 404, "data": []}))
