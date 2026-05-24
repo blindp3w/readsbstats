@@ -81,7 +81,11 @@ export function KpiCard({ label, value, prev, series, sublabel, testid }: Props)
 
   return (
     <SimpleTooltip content={tooltipContent} delayDuration={300}>
-      <div>
+      {/* h-full on the wrapper too so Card's h-full has a stretched parent
+          to resolve against — defensive against future TooltipTrigger
+          asChild-semantics changes that would otherwise let the wrapper
+          collapse to content-height. */}
+      <div className="h-full">
         <Card className="card-hover h-full" data-testid={testid} aria-label={ariaLabel}>
           <CardContent className="flex h-full flex-col gap-1 pt-4">
             <div className="text-xs font-medium uppercase tracking-wide text-[var(--color-text-dim)]">

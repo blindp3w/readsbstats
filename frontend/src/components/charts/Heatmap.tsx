@@ -1,8 +1,8 @@
 // Day-of-week × Hour activity heatmap. CSS-grid based; each cell is bucketed
-// into one of 5 warm-ramp stops (HEATMAP_RAMP in ./theme) based on its share
-// of the dataset's max. Empty (count=0) cells render transparent. This is
-// the M1.2 fix: the previous single-accent alpha ramp made the difference
-// between 50 and 500 flights/hr barely visible.
+// into one of 5 stops from HEATMAP_RAMP (see ./theme) based on its share of
+// the dataset's max. Discrete buckets, not a continuous gradient, so
+// neighbouring cells with similar values still read as distinct. Empty
+// (count=0) cells render transparent.
 //
 // Two responsive layouts, gated purely by Tailwind:
 //   < sm  (≤ 639 px): hours as ROWS (24), days as COLS (7).

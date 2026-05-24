@@ -4,6 +4,7 @@ import { buildPanelOption } from '@/pages/Metrics';
 import { buildBarOption } from '@/pages/Stats';
 import { buildFlightProfileOption } from '@/pages/Flight';
 import { buildTopChartOption, type Row } from '@/components/charts/TopChart';
+import { abbreviateAxis } from '@/components/charts/topRows';
 
 const fakeFmtTs = (epoch: number) => new Date(epoch * 1000).toISOString();
 const fakeFmtAxisTime = (epoch: number) =>
@@ -190,5 +191,40 @@ describe('buildFlightProfileOption (Flight)', () => {
     const opt = buildFlightProfileOption(rows, 'ft', 'kt', fakeFmtAxisTime, fakeFmtTs);
     expect((opt.series as any)[0].yAxisIndex).toBe(0);
     expect((opt.series as any)[1].yAxisIndex).toBe(1);
+  });
+});
+
+describe('abbreviateAxis', () => {
+  it('returns small integers verbatim', () => {
+    expect(abbreviateAxis(0)).toBe('0');
+    expect(abbreviateAxis(999)).toBe('999');
+  });
+
+  it('abbreviates thousands with k, dropping trailing .0', () => {
+    expect(abbreviateAxis(1000)).toBe('1k');
+    expect(abbreviateAxis(1500)).toBe('1.5k');
+    expect(abbreviateAxis(10000)).toBe('10k');
+    expect(abbreviateAxis(12345)).toBe('12k');
+  });
+
+  it('abbreviates millions with M, dropping trailing .0', () => {
+    expect(abbreviateAxis(1_000_000)).toBe('1M');
+    expect(abbreviateAxis(1_500_000)).toBe('1.5M');
+    expect(abbreviateAxis(10_000_000)).toBe('10M');
+  });
+
+  it('handles negative values with the same scale', () => {
+    expect(abbreviateAxis(-5000)).toBe('-5k');
+  });
+
+  it('returns empty string for non-finite input', () => {
+    expect(abbreviateAxis(Number.NaN)).toBe('');
+    expect(abbreviateAxis(Number.POSITIVE_INFINITY)).toBe('');
+  });
+
+  it('does NOT strip trailing zero in non-decimal numbers (regex anchors)', () => {
+    // Regression guard: the .0$ replacement must not collapse "10" → "1".
+    expect(abbreviateAxis(10000)).toBe('10k');
+    expect(abbreviateAxis(20_000_000)).toBe('20M');
   });
 });
