@@ -31,6 +31,15 @@ const STATS_PAYLOAD = {
   heatmap: [],
   squawk_counts: {},
   furthest_aircraft: null,
+  lifetime: {
+    total_flights: 0,
+    total_positions: 0,
+    unique_aircraft: 0,
+    unique_airlines: 0,
+    oldest_flight: null,
+    db_size_bytes: null,
+    source_breakdown: { adsb: 0, mlat: 0, other: 0 },
+  },
 };
 
 beforeEach(() => {

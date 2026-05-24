@@ -1363,6 +1363,45 @@ def api_stats(
     except OSError:
         db_size = None
 
+    # Lifetime block — receiver-wide totals that are NOT scoped to the
+    # selected window. The Statistics page's "About this receiver" footer
+    # reads from this so it stays stable when the user changes the range
+    # picker. When `filtered=False` the main `agg` query is ALREADY over
+    # all flights, so we reuse those values; when filtered, a small
+    # extra aggregation runs.
+    if not filtered:
+        lifetime_total_flights    = agg["total_flights"]
+        lifetime_total_positions  = agg["total_positions"]
+        lifetime_unique_aircraft  = agg["unique_aircraft"]
+        lifetime_unique_airlines  = agg["unique_airlines"]
+        lifetime_oldest_flight    = agg["oldest_flight"]
+        lifetime_adsb_pct         = adsb_pct
+        lifetime_mlat_pct         = mlat_pct
+    else:
+        life = conn.execute(
+            """
+            SELECT
+                COUNT(*)                                                          AS total_flights,
+                SUM(total_positions)                                              AS total_positions,
+                COUNT(DISTINCT icao_hex)                                          AS unique_aircraft,
+                COUNT(DISTINCT CASE
+                    WHEN callsign IS NOT NULL AND callsign != '' AND length(callsign) >= 3
+                    THEN substr(callsign,1,3) END)                                AS unique_airlines,
+                MIN(first_seen)                                                   AS oldest_flight,
+                ROUND(100.0 * SUM(adsb_positions) / NULLIF(SUM(total_positions),0), 1) AS adsb_pct,
+                ROUND(100.0 * SUM(mlat_positions) / NULLIF(SUM(total_positions),0), 1) AS mlat_pct
+            FROM flights
+            """,
+        ).fetchone()
+        lifetime_total_flights    = life["total_flights"]
+        lifetime_total_positions  = life["total_positions"]
+        lifetime_unique_aircraft  = life["unique_aircraft"]
+        lifetime_unique_airlines  = life["unique_airlines"]
+        lifetime_oldest_flight    = life["oldest_flight"]
+        lifetime_adsb_pct         = life["adsb_pct"] or 0
+        lifetime_mlat_pct         = life["mlat_pct"] or 0
+    lifetime_other_pct = round(100.0 - lifetime_adsb_pct - lifetime_mlat_pct, 1)
+
     # Military + interesting — one JOIN pass (OR-merge tar1090-db + ADSBx flags)
     flags_row = conn.execute(
         f"""
@@ -1644,6 +1683,19 @@ def api_stats(
         "trends": {
             "flights_24h_prev": flights_prev_24h,
             "flights_7d_prev":  flights_prev_7d,
+        },
+        "lifetime": {
+            "total_flights":    lifetime_total_flights,
+            "total_positions":  lifetime_total_positions,
+            "unique_aircraft":  lifetime_unique_aircraft,
+            "unique_airlines":  lifetime_unique_airlines,
+            "oldest_flight":    lifetime_oldest_flight,
+            "db_size_bytes":    db_size,
+            "source_breakdown": {
+                "adsb":  lifetime_adsb_pct,
+                "mlat":  lifetime_mlat_pct,
+                "other": lifetime_other_pct,
+            },
         },
         "heatmap": [dict(r) for r in heatmap_rows],
         "top_countries": top_countries,

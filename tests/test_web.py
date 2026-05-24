@@ -1727,6 +1727,29 @@ class TestApiStats:
         days = [row["day"] for row in r.json()["daily_unique_aircraft"]]
         assert days == sorted(days), f"daily must be ASC, got {days}"
 
+    def test_lifetime_block_stays_constant_across_window(self, client, db_conn, clear_web_cache):
+        # The `lifetime` block is consumed by the "About this receiver"
+        # footer and must NOT change when the user picks a date range.
+        # Insert flights inside and outside the range; the lifetime
+        # totals should reflect ALL of them regardless of filter.
+        insert_flight(db_conn, icao="aa0001", first_seen=1_000_000)
+        insert_flight(db_conn, icao="aa0002", first_seen=2_000_000)
+        insert_flight(db_conn, icao="aa0003", first_seen=3_000_000)
+        # Unfiltered baseline
+        r_all = client.get("/api/stats").json()
+        # Filtered to just the middle flight
+        r_filt = client.get("/api/stats?from=1_900_000&to=2_100_000".replace("_", "")).json()
+        # Top-level metrics differ between filtered and unfiltered…
+        assert r_all["total_flights"] == 3
+        assert r_filt["total_flights"] == 1
+        # …but the lifetime block does not.
+        assert r_all["lifetime"]["total_flights"] == 3
+        assert r_filt["lifetime"]["total_flights"] == 3
+        assert r_all["lifetime"]["unique_aircraft"] == 3
+        assert r_filt["lifetime"]["unique_aircraft"] == 3
+        assert r_all["lifetime"]["oldest_flight"] == 1_000_000
+        assert r_filt["lifetime"]["oldest_flight"] == 1_000_000
+
     def test_daily_unique_aircraft_includes_today(self, client, db_conn, clear_web_cache):
         # The unfiltered path used to be ORDER BY day DESC LIMIT 30; after the
         # ASC flip we widened to LIMIT 31 so the 31-distinct-date window
