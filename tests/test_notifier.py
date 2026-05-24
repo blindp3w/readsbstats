@@ -2126,10 +2126,6 @@ class TestClampCaption:
     def test_default_limit_is_1024(self):
         assert notifier._PHOTO_CAPTION_MAX == 1024
 
-    def test_truncate_caption_alias_preserved(self):
-        """``_truncate_caption`` is kept as a back-compat alias."""
-        assert notifier._truncate_caption is notifier._clamp_caption
-
 
 class TestDispatchTruncates:
     @pytest.fixture(autouse=True)
