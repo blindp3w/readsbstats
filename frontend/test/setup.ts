@@ -51,6 +51,24 @@ if (typeof window !== 'undefined' && typeof window.ResizeObserver === 'undefined
   (globalThis as any).ResizeObserver = ResizeObserverShim;
 }
 
+// jsdom has no matchMedia. The v2.9.0 useIsMobile hook (and any other
+// matchMedia consumer) needs at least a stubbed factory; default to
+// `matches: false` (desktop). Individual tests can override via
+// `Object.defineProperty(window, 'matchMedia', { value: ... })`.
+if (typeof window !== 'undefined' && !window.matchMedia) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (window as any).matchMedia = (query: string) => ({
+    matches: false,
+    media: query,
+    onchange: null,
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    addListener: () => {},
+    removeListener: () => {},
+    dispatchEvent: () => false,
+  });
+}
+
 // jsdom has no IntersectionObserver. The Stats page section anchors use one
 // for active-state scrollspy; a no-op shim is enough to let the component
 // mount without throwing in tests.

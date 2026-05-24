@@ -28,10 +28,12 @@ export function RssiCell({ value, min, max, median }: Props) {
   // Range guard: if every observed RSSI is the same (or only one
   // non-null sample) the bar would be either 0% or NaN. Render a full
   // bar in the success color in that case — there's no meaningful
-  // 'better-than-median' signal to convey.
+  // 'better-than-median' signal to convey. (For multi-sample flights
+  // the strict > median keeps the existing 'green if better than typical'
+  // semantics; tests pin this exact threshold.)
   const range = max - min;
   const widthPct = range > 0 ? Math.round(((value - min) / range) * 100) : 100;
-  const isStrong = value > median;
+  const isStrong = range === 0 ? true : value > median;
   const bg = isStrong ? 'var(--color-success)' : 'var(--color-warn)';
 
   return (

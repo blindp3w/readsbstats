@@ -76,6 +76,22 @@ beforeEach(() => {
     });
   }) as unknown as typeof fetch;
   globalThis.localStorage.clear();
+  // useIsMobile gates row-tap disclosure. Default matchMedia stub in
+  // test/setup.ts returns matches:false (desktop); override to true so
+  // the click→expand path is exercised.
+  Object.defineProperty(window, 'matchMedia', {
+    writable: true,
+    value: (query: string) => ({
+      matches: true,
+      media: query,
+      onchange: null,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      addListener: () => {},
+      removeListener: () => {},
+      dispatchEvent: () => false,
+    }),
+  });
 });
 
 function renderPage() {

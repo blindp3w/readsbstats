@@ -20,6 +20,7 @@ import { KpiSparkline } from '@/components/stats/KpiSparkline';
 import { MetricCell } from '@/components/flight/MetricCell';
 import { RssiCell } from '@/components/flight/RssiCell';
 import { haversineNm, bearingFromReceiver } from '@/lib/geo';
+import { useIsMobile } from '@/hooks/useIsMobile';
 import { cn } from '@/lib/cn';
 
 // Heavy bits (MapLibre GL) lazy-loaded so other pages don't pay for them.
@@ -445,6 +446,7 @@ function FlightHeader({
                     {fmtTs(f.last_seen)}
                   </span>
                 }
+                valueText={`${fmtTs(f.first_seen)} to ${fmtTs(f.last_seen)}`}
                 sublabel={`duration ${fmtDur(f.duration_sec)}`}
                 testid="flight-metric-window"
               />
@@ -624,6 +626,11 @@ function PositionTable({ positions }: { positions: Position[] }) {
   // Per-row inline disclosure state — iPhone only. Keyed by ts (positions
   // sorted by ts and ts is unique-ish per flight).
   const [expanded, setExpanded] = useState<Set<number>>(() => new Set());
+  // Gate the interactive row affordance behind <sm. At md+ all detail
+  // columns are visible inline, so the row tap-handler + aria-expanded +
+  // role="button" would mislead screen readers ('expanded' but nothing
+  // changes visually) and accumulate Set entries indefinitely.
+  const isMobile = useIsMobile();
 
   if (positions.length === 0) {
     return <p className="text-sm text-[var(--color-text-dim)]">No positions recorded.</p>;
@@ -678,16 +685,23 @@ function PositionTable({ positions }: { positions: Position[] }) {
               <Fragment key={p.ts}>
                 <TR
                   data-testid={`flight-position-row-${p.ts}`}
-                  tabIndex={0}
-                  aria-expanded={isOpen}
-                  onClick={() => toggle(p.ts)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' || e.key === ' ') {
-                      e.preventDefault();
-                      toggle(p.ts);
-                    }
-                  }}
-                  className="cursor-pointer md:cursor-default"
+                  // Interactive affordances ONLY on <sm. Desktop sees all
+                  // detail columns inline so there's nothing to disclose.
+                  {...(isMobile
+                    ? {
+                        tabIndex: 0,
+                        role: 'button',
+                        'aria-expanded': isOpen,
+                        onClick: () => toggle(p.ts),
+                        onKeyDown: (e: React.KeyboardEvent) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            toggle(p.ts);
+                          }
+                        },
+                        className: 'cursor-pointer',
+                      }
+                    : {})}
                 >
                   <TD
                     className="tabnum border-l-[3px] text-xs text-[var(--color-text-dim)]"
