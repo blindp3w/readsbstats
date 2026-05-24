@@ -256,8 +256,39 @@ class TestFetchAirportData:
         result = photo_sources._fetch_airport_data("aabbcc")
         assert result is not None
         assert result.thumbnail_url == "https://ad.com/t.jpg"
+        # URL doesn't have /images/aircraft/thumbnails/ so large_url
+        # falls through to the same value as thumbnail.
         assert result.large_url == "https://ad.com/t.jpg"
         assert result.photographer == "Bob"
+
+    def test_derives_full_resolution_url_by_stripping_thumbnails_path(self, monkeypatch):
+        # Airport-data.com's API returns the thumbnail URL on a
+        # /images/aircraft/thumbnails/ subpath. The full-resolution
+        # image lives at the same path WITHOUT /thumbnails/. v2.9.1
+        # polish: derive that larger URL so the photo lightbox isn't a
+        # blurry upscale of the ~150 px thumbnail.
+        payload = {
+            "status": 200,
+            "data": [
+                {
+                    "image": (
+                        "https://www.airport-data.com/images/aircraft/"
+                        "thumbnails/000/281/281683.jpg"
+                    ),
+                    "link": "https://www.airport-data.com/aircraft/SP-LIM.html",
+                    "photographer": "Photog",
+                }
+            ],
+        }
+        _patch_safe_open(monkeypatch, json.dumps(payload))
+        result = photo_sources._fetch_airport_data("aabbcc")
+        assert result is not None
+        assert result.thumbnail_url == (
+            "https://www.airport-data.com/images/aircraft/thumbnails/000/281/281683.jpg"
+        )
+        assert result.large_url == (
+            "https://www.airport-data.com/images/aircraft/000/281/281683.jpg"
+        )
 
     def test_status_not_200_returns_none(self, monkeypatch):
         _patch_safe_open(monkeypatch, json.dumps({"status": 404, "data": []}))

@@ -52,7 +52,11 @@ export function PhotoLightbox({ photo, alt, children }: Props) {
         <Dlg.Content
           className={cn(
             'fixed left-1/2 top-1/2 z-[1000] -translate-x-1/2 -translate-y-1/2',
-            'flex max-h-[calc(100vh-2rem)] w-[min(960px,calc(100vw-2rem))] flex-col',
+            // w-fit + max-w lets the dialog shrink-wrap small images
+            // (so the footer doesn't stretch across 960 px of black
+            // beside a 200 px thumbnail) while still capping the
+            // upper bound for full-resolution photos.
+            'flex max-h-[calc(100vh-2rem)] w-fit max-w-[min(960px,calc(100vw-2rem))] flex-col',
             'overflow-hidden rounded-lg border border-[var(--color-border-default)] bg-[var(--color-surface)] shadow-2xl',
             'focus:outline-none',
           )}
@@ -68,15 +72,14 @@ export function PhotoLightbox({ photo, alt, children }: Props) {
               src={largeUrl}
               alt={alt}
               loading="lazy"
-              // w-full + object-contain: image fills the dialog width
-              // (or scales down to fit max-h) while preserving its
-              // natural aspect ratio. When the source only returned a
-              // thumbnail (~240 px) it upscales to the container width;
-              // when it returned a true large variant (~900 px+) it
-              // renders crisp. Without w-full small images were
-              // rendering at their natural size and the dialog felt
-              // empty (flight_details5.png).
-              className="block h-auto w-full max-w-full object-contain"
+              // Render at natural pixel size, capped by viewport.
+              // Earlier we used `w-full` to force small thumbnails
+              // to fill the dialog, but that upscaled blurrily for
+              // sources that only expose a ~150 px image
+              // (airport-data.com — flight_details6.png). The dialog
+              // now uses `w-fit` to shrink-wrap small images, so the
+              // black-bar problem doesn't reappear.
+              className="block max-w-full object-contain"
               style={{ maxHeight: 'calc(100vh - 6rem)' }}
             />
             <DialogClose asChild>
