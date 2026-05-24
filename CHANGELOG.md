@@ -1,5 +1,44 @@
 # Changelog
 
+## 2.9.1 — 2026-05-24
+
+### Flight detail polish + photo lightbox
+
+Three small follow-ups to v2.9.0 from screenshot review.
+
+User-visible changes:
+
+- **Route map zoom controls** (`/stats/flight/:id`). The `RouteMap`
+  component now includes a MapLibre `<NavigationControl>` in the
+  top-right corner: + / − zoom buttons. Compass hidden — bearing
+  rotation isn't relevant for a 2D flight track.
+- **Route start + end markers**. Two small coloured squares on the
+  flight line: green at the first plotted position ("start"), red at
+  the last ("end"). The shape differs from the receiver dot (circle)
+  so the three markers are distinguishable even before colour parses.
+  Hover/tap shows the role via `aria-label` + `title`.
+- **Photo lightbox** on both `/stats/flight/:id` AND `/stats/aircraft/:icao`.
+  Aircraft photos in both detail pages are now click-to-enlarge: a
+  centred Radix Dialog opens with the full-size image (max-h 80vh,
+  object-contain so portrait + landscape photos both fit) plus a
+  footer line with `© photographer` and a `view on source →` link to
+  the original Planespotters listing when `link_url` is present.
+  Esc / outside-click / close button dismiss. Degrades gracefully —
+  when no large URL is available (or the URL fails `safeUrl`'s
+  HTTPS-only check), the thumbnail renders without a click action.
+
+Internal:
+
+- **`PhotoLightbox`** new shared component
+  (`frontend/src/components/PhotoLightbox.tsx`) wraps the caller's
+  thumbnail `<button>` in a Radix Dialog trigger. Single API; both
+  Flight and Aircraft pages consume it.
+- 6 new frontend tests covering: trigger renders, click opens dialog
+  with image + photographer + source link, degrades to plain children
+  when URLs are missing, rejects non-HTTPS via `safeUrl`, falls back
+  to thumbnail when large is absent, omits source link when missing.
+  Total suite: **230 passed**.
+
 ## 2.9.0 — 2026-05-24
 
 ### Flight detail compact header + chart tone-down + position-log polish

@@ -1,5 +1,13 @@
 import { useEffect, useMemo, useRef } from 'react';
-import { Map, Source, Layer, Marker, AttributionControl, type MapRef } from 'react-map-gl/maplibre';
+import {
+  Map,
+  Source,
+  Layer,
+  Marker,
+  AttributionControl,
+  NavigationControl,
+  type MapRef,
+} from 'react-map-gl/maplibre';
 import { LngLatBounds } from 'maplibre-gl';
 import type { StyleSpecification } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
@@ -33,6 +41,8 @@ const ADSB_COLOR = '#22c55e';
 const MLAT_COLOR = '#eab308';
 const MIXED_COLOR = '#5b9af9';
 const RECEIVER_COLOR = '#5b9af9';
+const START_COLOR = '#22c55e'; // matches ADS-B green — "begin"
+const END_COLOR = '#ef4444'; // danger red — "terminate"
 
 function colorForSource(src: string | null | undefined): string {
   if (!src) return MIXED_COLOR;
@@ -174,6 +184,9 @@ export default function RouteMap({ positions, receiverLat, receiverLon }: Props)
       style={{ width: '100%', height: '100%', borderRadius: '0.25rem' }}
     >
       <AttributionControl compact position="bottom-right" />
+      {/* Zoom + / − in top-right. Compass hidden — bearing rotation
+          isn't relevant for a 2D flight route. */}
+      <NavigationControl position="top-right" showCompass={false} />
       {segmentsGeoJSON.features.length > 0 && (
         <Source id="route" type="geojson" data={segmentsGeoJSON}>
           <Layer
@@ -192,12 +205,59 @@ export default function RouteMap({ positions, receiverLat, receiverLon }: Props)
       {receiverLat != null && receiverLon != null && (
         <Marker longitude={receiverLon} latitude={receiverLat} anchor="center">
           <div
-            aria-hidden="true"
+            aria-label="Receiver"
+            title="Receiver"
             style={{
               width: 12,
               height: 12,
               borderRadius: '50%',
               backgroundColor: RECEIVER_COLOR,
+              border: '2px solid #fff',
+              boxSizing: 'border-box',
+            }}
+          />
+        </Marker>
+      )}
+
+      {/* Start marker — green square at the FIRST plotted position.
+          Different shape from the receiver dot to disambiguate even
+          before colour is parsed; matches the green = ADS-B convention
+          used by the route line so the start visually 'belongs' to the
+          track. */}
+      {allPoints.length >= 1 && (
+        <Marker longitude={allPoints[0][0]} latitude={allPoints[0][1]} anchor="center">
+          <div
+            aria-label="Route start"
+            title="Route start"
+            data-testid="route-marker-start"
+            style={{
+              width: 10,
+              height: 10,
+              backgroundColor: START_COLOR,
+              border: '2px solid #fff',
+              boxSizing: 'border-box',
+            }}
+          />
+        </Marker>
+      )}
+
+      {/* End marker — red square at the LAST plotted position. Same
+          shape as start so the pair reads as "endpoints"; colour
+          differentiates direction. */}
+      {allPoints.length >= 2 && (
+        <Marker
+          longitude={allPoints[allPoints.length - 1][0]}
+          latitude={allPoints[allPoints.length - 1][1]}
+          anchor="center"
+        >
+          <div
+            aria-label="Route end"
+            title="Route end"
+            data-testid="route-marker-end"
+            style={{
+              width: 10,
+              height: 10,
+              backgroundColor: END_COLOR,
               border: '2px solid #fff',
               boxSizing: 'border-box',
             }}

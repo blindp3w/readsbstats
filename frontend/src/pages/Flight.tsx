@@ -21,6 +21,7 @@ import { MetricCell } from '@/components/flight/MetricCell';
 import { RssiCell } from '@/components/flight/RssiCell';
 import { haversineNm, bearingFromReceiver } from '@/lib/geo';
 import { useIsMobile } from '@/hooks/useIsMobile';
+import { PhotoLightbox } from '@/components/PhotoLightbox';
 import { cn } from '@/lib/cn';
 
 // Heavy bits (MapLibre GL) lazy-loaded so other pages don't pay for them.
@@ -334,19 +335,24 @@ function FlightHeader({
               <Skeleton className="aspect-[16/9] w-full sm:h-[100px] sm:w-[140px]" />
             ) : photoUrl ? (
               <>
-                <div
-                  className={cn(
-                    'overflow-hidden rounded bg-[var(--color-surface-2)]',
-                    'aspect-[16/9] sm:aspect-auto sm:h-[100px] sm:w-[140px]',
-                  )}
-                >
-                  <img
-                    src={photoUrl}
-                    alt={f.registration ?? f.icao_hex}
-                    loading="lazy"
-                    className="h-full w-full object-cover"
-                  />
-                </div>
+                <PhotoLightbox photo={photoQ.data ?? null} alt={f.registration ?? f.icao_hex}>
+                  <button
+                    type="button"
+                    aria-label="Enlarge photo"
+                    data-testid="flight-photo-trigger"
+                    className={cn(
+                      'block overflow-hidden rounded bg-[var(--color-surface-2)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)]',
+                      'aspect-[16/9] w-full sm:aspect-auto sm:h-[100px] sm:w-[140px]',
+                    )}
+                  >
+                    <img
+                      src={photoUrl}
+                      alt={f.registration ?? f.icao_hex}
+                      loading="lazy"
+                      className="h-full w-full object-cover"
+                    />
+                  </button>
+                </PhotoLightbox>
                 {photoQ.data?.photographer && (
                   <p
                     className="text-[10px] text-[var(--color-text-dim)]"
