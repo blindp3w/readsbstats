@@ -69,10 +69,15 @@ export function SelectContent({
 
 interface ItemProps extends React.ComponentPropsWithoutRef<typeof Sel.Item> {
   children: ReactNode;
+  // Optional inline subtitle (e.g. unit list for the Nav units selector).
+  // Rendered as a right-aligned sibling to <Sel.ItemText>, OUTSIDE the
+  // ItemText — keeping it out of ItemText means the trigger's
+  // <Sel.Value /> still shows only the option's name, not "name subtitle".
+  subtitle?: ReactNode;
 }
 
 export const SelectItem = forwardRef<HTMLDivElement, ItemProps>(
-  ({ children, className, ...props }, ref) => (
+  ({ children, subtitle, className, ...props }, ref) => (
     <Sel.Item
       ref={ref}
       className={cn(
@@ -85,6 +90,9 @@ export const SelectItem = forwardRef<HTMLDivElement, ItemProps>(
       {...props}
     >
       <Sel.ItemText>{children}</Sel.ItemText>
+      {subtitle ? (
+        <span className="ml-auto pl-3 text-xs text-[var(--color-text-dim)] tabnum">{subtitle}</span>
+      ) : null}
     </Sel.Item>
   ),
 );

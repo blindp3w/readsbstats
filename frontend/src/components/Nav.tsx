@@ -1,15 +1,32 @@
+import { useState } from 'react';
 import { NavLink, Link } from 'react-router-dom';
 import { HamburgerMenuIcon } from '@radix-ui/react-icons';
 import { cn } from '@/lib/cn';
 import { useUnitsStore, type UnitSystem } from '@/store/units';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/Select';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/Select';
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/DropdownMenu';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/Tooltip';
 import { LiveCountBadge } from '@/components/LiveCountBadge';
+
+// Unit-system → (label, units) for the Nav units selector tooltip + dropdown
+// subtitles. Single source of truth so the desktop tooltip and the touch
+// fallback (subtitle inside each SelectItem) can't drift apart.
+const UNIT_OPTIONS: { value: UnitSystem; label: string; units: string }[] = [
+  { value: 'aeronautical', label: 'Aeronautical', units: 'nm · ft · kts' },
+  { value: 'metric', label: 'Metric', units: 'km · m · km/h' },
+  { value: 'imperial', label: 'Imperial', units: 'mi · ft · mph' },
+];
 
 // Top nav. Mirrors the v1 Jinja nav structure (8 links + brand). The
 // mobile menu is a Radix DropdownMenu (below md/1024px); desktop is a
@@ -28,19 +45,55 @@ const LINKS = [
 function UnitsSelect() {
   const units = useUnitsStore((s) => s.units);
   const setUnits = useUnitsStore((s) => s.setUnits);
+  // Controlled tooltip state so it auto-closes when the Select opens.
+  // Radix Tooltip + Select composition isn't documented; the default
+  // tooltip stays visible on hover/focus and the click that opens the
+  // Select doesn't move focus away (focus moves into Select.Content's
+  // portal). Without coordination the tooltip lingers over the open
+  // dropdown.
+  const [tipOpen, setTipOpen] = useState(false);
+  const [selectOpen, setSelectOpen] = useState(false);
   return (
-    <Select value={units} onValueChange={(v) => setUnits(v as UnitSystem)}>
-      <SelectTrigger
-        data-testid="nav-units-select"
-        className="min-h-[36px] w-[130px] text-xs md:min-h-[28px] md:py-0.5"
-        aria-label="Units"
-      >
-        <SelectValue />
-      </SelectTrigger>
+    <Select
+      value={units}
+      onValueChange={(v) => setUnits(v as UnitSystem)}
+      onOpenChange={setSelectOpen}
+    >
+      <Tooltip open={tipOpen && !selectOpen} onOpenChange={setTipOpen} delayDuration={300}>
+        <TooltipTrigger asChild>
+          <SelectTrigger
+            data-testid="nav-units-select"
+            className="min-h-[36px] w-[130px] text-xs md:min-h-[28px] md:py-0.5"
+            aria-label="Units"
+          >
+            <SelectValue />
+          </SelectTrigger>
+        </TooltipTrigger>
+        <TooltipContent data-testid="nav-units-tooltip" className="w-[200px] p-2">
+          <div className="space-y-1 text-xs" role="presentation">
+            {UNIT_OPTIONS.map((o) => (
+              <div
+                key={o.value}
+                className={cn(
+                  'flex items-baseline justify-between gap-3',
+                  o.value === units
+                    ? 'text-[var(--color-text)] font-semibold'
+                    : 'text-[var(--color-text-dim)]',
+                )}
+              >
+                <span>{o.label}</span>
+                <span className="tabnum font-mono">{o.units}</span>
+              </div>
+            ))}
+          </div>
+        </TooltipContent>
+      </Tooltip>
       <SelectContent>
-        <SelectItem value="aeronautical">Aeronautical</SelectItem>
-        <SelectItem value="metric">Metric</SelectItem>
-        <SelectItem value="imperial">Imperial</SelectItem>
+        {UNIT_OPTIONS.map((o) => (
+          <SelectItem key={o.value} value={o.value} subtitle={o.units}>
+            {o.label}
+          </SelectItem>
+        ))}
       </SelectContent>
     </Select>
   );
@@ -94,7 +147,12 @@ export function Nav() {
       // to keep margin over any future map-overlay UI.
       // bg /95 (fallback) and /85 (with backdrop-blur) lift opacity enough
       // that the basemap can't show through during scroll.
-      className="sticky top-0 z-[1000] border-b border-[var(--color-border-default)] bg-[var(--color-surface)]/95 backdrop-blur supports-[backdrop-filter]:bg-[var(--color-surface)]/85"
+      // pt-[env(safe-area-inset-top)] clears the iPhone Dynamic Island /
+      // notch on notched devices; resolves to 0 on desktop so behaviour
+      // is unchanged there. Paired with --rsbs-nav-h in index.css which
+      // includes the same env() term so the Stats sticky range bar (and
+      // any future docked chrome) align with the nav's bottom edge.
+      className="sticky top-0 z-[1000] border-b border-[var(--color-border-default)] bg-[var(--color-surface)]/95 pt-[env(safe-area-inset-top)] backdrop-blur supports-[backdrop-filter]:bg-[var(--color-surface)]/85"
     >
       <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-4 py-2.5 md:py-1.5">
         <Link to="/" className="text-sm font-semibold" data-testid="nav-brand">

@@ -1,5 +1,60 @@
 # Changelog
 
+## 2.7.0 — 2026-05-24
+
+### Metrics health stripe + paper-cuts
+
+Picks up four small, additive items from
+`internal_docs/uiux/CLAUDE_DESIGN_BRIEF.md` (Milestones 2.3, 2.4, 9, 10.3).
+No backend changes — `/api/metrics/health` and its `check.message` strings
+were already in the shape this UI consumes.
+
+User-visible changes:
+
+- **Receiver health stripe** on `/metrics` (M2.3). The old collapsible
+  banner is replaced by a horizontal strip of squares — one per health
+  check, colored green / amber / red — with a summary line:
+  `N checks · n OK · n warn · n down [▾]`. Each square is hover-
+  tooltipped with the check name + current message, and clicking it
+  expands the detail panel + focuses the corresponding row.
+- **First-failing check summaries inline** (M2.4). When any check is
+  warn / critical, up to two single-line summaries appear immediately
+  below the stripe (e.g. `⚠ message_rate 1008/min vs 641/min baseline
+  (157%)`). The body comes verbatim from `check.message`.
+- **`Health unavailable` notice on error**. The previous banner
+  silently disappeared when `/api/metrics/health` errored. The new
+  stripe shows a small "Receiver health checks unavailable — retry on
+  next poll" alert so the failure is visible.
+- **Units selector tooltip + per-option subtitles** (M9). Hovering or
+  focusing the `Aeronautical ▾` selector in the nav now reveals a
+  three-row tooltip listing what each system means (`Aeronautical —
+  nm · ft · kts`, `Metric — km · m · km/h`, `Imperial — mi · ft · mph`).
+  Touch users get the same content as inline subtitles inside each
+  dropdown option, since Radix tooltips don't fire on tap.
+- **Nav clears the iPhone notch** (M10.3). The sticky top bar now
+  respects `env(safe-area-inset-top)`; on desktop the offset resolves
+  to `0` so layout is unchanged. The `--rsbs-nav-h` CSS variable used
+  by the v2.6.0 Stats sticky range bar grows in lockstep, so docked
+  page chrome stays glued to the nav's actual bottom edge on notched
+  devices.
+
+Internal:
+
+- New `frontend/src/components/metrics/HealthStripe.tsx` component
+  (mirrors the `components/stats/` layout convention from v2.6.0).
+  `statusColor` / `StatusIcon` helpers moved out of `Metrics.tsx` into
+  the new component.
+- `frontend/src/components/ui/Select.tsx::SelectItem` gains an optional
+  `subtitle?: ReactNode` prop, rendered as an `ml-auto` sibling to
+  `<Select.ItemText>`. Backward compatible — no other call site changes.
+- Radix Tooltip + Select composition uses controlled state in the nav
+  (`tipOpen && !selectOpen`) so the tooltip auto-dismisses when the
+  dropdown opens. Verified via context7 that this isn't covered by
+  Radix's documentation; controlled coordination was the safest pattern.
+- 6 new frontend tests across `metrics-health.test.tsx` and `nav.test.tsx`
+  (stripe squares + summary counts + first-failing logic + empty/error
+  states; tooltip content assertion). Total frontend suite: **183 passed**.
+
 ## 2.6.0 — 2026-05-24
 
 ### Statistics page redesign — time-window narrative
