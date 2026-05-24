@@ -73,7 +73,14 @@ def _parse_stats(data: dict) -> tuple[int | None, dict | None]:
     ts = last1.get("end")
     if ts is None:
         return None, None
-    ts = int(ts)
+    try:
+        ts = int(ts)
+    except (ValueError, TypeError):
+        # Audit-13 A13-026: a non-numeric `end` (schema drift, TLS-terminator
+        # weirdness, partial write) used to crash the parse and abort the
+        # whole metrics row. Log and skip this cycle; the next poll picks up.
+        log.warning("metrics_collector: non-numeric last1min.end=%r — skipping cycle", ts)
+        return None, None
 
     local  = last1.get("local") if isinstance(last1.get("local"), dict) else {}
     remote = last1.get("remote") if isinstance(last1.get("remote"), dict) else {}

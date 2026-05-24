@@ -493,6 +493,11 @@ def _dispatch_one(item: tuple) -> None:
     elif kind == "wl":
         notifier.notify_watchlist(item[1], item[2], item[3], item[4], item[5],
                                   item[6], item[7], item[8])
+    else:
+        # Audit-13 A13-027: previously this silently dropped the notification.
+        # A typo or future-version kind now surfaces in journalctl so the
+        # alert loss is at least visible.
+        log.warning("_dispatch_one: unknown notification kind=%r — dropping", kind)
 
 
 def _dispatch_notifications(pending: list) -> None:
