@@ -16,11 +16,18 @@ export const CHART_COLORS = {
   surface: '#161a26',
 };
 
-// 5-stop warm sequential ramp for the activity heatmap. Encodes luminance
-// (pale → dark) so the ranking still reads under color-vision deficiency.
-// Lives here (per ADR-0008) so both Heatmap.tsx and any future ECharts
-// visualMap consumer can share the same stops.
-export const HEATMAP_RAMP = ['#f5e6c4', '#f0c674', '#e69138', '#cc4125', '#990000'];
+// 5-stop sequential ramp for the activity heatmap. Uses the project's
+// accent blue at five discrete alpha stops — keeps the dashboard's
+// single-color palette while giving cells better discrimination than
+// the previous continuous (0.18 → 1.0) gradient (M1.2 audit fix).
+// `#5b9af9` is CHART_COLORS.accent.
+export const HEATMAP_RAMP = [
+  '#5b9af933', // 20%
+  '#5b9af959', // 35%
+  '#5b9af980', // 50%
+  '#5b9af9b3', // 70%
+  '#5b9af9ff', // 100%
+];
 
 export function baseOption(): Partial<EChartsOption> {
   return {

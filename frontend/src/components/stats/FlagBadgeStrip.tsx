@@ -41,8 +41,11 @@ function Pill({ to, label, count, variant, testid, ariaTemplate }: PillProps) {
       to={to}
       data-testid={testid}
       aria-label={ariaTemplate(count)}
+      // flex (not inline-flex) + w-full so each pill stretches to fill its
+      // grid cell. justify-between keeps the count anchored right inside
+      // each pill so the row scans as a column of values.
       className={cn(
-        'inline-flex min-h-11 items-center gap-2 rounded-full border px-3 py-1 text-xs font-medium transition-colors',
+        'flex min-h-11 w-full items-center justify-between gap-2 rounded-full border px-3 py-1 text-xs font-medium transition-colors',
         muted
           ? 'border-[var(--color-border-default)] text-[var(--color-text-dim)] hover:bg-[var(--color-surface-2)]'
           : 'border-[var(--color-border-default)] hover:bg-[var(--color-surface-2)]',
@@ -65,8 +68,11 @@ function Pill({ to, label, count, variant, testid, ariaTemplate }: PillProps) {
 
 export function FlagBadgeStrip({ counts }: Props) {
   return (
+    // Equal-width grid (6 cells at xl, 3 at md, 2 at base). The whole strip
+    // spans the same width as the KPI row above so the visual rhythm is
+    // consistent — pills don't bunch on the left of the container.
     <div
-      className="flex flex-wrap items-center gap-2"
+      className="grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-6"
       data-testid="stats-flag-strip"
       aria-label="Notable activity"
     >

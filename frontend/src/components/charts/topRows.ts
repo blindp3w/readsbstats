@@ -35,6 +35,17 @@ export interface RankingsData {
 
 export const trunc = (s: string, n = 14) => (s.length > n ? s.slice(0, n - 1) + '…' : s);
 
+// Compact axis-tick formatter. Long flight counts (>10k, especially in the
+// xl small-multiples view at ~280 px wide) overflow the axis and collide
+// with their neighbours. Abbreviate to k/M with one decimal where useful.
+export function abbreviateAxis(v: number): string {
+  if (!Number.isFinite(v)) return '';
+  const abs = Math.abs(v);
+  if (abs >= 1e6) return (v / 1e6).toFixed(abs >= 1e7 ? 0 : 1).replace(/\.0$/, '') + 'M';
+  if (abs >= 1e3) return (v / 1e3).toFixed(abs >= 1e4 ? 0 : 1).replace(/\.0$/, '') + 'k';
+  return String(v);
+}
+
 export function buildRows(view: ViewKey, props: RankingsData, topN = 15): Row[] {
   switch (view) {
     case 'aircraft':
@@ -94,7 +105,15 @@ export function buildTopChartOption(rows: Row[], clickable: boolean): EChartsOpt
     grid: { top: 8, right: 32, bottom: 8, left: 110, containLabel: false },
     xAxis: {
       type: 'value',
-      axisLabel: { color: CHART_COLORS.textDim },
+      // splitNumber: 4 hint keeps the tick density low so labels don't
+      // collide on narrow cards; hideOverlap is the belt-and-braces fallback
+      // when a long number (e.g. 12,000) still overflows.
+      splitNumber: 4,
+      axisLabel: {
+        color: CHART_COLORS.textDim,
+        formatter: abbreviateAxis,
+        hideOverlap: true,
+      },
       splitLine: { lineStyle: { color: CHART_COLORS.grid, type: 'dashed' } },
     },
     yAxis: {

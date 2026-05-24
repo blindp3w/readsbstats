@@ -77,24 +77,40 @@ export function KpiCard({ label, value, prev, series, sublabel, testid }: Props)
           cmp.pct != null ? ` (${Math.abs(cmp.pct).toFixed(0)} percent)` : ''
         } vs previous period`;
 
+  const hasSparkline = !!series && series.length >= 7;
+
   return (
     <SimpleTooltip content={tooltipContent} delayDuration={300}>
       <div>
-        <Card className="card-hover" data-testid={testid} aria-label={ariaLabel}>
-          <CardContent className="space-y-1 pt-4">
+        <Card className="card-hover h-full" data-testid={testid} aria-label={ariaLabel}>
+          <CardContent className="flex h-full flex-col gap-1 pt-4">
             <div className="text-xs font-medium uppercase tracking-wide text-[var(--color-text-dim)]">
               {label}
             </div>
             <div className="tabnum text-3xl font-bold leading-tight">{valueText}</div>
             <div className="text-xs tabnum min-h-[1rem]">{deltaLine}</div>
-            {sublabel ? (
-              <div className="text-xs text-[var(--color-text-dim)]">{sublabel}</div>
-            ) : null}
-            {series && series.length > 0 ? (
-              <div className="pt-1">
-                <KpiSparkline data={series} ariaLabel={`${label} trend`} />
-              </div>
-            ) : null}
+            {/* Sublabel slot: always reserved so cards line up across the
+                row even when one card has nothing useful to put here. */}
+            <div className="min-h-[1rem] text-xs text-[var(--color-text-dim)]">
+              {sublabel ?? (
+                <span className="inline-block h-px w-8 bg-[var(--color-border-default)]" />
+              )}
+            </div>
+            {/* Sparkline slot: same trick. h-6 (24 px) matches KpiSparkline's
+                default height; empty cards get a 1-px dim baseline. mt-auto
+                pins it to the card's bottom regardless of value/sublabel
+                line-wrap so every card in the row aligns to the same
+                visual baseline. */}
+            <div className="mt-auto flex h-6 items-center pt-1">
+              {hasSparkline ? (
+                <KpiSparkline data={series!} ariaLabel={`${label} trend`} />
+              ) : (
+                <span
+                  aria-hidden="true"
+                  className="block h-px w-full bg-[var(--color-border-default)]"
+                />
+              )}
+            </div>
           </CardContent>
         </Card>
       </div>
