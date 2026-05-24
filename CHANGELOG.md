@@ -12,20 +12,23 @@ User-visible changes:
   component now includes a MapLibre `<NavigationControl>` in the
   top-right corner: + / − zoom buttons. Compass hidden — bearing
   rotation isn't relevant for a 2D flight track.
-- **Route start + end markers**. Two small coloured squares on the
+- **Route start + end markers**. Small coloured circles on the
   flight line: green at the first plotted position ("start"), red at
-  the last ("end"). The shape differs from the receiver dot (circle)
-  so the three markers are distinguishable even before colour parses.
-  Hover/tap shows the role via `aria-label` + `title`.
+  the last ("end"). Same circular shape as the receiver dot; colour
+  alone differentiates role (matches the line's source-colour
+  convention — green = ADS-B). Hover/tap shows the role via
+  `aria-label` + `title`.
 - **Photo lightbox** on both `/stats/flight/:id` AND `/stats/aircraft/:icao`.
   Aircraft photos in both detail pages are now click-to-enlarge: a
-  centred Radix Dialog opens with the full-size image (max-h 80vh,
-  object-contain so portrait + landscape photos both fit) plus a
-  footer line with `© photographer` and a `view on source →` link to
-  the original Planespotters listing when `link_url` is present.
-  Esc / outside-click / close button dismiss. Degrades gracefully —
-  when no large URL is available (or the URL fails `safeUrl`'s
-  HTTPS-only check), the thumbnail renders without a click action.
+  centred Radix Dialog opens with the image filling the dialog width
+  (`w-full object-contain`, max-h `calc(100vh - 6rem)`) so small
+  thumbnails upscale to a useful size and full-resolution images
+  preserve their aspect ratio. Footer carries `© photographer` and a
+  `view on source →` link to the original Planespotters listing when
+  `link_url` is present. Esc / outside-click / close button dismiss.
+  Degrades gracefully — when no large URL is available (or the URL
+  fails `safeUrl`'s HTTPS-only check), the thumbnail renders without
+  a click action.
 
 Internal:
 

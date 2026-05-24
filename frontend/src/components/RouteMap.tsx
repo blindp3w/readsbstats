@@ -219,11 +219,9 @@ export default function RouteMap({ positions, receiverLat, receiverLon }: Props)
         </Marker>
       )}
 
-      {/* Start marker — green square at the FIRST plotted position.
-          Different shape from the receiver dot to disambiguate even
-          before colour is parsed; matches the green = ADS-B convention
-          used by the route line so the start visually 'belongs' to the
-          track. */}
+      {/* Start marker — green circle at the FIRST plotted position.
+          Same circular shape as the receiver dot; color (green =
+          ADS-B-track convention) distinguishes role. */}
       {allPoints.length >= 1 && (
         <Marker longitude={allPoints[0][0]} latitude={allPoints[0][1]} anchor="center">
           <div
@@ -231,8 +229,9 @@ export default function RouteMap({ positions, receiverLat, receiverLon }: Props)
             title="Route start"
             data-testid="route-marker-start"
             style={{
-              width: 10,
-              height: 10,
+              width: 12,
+              height: 12,
+              borderRadius: '50%',
               backgroundColor: START_COLOR,
               border: '2px solid #fff',
               boxSizing: 'border-box',
@@ -241,9 +240,7 @@ export default function RouteMap({ positions, receiverLat, receiverLon }: Props)
         </Marker>
       )}
 
-      {/* End marker — red square at the LAST plotted position. Same
-          shape as start so the pair reads as "endpoints"; colour
-          differentiates direction. */}
+      {/* End marker — red circle at the LAST plotted position. */}
       {allPoints.length >= 2 && (
         <Marker
           longitude={allPoints[allPoints.length - 1][0]}
@@ -255,8 +252,9 @@ export default function RouteMap({ positions, receiverLat, receiverLon }: Props)
             title="Route end"
             data-testid="route-marker-end"
             style={{
-              width: 10,
-              height: 10,
+              width: 12,
+              height: 12,
+              borderRadius: '50%',
               backgroundColor: END_COLOR,
               border: '2px solid #fff',
               boxSizing: 'border-box',

@@ -68,7 +68,16 @@ export function PhotoLightbox({ photo, alt, children }: Props) {
               src={largeUrl}
               alt={alt}
               loading="lazy"
-              className="block max-h-[calc(100vh-8rem)] max-w-full object-contain"
+              // w-full + object-contain: image fills the dialog width
+              // (or scales down to fit max-h) while preserving its
+              // natural aspect ratio. When the source only returned a
+              // thumbnail (~240 px) it upscales to the container width;
+              // when it returned a true large variant (~900 px+) it
+              // renders crisp. Without w-full small images were
+              // rendering at their natural size and the dialog felt
+              // empty (flight_details5.png).
+              className="block h-auto w-full max-w-full object-contain"
+              style={{ maxHeight: 'calc(100vh - 6rem)' }}
             />
             <DialogClose asChild>
               <button
