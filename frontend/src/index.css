@@ -80,12 +80,15 @@
     color-scheme: dark;
     /* Sticky-offset reference for any page chrome that needs to dock just
        below the top nav (Stats page range bar, etc.). Tracks the real
-       computed nav height — see Nav.tsx for the source of truth. */
-    --rsbs-nav-h: 41px;
+       computed nav height — see Nav.tsx for the source of truth. The
+       env() term keeps the offset honest on notched iPhones where Nav
+       gains `pt-[env(safe-area-inset-top)]` to clear the Dynamic Island;
+       on desktop env() resolves to 0 so behaviour is unchanged. */
+    --rsbs-nav-h: calc(env(safe-area-inset-top) + 41px);
   }
   @media (min-width: 768px) {
     :root {
-      --rsbs-nav-h: 33px;
+      --rsbs-nav-h: calc(env(safe-area-inset-top) + 33px);
     }
   }
 

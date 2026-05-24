@@ -86,4 +86,23 @@ describe('Nav', () => {
     const { getByTestId } = renderNav();
     expect(getByTestId('nav-toggle').getAttribute('aria-label')).toBe('Open navigation menu');
   });
+
+  it('units selector reveals a unit-table tooltip on focus', async () => {
+    const { getByTestId } = renderNav();
+    const trigger = getByTestId('nav-units-select');
+    trigger.focus();
+    await waitFor(() => {
+      const tip = document.querySelector('[data-testid="nav-units-tooltip"]');
+      if (!tip) throw new Error('tooltip not ready');
+    });
+    const tip = document.querySelector('[data-testid="nav-units-tooltip"]')!;
+    const text = tip.textContent ?? '';
+    // All three unit systems present with their unit lists.
+    expect(text).toContain('Aeronautical');
+    expect(text).toContain('nm · ft · kts');
+    expect(text).toContain('Metric');
+    expect(text).toContain('km · m · km/h');
+    expect(text).toContain('Imperial');
+    expect(text).toContain('mi · ft · mph');
+  });
 });

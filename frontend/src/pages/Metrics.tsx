@@ -1,49 +1,22 @@
-import { useMemo, useState } from 'react';
+import { useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import {
-  ChevronDownIcon,
-  ChevronUpIcon,
-  CheckCircledIcon,
-  ExclamationTriangleIcon,
-  CrossCircledIcon,
-  InfoCircledIcon,
-} from '@radix-ui/react-icons';
 import type { EChartsOption } from 'echarts';
 import { apiJson } from '@/lib/api';
 import { useRange, RangePicker, type RangeValue } from '@/components/RangePicker';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { Alert } from '@/components/ui/Alert';
-import { Badge } from '@/components/ui/Badge';
 import { cn } from '@/lib/cn';
 import { EChart } from '@/components/charts/EChart';
-import {
-  CHART_COLORS,
-  baseOption,
-  timeAxis,
-  valueAxis,
-} from '@/components/charts/theme';
+import { CHART_COLORS, baseOption, timeAxis, valueAxis } from '@/components/charts/theme';
 import { fmtBytes } from '@/lib/format';
 import { useFormat } from '@/hooks/useFormat';
+import { HealthStripe, type HealthResp } from '@/components/metrics/HealthStripe';
 
 interface MetricsResp {
   bucket_seconds: number;
   metrics: string[];
   data: number[][]; // [[ts...], [m1...], [m2...], ...]
-}
-
-interface HealthCheck {
-  name: string;
-  // Matches the backend `Check.severity` dataclass field — do not rename
-  // to "status" without also changing health.py and the Python tests.
-  severity: 'ok' | 'warn' | 'critical' | 'info' | string;
-  message?: string;
-}
-
-interface HealthResp {
-  overall: 'ok' | 'warn' | 'critical' | 'info' | string;
-  as_of: number;
-  checks: HealthCheck[];
 }
 
 // Y-axis tick formatter shape.
@@ -191,19 +164,16 @@ export default function MetricsPage() {
         />
       </header>
 
-      <HealthBanner q={healthQ} />
+      <HealthStripe q={healthQ} />
 
       {metricsQ.isError && (
-        <Alert variant="error">
-          Failed to load metrics: {(metricsQ.error as Error).message}
-        </Alert>
+        <Alert variant="error">Failed to load metrics: {(metricsQ.error as Error).message}</Alert>
       )}
 
       {metricsQ.data && !hasData && !metricsQ.isLoading && (
         <Alert variant="info" data-testid="metrics-no-data">
-          No metrics recorded in the selected range. Either receiver metrics
-          collection is disabled (<code>RSBS_METRICS_ENABLED=0</code>) or the
-          window is younger than the poll interval.
+          No metrics recorded in the selected range. Either receiver metrics collection is disabled
+          (<code>RSBS_METRICS_ENABLED=0</code>) or the window is younger than the poll interval.
         </Alert>
       )}
 
@@ -232,107 +202,8 @@ export default function MetricsPage() {
   );
 }
 
-function statusColor(status: string): string {
-  if (status === 'ok') return CHART_COLORS.success;
-  if (status === 'warn') return CHART_COLORS.warn;
-  if (status === 'critical') return CHART_COLORS.danger;
-  return CHART_COLORS.textDim; // info / unknown
-}
-
-// Per-check status badge: icon (semantic shape) + accessible text. The
-// left-border stripe on each row is a secondary cue; this is the primary
-// at-a-glance signal and is colourblind-safer (shape, not just colour).
-function StatusIcon({ status }: { status: string }) {
-  const color = statusColor(status);
-  const props = {
-    width: 16,
-    height: 16,
-    style: { color, flexShrink: 0 },
-    'aria-hidden': true as const,
-  };
-  if (status === 'ok') return <CheckCircledIcon {...props} />;
-  if (status === 'warn') return <ExclamationTriangleIcon {...props} />;
-  if (status === 'critical') return <CrossCircledIcon {...props} />;
-  return <InfoCircledIcon {...props} />;
-}
-
-// ---------------------------------------------------------------------------
-// Health banner — collapsed by default, click-to-expand per-check detail.
-// Mirrors v1's behaviour (templates/metrics.html lines 9–16).
-// ---------------------------------------------------------------------------
-
-function HealthBanner({
-  q,
-}: {
-  q: { data: HealthResp | undefined; isLoading: boolean; isError: boolean; error: Error | null };
-}) {
-  const [open, setOpen] = useState(false);
-  if (q.isLoading) return <Skeleton className="h-12 w-full" />;
-  if (q.isError || !q.data) return null;
-  const variant: 'info' | 'warn' | 'error' =
-    q.data.overall === 'critical'
-      ? 'error'
-      : q.data.overall === 'warn'
-        ? 'warn'
-        : 'info';
-  const badgeVariant =
-    q.data.overall === 'ok'
-      ? 'success'
-      : q.data.overall === 'warn'
-        ? 'warn'
-        : q.data.overall === 'critical'
-          ? 'danger'
-          : 'muted';
-  const bad = q.data.checks.filter((c) => c.severity === 'warn' || c.severity === 'critical');
-  return (
-    <Alert variant={variant} data-testid="metrics-health-banner" className="p-0">
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        aria-expanded={open}
-        aria-controls="metrics-health-detail"
-        data-testid="metrics-health-toggle"
-        className="flex w-full flex-wrap items-center gap-2 px-3 py-2 text-left text-sm hover:bg-[var(--color-surface-2)]/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)]"
-      >
-        <span className="font-medium">Receiver health:</span>
-        <Badge variant={badgeVariant}>{q.data.overall}</Badge>
-        {bad.length > 0 && (
-          <span className="text-[var(--color-text-dim)]">
-            {bad.length} alert{bad.length === 1 ? '' : 's'}
-          </span>
-        )}
-        <span className="ml-auto inline-flex items-center gap-1 text-[var(--color-text-dim)]">
-          {q.data.checks.length} check{q.data.checks.length === 1 ? '' : 's'}
-          {open ? <ChevronUpIcon aria-hidden="true" /> : <ChevronDownIcon aria-hidden="true" />}
-        </span>
-      </button>
-      {open && (
-        <ul
-          id="metrics-health-detail"
-          className="border-t border-[var(--color-border-default)] divide-y divide-[var(--color-border-default)]"
-          data-testid="metrics-health-detail"
-        >
-          {q.data.checks.map((c) => (
-            <li
-              key={c.name}
-              className="flex flex-wrap items-center gap-2 border-l-4 pl-3 pr-3 py-2 text-xs"
-              style={{ borderLeftColor: statusColor(c.severity) }}
-              data-testid={`metrics-health-check-${c.name}`}
-              data-status={c.severity}
-            >
-              <StatusIcon status={c.severity} />
-              <span className="sr-only">{c.severity}:</span>
-              <span className="font-medium">{c.name}</span>
-              {c.message ? (
-                <span className="text-[var(--color-text-dim)]">{c.message}</span>
-              ) : null}
-            </li>
-          ))}
-        </ul>
-      )}
-    </Alert>
-  );
-}
+// statusColor / StatusIcon / HealthBanner moved to
+// `frontend/src/components/metrics/HealthStripe.tsx` in v2.7.0.
 
 // ---------------------------------------------------------------------------
 // Metric chart — converts the columnar /api/metrics response into one ECharts
@@ -348,8 +219,8 @@ function HealthBanner({
 //   fmtTs       → full datetime for the cross-series tooltip / pointer label
 // The builder picks fmtAxisTime vs fmtAxisDate based on the data span.
 const MULTI_DAY_THRESHOLD_S = 36 * 3600; // 36h — wider than 24h to avoid
-                                          // flipping formats on a sub-day
-                                          // jitter inside the 24h preset.
+// flipping formats on a sub-day
+// jitter inside the 24h preset.
 export function buildPanelOption(
   resp: MetricsResp | undefined,
   keys: string[],
@@ -424,7 +295,9 @@ function MetricChart({
   const hasRows = !!resp && resp.data.length > 0 && (resp.data[0]?.length ?? 0) > 0;
   if (!hasRows) {
     return (
-      <div className={cn('flex h-56 items-center justify-center text-sm text-[var(--color-text-dim)]')}>
+      <div
+        className={cn('flex h-56 items-center justify-center text-sm text-[var(--color-text-dim)]')}
+      >
         no data
       </div>
     );
