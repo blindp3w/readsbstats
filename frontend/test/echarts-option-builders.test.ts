@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 
-import { buildPanelOption } from '@/pages/Metrics';
+import { buildPanelOption, buildSignalSmallMultiplesOption } from '@/pages/Metrics';
 import { buildBarOption } from '@/pages/Stats';
 import { buildFlightProfileOption } from '@/pages/Flight';
 import { buildTopChartOption, type Row } from '@/components/charts/TopChart';
@@ -226,5 +226,155 @@ describe('abbreviateAxis', () => {
     // Regression guard: the .0$ replacement must not collapse "10" → "1".
     expect(abbreviateAxis(10000)).toBe('10k');
     expect(abbreviateAxis(20_000_000)).toBe('20M');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v2.8.0 — M2.2 isolation arg on buildPanelOption
+// ---------------------------------------------------------------------------
+
+describe('buildPanelOption isolated arg', () => {
+  const resp = {
+    bucket_seconds: 60,
+    metrics: ['ac_adsb', 'ac_mlat'],
+    data: [
+      [1000, 2000, 3000],
+      [10, 20, 30],
+      [1, 2, 3],
+    ],
+  };
+  it('full opacity for both series when isolated is null', () => {
+    const opt = buildPanelOption(
+      resp,
+      ['ac_adsb', 'ac_mlat'],
+      ['#1', '#2'],
+      fakeFmtAxisTime,
+      fakeFmtAxisDate,
+      fakeFmtTs,
+      undefined,
+      null,
+    );
+    const series = opt.series as any[];
+    expect(series[0].lineStyle.opacity).toBe(1);
+    expect(series[1].lineStyle.opacity).toBe(1);
+    expect(series[0].areaStyle.opacity).toBeCloseTo(0.25);
+  });
+  it('fades non-isolated series to 0.2 line / 0.06 area', () => {
+    const opt = buildPanelOption(
+      resp,
+      ['ac_adsb', 'ac_mlat'],
+      ['#1', '#2'],
+      fakeFmtAxisTime,
+      fakeFmtAxisDate,
+      fakeFmtTs,
+      undefined,
+      'ac_adsb',
+    );
+    const series = opt.series as any[];
+    // ac_adsb at full opacity
+    expect(series[0].lineStyle.opacity).toBe(1);
+    expect(series[0].areaStyle.opacity).toBeCloseTo(0.25);
+    // ac_mlat faded
+    expect(series[1].lineStyle.opacity).toBe(0.2);
+    expect(series[1].areaStyle.opacity).toBeCloseTo(0.06);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v2.8.0 — M2.1 signal small-multiples builder
+// ---------------------------------------------------------------------------
+
+describe('buildSignalSmallMultiplesOption (M2.1)', () => {
+  const resp = {
+    bucket_seconds: 60,
+    metrics: ['peak_signal', 'signal', 'noise', 'strong_signals'],
+    data: [
+      [1000, 2000, 3000],
+      [-30, -29, -28],
+      [-35, -34, -33],
+      [-40, -39, -38],
+      [5, 6, 7],
+    ],
+  };
+
+  it('emits 4 grids, 4 xAxes, 4 yAxes, 4 series — one per metric', () => {
+    const opt = buildSignalSmallMultiplesOption(
+      resp,
+      ['peak_signal', 'signal', 'noise', 'strong_signals'],
+      ['#a', '#b', '#c', '#d'],
+      ['Peak', 'Mean', 'Noise', 'Strong'],
+      fakeFmtAxisTime,
+      fakeFmtAxisDate,
+      fakeFmtTs,
+    );
+    expect((opt.grid as any[]).length).toBe(4);
+    expect((opt.xAxis as any[]).length).toBe(4);
+    expect((opt.yAxis as any[]).length).toBe(4);
+    expect((opt.series as any[]).length).toBe(4);
+  });
+
+  it('hides x-axis labels on the top 3 grids, shows on the bottom', () => {
+    const opt = buildSignalSmallMultiplesOption(
+      resp,
+      ['peak_signal', 'signal', 'noise', 'strong_signals'],
+      ['#a', '#b', '#c', '#d'],
+      ['Peak', 'Mean', 'Noise', 'Strong'],
+      fakeFmtAxisTime,
+      fakeFmtAxisDate,
+      fakeFmtTs,
+    );
+    const xAxes = opt.xAxis as any[];
+    // Top 3 hide label
+    expect(xAxes[0].axisLabel.show).toBe(false);
+    expect(xAxes[1].axisLabel.show).toBe(false);
+    expect(xAxes[2].axisLabel.show).toBe(false);
+    // Bottom shows label (no `show: false`)
+    expect(xAxes[3].axisLabel.show).not.toBe(false);
+  });
+
+  it('links axisPointer across all xAxes for synchronized crosshair', () => {
+    const opt = buildSignalSmallMultiplesOption(
+      resp,
+      ['peak_signal', 'signal', 'noise', 'strong_signals'],
+      ['#a', '#b', '#c', '#d'],
+      ['Peak', 'Mean', 'Noise', 'Strong'],
+      fakeFmtAxisTime,
+      fakeFmtAxisDate,
+      fakeFmtTs,
+    );
+    expect((opt.axisPointer as any).link).toBeDefined();
+    expect((opt.axisPointer as any).link[0].xAxisIndex).toBe('all');
+  });
+
+  it('renders the latest value in the title row per sub-panel', () => {
+    const opt = buildSignalSmallMultiplesOption(
+      resp,
+      ['peak_signal', 'signal', 'noise', 'strong_signals'],
+      ['#a', '#b', '#c', '#d'],
+      ['Peak', 'Mean', 'Noise', 'Strong'],
+      fakeFmtAxisTime,
+      fakeFmtAxisDate,
+      fakeFmtTs,
+    );
+    const titles = opt.title as any[];
+    // 4 sub-panels × 2 entries each (label + value) = 8 titles
+    expect(titles.length).toBe(8);
+    // Last value of peak_signal is -28 → rendered with 1-dp rounding
+    const valueTitles = titles.filter((t) => t.right === 8);
+    expect(valueTitles.length).toBe(4);
+    expect(valueTitles[0].text).toBe('-28');
+  });
+
+  it('returns empty series when resp is undefined', () => {
+    const opt = buildSignalSmallMultiplesOption(
+      undefined,
+      ['peak_signal'],
+      ['#a'],
+      ['Peak'],
+      fakeFmtAxisTime,
+      fakeFmtAxisDate,
+      fakeFmtTs,
+    );
+    expect((opt.series as any[]).length).toBe(0);
   });
 });
