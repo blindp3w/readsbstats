@@ -41,7 +41,10 @@ const ADSB_COLOR = '#22c55e';
 const MLAT_COLOR = '#eab308';
 const MIXED_COLOR = '#5b9af9';
 const RECEIVER_COLOR = '#5b9af9';
-const START_COLOR = '#22c55e'; // matches ADS-B green — "begin"
+// Route start matches the ADS-B track colour so the start marker
+// visually 'belongs' to the dominant line colour. Aliased (not a fresh
+// literal) so a future ADS-B colour tweak propagates here automatically.
+const START_COLOR = ADSB_COLOR;
 const END_COLOR = '#ef4444'; // danger red — "terminate"
 
 function colorForSource(src: string | null | undefined): string {
