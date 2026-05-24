@@ -133,15 +133,17 @@ def _fetch_airport_data(icao_hex: str) -> PhotoResult | None:
     if not img:
         return None
     # The API returns the thumbnail URL on the `/thumbnails/` subpath
-    # (typically ~150 px wide). The full-resolution image lives at the
-    # same path WITHOUT `/thumbnails/`. Derive the larger variant so
-    # the photo lightbox isn't a blurry upscale.
+    # (~150 px wide, ~2 KB). The full-resolution image is NOT at the
+    # same host with `/thumbnails/` stripped — that path 404s. The
+    # source HTML for the photo page references the full-res image at
+    # the dedicated CDN host: `image.airport-data.com/aircraft/<file>`
+    # (verified ~40× larger payload). Derive that URL from the
+    # thumbnail's basename so the photo lightbox isn't a blurry upscale.
+    large = img
     if "/images/aircraft/thumbnails/" in img:
-        large = img.replace(
-            "/images/aircraft/thumbnails/", "/images/aircraft/", 1
-        )
-    else:
-        large = img
+        basename = img.rsplit("/", 1)[-1]
+        if basename:
+            large = f"https://image.airport-data.com/aircraft/{basename}"
     return PhotoResult(
         thumbnail_url=img,
         large_url=large,
