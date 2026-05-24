@@ -50,3 +50,21 @@ if (typeof window !== 'undefined' && typeof window.ResizeObserver === 'undefined
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (globalThis as any).ResizeObserver = ResizeObserverShim;
 }
+
+// jsdom has no IntersectionObserver. The Stats page section anchors use one
+// for active-state scrollspy; a no-op shim is enough to let the component
+// mount without throwing in tests.
+if (typeof window !== 'undefined' && typeof window.IntersectionObserver === 'undefined') {
+  class IntersectionObserverShim {
+    observe(): void {}
+    unobserve(): void {}
+    disconnect(): void {}
+    takeRecords(): [] {
+      return [];
+    }
+  }
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (window as any).IntersectionObserver = IntersectionObserverShim;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (globalThis as any).IntersectionObserver = IntersectionObserverShim;
+}

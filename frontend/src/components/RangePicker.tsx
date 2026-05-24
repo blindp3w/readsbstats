@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { ChevronDownIcon, ChevronUpIcon } from '@radix-ui/react-icons';
 import { ToggleGroupRoot, ToggleGroupItem } from '@/components/ui/ToggleGroup';
@@ -102,7 +102,13 @@ function presetWindow(range: RangeValue): { from?: number; to?: number } {
   if (range === 'all' || range === 'custom') return {};
   const now = Math.floor(Date.now() / 1000);
   const sec =
-    range === '24h' ? 86400 : range === '7d' ? 7 * 86400 : range === '30d' ? 30 * 86400 : 90 * 86400;
+    range === '24h'
+      ? 86400
+      : range === '7d'
+        ? 7 * 86400
+        : range === '30d'
+          ? 30 * 86400
+          : 90 * 86400;
   return { from: now - sec, to: now };
 }
 
@@ -113,6 +119,13 @@ interface PickerProps {
   options?: { value: RangeValue; label: string }[];
   // Show the "All" preset (Statistics page yes, Metrics page no).
   allowAll?: boolean;
+  // When true, the picker wraps itself in a sticky container that docks
+  // immediately under the top nav (offset = `var(--rsbs-nav-h)` from
+  // index.css). Optional `right` slot renders inline at the far right —
+  // intended for a refreshing indicator or secondary control. Default off
+  // so existing call sites (Metrics, History, Map) are unaffected.
+  sticky?: boolean;
+  right?: ReactNode;
 }
 
 // Custom range stored as Unix epoch but edited as separate date + time fields
@@ -144,13 +157,15 @@ export function RangePicker({
   onCustom,
   options = PRESETS,
   allowAll = true,
+  sticky = false,
+  right,
 }: PickerProps) {
   const [open, setOpen] = useState(false);
 
   const visibleOptions = allowAll ? options : options.filter((o) => o.value !== 'all');
   const isCustom = state.value === 'custom';
 
-  return (
+  const inner = (
     <div className="flex flex-wrap items-center gap-2" data-testid="range-picker">
       <ToggleGroupRoot
         type="single"
@@ -200,6 +215,23 @@ export function RangePicker({
           />
         </PopoverContent>
       </Popover>
+      {right ? <div className="ml-auto">{right}</div> : null}
+    </div>
+  );
+
+  if (!sticky) return inner;
+
+  return (
+    <div
+      // z-30 sits below the nav (z-[1000]) but above page content so the
+      // bar doesn't get clipped on scroll. The negative inline margin +
+      // matching padding re-creates the parent page's px-4 gutter so the
+      // backdrop fills the full viewport width on stick.
+      className="sticky z-30 -mx-4 border-b border-[var(--color-border-default)] bg-[var(--color-surface)]/85 px-4 py-2 backdrop-blur supports-[backdrop-filter]:bg-[var(--color-surface)]/70"
+      style={{ top: 'var(--rsbs-nav-h, 41px)' }}
+      data-testid="range-picker-sticky"
+    >
+      {inner}
     </div>
   );
 }

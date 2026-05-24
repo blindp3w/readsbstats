@@ -1,28 +1,26 @@
 import { useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
-import {
-  TriangleUpIcon,
-  TriangleDownIcon,
-  DotFilledIcon,
-} from '@radix-ui/react-icons';
 import type { EChartsOption } from 'echarts';
 import { apiJson } from '@/lib/api';
-import { useRange, RangePicker } from '@/components/RangePicker';
+import { useRange, RangePicker, type RangeValue } from '@/components/RangePicker';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { Alert } from '@/components/ui/Alert';
-import { Badge } from '@/components/ui/Badge';
 import { ActivityHeatmap } from '@/components/charts/Heatmap';
 import { PolarRange } from '@/components/charts/PolarRange';
 import { Table, THead, TBody, TR, TH, TD } from '@/components/ui/Table';
 import { useFormat } from '@/hooks/useFormat';
-import { fmtBytes } from '@/lib/format';
 import { cn } from '@/lib/cn';
 import { CHART_COLORS, baseOption, valueAxis } from '@/components/charts/theme';
 import { EChart } from '@/components/charts/EChart';
 import { TopChart } from '@/components/charts/TopChart';
-import { SimpleTooltip } from '@/components/ui/Tooltip';
+import { KpiCard } from '@/components/stats/KpiCard';
+import { FlagBadgeStrip } from '@/components/stats/FlagBadgeStrip';
+import { RangeContextLine } from '@/components/stats/RangeContextLine';
+import { AboutReceiverFooter } from '@/components/stats/AboutReceiverFooter';
+import { SectionAnchors } from '@/components/stats/SectionAnchors';
+import { TopChartMultiples } from '@/components/stats/TopChartMultiples';
 
 export interface StatsResponse {
   total_flights: number;
@@ -38,7 +36,7 @@ export interface StatsResponse {
   // SQL aliases the column to `type`, not `aircraft_type`.
   top_aircraft_types: { type: string; type_desc: string | null; flights: number }[];
   hourly_distribution: { hour: number; count: number }[];
-  // SQL returns `unique_aircraft`, not `unique`.
+  // SQL returns `unique_aircraft`, not `unique`. Ordered ASC by day.
   daily_unique_aircraft: { day: string; unique_aircraft: number; flights: number }[];
   altitude_distribution: { band: string; count: number }[];
   military_flights: number;
@@ -54,7 +52,12 @@ export interface StatsResponse {
     flights: number;
   }[];
   top_routes?: { origin_icao: string; dest_icao: string; flights: number }[];
-  top_airports?: { icao_code: string; name?: string | null; appearances?: number; flights?: number }[];
+  top_airports?: {
+    icao_code: string;
+    name?: string | null;
+    appearances?: number;
+    flights?: number;
+  }[];
   new_aircraft?: {
     total: number;
     items: {
@@ -67,6 +70,16 @@ export interface StatsResponse {
     }[];
   };
   squawk_counts?: { '7700'?: number; '7600'?: number; '7500'?: number };
+  // Window-scoped furthest flight. Backend returns the full flight row
+  // (web.py:1636), or null for empty windows.
+  furthest_aircraft?: {
+    icao_hex: string;
+    callsign: string | null;
+    registration?: string | null;
+    aircraft_type: string | null;
+    type_desc: string | null;
+    max_distance_nm: number | null;
+  } | null;
 }
 
 interface PolarResponse {
@@ -85,10 +98,10 @@ interface RecordEntry {
 }
 
 interface RecordsResponse {
-  fastest:  (RecordEntry & { max_gs: number | null }) | null;
+  fastest: (RecordEntry & { max_gs: number | null }) | null;
   furthest: (RecordEntry & { max_distance_nm: number | null }) | null;
-  highest:  (RecordEntry & { max_alt_baro: number | null }) | null;
-  longest:  (RecordEntry & { duration_sec: number | null }) | null;
+  highest: (RecordEntry & { max_alt_baro: number | null }) | null;
+  longest: (RecordEntry & { duration_sec: number | null }) | null;
 }
 
 export default function StatsPage() {
@@ -103,337 +116,298 @@ export default function StatsPage() {
     queryKey: ['stats', qsStr],
     queryFn: () => apiJson<StatsResponse>(`stats${qsStr ? '?' + qsStr : ''}`),
     staleTime: 120_000,
+    placeholderData: (prev) => prev,
   });
   const polarQ = useQuery<PolarResponse>({
     queryKey: ['stats-polar'],
     queryFn: () => apiJson<PolarResponse>('stats/polar'),
     staleTime: 300_000,
+    placeholderData: (prev) => prev,
   });
   const recordsQ = useQuery<RecordsResponse>({
     queryKey: ['stats-records'],
     queryFn: () => apiJson<RecordsResponse>('stats/records'),
     staleTime: 300_000,
+    placeholderData: (prev) => prev,
   });
 
+  const stats = statsQ.data;
+  const isRefetching = statsQ.isFetching && !statsQ.isLoading;
+
+  // Sparkline series — derived per-KPI from already-fetched data. See plan §
+  // "Data flow" for the window→source mapping.
+  const flightsSeries = pickFlightsSeries(range.value, stats);
+  const uniqueSeries = pickUniqueSeries(range.value, stats);
+  const positionsSeries = stats?.hourly_distribution?.map((h) => h.count) ?? [];
+
+  const flightsDelta = pickFlightsDelta(range.value, stats);
+
   return (
-    <div className="mx-auto max-w-7xl space-y-4 px-4 py-6" data-testid="page-stats">
+    <div
+      className="mx-auto max-w-7xl space-y-4 px-4 py-6 [&_section]:scroll-mt-[calc(var(--rsbs-nav-h,41px)+60px)]"
+      data-testid="page-stats"
+    >
       <header className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-xl font-semibold">Statistics</h1>
           <p className="text-sm text-[var(--color-text-dim)]">Receiver-wide flight aggregates.</p>
         </div>
-        <RangePicker state={range} onPreset={setPreset} onCustom={setCustom} />
       </header>
+
+      <RangePicker
+        state={range}
+        onPreset={setPreset}
+        onCustom={setCustom}
+        sticky
+        right={<RangeContextLine state={range} isFetching={isRefetching} />}
+      />
+
+      <SectionAnchors />
 
       {statsQ.isError && (
         <Alert variant="error">Failed to load stats: {(statsQ.error as Error).message}</Alert>
       )}
 
-      <SummaryCards stats={statsQ.data} loading={statsQ.isLoading} />
+      <section id="overview" className="space-y-3" aria-labelledby="overview-heading">
+        <h2 id="overview-heading" className="sr-only">
+          Overview
+        </h2>
+        {statsQ.isLoading ? (
+          <KpiSkeletons />
+        ) : (
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            <KpiCard
+              label="Flights"
+              value={stats?.total_flights ?? 0}
+              prev={flightsDelta?.prev ?? null}
+              series={flightsSeries}
+              testid="kpi-flights"
+            />
+            <KpiCard
+              label="Unique aircraft"
+              value={stats?.unique_aircraft ?? 0}
+              series={uniqueSeries}
+              sublabel={`${(stats?.unique_airlines ?? 0).toLocaleString()} unique airlines`}
+              testid="kpi-unique-aircraft"
+            />
+            <KpiCard
+              label="Position fixes"
+              value={stats?.total_positions ?? 0}
+              series={positionsSeries}
+              sublabel={
+                stats
+                  ? `${stats.source_breakdown.adsb}% ADS-B · ${stats.source_breakdown.mlat}% MLAT`
+                  : undefined
+              }
+              testid="kpi-positions"
+            />
+            <MaxRangeCard furthest={stats?.furthest_aircraft ?? null} />
+          </div>
+        )}
 
-      <div className="grid gap-4 lg:grid-cols-2">
-        <Card data-testid="stats-hourly-card">
-          <CardHeader>
-            <CardTitle>Activity by hour</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {statsQ.isLoading ? (
-              <Skeleton className="h-56 w-full" />
-            ) : (
-              <BarChartBlock data={statsQ.data?.hourly_distribution ?? []} xKey="hour" yKey="count" />
-            )}
-          </CardContent>
-        </Card>
+        {statsQ.isLoading ? (
+          <div className="flex flex-wrap items-center gap-2">
+            {Array.from({ length: 6 }).map((_, i) => (
+              <Skeleton key={i} className="h-9 w-28 rounded-full" />
+            ))}
+          </div>
+        ) : stats ? (
+          <FlagBadgeStrip
+            counts={{
+              military: stats.military_flights,
+              interesting: stats.interesting_flights,
+              anonymous: stats.anonymous_flights,
+              squawks: stats.squawk_counts ?? {},
+            }}
+          />
+        ) : null}
+      </section>
 
-        <Card data-testid="stats-daily-card">
-          <CardHeader>
-            <CardTitle>Daily unique aircraft</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {statsQ.isLoading ? (
-              <Skeleton className="h-56 w-full" />
-            ) : (
-              <BarChartBlock
-                data={statsQ.data?.daily_unique_aircraft ?? []}
-                xKey="day"
-                yKey="unique_aircraft"
-              />
-            )}
-          </CardContent>
-        </Card>
-      </div>
-
-      <Card data-testid="stats-heatmap-card">
-        <CardHeader>
-          <CardTitle>Activity heatmap (DOW × hour)</CardTitle>
-        </CardHeader>
-        <CardContent>
-          {statsQ.isLoading ? (
-            <Skeleton className="h-40 w-full" />
-          ) : (
-            <ActivityHeatmap rows={statsQ.data?.heatmap ?? []} />
-          )}
-        </CardContent>
-      </Card>
-
-      <div className="grid gap-4 lg:grid-cols-2">
-        <NewAircraftList data={statsQ.data?.new_aircraft} loading={statsQ.isLoading} />
-        <Card data-testid="stats-polar-card">
-          <CardHeader>
-            <CardTitle>Polar range</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {polarQ.isLoading ? (
-              <Skeleton className="h-64 w-full" />
-            ) : (
-              <PolarRange buckets={polarQ.data?.buckets} />
-            )}
-          </CardContent>
-        </Card>
-      </div>
-
-      <TopChart
-        loading={statsQ.isLoading}
-        top_aircraft_types={statsQ.data?.top_aircraft_types}
-        top_airlines={statsQ.data?.top_airlines}
-        top_countries={statsQ.data?.top_countries}
-        frequent_aircraft={statsQ.data?.frequent_aircraft}
-        top_routes={statsQ.data?.top_routes}
-        top_airports={statsQ.data?.top_airports}
-      />
-
-      <Records q={recordsQ} />
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Summary cards
-// ---------------------------------------------------------------------------
-
-function SummaryCards({ stats, loading }: { stats: StatsResponse | undefined; loading: boolean }) {
-  if (loading) {
-    return (
-      <div className="space-y-3" data-testid="stats-summary-cards">
-        <div className="grid gap-3 grid-cols-2 sm:grid-cols-3 lg:grid-cols-6">
-          {Array.from({ length: 6 }).map((_, i) => (
-            <Skeleton key={i} className="h-24 w-full" />
-          ))}
-        </div>
-        <div className="grid gap-3 grid-cols-2 sm:grid-cols-3 lg:grid-cols-6">
-          {Array.from({ length: 6 }).map((_, i) => (
-            <Skeleton key={i} className="h-24 w-full" />
-          ))}
-        </div>
-      </div>
-    );
-  }
-  if (!stats) return null;
-  const oldest = stats.oldest_flight
-    ? new Date(stats.oldest_flight * 1000).toLocaleDateString()
-    : '—';
-  return (
-    <div className="space-y-3" data-testid="stats-summary-cards">
-      {/* Row 1: core metrics with trend cards inserted after Total flights */}
-      <div className="grid gap-3 grid-cols-2 sm:grid-cols-3 lg:grid-cols-6">
-        <Card className="card-hover" data-testid="stat-total-flights">
-          <CardContent className="space-y-1 pt-4">
-            <div className="text-xs font-medium uppercase tracking-wide text-[var(--color-text-dim)]">
-              Total flights
-            </div>
-            <div className="tabnum text-2xl font-bold">{stats.total_flights.toLocaleString()}</div>
-            <div className="text-xs text-[var(--color-text-dim)]">since {oldest}</div>
-          </CardContent>
-        </Card>
-        <TrendCard
-          label="Last 24h"
-          value={stats.flights_last_24h}
-          prev={stats.trends?.flights_24h_prev ?? null}
-          testid="stat-last-24h"
-        />
-        <TrendCard
-          label="Last 7 days"
-          value={stats.flights_last_7d}
-          prev={stats.trends?.flights_7d_prev ?? null}
-          testid="stat-last-7d"
-        />
-        <Card className="card-hover" data-testid="stat-unique-aircraft">
-          <CardContent className="space-y-1 pt-4">
-            <div className="text-xs font-medium uppercase tracking-wide text-[var(--color-text-dim)]">
-              Unique aircraft
-            </div>
-            <div className="tabnum text-2xl font-bold">{stats.unique_aircraft.toLocaleString()}</div>
-            <div className="text-xs text-[var(--color-text-dim)]">
-              {stats.unique_airlines.toLocaleString()} unique airlines
-            </div>
-          </CardContent>
-        </Card>
-        <Card className="card-hover" data-testid="stat-position-fixes">
-          <CardContent className="space-y-1 pt-4">
-            <div className="text-xs font-medium uppercase tracking-wide text-[var(--color-text-dim)]">
-              Position fixes
-            </div>
-            <div className="tabnum text-2xl font-bold">{stats.total_positions.toLocaleString()}</div>
-            <div className="text-xs text-[var(--color-text-dim)]">
-              {stats.source_breakdown.adsb}% ADS-B · {stats.source_breakdown.mlat}% MLAT
-            </div>
-          </CardContent>
-        </Card>
-        <Card className="card-hover" data-testid="stat-db-size">
-          <CardContent className="space-y-1 pt-4">
-            <div className="text-xs font-medium uppercase tracking-wide text-[var(--color-text-dim)]">
-              DB size
-            </div>
-            <div className="tabnum text-2xl font-bold">
-              {stats.db_size_bytes != null ? fmtBytes(stats.db_size_bytes) : '—'}
-            </div>
-            {oldest !== '—' ? (
-              <div className="text-xs text-[var(--color-text-dim)]">oldest {oldest}</div>
-            ) : null}
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* Row 2: flags + squawks */}
-      <div className="grid gap-3 grid-cols-2 sm:grid-cols-3 lg:grid-cols-6">
-        <FlaggedCard
-          label="Military"
-          count={stats.military_flights}
-          variant="success"
-          testid="stat-military"
-        />
-        <FlaggedCard
-          label="Interesting"
-          count={stats.interesting_flights}
-          variant="warn"
-          testid="stat-interesting"
-        />
-        <FlaggedCard
-          label="Anonymous"
-          count={stats.anonymous_flights}
-          variant="danger"
-          testid="stat-anonymous"
-        />
-        {(['7700', '7600', '7500'] as const).map((code) => {
-          const count = stats.squawk_counts?.[code] ?? 0;
-          return (
-            <Link
-              key={code}
-              to={`/history?squawk=${code}`}
-              data-testid={`stat-squawk-${code}`}
-              className={cn(
-                'block rounded-lg border border-[var(--color-border-default)]',
-                'bg-[var(--color-surface-2)]/60 p-4 text-center shadow-[var(--shadow-sm)]',
-                'transition-colors',
-                count > 0
-                  ? 'hover:border-[var(--color-danger)] hover:bg-[var(--color-surface-3)]'
-                  : 'hover:bg-[var(--color-surface-2)]',
-              )}
-            >
-              <div className="font-mono text-xs text-[var(--color-text-dim)]">{code}</div>
-              <div
-                className={cn(
-                  'tabnum text-2xl font-bold',
-                  count > 0 ? 'text-[var(--color-danger)]' : 'text-[var(--color-text-dim)]',
-                )}
-              >
-                {count.toLocaleString()}
-              </div>
-              <div className="text-[10px] uppercase tracking-wide text-[var(--color-text-dim)]">
-                {SQUAWK_LABELS[code]}
-              </div>
-            </Link>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-function TrendCard({
-  label,
-  value,
-  prev,
-  testid,
-}: {
-  label: string;
-  value: number;
-  prev: number | null;
-  testid: string;
-}) {
-  const delta = prev == null ? null : value - prev;
-  const pct = prev != null && prev > 0 ? ((value - prev) / prev) * 100 : null;
-  const ArrowIcon =
-    delta == null ? null : delta > 0 ? TriangleUpIcon : delta < 0 ? TriangleDownIcon : DotFilledIcon;
-  const tone =
-    delta == null || delta === 0
-      ? 'text-[var(--color-text-dim)]'
-      : delta > 0
-        ? 'text-[var(--color-success)]'
-        : 'text-[var(--color-danger)]';
-  const tooltipContent =
-    delta == null ? (
-      'No previous period data'
-    ) : (
-      <span className="inline-flex items-center gap-1">
-        {ArrowIcon ? <ArrowIcon aria-hidden="true" /> : null}
-        <span className={tone}>
-          {delta >= 0 ? '+' : '−'}{Math.abs(delta).toLocaleString()}
-          {pct != null ? ` (${pct >= 0 ? '+' : ''}${pct.toFixed(0)}%)` : ''}
-        </span>
-        <span className="text-[var(--color-text-dim)]">vs previous period</span>
-      </span>
-    );
-  return (
-    <SimpleTooltip content={tooltipContent} delayDuration={300}>
-      <div>
-        <Card className="card-hover" data-testid={testid}>
-          <CardContent className="space-y-1 pt-4">
-            <div className="text-xs font-medium uppercase tracking-wide text-[var(--color-text-dim)]">
-              {label}
-            </div>
-            <div className="tabnum text-2xl font-bold">{value.toLocaleString()}</div>
-            <div className={`text-xs tabnum ${tone}`}>
-              {delta == null ? (
-                <span className="text-[var(--color-text-dim)]">—</span>
+      <section id="activity" className="space-y-4" aria-labelledby="activity-heading">
+        <h2 id="activity-heading" className="sr-only">
+          Activity
+        </h2>
+        <div className="grid gap-4 lg:grid-cols-2">
+          <Card data-testid="stats-hourly-card">
+            <CardHeader>
+              <CardTitle>Activity by hour</CardTitle>
+            </CardHeader>
+            <CardContent>
+              {statsQ.isLoading ? (
+                <Skeleton className="h-56 w-full" />
+              ) : (stats?.hourly_distribution?.length ?? 0) === 0 ? (
+                <EmptyChartNote />
               ) : (
-                <span className="inline-flex items-center gap-1">
-                  {ArrowIcon ? <ArrowIcon aria-hidden="true" /> : null}
-                  <span>
-                    {delta >= 0 ? '+' : '−'}{Math.abs(delta).toLocaleString()}
-                    {pct != null ? ` (${pct >= 0 ? '+' : ''}${pct.toFixed(0)}%)` : ''}
-                  </span>
-                </span>
+                <BarChartBlock data={stats?.hourly_distribution ?? []} xKey="hour" yKey="count" />
               )}
-            </div>
+            </CardContent>
+          </Card>
+
+          <Card data-testid="stats-daily-card">
+            <CardHeader>
+              <CardTitle>Daily unique aircraft</CardTitle>
+            </CardHeader>
+            <CardContent>
+              {statsQ.isLoading ? (
+                <Skeleton className="h-56 w-full" />
+              ) : (stats?.daily_unique_aircraft?.length ?? 0) === 0 ? (
+                <EmptyChartNote />
+              ) : (
+                <BarChartBlock
+                  data={stats?.daily_unique_aircraft ?? []}
+                  xKey="day"
+                  yKey="unique_aircraft"
+                />
+              )}
+            </CardContent>
+          </Card>
+        </div>
+
+        <Card data-testid="stats-heatmap-card">
+          <CardHeader>
+            <CardTitle>Activity heatmap (DOW × hour)</CardTitle>
+          </CardHeader>
+          <CardContent>
+            {statsQ.isLoading ? (
+              <Skeleton className="h-40 w-full" />
+            ) : (
+              <ActivityHeatmap rows={stats?.heatmap ?? []} />
+            )}
           </CardContent>
         </Card>
-      </div>
-    </SimpleTooltip>
+      </section>
+
+      <section id="rankings" className="space-y-4" aria-labelledby="rankings-heading">
+        <h2 id="rankings-heading" className="sr-only">
+          Rankings
+        </h2>
+        <div className="xl:hidden">
+          <TopChart
+            loading={statsQ.isLoading}
+            top_aircraft_types={stats?.top_aircraft_types}
+            top_airlines={stats?.top_airlines}
+            top_countries={stats?.top_countries}
+            frequent_aircraft={stats?.frequent_aircraft}
+            top_routes={stats?.top_routes}
+            top_airports={stats?.top_airports}
+          />
+        </div>
+        <div className="hidden xl:block">
+          <TopChartMultiples
+            loading={statsQ.isLoading}
+            top_aircraft_types={stats?.top_aircraft_types}
+            top_airlines={stats?.top_airlines}
+            top_countries={stats?.top_countries}
+            frequent_aircraft={stats?.frequent_aircraft}
+            top_routes={stats?.top_routes}
+            top_airports={stats?.top_airports}
+          />
+        </div>
+
+        <Records q={recordsQ} />
+      </section>
+
+      <section id="coverage" className="space-y-4" aria-labelledby="coverage-heading">
+        <h2 id="coverage-heading" className="sr-only">
+          Coverage
+        </h2>
+        <div className="grid gap-4 lg:grid-cols-2">
+          <NewAircraftList data={stats?.new_aircraft} loading={statsQ.isLoading} />
+          <Card data-testid="stats-polar-card">
+            <CardHeader>
+              <CardTitle>Polar range</CardTitle>
+            </CardHeader>
+            <CardContent>
+              {polarQ.isLoading ? (
+                <Skeleton className="h-64 w-full" />
+              ) : (
+                <PolarRange buckets={polarQ.data?.buckets} />
+              )}
+            </CardContent>
+          </Card>
+        </div>
+      </section>
+
+      <AboutReceiverFooter
+        totalFlights={stats?.total_flights}
+        uniqueAirlines={stats?.unique_airlines}
+        totalPositions={stats?.total_positions}
+        dbSizeBytes={stats?.db_size_bytes}
+        oldestFlight={stats?.oldest_flight}
+        sourceBreakdown={stats?.source_breakdown}
+      />
+    </div>
   );
 }
 
-function FlaggedCard({
-  label,
-  count,
-  variant,
-  testid,
-}: {
-  label: string;
-  count: number;
-  variant: 'success' | 'warn' | 'danger';
-  testid: string;
-}) {
+// ---------------------------------------------------------------------------
+// KPI helpers
+// ---------------------------------------------------------------------------
+
+function KpiSkeletons() {
   return (
-    <Link
-      to={`/history?flags=${label.toLowerCase()}`}
-      data-testid={testid}
-      aria-label={`View ${label} flights in history`}
-      className="block rounded-lg border border-[var(--color-border-default)] bg-[var(--color-surface-2)]/60 p-4 shadow-[var(--shadow-sm)] transition-colors hover:bg-[var(--color-surface-2)]"
-    >
-      <Badge variant={variant}>{label}</Badge>
-      <div className="tabnum text-2xl font-bold mt-1">{count.toLocaleString()}</div>
-    </Link>
+    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+      {Array.from({ length: 4 }).map((_, i) => (
+        <Skeleton key={i} className="h-28 w-full" />
+      ))}
+    </div>
+  );
+}
+
+function EmptyChartNote() {
+  return (
+    <p className="py-12 text-center text-sm text-[var(--color-text-dim)]">
+      No flights in this window.
+    </p>
+  );
+}
+
+function pickFlightsSeries(range: RangeValue, stats: StatsResponse | undefined): number[] {
+  if (!stats) return [];
+  if (range === '24h') return stats.hourly_distribution?.map((h) => h.count) ?? [];
+  return stats.daily_unique_aircraft?.map((d) => d.flights) ?? [];
+}
+
+function pickUniqueSeries(range: RangeValue, stats: StatsResponse | undefined): number[] {
+  if (!stats) return [];
+  if (range === '24h') return []; // No per-hour unique-aircraft series available.
+  return stats.daily_unique_aircraft?.map((d) => d.unique_aircraft) ?? [];
+}
+
+function pickFlightsDelta(
+  range: RangeValue,
+  stats: StatsResponse | undefined,
+): { current: number; prev: number } | null {
+  if (!stats) return null;
+  if (range === '24h' && stats.trends) {
+    return { current: stats.flights_last_24h, prev: stats.trends.flights_24h_prev };
+  }
+  if (range === '7d' && stats.trends) {
+    return { current: stats.flights_last_7d, prev: stats.trends.flights_7d_prev };
+  }
+  return null;
+}
+
+function MaxRangeCard({ furthest }: { furthest: StatsResponse['furthest_aircraft'] }) {
+  const { fmtDist } = useFormat();
+  if (!furthest || furthest.max_distance_nm == null) {
+    return <KpiCard label="Max range" value="—" testid="kpi-max-range" />;
+  }
+  const linkLabel = furthest.callsign ?? furthest.registration ?? furthest.icao_hex;
+  return (
+    <KpiCard
+      label="Max range"
+      value={fmtDist(furthest.max_distance_nm)}
+      testid="kpi-max-range"
+      sublabel={
+        <Link
+          to={`/aircraft/${furthest.icao_hex}`}
+          className="font-mono text-[var(--color-accent)] hover:underline"
+        >
+          {linkLabel}
+        </Link>
+      }
+    />
   );
 }
 
@@ -479,12 +453,15 @@ function BarChartBlock({
   return <EChart option={option} height={220} />;
 }
 
-
 // ---------------------------------------------------------------------------
 // Records
 // ---------------------------------------------------------------------------
 
-function Records({ q }: { q: { data: RecordsResponse | undefined; isLoading: boolean; isError: boolean } }) {
+function Records({
+  q,
+}: {
+  q: { data: RecordsResponse | undefined; isLoading: boolean; isError: boolean };
+}) {
   const { fmtAlt, fmtSpd, fmtDist, fmtTs } = useFormat();
   if (q.isError) return null;
   return (
@@ -587,7 +564,6 @@ function RecordCell({
   );
 }
 
-
 function NewAircraftList({
   data,
   loading,
@@ -666,12 +642,6 @@ function NewAircraftList({
     </Card>
   );
 }
-
-const SQUAWK_LABELS: Record<string, string> = {
-  '7700': 'Emergency',
-  '7600': 'Radio failure',
-  '7500': 'Hijack',
-};
 
 function formatLongest(seconds: number | null): string {
   if (seconds == null) return '—';

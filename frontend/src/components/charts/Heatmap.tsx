@@ -1,7 +1,8 @@
-// Day-of-week × Hour activity heatmap. CSS-grid based; each cell's opacity
-// is normalised to the max value in the dataset, with a 0.18 floor so
-// low-but-nonzero cells remain visible (improvements.md #11 — addressed
-// the "invisible 1-2 flight cells" gap).
+// Day-of-week × Hour activity heatmap. CSS-grid based; each cell is bucketed
+// into one of 5 warm-ramp stops (HEATMAP_RAMP in ./theme) based on its share
+// of the dataset's max. Empty (count=0) cells render transparent. This is
+// the M1.2 fix: the previous single-accent alpha ramp made the difference
+// between 50 and 500 flights/hr barely visible.
 //
 // Two responsive layouts, gated purely by Tailwind:
 //   < sm  (≤ 639 px): hours as ROWS (24), days as COLS (7).
@@ -15,8 +16,17 @@
 // keyboard focus, and per-cell aria-labels keep working (this is the
 // a11y win that kept us off ECharts canvas in ADR-0008).
 
-import { CHART_COLORS } from './theme';
+import { HEATMAP_RAMP } from './theme';
 import { SimpleTooltip } from '@/components/ui/Tooltip';
+
+// Bucket a non-zero count into one of the ramp's 5 stops based on its
+// fraction of `max`. Linear, inclusive on both ends: count==max → stop 4.
+function rampColor(count: number, max: number): string {
+  if (max === 0 || count === 0) return 'transparent';
+  const frac = Math.min(1, count / max);
+  const idx = Math.min(HEATMAP_RAMP.length - 1, Math.floor(frac * HEATMAP_RAMP.length));
+  return HEATMAP_RAMP[idx];
+}
 
 interface HeatmapRow {
   dow: number; // 0=Sun .. 6=Sat
@@ -38,17 +48,13 @@ function Cell({
   day: number;
   hour: number;
 }) {
-  const opacity = max === 0 ? 0 : count === 0 ? 0 : Math.max(0.18, count / max);
   const label = `${DOW[day]} ${hour}:00`;
   return (
     <SimpleTooltip content={`${label} — ${count} flights`}>
       <div
         tabIndex={0}
         className="h-5 rounded-sm outline outline-1 outline-[var(--color-border-default)]/40 focus:outline-2 focus:outline-[var(--color-accent)]"
-        style={{
-          background:
-            count === 0 ? 'transparent' : `${CHART_COLORS.accent}${alphaHex(opacity)}`,
-        }}
+        style={{ background: rampColor(count, max) }}
         aria-label={`${label} ${count} flights`}
       />
     </SimpleTooltip>
@@ -76,10 +82,7 @@ export function ActivityHeatmap({ rows }: { rows: HeatmapRow[] }) {
       >
         <div />
         {DOW.map((label) => (
-          <div
-            key={label}
-            className="text-center text-[10px] text-[var(--color-text-dim)]"
-          >
+          <div key={label} className="text-center text-[10px] text-[var(--color-text-dim)]">
             {label}
           </div>
         ))}
@@ -132,12 +135,8 @@ export function ActivityHeatmap({ rows }: { rows: HeatmapRow[] }) {
           data-testid="activity-heatmap-legend"
         >
           <span className="mr-1">1</span>
-          {[0.18, 0.45, 0.72, 1.0].map((a) => (
-            <span
-              key={a}
-              className="inline-block h-2.5 w-5 rounded-sm"
-              style={{ background: `${CHART_COLORS.accent}${alphaHex(a)}` }}
-            />
+          {HEATMAP_RAMP.map((c) => (
+            <span key={c} className="inline-block h-2.5 w-5 rounded-sm" style={{ background: c }} />
           ))}
           <span className="ml-1">{max.toLocaleString()}</span>
           <span className="ml-1">flights/hr</span>
@@ -145,10 +144,4 @@ export function ActivityHeatmap({ rows }: { rows: HeatmapRow[] }) {
       )}
     </div>
   );
-}
-
-export function alphaHex(a: number): string {
-  return Math.round(Math.min(1, Math.max(0, a)) * 255)
-    .toString(16)
-    .padStart(2, '0');
 }

@@ -1712,6 +1712,21 @@ class TestApiStats:
         assert data["military_flights"] == 1
         assert data["interesting_flights"] == 0
 
+    def test_daily_unique_aircraft_sorted_asc(self, client, db_conn, clear_web_cache):
+        # Insert flights across three distinct days within the last 30-day window.
+        # daily_unique_aircraft must be returned oldest-first so the frontend
+        # bar chart reads left→right past→present.
+        now = int(time.time())
+        day1 = now - 5 * 86400
+        day2 = now - 3 * 86400
+        day3 = now - 1 * 86400
+        insert_flight(db_conn, icao="aa0001", first_seen=day1)
+        insert_flight(db_conn, icao="aa0002", first_seen=day2)
+        insert_flight(db_conn, icao="aa0003", first_seen=day3)
+        r = client.get("/api/stats")
+        days = [row["day"] for row in r.json()["daily_unique_aircraft"]]
+        assert days == sorted(days), f"daily must be ASC, got {days}"
+
 
 # ---------------------------------------------------------------------------
 # API: /api/stats/polar
