@@ -1,5 +1,89 @@
 # Changelog
 
+## 2.6.0 — 2026-05-24
+
+### Statistics page redesign — time-window narrative
+
+Reworks the Statistics page (`/stats/`) around the **selected time window** instead
+of treating every metric with equal visual weight. Implements Milestone 6 ("Option
+C — time-window narrative") from `internal_docs/uiux/CLAUDE_DESIGN_BRIEF.md` and
+lands the M1 paper-cut fixes that were still outstanding. Lighter, more scannable,
+and consistent with the dark blue chrome of the rest of the SPA.
+
+User-visible changes:
+
+- **Sticky range bar with context sentence.** `24h | 7d | 30d | 90d | All | Custom`
+  segmented control docks under the nav as you scroll, with a one-line caption
+  underneath: *"Showing **last 24 hours** · YYYY-MM-DD HH:MM → … · compared with
+  previous 24h"*. A small refreshing indicator appears next to it during
+  background refetches.
+- **4 large KPI cards** replace the previous 12-tile grid: Flights, Unique
+  aircraft, Position fixes, Max range. Each card has a delta line (where a
+  comparison exists), an inline sparkline (where the window has enough points),
+  and aligns uniformly across the row regardless of which sublabels exist.
+- **Inline flag/squawk badge strip** replaces the second row of flagged cards.
+  Equal-width pills for Military · Interesting · Anonymous · 7700 · 7600 · 7500;
+  each pill is a `<Link>` into the pre-filtered History view.
+- **In-page section anchors** (xl only): `Overview · Activity · Rankings ·
+  Coverage` chips with scroll-spy active state.
+- **xl small-multiples** for the rankings panel: all six Top-N charts visible at
+  once at laptop width (aircraft types / airlines / countries / visitors / routes
+  / airports). Single-card switcher kept for narrower screens.
+- **Collapsible "About this receiver" footer** for lifetime totals (Total
+  flights, Unique airlines, Total positions, DB size, Oldest flight, Source
+  breakdown). Always shows receiver-wide values — does **not** change when the
+  range picker moves.
+- **Daily-unique chart reads chronologically** in every window (was reversed in
+  range=all). Today's bar is always the rightmost.
+- **Heatmap discrimination** improved with a 5-stop blue alpha ramp. Hot cells
+  are unambiguously distinct from cold cells; legend matches the actual stops.
+- **Top-N x-axis labels abbreviate to k/M** (e.g. `12k`, `1.5M`) and avoid
+  collisions on the dense small-multiples cells.
+- **SWR refresh pattern**: previous data stays visible while the next range
+  loads, so changing presets no longer flashes the skeleton.
+- **Personal records** and **polar range** kept and lightly polished.
+
+Map fixes:
+
+- **No more duplicate-aircraft markers during Rewind / HIST scrubbing.** Two
+  contributing causes addressed: (a) the snapshot query's `placeholderData`
+  fallback now only applies in Live mode, so scrubbing doesn't keep the
+  previous timestamp's markers on screen; (b) `LiveMap` now de-dups the
+  aircraft array by `icao_hex` defensively, so the rare case of two `flight_id`
+  rows for one aircraft inside the 600-second snapshot window only renders as
+  one marker.
+
+Backend:
+
+- **New `lifetime: {...}` block** in `/api/stats` carrying the receiver-wide
+  totals (total_flights, unique_aircraft, total_positions, unique_airlines,
+  oldest_flight, db_size_bytes, source_breakdown). Always populated, independent
+  of `from`/`to`. Consumed by the "About this receiver" footer.
+- **Daily-unique chart SQL** (`web.py:1489`): `ORDER BY day DESC LIMIT 30` →
+  `ORDER BY day ASC LIMIT 31` for the unfiltered path. The `+1` keeps today's
+  bar in view (the 30-day window spans 31 distinct UTC date strings).
+
+Internal:
+
+- New `frontend/src/components/stats/` directory with seven small primitives:
+  `KpiCard`, `KpiSparkline`, `FlagBadgeStrip`, `RangeContextLine`,
+  `AboutReceiverFooter`, `SectionAnchors`, `TopChartMultiples`.
+- `TopChart.tsx` refactored: option builder + view definitions extracted to a
+  shared `charts/topRows.ts` consumed by both the single-card and
+  small-multiples variants.
+- `RangePicker.tsx` gains optional `sticky` and `right` slot props (default
+  off so Metrics / History / Map call sites are unchanged).
+- `--rsbs-nav-h` CSS variable published from `index.css` so sticky chrome can
+  dock under the nav without hardcoding heights at the component level.
+- `HEATMAP_RAMP` constant added to `charts/theme.ts` per ADR-0008 (chart colors
+  live in the chart theme, not Tailwind tokens).
+- `IntersectionObserver` shim added to `frontend/test/setup.ts` (jsdom doesn't
+  provide one).
+- 31 new tests across 6 new frontend files (KPI card, sparkline, flag strip,
+  range context, stats page layout, abbreviateAxis) plus backend tests for the
+  daily-chart ASC ordering, the lifetime block constancy, NULL coercion on
+  empty DB, and snapshot dedup.
+
 ## 2.5.2 — 2026-05-24
 
 ### Audit-13 backlog cleanup — Low-severity sweep
