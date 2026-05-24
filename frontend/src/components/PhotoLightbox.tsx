@@ -71,7 +71,12 @@ export function PhotoLightbox({ photo, alt, children }: Props) {
             <img
               src={largeUrl}
               alt={alt}
-              loading="lazy"
+              // eager: the image only fetches when the dialog opens,
+              // so there's no page-weight penalty; lazy here just
+              // produced a perceptible blank frame before the enlarged
+              // photo appeared (fixed elements aren't reliably treated
+              // as in-viewport for lazy intersection).
+              loading="eager"
               // Render at natural pixel size, capped by viewport.
               // Earlier we used `w-full` to force small thumbnails
               // to fill the dialog, but that upscaled blurrily for

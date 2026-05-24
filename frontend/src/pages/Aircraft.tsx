@@ -118,7 +118,7 @@ export default function AircraftPage() {
         </CardHeader>
         <CardContent>
           <div className="grid gap-4 md:grid-cols-[200px_1fr]">
-            <PhotoBox q={photoQ} />
+            <PhotoBox q={photoQ} label={info.registration ?? icao ?? 'Aircraft'} />
             <dl className="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1.5 text-sm">
               <dt className="text-[var(--color-text-dim)]">Type</dt>
               <dd>
@@ -249,7 +249,17 @@ function WatchButton({ icao }: { icao: string }) {
   );
 }
 
-function PhotoBox({ q }: { q: { data: PhotoResp | null | undefined; isLoading: boolean } }) {
+function PhotoBox({
+  q,
+  label,
+}: {
+  q: { data: PhotoResp | null | undefined; isLoading: boolean };
+  // Aircraft label (registration or icao_hex) — used as the lightbox's
+  // accessible name (via <Dlg.Title> sr-only) and the enlarged image's
+  // alt text. Radix requires a non-empty title for the dialog to satisfy
+  // its accessible-name contract.
+  label: string;
+}) {
   if (q.isLoading) return <Skeleton className="aspect-[4/3] w-full" />;
   if (!q.data) return null;
   const url = safeUrl(q.data.large_url) || safeUrl(q.data.thumbnail_url);
@@ -262,14 +272,14 @@ function PhotoBox({ q }: { q: { data: PhotoResp | null | undefined; isLoading: b
   }
   return (
     <div className="space-y-1">
-      <PhotoLightbox photo={q.data} alt="">
+      <PhotoLightbox photo={q.data} alt={label}>
         <button
           type="button"
           aria-label="Enlarge photo"
           data-testid="aircraft-photo-trigger"
           className="block aspect-[4/3] w-full overflow-hidden rounded bg-[var(--color-surface-2)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)]"
         >
-          <img src={url} alt="" loading="lazy" className="h-full w-full object-cover" />
+          <img src={url} alt={label} loading="lazy" className="h-full w-full object-cover" />
         </button>
       </PhotoLightbox>
       {q.data.photographer && (
