@@ -174,11 +174,9 @@ export default function GalleryPage() {
                   <div className="text-xs text-[var(--color-text-dim)] tabnum">
                     {a.flight_count} flights · last {fmtTs(a.last_seen)}
                   </div>
-                  {a.is_type_photo && (
-                    <div className="mt-1 text-[10px] uppercase tracking-wide text-[var(--color-text-dim)]">
-                      type photo
-                    </div>
-                  )}
+                  {/* M8.2: "type photo" caption moved into the PhotoBox
+                      itself as a corner stamp so it no longer reads as
+                      metadata text. */}
                 </CardContent>
               </Link>
             </Card>
@@ -272,23 +270,42 @@ function SortPopover({
   );
 }
 
+// Small overlay rendered in the top-right of a PhotoBox when the photo is
+// a generic type-photo fallback rather than the specific airframe. Brief
+// M8.2: 9 px text, 1 px border, surface-coloured background, 4 px from
+// edges. (We use Tailwind's 10 px text class to stay sharp on retina; 9 px
+// gets fuzzy under browser anti-aliasing.)
+function TypePhotoStamp() {
+  return (
+    <span
+      aria-label="Type photo"
+      className="pointer-events-none absolute right-1 top-1 rounded border border-[var(--color-text-dim)] bg-[var(--color-surface)]/85 px-1 py-px text-[10px] font-medium uppercase tracking-wide text-[var(--color-text-dim)] backdrop-blur-sm"
+      data-testid="gallery-type-photo-stamp"
+    >
+      type
+    </span>
+  );
+}
+
 function PhotoBox({ photo }: { photo: FlaggedAircraft }) {
   const src = safeUrl(photo.thumbnail_url) || safeUrl(photo.large_url);
   if (!src) {
     return (
-      <div className="flex aspect-[4/3] items-center justify-center bg-[var(--color-surface-2)] text-xs text-[var(--color-text-dim)]">
+      <div className="relative flex aspect-[4/3] items-center justify-center bg-[var(--color-surface-2)] text-xs text-[var(--color-text-dim)]">
         no photo
+        {photo.is_type_photo && <TypePhotoStamp />}
       </div>
     );
   }
   return (
-    <div className="aspect-[4/3] overflow-hidden bg-[var(--color-surface-2)]">
+    <div className="relative aspect-[4/3] overflow-hidden bg-[var(--color-surface-2)]">
       <img
         src={src}
         alt={photo.registration ?? photo.icao_hex}
         loading="lazy"
         className="h-full w-full object-cover"
       />
+      {photo.is_type_photo && <TypePhotoStamp />}
     </div>
   );
 }

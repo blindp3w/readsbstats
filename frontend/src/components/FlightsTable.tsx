@@ -12,6 +12,20 @@ import { cn } from '@/lib/cn';
 // /v2/aircraft/:icao. Sort + page is owned by the caller (URL-state) so the
 // table is pure: receives state via props, emits state changes via callbacks.
 
+// Brief M8.4: 3 px coloured left-border stripe on every row keyed to
+// primary_source. The stripe goes on the FIRST <td>, not on <tr> — the
+// underlying <table> uses `border-collapse` (ui/Table.tsx) which suppresses
+// row-level borders. Stripe colour is also the visible source signal on
+// mobile, where the Source column itself is hidden.
+function stripeColor(source: string | null | undefined): string {
+  if (!source) return 'var(--color-border-default)';
+  const s = source.toLowerCase();
+  if (s === 'adsb') return 'var(--color-success)';
+  if (s === 'mlat') return 'var(--color-warn)';
+  if (s === 'mixed') return 'var(--color-accent)';
+  return 'var(--color-border-default)';
+}
+
 export interface Flight {
   id: number;
   icao_hex: string;
@@ -95,7 +109,15 @@ export function FlightsTable({ flights, isLoading, error, sortBy, sortDir, onSor
       onSortChange(key, sortDir === 'asc' ? 'desc' : 'asc');
     } else {
       // Default: descending for first_seen, alphabetical (asc) for textual cols.
-      const defaultDir: SortDir = key === 'first_seen' || key === 'duration_sec' || key === 'max_alt_baro' || key === 'max_gs' || key === 'max_distance_nm' || key === 'total_positions' ? 'desc' : 'asc';
+      const defaultDir: SortDir =
+        key === 'first_seen' ||
+        key === 'duration_sec' ||
+        key === 'max_alt_baro' ||
+        key === 'max_gs' ||
+        key === 'max_distance_nm' ||
+        key === 'total_positions'
+          ? 'desc'
+          : 'asc';
       onSortChange(key, defaultDir);
     }
   }
@@ -164,11 +186,16 @@ export function FlightsTable({ flights, isLoading, error, sortBy, sortDir, onSor
       <TBody>
         {(flights ?? []).map((f) => (
           <TR key={f.id} data-testid={`flights-row-${f.id}`}>
-            <TD className="text-xs tabnum">
-              <Link
-                to={`/flight/${f.id}`}
-                className="text-[var(--color-accent)] hover:underline"
-              >
+            {/* Stripe lives on the FIRST cell because <table> uses
+                border-collapse (see Table.tsx) which suppresses tr-level
+                borders. data-source attr is the test hook. */}
+            <TD
+              className="border-l-[3px] text-xs tabnum"
+              style={{ borderLeftColor: stripeColor(f.primary_source) }}
+              data-source={f.primary_source ?? ''}
+              data-testid={`flights-row-${f.id}-stripe`}
+            >
+              <Link to={`/flight/${f.id}`} className="text-[var(--color-accent)] hover:underline">
                 {fmtTs(f.first_seen)}
               </Link>
             </TD>
@@ -201,7 +228,7 @@ export function FlightsTable({ flights, isLoading, error, sortBy, sortDir, onSor
               </TD>
             )}
             <TD className="hidden md:table-cell">
-              <SourceBadge source={f.primary_source} />
+              <SourceBadge source={f.primary_source} size="sm" />
             </TD>
             <TD className="hidden md:table-cell tabnum">{fmtAlt(f.max_alt_baro)}</TD>
             <TD className="hidden md:table-cell tabnum">{fmtSpd(f.max_gs)}</TD>

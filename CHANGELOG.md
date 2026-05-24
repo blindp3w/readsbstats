@@ -1,5 +1,67 @@
 # Changelog
 
+## 2.8.0 — 2026-05-24
+
+### Metrics small-multiples + History stripe + Gallery type-photo stamp
+
+Four small, additive items from `internal_docs/uiux/CLAUDE_DESIGN_BRIEF.md`
+(Milestones 2.1, 2.2, 8.2, 8.4). No backend changes — `/api/metrics`,
+`/api/flights`, and `/api/aircraft/flagged` already return the fields
+this UI consumes.
+
+User-visible changes:
+
+- **Signal quality — 4 stacked sub-panels** (M2.1). The Metrics page's
+  "Signal quality" panel was a 3-series overlay with no legend; replaced
+  with four stacked sub-panels (Peak / Mean / Noise / Strong signals),
+  each ~50 px tall, sharing a single x-axis at the bottom. Each sub-panel
+  carries its label on the left and the most recent value on the right.
+  Hover anywhere → vertical crosshair across all 4 in lockstep. Added
+  `strong_signals` as the new 4th series (already collected, never
+  previously rendered).
+- **Aircraft-count isolation pills** (M2.2). The 4-series Aircraft panel
+  gained a pill row above the chart (color-keyed to each line):
+  `With pos · No pos · ADS-B · MLAT`. Click a pill to isolate that
+  series — others fade to 20 % opacity rather than disappear. Click
+  again to restore. Faithful to the brief; uses an HTML pill row + opacity
+  mutation (not ECharts' built-in legend, which hides instead of fading).
+- **History rows — 3 px source stripe** (M8.4). Every row in the History
+  table now carries a coloured left-border stripe keyed to
+  `primary_source`: green for ADS-B, amber for MLAT, blue for mixed,
+  faint border-default for other. The right-side Source pill shrinks to
+  10 px and stays at desktop; on mobile the column is still hidden but
+  the stripe is the visible signal. Source taxonomy unchanged.
+- **Gallery — type-photo corner stamp** (M8.2). The "type photo"
+  caption that used to sit below the metadata (reading as data) is now
+  a small `[ type ]` stamp in the top-right corner of the photo itself.
+  4 px from edges, 10 px text, 1 px border, semi-transparent surface
+  background. Cards with a specific aircraft photo carry no stamp.
+
+Internal:
+
+- **ECharts multi-grid pattern**: `buildSignalSmallMultiplesOption` in
+  `frontend/src/pages/Metrics.tsx` builds a 4-grid option in a single
+  chart instance (one canvas, one ResizeObserver), with `axisPointer.link:
+  [{ xAxisIndex: 'all' }]` for the synchronized crosshair. Verified via
+  context7 that `'all'` is valid syntax and must live at the root option
+  level, not per-axis.
+- **`buildPanelOption` gains `isolated?: string | null` arg**. When set,
+  non-matching series get `lineStyle.opacity: 0.2` + `areaStyle.opacity:
+  0.06`. Backward compatible (default `null` ⇒ unchanged).
+- **`SourceBadge` gains `size?: 'sm' | 'md'`**. Default `'md'` keeps every
+  other call site (`FlightDetail`, `Aircraft`) unchanged. `'sm'` uses
+  10 px text + tighter padding for the dense History rows.
+- **History stripe lives on the first `<td>`, not on `<tr>`**, because the
+  shared `<Table>` primitive uses `border-collapse` which suppresses
+  row-level borders. Test guards this directly so a future refactor
+  can't silently break the stripe.
+- **`Panel.labels?: string[]`** added to the Metrics PANELS schema for
+  the two panels that render labels visibly (signal sub-titles,
+  aircraft pills).
+- 16 new frontend tests: 6 for the History stripe contract, 3 for the
+  Gallery type-photo stamp, 7 for the new ECharts builders +
+  isolation arg. Total suite: **200 passed**.
+
 ## 2.7.0 — 2026-05-24
 
 ### Metrics health stripe + paper-cuts

@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import type { EChartsOption } from 'echarts';
 import { apiJson } from '@/lib/api';
@@ -27,6 +27,10 @@ interface Panel {
   title: string;
   metrics: string[];
   colors: string[];
+  // Friendly per-metric labels for the panels that render them visibly
+  // (signal small-multiples sub-titles, aircraft isolation pills). Other
+  // panels can omit — the metric key is fine as a fallback.
+  labels?: string[];
   // Optional Y-axis tick formatter — used for byte/meter values that
   // shouldn't render as raw integers.
   valueFormat?: ValueFmt;
@@ -36,16 +40,23 @@ interface Panel {
 // CHART_GROUPS for the source-of-truth.
 const PANELS: Panel[] = [
   {
+    // M2.1: rendered by <SignalSmallMultiples>, not <MetricChart>. 4
+    // stacked sub-panels in one ECharts canvas; bottom-most sub-panel
+    // owns the shared x-axis.
     id: 'signal',
     title: 'Signal quality (dBFS)',
-    metrics: ['signal', 'noise', 'peak_signal'],
-    colors: [CHART_COLORS.success, CHART_COLORS.danger, CHART_COLORS.accent],
+    metrics: ['peak_signal', 'signal', 'noise', 'strong_signals'],
+    colors: [CHART_COLORS.accent, CHART_COLORS.success, CHART_COLORS.danger, CHART_COLORS.warn],
+    labels: ['Peak signal', 'Mean signal', 'Noise floor', 'Strong signals'],
   },
   {
+    // M2.2: rendered by <IsolatingMetricChart>, not <MetricChart>. HTML
+    // pill row above the chart toggles series isolation (fade-not-hide).
     id: 'aircraft',
     title: 'Aircraft count',
     metrics: ['ac_with_pos', 'ac_without_pos', 'ac_adsb', 'ac_mlat'],
     colors: [CHART_COLORS.accent, CHART_COLORS.textDim, CHART_COLORS.success, CHART_COLORS.warn],
+    labels: ['With pos', 'No pos', 'ADS-B', 'MLAT'],
   },
   {
     id: 'messages',
@@ -186,6 +197,21 @@ export default function MetricsPage() {
             <CardContent>
               {metricsQ.isLoading ? (
                 <Skeleton className="h-56 w-full" />
+              ) : panel.id === 'signal' ? (
+                <SignalSmallMultiples
+                  resp={metricsQ.data}
+                  keys={panel.metrics}
+                  colors={panel.colors}
+                  labels={panel.labels ?? panel.metrics}
+                />
+              ) : panel.id === 'aircraft' ? (
+                <IsolatingMetricChart
+                  resp={metricsQ.data}
+                  keys={panel.metrics}
+                  colors={panel.colors}
+                  labels={panel.labels ?? panel.metrics}
+                  valueFormat={panel.valueFormat}
+                />
               ) : (
                 <MetricChart
                   resp={metricsQ.data}
@@ -229,6 +255,9 @@ export function buildPanelOption(
   fmtAxisDate: (epoch: number) => string,
   fmtTs: (epoch: number) => string,
   valueFormat?: ValueFmt,
+  // M2.2: when set to a metric key, that series stays at full opacity and
+  // the others fade to 0.2 line / 0.06 area. null = all full opacity.
+  isolated?: string | null,
 ): EChartsOption {
   if (!resp || !resp.data || resp.data.length === 0) return { series: [] };
   const [tsCol, ...rest] = resp.data;
@@ -241,6 +270,7 @@ export function buildPanelOption(
     if (idx < 0) return { type: 'line' as const, name: k, data: [] as number[][] };
     const valuesCol = rest[idx] ?? [];
     const data: number[][] = valuesCol.map((v, j) => [tsCol[j] * 1000, v]);
+    const faded = isolated != null && isolated !== k;
     return {
       type: 'line' as const,
       name: k,
@@ -248,8 +278,8 @@ export function buildPanelOption(
       color: colors[i] ?? CHART_COLORS.accent,
       showSymbol: false,
       sampling: 'lttb' as const,
-      lineStyle: { width: 1.5 },
-      areaStyle: { opacity: 0.25 },
+      lineStyle: { width: 1.5, opacity: faded ? 0.2 : 1 },
+      areaStyle: { opacity: faded ? 0.06 : 0.25 },
     };
   });
   const base = baseOption();
@@ -274,6 +304,258 @@ export function buildPanelOption(
     dataZoom: [{ type: 'inside', xAxisIndex: 0, throttle: 50 }],
     series,
   };
+}
+
+// ---------------------------------------------------------------------------
+// M2.1 — Signal small-multiples: ONE ECharts canvas with 4 stacked grids
+// sharing a single x-axis at the bottom. Per-sub-panel title + current value
+// rendered as ECharts `title` entries (one canvas, one resize observer).
+// ---------------------------------------------------------------------------
+
+// Per-sub-panel layout (top → bottom). The bottom grid reserves room for
+// the shared x-axis tick labels.
+const SMALL_MULT_HEIGHT = 280; // px — chart canvas total
+const SMALL_MULT_GRID_H = 50;
+const SMALL_MULT_TITLE_H = 14; // small label row above each grid
+
+function smallMultGridTop(i: number): number {
+  // Row stride = title + grid; bottom (i=3) has axis label band below.
+  return SMALL_MULT_TITLE_H + i * (SMALL_MULT_TITLE_H + SMALL_MULT_GRID_H);
+}
+
+function lastNonNullValue(col: number[] | undefined): number | null {
+  if (!col) return null;
+  for (let i = col.length - 1; i >= 0; i--) {
+    const v = col[i];
+    if (v != null && Number.isFinite(v)) return v;
+  }
+  return null;
+}
+
+// Exported for unit tests.
+export function buildSignalSmallMultiplesOption(
+  resp: MetricsResp | undefined,
+  keys: string[],
+  colors: string[],
+  labels: string[],
+  fmtAxisTime: (epoch: number) => string,
+  fmtAxisDate: (epoch: number) => string,
+  fmtTs: (epoch: number) => string,
+): EChartsOption {
+  if (!resp || !resp.data || resp.data.length === 0) return { series: [] };
+  const [tsCol, ...rest] = resp.data;
+  if (!tsCol || tsCol.length === 0) return { series: [] };
+  const spanSeconds = tsCol[tsCol.length - 1] - tsCol[0];
+  const axisFmt = spanSeconds >= MULTI_DAY_THRESHOLD_S ? fmtAxisDate : fmtAxisTime;
+
+  const titles: EChartsOption['title'] = [];
+  const grids: EChartsOption['grid'] = [];
+  const xAxes: EChartsOption['xAxis'] = [];
+  const yAxes: EChartsOption['yAxis'] = [];
+  const series: EChartsOption['series'] = [];
+
+  keys.forEach((k, i) => {
+    const idx = resp.metrics.indexOf(k);
+    const valuesCol = idx >= 0 ? (rest[idx] ?? []) : [];
+    const data: number[][] = valuesCol.map((v, j) => [tsCol[j] * 1000, v]);
+    const lastVal = lastNonNullValue(valuesCol);
+    const isBottom = i === keys.length - 1;
+    const gridTop = smallMultGridTop(i);
+
+    // Two title entries per sub-panel: label (left) + current value (right).
+    (titles as any[]).push(
+      {
+        text: labels[i] ?? k,
+        top: gridTop - SMALL_MULT_TITLE_H,
+        left: 8,
+        textStyle: { color: CHART_COLORS.textDim, fontSize: 11, fontWeight: 'normal' },
+      },
+      {
+        text: lastVal == null ? '—' : String(Math.round(lastVal * 10) / 10),
+        top: gridTop - SMALL_MULT_TITLE_H,
+        right: 8,
+        textStyle: {
+          color: CHART_COLORS.text,
+          fontSize: 11,
+          fontFamily: 'ui-monospace, monospace',
+        },
+      },
+    );
+    (grids as any[]).push({
+      top: gridTop,
+      left: 40,
+      right: 12,
+      height: SMALL_MULT_GRID_H,
+    });
+    (xAxes as any[]).push({
+      type: 'time',
+      gridIndex: i,
+      axisLine: { lineStyle: { color: CHART_COLORS.grid } },
+      axisTick: { show: isBottom },
+      axisLabel: isBottom
+        ? {
+            color: CHART_COLORS.textDim,
+            fontSize: 10,
+            formatter: (v: number) => axisFmt(v / 1000),
+            hideOverlap: true,
+          }
+        : { show: false },
+      splitLine: { show: false },
+      axisPointer: {
+        label: { formatter: (p: any) => fmtTs(p.value / 1000) },
+      },
+    });
+    (yAxes as any[]).push({
+      type: 'value',
+      gridIndex: i,
+      axisLine: { show: false },
+      axisLabel: { color: CHART_COLORS.textDim, fontSize: 9 },
+      splitLine: { lineStyle: { color: CHART_COLORS.grid, type: 'dashed' } },
+      splitNumber: 2,
+    });
+    (series as any[]).push({
+      type: 'line',
+      name: labels[i] ?? k,
+      data,
+      xAxisIndex: i,
+      yAxisIndex: i,
+      color: colors[i] ?? CHART_COLORS.accent,
+      showSymbol: false,
+      sampling: 'lttb',
+      lineStyle: { width: 1.5 },
+      areaStyle: { opacity: 0.3 },
+    });
+  });
+
+  const base = baseOption();
+  return {
+    ...base,
+    title: titles,
+    grid: grids,
+    xAxis: xAxes,
+    yAxis: yAxes,
+    // axisPointer.link must live at the root (verified via context7).
+    // 'all' links every xAxis so the vertical crosshair tracks across all
+    // 4 sub-panels on hover.
+    axisPointer: { link: [{ xAxisIndex: 'all' as any }] },
+    tooltip: {
+      ...base.tooltip,
+      trigger: 'axis',
+      axisPointer: { type: 'line' },
+    },
+    series,
+  };
+}
+
+function SignalSmallMultiples({
+  resp,
+  keys,
+  colors,
+  labels,
+}: {
+  resp: MetricsResp | undefined;
+  keys: string[];
+  colors: string[];
+  labels: string[];
+}) {
+  const { fmtTs, fmtAxisTime, fmtAxisDate } = useFormat();
+  const option = useMemo<EChartsOption>(
+    () =>
+      buildSignalSmallMultiplesOption(resp, keys, colors, labels, fmtAxisTime, fmtAxisDate, fmtTs),
+    [resp, keys, colors, labels, fmtAxisTime, fmtAxisDate, fmtTs],
+  );
+  const hasRows = !!resp && resp.data.length > 0 && (resp.data[0]?.length ?? 0) > 0;
+  if (!hasRows) {
+    return (
+      <div
+        className={cn(
+          'flex h-[280px] items-center justify-center text-sm text-[var(--color-text-dim)]',
+        )}
+      >
+        no data
+      </div>
+    );
+  }
+  return <EChart option={option} group="metrics" height={SMALL_MULT_HEIGHT} />;
+}
+
+// ---------------------------------------------------------------------------
+// M2.2 — Isolating metric chart: HTML pill row above the chart that toggles
+// per-series isolation (fade-not-hide). Uses buildPanelOption with the
+// `isolated` arg.
+// ---------------------------------------------------------------------------
+
+function IsolatingMetricChart({
+  resp,
+  keys,
+  colors,
+  labels,
+  valueFormat,
+}: {
+  resp: MetricsResp | undefined;
+  keys: string[];
+  colors: string[];
+  labels: string[];
+  valueFormat?: ValueFmt;
+}) {
+  const { fmtTs, fmtAxisTime, fmtAxisDate } = useFormat();
+  const [isolated, setIsolated] = useState<string | null>(null);
+  const option = useMemo<EChartsOption>(
+    () =>
+      buildPanelOption(resp, keys, colors, fmtAxisTime, fmtAxisDate, fmtTs, valueFormat, isolated),
+    [resp, keys, colors, valueFormat, fmtAxisTime, fmtAxisDate, fmtTs, isolated],
+  );
+  const hasRows = !!resp && resp.data.length > 0 && (resp.data[0]?.length ?? 0) > 0;
+  return (
+    <div className="space-y-2">
+      <div
+        role="group"
+        aria-label="Series isolation"
+        className="flex flex-wrap items-center gap-2"
+        data-testid="metrics-aircraft-pills"
+      >
+        {keys.map((k, i) => {
+          const active = isolated === k;
+          const color = colors[i] ?? CHART_COLORS.accent;
+          return (
+            <button
+              key={k}
+              type="button"
+              onClick={() => setIsolated((cur) => (cur === k ? null : k))}
+              aria-pressed={active}
+              aria-label={`Isolate ${labels[i] ?? k}`}
+              data-testid={`metrics-aircraft-pill-${k}`}
+              className={cn(
+                'inline-flex min-h-9 items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium transition-colors',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)]',
+                active
+                  ? 'border-[var(--color-accent)] bg-[var(--color-surface-2)] text-[var(--color-text)]'
+                  : 'border-[var(--color-border-default)] text-[var(--color-text-dim)] hover:bg-[var(--color-surface-2)]/60 hover:text-[var(--color-text)]',
+              )}
+            >
+              <span
+                aria-hidden="true"
+                className="inline-block h-2.5 w-2.5 rounded-full"
+                style={{ background: color }}
+              />
+              {labels[i] ?? k}
+            </button>
+          );
+        })}
+      </div>
+      {!hasRows ? (
+        <div
+          className={cn(
+            'flex h-56 items-center justify-center text-sm text-[var(--color-text-dim)]',
+          )}
+        >
+          no data
+        </div>
+      ) : (
+        <EChart option={option} group="metrics" height={220} />
+      )}
+    </div>
+  );
 }
 
 function MetricChart({
