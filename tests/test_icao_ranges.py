@@ -80,7 +80,16 @@ class TestIsAnonymousIcao:
     def test_f_range_is_anonymous(self):
         # 0xF00000+ is reserved for ICAO special / temporary schemes.
         assert icao_ranges.is_anonymous_icao("f00001") is True
-        assert icao_ranges.is_anonymous_icao("ffffff") is True
+        assert icao_ranges.is_anonymous_icao("fffffe") is True
+
+    def test_reserved_markers_not_anonymous(self):
+        # Audit-13 A13-024: 0x000000 (null/no-information) and 0xFFFFFF
+        # (broadcast/all-call) are ICAO-reserved sentinel addresses, not
+        # real aircraft. A receiver should not classify them as anonymous
+        # aircraft — they're protocol artifacts that occasionally leak
+        # into the message stream.
+        assert icao_ranges.is_anonymous_icao("000000") is False
+        assert icao_ranges.is_anonymous_icao("ffffff") is False
 
     def test_gap_between_state_blocks_is_anonymous(self):
         # Uruguay ends at 0xE90FFF, Bolivia starts at 0xE94000 — 0xE91000 is a gap.
@@ -128,10 +137,9 @@ class TestIsAnonymousIcao:
         # "anonymous" misrepresents the situation.  Treat as malformed.
         assert icao_ranges.is_anonymous_icao("1000000") is False
 
-    def test_zero_address_is_anonymous(self):
-        # 0x000000 is the Mode-S "no address" broadcast — not assigned to
-        # any state, definitely worth flagging if a real receiver picks it up.
-        assert icao_ranges.is_anonymous_icao("000000") is True
+    # `test_zero_address_is_anonymous` removed in audit-13 A13-024 — see
+    # `test_reserved_markers_not_anonymous` above. Earlier rationale flipped:
+    # 0x000000 / 0xFFFFFF are sentinel addresses, not real anonymous aircraft.
 
 
 class TestAnonymousFlagSql:

@@ -255,6 +255,12 @@ def is_anonymous_icao(icao_hex: str | None) -> bool:
         return False
     if not (0 <= addr <= 0xFFFFFF):
         return False
+    # Audit-13 A13-024: 0x000000 (null / no-information) and 0xFFFFFF
+    # (all-call / broadcast) are ICAO-reserved sentinel addresses, not
+    # real aircraft. Skip before the state-allocation scan so the badge
+    # logic and FLAG_ANONYMOUS retroactive scoring don't tag them.
+    if addr in (0x000000, 0xFFFFFF):
+        return False
     for start, end, _country, _iso in _RANGES:
         if start <= addr <= end:
             return False
@@ -271,7 +277,13 @@ def anonymous_flag_sql(col: str = "icao_hex", flag_value: int = 16) -> str:
     that want a different bit value pass it explicitly so the constant stays
     in one place (``config.py``).
     """
-    whens = []
+    # Audit-13 A13-024: ICAO-reserved sentinel addresses (null + broadcast)
+    # are not real aircraft — mirror the Python guard so SQL queries don't
+    # tag them either. Listed first so subsequent state-block WHENs aren't
+    # consulted for these two values.
+    whens = [
+        f"WHEN {col} IN ('000000', 'ffffff') THEN 0",
+    ]
     for start, end, _country, _iso in _RANGES:
         s = format(start, "06x")
         e = format(end, "06x")

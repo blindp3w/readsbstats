@@ -96,12 +96,19 @@ def telegram_enabled() -> bool:
 # Unit formatting
 # ---------------------------------------------------------------------------
 
+def _units() -> str:
+    # Normalise once per call: RSBS_TELEGRAM_UNITS=Imperial / METRIC must
+    # match the same branch as the canonical lowercase form (audit-13 A13-035).
+    return (config.TELEGRAM_UNITS or "").strip().lower()
+
+
 def _fmt_dist(nm: float | None) -> str:
     if nm is None:
         return "?"
-    if config.TELEGRAM_UNITS == "imperial":
+    u = _units()
+    if u == "imperial":
         return f"{nm * 1.15078:.0f} mi"
-    if config.TELEGRAM_UNITS == "aeronautical":
+    if u == "aeronautical":
         return f"{nm:.0f} nm"
     return f"{nm * 1.852:.0f} km"          # metric (default)
 
@@ -109,7 +116,7 @@ def _fmt_dist(nm: float | None) -> str:
 def _fmt_alt(ft: int | None) -> str:
     if ft is None:
         return "?"
-    if config.TELEGRAM_UNITS in ("imperial", "aeronautical"):
+    if _units() in ("imperial", "aeronautical"):
         return f"{ft:,} ft"
     return f"{round(ft * 0.3048):,} m"    # metric (default)
 
@@ -117,9 +124,10 @@ def _fmt_alt(ft: int | None) -> str:
 def _fmt_spd(kts: float | None) -> str:
     if kts is None:
         return "?"
-    if config.TELEGRAM_UNITS == "imperial":
+    u = _units()
+    if u == "imperial":
         return f"{kts * 1.15078:.0f} mph"
-    if config.TELEGRAM_UNITS == "aeronautical":
+    if u == "aeronautical":
         return f"{kts:.0f} kts"
     return f"{kts * 1.852:.0f} km/h"       # metric (default)
 
