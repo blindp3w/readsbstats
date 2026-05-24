@@ -8,6 +8,7 @@ import { Skeleton } from '@/components/ui/Skeleton';
 import { Alert } from '@/components/ui/Alert';
 import { cn } from '@/lib/cn';
 import { EChart } from '@/components/charts/EChart';
+import { IsolationPills } from '@/components/charts/IsolationPills';
 import { CHART_COLORS, baseOption, timeAxis, valueAxis } from '@/components/charts/theme';
 import { fmtBytes } from '@/lib/format';
 import { useFormat } from '@/hooks/useFormat';
@@ -515,44 +516,14 @@ function IsolatingMetricChart({
   const hasRows = !!resp && resp.data.length > 0 && (resp.data[0]?.length ?? 0) > 0;
   return (
     <div className="space-y-2">
-      <div
-        role="group"
-        aria-label="Series isolation"
-        className="flex flex-wrap items-center gap-2"
-        data-testid="metrics-aircraft-pills"
-      >
-        {keys.map((k, i) => {
-          const active = isolated === k;
-          const color = colors[i] ?? CHART_COLORS.accent;
-          return (
-            <button
-              key={k}
-              type="button"
-              onClick={() => setIsolated((cur) => (cur === k ? null : k))}
-              aria-pressed={active}
-              aria-label={`Isolate ${labels[i] ?? k}`}
-              data-testid={`metrics-aircraft-pill-${k}`}
-              className={cn(
-                // 44 px tap target on mobile (Apple HIG), 36 px on
-                // desktop where pointer precision makes the smaller
-                // pill less awkward in a dense Metrics page.
-                'inline-flex min-h-[44px] items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium transition-colors md:min-h-9',
-                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)]',
-                active
-                  ? 'border-[var(--color-accent)] bg-[var(--color-surface-2)] text-[var(--color-text)]'
-                  : 'border-[var(--color-border-default)] text-[var(--color-text-dim)] hover:bg-[var(--color-surface-2)]/60 hover:text-[var(--color-text)]',
-              )}
-            >
-              <span
-                aria-hidden="true"
-                className="inline-block h-2.5 w-2.5 rounded-full"
-                style={{ background: color }}
-              />
-              {labels[i] ?? k}
-            </button>
-          );
-        })}
-      </div>
+      <IsolationPills
+        keys={keys}
+        labels={labels}
+        colors={colors}
+        isolated={isolated}
+        onChange={setIsolated}
+        testIdPrefix="metrics-aircraft"
+      />
       {!hasRows ? (
         <div
           className={cn(
