@@ -123,7 +123,13 @@ export default function MapPage() {
     },
     refetchInterval: mode === 'live' ? 10_000 : false,
     refetchIntervalInBackground: false,
-    placeholderData: (prev) => prev,
+    // Only fall back to stale data in Live mode (smooth 10s polling). In
+    // Rewind / HIST modes the queryKey changes on every scrub, and
+    // placeholderData would hold the previous timestamp's aircraft on
+    // screen while the new one loads — long enough for the user to see
+    // markers from BOTH snapshots overlap briefly, which reads as the
+    // same physical aircraft appearing at two different positions.
+    placeholderData: mode === 'live' ? (prev) => prev : undefined,
     staleTime: 5_000,
     enabled: snapshotEnabled,
   });
