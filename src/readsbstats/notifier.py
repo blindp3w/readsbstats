@@ -81,9 +81,10 @@ def telegram_enabled() -> bool:
         _tg_enabled = False
         return False
 
-    # Validate units (non-fatal — falls back to metric)
-    units = config.TELEGRAM_UNITS.strip().lower()
-    if units not in ("metric", "imperial", "aeronautical"):
+    # Validate units (non-fatal — falls back to metric). Reuse the same
+    # _units() helper as the formatters so there is one normalisation
+    # path for the whole module.
+    if _units() not in ("metric", "imperial", "aeronautical"):
         log.warning("Invalid RSBS_TELEGRAM_UNITS=%r — expected metric, "
                      "imperial, or aeronautical; falling back to metric",
                      config.TELEGRAM_UNITS)
