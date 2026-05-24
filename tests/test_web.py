@@ -2960,6 +2960,62 @@ class TestApiMapCoverage:
         assert r_all.json()["max_range_nm"]  == pytest.approx(200.0, rel=0.01)
 
 
+class TestMapSnapshot:
+    """Regression guards for /api/map/snapshot dedup.
+
+    The endpoint must return exactly one row per flight_id within the
+    600-second snapshot window. Frontend keys markers by flight_id, so a
+    duplicate row would render as a second marker for one aircraft —
+    misleading during Map Rewind / HIST scrubbing.
+    """
+
+    def _insert_position(self, conn, *, flight_id, ts, lat=52.10, lon=21.00):
+        conn.execute(
+            "INSERT INTO positions (flight_id, ts, lat, lon, source_type) VALUES (?,?,?,?,?)",
+            (flight_id, ts, lat, lon, "adsb_icao"),
+        )
+        conn.commit()
+
+    def test_snapshot_returns_freshest_position_per_flight(self, client, db_conn):
+        # One flight, two positions within the snapshot window. Snapshot
+        # must return only the latest one — not both.
+        # `at` must be near now() (the endpoint rejects future timestamps and
+        # those older than config.MAP_HISTORY_HOURS).
+        now = int(time.time())
+        at = now - 60
+        fid = insert_flight(db_conn, icao="aabbcc", first_seen=at - 300)
+        self._insert_position(db_conn, flight_id=fid, ts=at - 200, lat=50.0, lon=10.0)
+        self._insert_position(db_conn, flight_id=fid, ts=at - 30, lat=51.0, lon=11.0)
+        r = client.get(f"/api/map/snapshot?at={at}&trail=0")
+        assert r.status_code == 200
+        aircraft = r.json()["aircraft"]
+        assert len(aircraft) == 1, f"expected 1 row, got {len(aircraft)}: {aircraft}"
+        # The freshest position wins.
+        assert aircraft[0]["ts"] == at - 30
+        assert aircraft[0]["lat"] == 51.0
+
+    def test_snapshot_one_row_per_flight_id_when_two_flights_overlap(self, client, db_conn):
+        # Two SEPARATE flights for the SAME aircraft (icao_hex) within the
+        # 600-second snapshot window — backend correctly returns both
+        # (one row per flight_id, as documented). Frontend defensive
+        # dedup-by-icao_hex (LiveMap.tsx) is what prevents the visual
+        # duplicate; this test locks in the backend's per-flight_id
+        # behavior so the frontend dedup keeps having something to dedup.
+        now = int(time.time())
+        at = now - 60
+        fid1 = insert_flight(db_conn, icao="aabbcc", first_seen=at - 500)
+        fid2 = insert_flight(db_conn, icao="aabbcc", first_seen=at - 100)
+        self._insert_position(db_conn, flight_id=fid1, ts=at - 400, lat=50.0, lon=10.0)
+        self._insert_position(db_conn, flight_id=fid2, ts=at - 50, lat=51.0, lon=11.0)
+        r = client.get(f"/api/map/snapshot?at={at}&trail=0")
+        assert r.status_code == 200
+        aircraft = r.json()["aircraft"]
+        # Both flight_ids are present (one row each, no duplicate within
+        # a single flight_id).
+        flight_ids = sorted(a["flight_id"] for a in aircraft)
+        assert flight_ids == sorted([fid1, fid2])
+
+
 class TestMapPrewarmer:
     """Functional test for _prewarm_one — the actual thread lifecycle is
     exercised by deploy verification, not unit tests."""

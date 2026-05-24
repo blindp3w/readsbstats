@@ -116,13 +116,21 @@ const DARK_STYLE: StyleSpecification = {
 const HEATMAP_PAINT = {
   'heatmap-weight': ['coalesce', ['get', 'weight'], 1] as unknown as number,
   'heatmap-color': [
-    'interpolate', ['linear'], ['heatmap-density'],
-    0,    'rgba(0,0,0,0)',
-    0.1,  '#1b0c41',
-    0.3,  '#781c6d',
-    0.5,  '#bb3754',
-    0.7,  '#ed6925',
-    1,    '#fcffa4',
+    'interpolate',
+    ['linear'],
+    ['heatmap-density'],
+    0,
+    'rgba(0,0,0,0)',
+    0.1,
+    '#1b0c41',
+    0.3,
+    '#781c6d',
+    0.5,
+    '#bb3754',
+    0.7,
+    '#ed6925',
+    1,
+    '#fcffa4',
   ] as unknown as string,
   'heatmap-radius': 18,
   'heatmap-intensity': ['interpolate', ['linear'], ['zoom'], 0, 1, 9, 3] as unknown as number,
@@ -195,13 +203,34 @@ export default function LiveMap({
     };
   }, [coveragePolygon]);
 
+  // ─── Defensive dedup by icao_hex ───────────────────────────────────────
+  // The snapshot endpoint groups by flight_id (web.py::api_map_snapshot),
+  // which is correct for ordinary live polling. But during Rewind / HIST
+  // an aircraft can legitimately have multiple flight_id rows visible
+  // within the 600s snapshot window — if the collector closed one flight
+  // and opened a new one for the same icao_hex inside that window, both
+  // would render as separate markers at potentially-different positions.
+  // Keep only the freshest row per icao_hex.
+  const dedupedAircraft = useMemo<Aircraft[]>(() => {
+    // Plain object instead of `new Map(...)`: the `Map` identifier is
+    // shadowed at the top of this file by the `Map` component from
+    // react-map-gl/maplibre, and aliasing the global just for this
+    // micro-optimization isn't worth it.
+    const byIcao: Record<string, Aircraft> = {};
+    for (const ac of aircraft) {
+      const prev = byIcao[ac.icao_hex];
+      if (!prev || ac.ts > prev.ts) byIcao[ac.icao_hex] = ac;
+    }
+    return Object.values(byIcao);
+  }, [aircraft]);
+
   // ─── Selected aircraft trail ───────────────────────────────────────────
   // trail tuples are [lat, lon, ts]; convert + swap. Only the selected
   // aircraft gets a trail — drawing trails for all 30 markers spikes the
   // JS thread on every poll (audit-12 perf).
   const trailGeoJSON = useMemo<GeoJSON.Feature | null>(() => {
     if (selectedFlightId == null) return null;
-    const sel = aircraft.find((a) => a.flight_id === selectedFlightId);
+    const sel = dedupedAircraft.find((a) => a.flight_id === selectedFlightId);
     if (!sel || sel.trail.length < 2) return null;
     return {
       type: 'Feature',
@@ -211,7 +240,7 @@ export default function LiveMap({
         coordinates: sel.trail.map(([lat, lon]) => [lon, lat]),
       },
     };
-  }, [aircraft, selectedFlightId]);
+  }, [dedupedAircraft, selectedFlightId]);
 
   // ─── Receiver marker (GeoJSON Point) ───────────────────────────────────
   const receiverGeoJSON = useMemo<GeoJSON.Feature | null>(() => {
@@ -339,7 +368,7 @@ export default function LiveMap({
       {/* Aircraft markers — one Marker per craft. The component re-uses
           its DOM element across re-renders keyed by flight_id, so changing
           position / rotation / selection just diffs props. */}
-      {aircraft.map((ac) => {
+      {dedupedAircraft.map((ac) => {
         if (ac.lat == null || ac.lon == null) return null;
         const iconType = getIconType(ac.category, ac.aircraft_type);
         const isSelected = ac.flight_id === selectedFlightId;
