@@ -333,6 +333,13 @@ function lastNonNullValue(col: number[] | undefined): number | null {
 }
 
 // Exported for unit tests.
+// NOTE: unlike buildPanelOption, this builder does NOT accept a
+// `valueFormat` arg — the per-sub-panel "current value" in the title row
+// is rendered as a plain number. Fine for the signal panel (dBFS values
+// + a small count) where the unit is in the Card title. If this builder
+// is ever reused for a panel whose values need a unit suffix (bytes,
+// metres, etc.), thread `valueFormat` through and apply it at the
+// title-text site below.
 export function buildSignalSmallMultiplesOption(
   resp: MetricsResp | undefined,
   keys: string[],
@@ -437,7 +444,7 @@ export function buildSignalSmallMultiplesOption(
     // axisPointer.link must live at the root (verified via context7).
     // 'all' links every xAxis so the vertical crosshair tracks across all
     // 4 sub-panels on hover.
-    axisPointer: { link: [{ xAxisIndex: 'all' as any }] },
+    axisPointer: { link: [{ xAxisIndex: 'all' }] },
     tooltip: {
       ...base.tooltip,
       trigger: 'axis',
@@ -526,7 +533,10 @@ function IsolatingMetricChart({
               aria-label={`Isolate ${labels[i] ?? k}`}
               data-testid={`metrics-aircraft-pill-${k}`}
               className={cn(
-                'inline-flex min-h-9 items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium transition-colors',
+                // 44 px tap target on mobile (Apple HIG), 36 px on
+                // desktop where pointer precision makes the smaller
+                // pill less awkward in a dense Metrics page.
+                'inline-flex min-h-[44px] items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium transition-colors md:min-h-9',
                 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)]',
                 active
                   ? 'border-[var(--color-accent)] bg-[var(--color-surface-2)] text-[var(--color-text)]'

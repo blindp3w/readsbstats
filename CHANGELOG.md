@@ -34,8 +34,9 @@ User-visible changes:
 - **Gallery — type-photo corner stamp** (M8.2). The "type photo"
   caption that used to sit below the metadata (reading as data) is now
   a small `[ type ]` stamp in the top-right corner of the photo itself.
-  4 px from edges, 10 px text, 1 px border, semi-transparent surface
-  background. Cards with a specific aircraft photo carry no stamp.
+  4 px from edges, 10 px text (the brief specified 9 px; bumped to 10 px
+  to stay sharp under retina anti-aliasing), 1 px border, semi-transparent
+  surface background. Cards with a specific aircraft photo carry no stamp.
 
 Internal:
 
