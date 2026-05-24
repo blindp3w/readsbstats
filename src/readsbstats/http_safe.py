@@ -57,6 +57,7 @@ import threading
 import urllib.error
 import urllib.parse
 import urllib.request
+from types import MappingProxyType
 
 try:
     import httpx  # only needed by safe_httpx_get
@@ -64,7 +65,11 @@ except ImportError:  # pragma: no cover — httpx is a runtime dep
     httpx = None  # type: ignore[assignment]
 
 
-_USER_AGENT = {"User-Agent": "readsbstats/1.0"}
+# Audit-13 A13-053: read-only view so downstream re-exports (notably
+# photo_sources.PHOTO_UA) can't be `.pop()`/`.update()`'d by accident
+# and silently corrupt headers for every subsequent fetch. `dict(...)`
+# at the use sites already copies; the immutable wrapper enforces it.
+_USER_AGENT = MappingProxyType({"User-Agent": "readsbstats/1.0"})
 
 
 class TransientError(Exception):

@@ -1,4 +1,7 @@
 -r requirements.txt
 pytest==9.0.3
 pytest-cov==7.1.0
-httpx>=0.27.2
+# httpx is already pinned (==) by requirements.txt; do not re-declare here.
+# Audit-13 A13-051: a divergent floor here (httpx>=0.27.2) created a path
+# for `pip install -r requirements-dev.txt` to resolve to an older version
+# than prod under unusual resolution orders.
