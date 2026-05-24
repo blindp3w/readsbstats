@@ -1371,7 +1371,10 @@ def api_stats(
     # extra aggregation runs.
     if not filtered:
         lifetime_total_flights    = agg["total_flights"]
-        lifetime_total_positions  = agg["total_positions"]
+        # COALESCE NULL → 0: SUM() returns NULL on an empty `flights`
+        # table; the StatsResponse TS interface declares this as `number`
+        # (not nullable), so coerce here rather than lie about the type.
+        lifetime_total_positions  = agg["total_positions"] or 0
         lifetime_unique_aircraft  = agg["unique_aircraft"]
         lifetime_unique_airlines  = agg["unique_airlines"]
         lifetime_oldest_flight    = agg["oldest_flight"]
@@ -1394,7 +1397,8 @@ def api_stats(
             """,
         ).fetchone()
         lifetime_total_flights    = life["total_flights"]
-        lifetime_total_positions  = life["total_positions"]
+        # See note in the unfiltered branch — SUM() can return NULL.
+        lifetime_total_positions  = life["total_positions"] or 0
         lifetime_unique_aircraft  = life["unique_aircraft"]
         lifetime_unique_airlines  = life["unique_airlines"]
         lifetime_oldest_flight    = life["oldest_flight"]

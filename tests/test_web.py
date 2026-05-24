@@ -1727,6 +1727,16 @@ class TestApiStats:
         days = [row["day"] for row in r.json()["daily_unique_aircraft"]]
         assert days == sorted(days), f"daily must be ASC, got {days}"
 
+    def test_lifetime_block_coerces_nulls_on_empty_db(self, client, clear_web_cache):
+        # SUM(total_positions) is NULL on an empty `flights` table. The
+        # StatsResponse TS type declares total_positions: number; coerce
+        # NULL → 0 so the JSON wire shape never breaks that contract.
+        r_all = client.get("/api/stats").json()
+        assert r_all["lifetime"]["total_positions"] == 0
+        # Same on the filtered path.
+        r_filt = client.get("/api/stats?from=1000&to=2000").json()
+        assert r_filt["lifetime"]["total_positions"] == 0
+
     def test_lifetime_block_stays_constant_across_window(self, client, db_conn, clear_web_cache):
         # The `lifetime` block is consumed by the "About this receiver"
         # footer and must NOT change when the user picks a date range.
