@@ -80,6 +80,19 @@ export interface StatsResponse {
     type_desc: string | null;
     max_distance_nm: number | null;
   } | null;
+  // Lifetime block — receiver-wide totals that DO NOT change when the
+  // user picks a window. Consumed by the "About this receiver" footer.
+  // Always present; the same values as the top-level fields when the
+  // request is unfiltered.
+  lifetime?: {
+    total_flights: number;
+    total_positions: number;
+    unique_aircraft: number;
+    unique_airlines: number;
+    oldest_flight: number | null;
+    db_size_bytes: number | null;
+    source_breakdown: { adsb: number; mlat: number; other: number };
+  };
 }
 
 interface PolarResponse {
@@ -329,12 +342,12 @@ export default function StatsPage() {
       </section>
 
       <AboutReceiverFooter
-        totalFlights={stats?.total_flights}
-        uniqueAirlines={stats?.unique_airlines}
-        totalPositions={stats?.total_positions}
-        dbSizeBytes={stats?.db_size_bytes}
-        oldestFlight={stats?.oldest_flight}
-        sourceBreakdown={stats?.source_breakdown}
+        totalFlights={stats?.lifetime?.total_flights}
+        uniqueAirlines={stats?.lifetime?.unique_airlines}
+        totalPositions={stats?.lifetime?.total_positions}
+        dbSizeBytes={stats?.lifetime?.db_size_bytes}
+        oldestFlight={stats?.lifetime?.oldest_flight}
+        sourceBreakdown={stats?.lifetime?.source_breakdown}
       />
     </div>
   );
