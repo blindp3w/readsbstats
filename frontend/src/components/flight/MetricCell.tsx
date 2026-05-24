@@ -10,18 +10,24 @@ import { type ReactNode } from 'react';
 interface Props {
   label: string;
   value: ReactNode;
+  // When `value` is JSX (e.g. the Window cell renders two timestamps),
+  // pass a screen-reader-friendly string here so the aria-label carries
+  // the data. Falls back to `value` if it's already a string.
+  valueText?: string;
   sublabel?: ReactNode;
   testid?: string;
 }
 
-export function MetricCell({ label, value, sublabel, testid }: Props) {
+export function MetricCell({ label, value, valueText, sublabel, testid }: Props) {
+  const ariaValue = valueText ?? (typeof value === 'string' ? value : '');
+  const ariaSublabel = typeof sublabel === 'string' ? sublabel : '';
   return (
     <div
       data-testid={testid}
       aria-label={
-        typeof sublabel === 'string' && sublabel
-          ? `${label} ${typeof value === 'string' ? value : ''} — ${sublabel}`
-          : `${label} ${typeof value === 'string' ? value : ''}`
+        ariaSublabel
+          ? `${label} ${ariaValue} — ${ariaSublabel}`.trim()
+          : `${label} ${ariaValue}`.trim()
       }
     >
       <div className="text-[10px] font-medium uppercase tracking-wide text-[var(--color-text-dim)]">
