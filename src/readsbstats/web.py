@@ -1486,7 +1486,7 @@ def api_stats(
             FROM flights
             WHERE first_seen > ?
             GROUP BY day
-            ORDER BY day DESC
+            ORDER BY day ASC
             LIMIT 30
             """,
             (cutoff_30d,),

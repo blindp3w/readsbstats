@@ -16,6 +16,12 @@ export const CHART_COLORS = {
   surface: '#161a26',
 };
 
+// 5-stop warm sequential ramp for the activity heatmap. Encodes luminance
+// (pale → dark) so the ranking still reads under color-vision deficiency.
+// Lives here (per ADR-0008) so both Heatmap.tsx and any future ECharts
+// visualMap consumer can share the same stops.
+export const HEATMAP_RAMP = ['#f5e6c4', '#f0c674', '#e69138', '#cc4125', '#990000'];
+
 export function baseOption(): Partial<EChartsOption> {
   return {
     backgroundColor: 'transparent',
@@ -39,9 +45,7 @@ export function timeAxis(): EChartsOption['xAxis'] {
   };
 }
 
-export function valueAxis(opts?: {
-  formatter?: (v: number) => string;
-}): EChartsOption['yAxis'] {
+export function valueAxis(opts?: { formatter?: (v: number) => string }): EChartsOption['yAxis'] {
   return {
     type: 'value',
     axisLine: { show: false },

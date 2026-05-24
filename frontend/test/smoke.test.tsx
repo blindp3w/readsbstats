@@ -40,6 +40,7 @@ const FETCH_STUBS: Record<string, unknown> = {
     hourly_distribution: [], daily_unique_aircraft: [], altitude_distribution: [],
     military_flights: 0, interesting_flights: 0, anonymous_flights: 0,
     heatmap: [], squawk_counts: {},
+    furthest_aircraft: null,
   },
   '/stats/api/stats/polar': { buckets: [] },
   '/stats/api/stats/records': { fastest: null, furthest: null, highest: null, longest: null },

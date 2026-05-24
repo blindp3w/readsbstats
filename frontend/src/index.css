@@ -78,6 +78,15 @@
   /* Form input dark-mode hint for browsers that respect color-scheme. */
   :root {
     color-scheme: dark;
+    /* Sticky-offset reference for any page chrome that needs to dock just
+       below the top nav (Stats page range bar, etc.). Tracks the real
+       computed nav height — see Nav.tsx for the source of truth. */
+    --rsbs-nav-h: 41px;
+  }
+  @media (min-width: 768px) {
+    :root {
+      --rsbs-nav-h: 33px;
+    }
   }
 
   /* Selection accent — improves visual cohesion. */

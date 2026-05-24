@@ -1,7 +1,5 @@
 import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import type { EChartsOption } from 'echarts';
-import type { StatsResponse } from '@/pages/Stats';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { ToggleGroupRoot, ToggleGroupItem } from '@/components/ui/ToggleGroup';
@@ -12,126 +10,16 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/Select';
-import { CHART_COLORS, baseOption } from '@/components/charts/theme';
 import { EChart } from '@/components/charts/EChart';
+import { type RankingsData, type ViewKey, VIEWS, buildRows, buildTopChartOption } from './topRows';
 
-type ViewKey = 'aircraft' | 'airlines' | 'countries' | 'visitors' | 'routes' | 'airports';
+// Re-exports kept for any out-of-tree imports (and the existing
+// frontend/test/top-chart-click.test.tsx which imports the option builder).
+export { buildTopChartOption } from './topRows';
+export type { Row, ViewKey } from './topRows';
 
-const VIEWS: { key: ViewKey; label: string }[] = [
-  { key: 'aircraft', label: 'Aircraft types' },
-  { key: 'airlines', label: 'Airlines' },
-  { key: 'countries', label: 'Countries' },
-  { key: 'visitors', label: 'Visitors' },
-  { key: 'routes', label: 'Routes' },
-  { key: 'airports', label: 'Airports' },
-];
-
-export interface Row {
-  label: string;
-  fullLabel: string;
-  value: number;
-  icao_hex?: string;
-}
-
-interface TopChartProps {
+interface TopChartProps extends RankingsData {
   loading: boolean;
-  top_aircraft_types?: StatsResponse['top_aircraft_types'];
-  top_airlines?: StatsResponse['top_airlines'];
-  top_countries?: StatsResponse['top_countries'];
-  frequent_aircraft?: StatsResponse['frequent_aircraft'];
-  top_routes?: StatsResponse['top_routes'];
-  top_airports?: StatsResponse['top_airports'];
-}
-
-const trunc = (s: string, n = 14) => (s.length > n ? s.slice(0, n - 1) + '…' : s);
-
-function buildRows(view: ViewKey, props: TopChartProps): Row[] {
-  switch (view) {
-    case 'aircraft':
-      return (props.top_aircraft_types ?? []).slice(0, 15).map((r) => ({
-        label: trunc(r.type || '—'),
-        fullLabel: r.type + (r.type_desc ? ' — ' + r.type_desc : ''),
-        value: r.flights,
-      }));
-    case 'airlines':
-      return (props.top_airlines ?? []).slice(0, 15).map((r) => ({
-        label: trunc(r.airline || '—'),
-        fullLabel: r.airline_name ?? r.airline,
-        value: r.flights,
-      }));
-    case 'countries':
-      return (props.top_countries ?? []).slice(0, 15).map((r) => ({
-        label: trunc(r.country || '—'),
-        fullLabel: r.country,
-        value: r.flights,
-      }));
-    case 'visitors':
-      return (props.frequent_aircraft ?? []).slice(0, 15).map((r) => ({
-        label: trunc(r.registration ?? r.icao_hex),
-        fullLabel:
-          (r.registration ?? r.icao_hex) +
-          (r.aircraft_type ? ' (' + r.aircraft_type + ')' : ''),
-        value: r.flights,
-        icao_hex: r.icao_hex,
-      }));
-    case 'routes':
-      return (props.top_routes ?? []).slice(0, 15).map((r) => ({
-        label: (r.origin_icao || '???') + '→' + (r.dest_icao || '???'),
-        fullLabel: (r.origin_icao || '???') + ' → ' + (r.dest_icao || '???'),
-        value: r.flights,
-      }));
-    case 'airports':
-      return (props.top_airports ?? []).slice(0, 15).map((r) => ({
-        label: r.icao_code,
-        fullLabel: r.icao_code + (r.name ? ' ' + r.name : ''),
-        value: r.appearances ?? r.flights ?? 0,
-      }));
-  }
-}
-
-// Exported for unit tests.
-export function buildTopChartOption(rows: Row[], clickable: boolean): EChartsOption {
-  return {
-    ...baseOption(),
-    tooltip: {
-      trigger: 'item',
-      backgroundColor: CHART_COLORS.surface,
-      borderColor: CHART_COLORS.grid,
-      textStyle: { color: CHART_COLORS.text, fontSize: 12 },
-      formatter: (p: any) => `${p.data.fullLabel} — ${p.data.value}`,
-    },
-    grid: { top: 8, right: 32, bottom: 8, left: 110, containLabel: false },
-    xAxis: {
-      type: 'value',
-      axisLabel: { color: CHART_COLORS.textDim },
-      splitLine: { lineStyle: { color: CHART_COLORS.grid, type: 'dashed' } },
-    },
-    yAxis: {
-      type: 'category',
-      data: rows.map((r) => r.label),
-      axisLabel: {
-        color: CHART_COLORS.textDim,
-        formatter: (v: string) => trunc(v, 14),
-        width: 100,
-        overflow: 'truncate',
-      },
-      axisTick: { show: false },
-      inverse: true,
-    },
-    series: [
-      {
-        type: 'bar',
-        cursor: clickable ? 'pointer' : 'default',
-        data: rows.map((r) => ({
-          value: r.value,
-          name: r.label,
-          fullLabel: r.fullLabel,
-          icao_hex: r.icao_hex,
-        })),
-        itemStyle: { color: CHART_COLORS.accent, borderRadius: [0, 3, 3, 0] },
-      },
-    ],
-  };
 }
 
 export function TopChart(props: TopChartProps) {
@@ -164,15 +52,9 @@ export function TopChart(props: TopChartProps) {
             ToggleGroupRoot set `inline-flex` in their base classes; our cn()
             is clsx (not tailwind-merge), so `sm:hidden` / `hidden sm:flex`
             applied directly lose the CSS-order battle to `inline-flex`. */}
-        <Select
-          value={view}
-          onValueChange={(v) => setView(v as ViewKey)}
-        >
+        <Select value={view} onValueChange={(v) => setView(v as ViewKey)}>
           <div className="w-full sm:hidden">
-            <SelectTrigger
-              data-testid="stats-top-chart-select"
-              aria-label="Statistics view"
-            >
+            <SelectTrigger data-testid="stats-top-chart-select" aria-label="Statistics view">
               <SelectValue />
             </SelectTrigger>
           </div>
