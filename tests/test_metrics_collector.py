@@ -167,6 +167,21 @@ class TestParseStats:
         assert ts is None
         assert row is None
 
+    def test_garbage_end_returns_none(self):
+        # Audit-13 A13-026: int(ts) on a non-numeric value used to raise
+        # ValueError and abort the whole metrics collection cycle. Now
+        # returns (None, None) so the collector logs and continues.
+        ts, row = self.mc._parse_stats({"last1min": {"end": "not-a-number"}})
+        assert ts is None
+        assert row is None
+
+    def test_list_end_returns_none(self):
+        # TypeError variant — readsb schema drift could surface a nested
+        # structure where a scalar is expected.
+        ts, row = self.mc._parse_stats({"last1min": {"end": [42]}})
+        assert ts is None
+        assert row is None
+
     def test_missing_local_section(self):
         data = {"last1min": {"end": 100.0, "messages": 42}}
         ts, row = self.mc._parse_stats(data)

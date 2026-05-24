@@ -2352,6 +2352,16 @@ class TestDispatchOne:
         collector._dispatch_one(("mil", "abc123", "REG", "CS", "Type", "TYP", 50.0))
         assert captured == [("mil", ("abc123", "REG", "CS", "Type", "TYP", 50.0))]
 
+    def test_unknown_kind_logs_warning(self, monkeypatch, caplog):
+        # Audit-13 A13-027: a typo or future-version notification kind
+        # used to vanish silently. Now logs a warning so the alert loss
+        # is visible in journalctl.
+        from readsbstats import collector
+        import logging
+        with caplog.at_level(logging.WARNING, logger="readsbstats.collector"):
+            collector._dispatch_one(("xyz", "abc123"))
+        assert any("xyz" in rec.message for rec in caplog.records)
+
 
 # ---------------------------------------------------------------------------
 # _check_daily_summary — lines 534-544
