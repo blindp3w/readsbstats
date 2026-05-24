@@ -1487,8 +1487,13 @@ def api_stats(
             WHERE first_seen > ?
             GROUP BY day
             ORDER BY day ASC
-            LIMIT 30
+            LIMIT 31
             """,
+            # LIMIT 31 not 30: cutoff_30d is `now - 30*86400` (an instant,
+            # not a day boundary), so the WHERE typically straddles 31
+            # distinct UTC date strings (partial start day + 30 full days
+            # ending today). With ASC ordering, LIMIT 30 would truncate
+            # today's bar — the most user-relevant one.
             (cutoff_30d,),
         ).fetchall()
     else:
