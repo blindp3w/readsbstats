@@ -1,5 +1,75 @@
 # Changelog
 
+## 2.9.0 — 2026-05-24
+
+### Flight detail compact header + chart tone-down + position-log polish
+
+Closes Milestone 3 of `internal_docs/uiux/CLAUDE_DESIGN_BRIEF.md`. Three
+sub-items on `/stats/flight/:id`. No backend changes —
+`/api/flights/:id` already returns every field this redesign consumes.
+
+User-visible changes:
+
+- **Compact horizontal header** (M3.1). The previous ~300 px-tall header
+  (220 px photo on the left + 8 stacked label/value rows on the right)
+  is replaced by a ~170 px compact bar: 140×100 photo on the left,
+  identity row (`{reg} · {callsign}` + hex chip + squawk + flag + source
+  badge) + dim subtitle (`aircraft type · description · operator ·
+  route`) + a 4-column metric grid (Max alt / Max speed / Max distance
+  / Window). Each metric has a derived sublabel — vert rate at max alt,
+  track at max speed, bearing-from-receiver at max distance, duration
+  for the window. The map's top edge now sits within the first
+  viewport-height on laptop.
+- **Altitude chart tone-down + click-to-isolate** (M3.2). The orange
+  area under altitude is now a soft top→transparent gradient (≈30%
+  alpha at the top) instead of a solid 40% flood. A pill row above the
+  chart lets you isolate Altitude or Speed — click a pill to fade the
+  other series to 20% opacity; click again to restore. Reuses the
+  v2.8.0 isolation pattern.
+- **Position log RSSI polish** (M3.3). RSSI cells gained a per-row
+  horizontal mini bar: width encodes the value's position within this
+  flight's [min, max] range; color is green if above the flight's
+  median, amber if at-or-below. The text becomes dim (the bar is the
+  primary signal — the previous absolute-threshold color is gone). A
+  60×16 px sparkline appears in the column header showing the whole-
+  flight RSSI trend. Other columns (time, lat, lon, alt, speed) also
+  go dim so RSSI is the visual anchor.
+- **Per-position source stripe**. Every row's leftmost cell carries a
+  3 px coloured stripe keyed to `source_type` (green=ADS-B, amber=MLAT,
+  faint default for other). Same v2.8.0 pattern as the History flight
+  rows. Useful for spotting MLAT/ADS-B handoff patterns within a flight.
+- **iPhone inline disclosure**. On `<sm` the position log hides
+  lat/lon/source columns; tapping a row expands it inline to show the
+  hidden fields plus track and source as a dim two-column detail row.
+  Native interaction; no modal.
+
+Internal:
+
+- **`IsolationPills`** extracted from v2.8.0 `Metrics.tsx`'s inline
+  pill JSX into `frontend/src/components/charts/IsolationPills.tsx` so
+  Metrics and Flight share the same primitive. `testIdPrefix` prop
+  preserves the existing `metrics-aircraft-pill-{k}` testids exactly;
+  Flight uses `flight-profile-pill-{alt|gs}`.
+- **`buildFlightProfileOption` gains optional `isolated?: string |
+  null` arg** (mirrors the v2.8.0 `buildPanelOption` change). Series
+  carry STABLE `name: 'alt'` / `'gs'` so the isolation lookup doesn't
+  break when the user toggles units (`altLabel()` / `spdLabel()`
+  change between sessions). The built-in ECharts `legend` was removed
+  from the option — the HTML pill row replaces it.
+- **`SourceBadge size="sm"`** (v2.8.0) used in two new places: the
+  Flight identity chip row and the position log Source column at md+.
+- **New `lib/geo.ts`** with `haversineNm` + `bearingFromReceiver` —
+  parallel to backend `src/readsbstats/geo.py`. Used by the Flight
+  header to compute the at-max-distance position's bearing client-side
+  (the backend doesn't pre-compute it). Float-equality on `max_gs`
+  and `max_distance_nm` is deliberately avoided — the at-max lookups
+  scan the positions array via `Math.max` and per-position haversine.
+- **`MetricCell`** + **`RssiCell`** new in `frontend/src/components/flight/`
+  — lightweight tiles, no Card chrome.
+- 24 new frontend tests across `geo.test.ts`, `flight-header.test.tsx`,
+  `position-table-rssi.test.tsx`, plus extensions to
+  `echarts-option-builders.test.ts`. Total suite: **224 passed**.
+
 ## 2.8.0 — 2026-05-24
 
 ### Metrics small-multiples + History stripe + Gallery type-photo stamp

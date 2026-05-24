@@ -179,12 +179,51 @@ describe('buildFlightProfileOption (Flight)', () => {
     expect(yAxis[1].position).toBe('right');
   });
 
-  it('places the legend at top (avoids overlap with x-axis tick labels)', () => {
+  it('omits the built-in legend (v2.9.0 HTML IsolationPills replaces it)', () => {
     const opt = buildFlightProfileOption(rows, 'ft', 'kt', fakeFmtAxisTime, fakeFmtTs);
-    const legend = opt.legend as any;
-    expect(legend.top).toBe(0);
-    expect(legend.bottom).toBeUndefined();
-    expect(legend.data).toEqual(['ft', 'kt']);
+    expect(opt.legend).toBeUndefined();
+  });
+
+  it('series carry stable string keys (not unit-dependent labels)', () => {
+    // Critical for isolation: series.name must NOT change when units flip.
+    const optMetric = buildFlightProfileOption(rows, 'm', 'km/h', fakeFmtAxisTime, fakeFmtTs);
+    const optImperial = buildFlightProfileOption(rows, 'ft', 'kt', fakeFmtAxisTime, fakeFmtTs);
+    expect((optMetric.series as any)[0].name).toBe('alt');
+    expect((optMetric.series as any)[1].name).toBe('gs');
+    expect((optImperial.series as any)[0].name).toBe('alt');
+    expect((optImperial.series as any)[1].name).toBe('gs');
+  });
+
+  it('altitude area uses an orange gradient (not a solid 40% flood)', () => {
+    const opt = buildFlightProfileOption(rows, 'ft', 'kt', fakeFmtAxisTime, fakeFmtTs);
+    const area = (opt.series as any)[0].areaStyle;
+    expect(area.color).toBeDefined();
+    expect(area.color.type).toBe('linear');
+    expect(area.color.colorStops).toBeDefined();
+    expect(area.color.colorStops.length).toBe(2);
+  });
+
+  it('isolated="alt" fades the speed series, alt stays full opacity', () => {
+    const opt = buildFlightProfileOption(rows, 'ft', 'kt', fakeFmtAxisTime, fakeFmtTs, 'alt');
+    const series = opt.series as any[];
+    expect(series[0].lineStyle.opacity).toBe(1);
+    expect(series[0].areaStyle.opacity).toBe(1);
+    expect(series[1].lineStyle.opacity).toBe(0.2);
+  });
+
+  it('isolated="gs" fades the altitude series (both line + area)', () => {
+    const opt = buildFlightProfileOption(rows, 'ft', 'kt', fakeFmtAxisTime, fakeFmtTs, 'gs');
+    const series = opt.series as any[];
+    expect(series[0].lineStyle.opacity).toBe(0.2);
+    expect(series[0].areaStyle.opacity).toBeLessThanOrEqual(0.1);
+    expect(series[1].lineStyle.opacity).toBe(1);
+  });
+
+  it('isolated=null keeps both series at full opacity', () => {
+    const opt = buildFlightProfileOption(rows, 'ft', 'kt', fakeFmtAxisTime, fakeFmtTs, null);
+    const series = opt.series as any[];
+    expect(series[0].lineStyle.opacity).toBe(1);
+    expect(series[1].lineStyle.opacity).toBe(1);
   });
 
   it('assigns yAxisIndex per series', () => {

@@ -1,4 +1,4 @@
-import { lazy, Suspense, useMemo } from 'react';
+import { Fragment, lazy, Suspense, useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { ArrowLeftIcon } from '@radix-ui/react-icons';
@@ -15,6 +15,12 @@ import { useFormat } from '@/hooks/useFormat';
 import { fmtDur } from '@/lib/format';
 import { CHART_COLORS, baseOption, timeAxis, valueAxis } from '@/components/charts/theme';
 import { EChart } from '@/components/charts/EChart';
+import { IsolationPills } from '@/components/charts/IsolationPills';
+import { KpiSparkline } from '@/components/stats/KpiSparkline';
+import { MetricCell } from '@/components/flight/MetricCell';
+import { RssiCell } from '@/components/flight/RssiCell';
+import { haversineNm, bearingFromReceiver } from '@/lib/geo';
+import { cn } from '@/lib/cn';
 
 // Heavy bits (MapLibre GL) lazy-loaded so other pages don't pay for them.
 const RouteMap = lazy(() => import('@/components/RouteMap'));
@@ -126,7 +132,13 @@ export default function FlightPage() {
 
       {detailQ.data && (
         <>
-          <FlightHeader detail={detailQ.data} photoQ={photoQ} />
+          <FlightHeader
+            detail={detailQ.data}
+            photoQ={photoQ}
+            positions={detailQ.data.positions}
+            receiverLat={detailQ.data.receiver_lat}
+            receiverLon={detailQ.data.receiver_lon}
+          />
           <Card data-testid="flight-map-card">
             <CardHeader>
               <CardTitle>Route</CardTitle>
@@ -148,7 +160,7 @@ export default function FlightPage() {
               <CardTitle>Altitude + speed</CardTitle>
             </CardHeader>
             <CardContent>
-              <FlightProfile positions={detailQ.data.positions} />
+              <FlightProfileChart positions={detailQ.data.positions} />
             </CardContent>
           </Card>
           <Card data-testid="flight-positions-card">
@@ -200,10 +212,7 @@ function OtherFlightsTable({ rows }: { rows: OtherFlight[] }) {
         {rows.map((r) => (
           <TR key={r.id} data-testid={`flight-other-flight-${r.id}`}>
             <TD className="tabnum text-xs">
-              <Link
-                to={`/flight/${r.id}`}
-                className="text-[var(--color-accent)] hover:underline"
-              >
+              <Link to={`/flight/${r.id}`} className="text-[var(--color-accent)] hover:underline">
                 {fmtTs(r.first_seen)}
               </Link>
             </TD>
@@ -228,98 +237,219 @@ function OtherFlightsTable({ rows }: { rows: OtherFlight[] }) {
 // Header: photo + key stats
 // ---------------------------------------------------------------------------
 
+// At-max position lookups for the M3.1 header sub-labels. Computed
+// client-side from `positions` (NOT via equality against the flight-level
+// aggregates) because `max_gs` is REAL and `max_distance_nm` requires
+// per-position haversine. Single pass, O(n).
+interface AtMax {
+  altRate: number | null;
+  speedTrack: number | null;
+  distBearing: number | null;
+}
+
+function computeAtMax(positions: Position[], recLat: number | null, recLon: number | null): AtMax {
+  if (positions.length === 0) return { altRate: null, speedTrack: null, distBearing: null };
+  let maxAltIdx = -1;
+  let maxAlt = -Infinity;
+  let maxGsIdx = -1;
+  let maxGs = -Infinity;
+  let maxDistIdx = -1;
+  let maxDist = -Infinity;
+  for (let i = 0; i < positions.length; i++) {
+    const p = positions[i];
+    if (p.alt_baro != null && p.alt_baro > maxAlt) {
+      maxAlt = p.alt_baro;
+      maxAltIdx = i;
+    }
+    if (p.gs != null && p.gs > maxGs) {
+      maxGs = p.gs;
+      maxGsIdx = i;
+    }
+    if (p.lat != null && p.lon != null && recLat != null && recLon != null) {
+      const d = haversineNm(recLat, recLon, p.lat, p.lon);
+      if (d > maxDist) {
+        maxDist = d;
+        maxDistIdx = i;
+      }
+    }
+  }
+  return {
+    altRate: maxAltIdx >= 0 ? positions[maxAltIdx].baro_rate : null,
+    speedTrack: maxGsIdx >= 0 ? positions[maxGsIdx].track : null,
+    distBearing:
+      maxDistIdx >= 0 && recLat != null && recLon != null
+        ? bearingFromReceiver(
+            recLat,
+            recLon,
+            positions[maxDistIdx].lat!,
+            positions[maxDistIdx].lon!,
+          )
+        : null,
+  };
+}
+
 function FlightHeader({
   detail,
   photoQ,
+  positions,
+  receiverLat,
+  receiverLon,
 }: {
   detail: FlightDetail;
   photoQ: { data: PhotoResp | null | undefined; isLoading: boolean };
+  positions: Position[];
+  receiverLat: number | null;
+  receiverLon: number | null;
 }) {
   const { fmtAlt, fmtSpd, fmtDist, fmtTs } = useFormat();
   const f = detail.flight;
   const photoUrl =
     safeUrl(photoQ.data?.large_url ?? null) || safeUrl(photoQ.data?.thumbnail_url ?? null);
+  const atMax = computeAtMax(positions, receiverLat, receiverLon);
+
+  // Subtitle joins aircraft_type · type_desc · operator · route. Each
+  // segment omitted if null so the line never reads ' ·  · '.
+  const subtitleParts = [
+    f.aircraft_type,
+    f.type_desc,
+    f.airline_name,
+    f.origin_icao || f.dest_icao ? `${f.origin_icao ?? '???'} → ${f.dest_icao ?? '???'}` : null,
+  ].filter(Boolean);
+
+  const squawkVariant: 'danger' | 'warn' =
+    f.squawk === '7700' || f.squawk === '7600' || f.squawk === '7500' ? 'danger' : 'warn';
 
   return (
     <Card data-testid="flight-header-card">
-      <CardHeader>
-        <CardTitle>
-          <span className="flex flex-wrap items-center gap-2">
-            <Link
-              to={`/aircraft/${f.icao_hex}`}
-              className="font-mono text-[var(--color-accent)] hover:underline"
-            >
-              {f.registration ?? f.icao_hex}
-            </Link>
-            <span className="text-[var(--color-text-dim)]">·</span>
-            <span className="font-mono">{f.callsign ?? '—'}</span>
-            <FlagBadge flags={f.flags} />
-            <SourceBadge source={f.primary_source} />
-            {f.squawk ? <Badge variant="warn">{f.squawk}</Badge> : null}
-          </span>
-        </CardTitle>
-      </CardHeader>
-      <CardContent>
-        <div className="grid gap-4 md:grid-cols-[220px_1fr]">
-          <div>
+      <CardContent className="pt-4">
+        {/*
+          Laptop / iPad / iPad-portrait: photo left (fixed 140 px), content right.
+          iPhone (<sm): photo first (full width 16:9), content below.
+        */}
+        <div className="flex flex-col gap-3 sm:grid sm:grid-cols-[140px_1fr] sm:gap-3">
+          {/* Photo box */}
+          <div className="space-y-1">
             {photoQ.isLoading ? (
-              <Skeleton className="aspect-[4/3] w-full" />
+              <Skeleton className="aspect-[16/9] w-full sm:h-[100px] sm:w-[140px]" />
             ) : photoUrl ? (
-              <div className="space-y-1">
-                <div className="aspect-[4/3] overflow-hidden rounded bg-[var(--color-surface-2)]">
-                  <img src={photoUrl} alt="" loading="lazy" className="h-full w-full object-cover" />
+              <>
+                <div
+                  className={cn(
+                    'overflow-hidden rounded bg-[var(--color-surface-2)]',
+                    'aspect-[16/9] sm:aspect-auto sm:h-[100px] sm:w-[140px]',
+                  )}
+                >
+                  <img
+                    src={photoUrl}
+                    alt={f.registration ?? f.icao_hex}
+                    loading="lazy"
+                    className="h-full w-full object-cover"
+                  />
                 </div>
                 {photoQ.data?.photographer && (
-                  <p className="text-xs text-[var(--color-text-dim)]">
+                  <p
+                    className="text-[10px] text-[var(--color-text-dim)]"
+                    data-testid="flight-photo-credit"
+                  >
                     © {photoQ.data.photographer}
-                    {photoQ.data.is_type_photo ? ' (type photo)' : ''}
+                    {photoQ.data.is_type_photo ? ' · type photo' : ''}
                   </p>
                 )}
-              </div>
+              </>
             ) : (
-              <div className="flex aspect-[4/3] items-center justify-center rounded bg-[var(--color-surface-2)] text-xs text-[var(--color-text-dim)]">
+              <div
+                className={cn(
+                  'flex items-center justify-center rounded bg-[var(--color-surface-2)] text-xs text-[var(--color-text-dim)]',
+                  'aspect-[16/9] sm:aspect-auto sm:h-[100px] sm:w-[140px]',
+                )}
+              >
                 no photo
               </div>
             )}
           </div>
-          <dl className="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1.5 text-sm">
-            <dt className="text-[var(--color-text-dim)]">Aircraft</dt>
-            <dd>
-              {f.aircraft_type ?? '—'}
-              {f.type_desc ? (
-                <span className="ml-1 text-[var(--color-text-dim)]">· {f.type_desc}</span>
-              ) : null}
-            </dd>
-            {f.airline_name ? (
-              <>
-                <dt className="text-[var(--color-text-dim)]">Operator</dt>
-                <dd>{f.airline_name}</dd>
-              </>
-            ) : null}
-            <dt className="text-[var(--color-text-dim)]">Seen</dt>
-            <dd className="tabnum">
-              {fmtTs(f.first_seen)} → {fmtTs(f.last_seen)}
-            </dd>
-            <dt className="text-[var(--color-text-dim)]">Duration</dt>
-            <dd className="tabnum">{fmtDur(f.duration_sec)}</dd>
-            <dt className="text-[var(--color-text-dim)]">Route</dt>
-            <dd className="font-mono">
-              {f.origin_icao ?? '???'} → {f.dest_icao ?? '???'}
-            </dd>
-            <dt className="text-[var(--color-text-dim)]">Max alt</dt>
-            <dd className="tabnum">{fmtAlt(f.max_alt_baro)}</dd>
-            <dt className="text-[var(--color-text-dim)]">Max speed</dt>
-            <dd className="tabnum">{fmtSpd(f.max_gs)}</dd>
-            <dt className="text-[var(--color-text-dim)]">Max range</dt>
-            <dd className="tabnum">{fmtDist(f.max_distance_nm)}</dd>
-            <dt className="text-[var(--color-text-dim)]">Positions</dt>
-            <dd className="tabnum">
-              {f.total_positions.toLocaleString()}
-              <span className="ml-1 text-xs text-[var(--color-text-dim)]">
-                ({f.adsb_positions} ADS-B / {f.mlat_positions} MLAT)
+
+          {/* Identity + subtitle + metric grid */}
+          <div className="space-y-2">
+            {/* Identity row */}
+            <div className="flex flex-wrap items-center gap-2" data-testid="flight-identity">
+              <span className="text-base font-semibold">
+                <Link
+                  to={`/aircraft/${f.icao_hex}`}
+                  className="font-mono text-[var(--color-accent)] hover:underline"
+                  aria-label={`View aircraft ${f.icao_hex} history`}
+                >
+                  {f.registration ?? f.icao_hex}
+                </Link>
+                <span className="mx-1 text-[var(--color-text-dim)]">·</span>
+                <span className="font-mono">{f.callsign ?? '—'}</span>
               </span>
-            </dd>
-          </dl>
+              <span className="ml-auto flex flex-wrap items-center gap-1.5">
+                <Link
+                  to={`/aircraft/${f.icao_hex}`}
+                  className="font-mono text-xs text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
+                >
+                  {f.icao_hex}
+                </Link>
+                {f.squawk ? <Badge variant={squawkVariant}>{f.squawk}</Badge> : null}
+                <FlagBadge flags={f.flags} />
+                <SourceBadge source={f.primary_source} size="sm" />
+              </span>
+            </div>
+
+            {/* Subtitle line */}
+            {subtitleParts.length > 0 ? (
+              <div className="text-xs text-[var(--color-text-dim)]" data-testid="flight-subtitle">
+                {subtitleParts.join(' · ')}
+              </div>
+            ) : null}
+
+            {/* 4×2 metric grid (2×4 on iPhone) */}
+            <div
+              className="grid grid-cols-2 gap-x-4 gap-y-2 pt-1 sm:grid-cols-4"
+              data-testid="flight-metric-grid"
+            >
+              <MetricCell
+                label="Max alt"
+                value={fmtAlt(f.max_alt_baro)}
+                sublabel={
+                  atMax.altRate != null
+                    ? `vert ${atMax.altRate > 0 ? '+' : ''}${Math.round(atMax.altRate)} ft/min`
+                    : undefined
+                }
+                testid="flight-metric-alt"
+              />
+              <MetricCell
+                label="Max speed"
+                value={fmtSpd(f.max_gs)}
+                sublabel={
+                  atMax.speedTrack != null ? `track ${Math.round(atMax.speedTrack)}°` : undefined
+                }
+                testid="flight-metric-speed"
+              />
+              <MetricCell
+                label="Max distance"
+                value={fmtDist(f.max_distance_nm)}
+                sublabel={
+                  atMax.distBearing != null
+                    ? `bearing ${Math.round(atMax.distBearing)}°`
+                    : undefined
+                }
+                testid="flight-metric-dist"
+              />
+              <MetricCell
+                label="Window"
+                value={
+                  <span>
+                    {fmtTs(f.first_seen)}
+                    <span className="mx-1 text-[var(--color-text-dim)]">↘</span>
+                    {fmtTs(f.last_seen)}
+                  </span>
+                }
+                sublabel={`duration ${fmtDur(f.duration_sec)}`}
+                testid="flight-metric-window"
+              />
+            </div>
+          </div>
         </div>
       </CardContent>
     </Card>
@@ -336,29 +466,43 @@ interface ProfileRow {
   gs: number | null;
 }
 
-// Exported for unit tests.
+// Exported for unit tests. Series carry STABLE keys ('alt' / 'gs') as
+// their `name` so the `isolated` lookup doesn't break when the user
+// toggles units (altLabel changes from "Alt (m)" to "Alt (ft)").
 export function buildFlightProfileOption(
   rows: ProfileRow[],
   altLabel: string,
   spdLabel: string,
   fmtAxisTime: (epoch: number) => string,
   fmtTs: (epoch: number) => string,
+  // M3.2: when set to 'alt' or 'gs', the OTHER series fades to 0.2
+  // opacity. null = both at full opacity. Companion to the HTML pill
+  // row rendered by IsolationPills above the chart.
+  isolated?: string | null,
 ): EChartsOption {
   const base = baseOption();
   const tAxis = timeAxis() as Exclude<EChartsOption['xAxis'], undefined | unknown[]>;
   const leftAxis = valueAxis() as any;
   const rightAxis = valueAxis() as any;
+  const altFaded = isolated != null && isolated !== 'alt';
+  const gsFaded = isolated != null && isolated !== 'gs';
+  // Orange gradient under altitude (top 30% alpha → bottom transparent).
+  // Replaces the previous solid 40% area flood.
+  const altAreaGradient = {
+    type: 'linear' as const,
+    x: 0,
+    y: 0,
+    x2: 0,
+    y2: 1,
+    colorStops: [
+      { offset: 0, color: CHART_COLORS.orange + '4d' /* ~30% alpha */ },
+      { offset: 1, color: CHART_COLORS.orange + '00' /* fully transparent */ },
+    ],
+  };
   return {
     ...base,
-    // Legend at the top — at `bottom: 0` it collides with the time-axis
-    // tick labels on narrow viewports (and on desktop when the chart is
-    // forced into a 1/3-column grid).
-    legend: {
-      top: 0,
-      textStyle: { color: CHART_COLORS.textDim, fontSize: 12 },
-      data: [altLabel, spdLabel],
-    },
-    grid: { top: 32, right: 40, bottom: 28, left: 44, containLabel: false },
+    // Legend removed — the HTML pill row above the chart replaces it.
+    grid: { top: 16, right: 40, bottom: 28, left: 44, containLabel: false },
     xAxis: {
       ...tAxis,
       axisLabel: {
@@ -370,38 +514,42 @@ export function buildFlightProfileOption(
         label: { formatter: (p: any) => fmtTs(p.value / 1000) },
       },
     },
-    // No yAxis `name` here — the top legend already carries the series
-    // names and adding `name` puts them on the same horizontal strip
-    // (would crowd "Alt (m) | legend | Speed (km/h)" into the top edge).
     yAxis: [leftAxis, { ...rightAxis, position: 'right' }],
     dataZoom: [{ type: 'inside' }],
     series: [
       {
-        name: altLabel,
+        // STABLE name for isolation lookup; the pill row renders the
+        // unit-dependent label separately.
+        name: 'alt',
+        // Friendly tooltip / external label still uses the unit-aware string.
+        tooltip: { valueFormatter: (v: number) => `${v} (${altLabel})` },
         type: 'line',
         yAxisIndex: 0,
         color: CHART_COLORS.orange,
         data: rows.map((r) => [r.ts * 1000, r.alt]),
         showSymbol: false,
         sampling: 'lttb',
-        areaStyle: { opacity: 0.4 },
+        lineStyle: { width: 1.5, opacity: altFaded ? 0.2 : 1 },
+        areaStyle: { color: altAreaGradient, opacity: altFaded ? 0.06 : 1 },
       },
       {
-        name: spdLabel,
+        name: 'gs',
+        tooltip: { valueFormatter: (v: number) => `${v} (${spdLabel})` },
         type: 'line',
         yAxisIndex: 1,
         color: CHART_COLORS.accent,
         data: rows.map((r) => [r.ts * 1000, r.gs]),
         showSymbol: false,
         sampling: 'lttb',
-        lineStyle: { width: 1.5 },
+        lineStyle: { width: 1.5, opacity: gsFaded ? 0.2 : 1 },
       },
     ],
   };
 }
 
-function FlightProfile({ positions }: { positions: Position[] }) {
+function FlightProfileChart({ positions }: { positions: Position[] }) {
   const { altLabel, spdLabel, fmtTs, fmtAxisTime } = useFormat();
+  const [isolated, setIsolated] = useState<string | null>(null);
   const rows = useMemo<ProfileRow[]>(
     () =>
       positions
@@ -410,8 +558,8 @@ function FlightProfile({ positions }: { positions: Position[] }) {
     [positions],
   );
   const option = useMemo(
-    () => buildFlightProfileOption(rows, altLabel(), spdLabel(), fmtAxisTime, fmtTs),
-    [rows, altLabel, spdLabel, fmtAxisTime, fmtTs],
+    () => buildFlightProfileOption(rows, altLabel(), spdLabel(), fmtAxisTime, fmtTs, isolated),
+    [rows, altLabel, spdLabel, fmtAxisTime, fmtTs, isolated],
   );
   if (rows.length === 0) {
     return (
@@ -420,62 +568,177 @@ function FlightProfile({ positions }: { positions: Position[] }) {
       </div>
     );
   }
-  return <EChart option={option} height={260} />;
+  return (
+    <div className="space-y-2">
+      <IsolationPills
+        keys={['alt', 'gs']}
+        labels={[altLabel(), spdLabel()]}
+        colors={[CHART_COLORS.orange, CHART_COLORS.accent]}
+        isolated={isolated}
+        onChange={setIsolated}
+        testIdPrefix="flight-profile"
+      />
+      <EChart option={option} height={260} />
+    </div>
+  );
 }
 
 // ---------------------------------------------------------------------------
 // Position log
 // ---------------------------------------------------------------------------
 
-function rssiColor(rssi: number | null): string {
-  if (rssi == null) return CHART_COLORS.textDim;
-  if (rssi >= -3) return CHART_COLORS.success;
-  if (rssi >= -10) return '#a3e635';
-  if (rssi >= -20) return CHART_COLORS.warn;
-  if (rssi >= -30) return CHART_COLORS.orange;
-  return CHART_COLORS.danger;
+// Per-position source stripe — keyed to source_type (NOT primary_source).
+// Same mapping as History flight rows but uses startsWith for the raw
+// readsb taxonomy ('adsb_icao', 'adsb_icao_nt', etc.).
+function positionSourceStripe(source: string | null): string {
+  if (!source) return 'var(--color-border-default)';
+  const s = source.toLowerCase();
+  if (s.startsWith('adsb')) return 'var(--color-success)';
+  if (s === 'mlat') return 'var(--color-warn)';
+  return 'var(--color-border-default)';
+}
+
+interface RssiStats {
+  min: number;
+  max: number;
+  median: number;
+  hasAny: boolean;
+}
+
+function computeRssiStats(positions: Position[]): RssiStats {
+  // Filter NULLs before computing median — median of a NULL-laden array
+  // would be nonsense.
+  const vals: number[] = [];
+  for (const p of positions) {
+    if (p.rssi != null && Number.isFinite(p.rssi)) vals.push(p.rssi);
+  }
+  if (vals.length === 0) return { min: 0, max: 0, median: 0, hasAny: false };
+  vals.sort((a, b) => a - b);
+  const mid = vals.length >> 1;
+  const median = vals.length % 2 === 0 ? (vals[mid - 1] + vals[mid]) / 2 : vals[mid];
+  return { min: vals[0], max: vals[vals.length - 1], median, hasAny: true };
 }
 
 function PositionTable({ positions }: { positions: Position[] }) {
   const { fmtAlt, fmtSpd, fmtTs } = useFormat();
+  // Per-row inline disclosure state — iPhone only. Keyed by ts (positions
+  // sorted by ts and ts is unique-ish per flight).
+  const [expanded, setExpanded] = useState<Set<number>>(() => new Set());
+
   if (positions.length === 0) {
     return <p className="text-sm text-[var(--color-text-dim)]">No positions recorded.</p>;
   }
-  // Sample if too many — full table would be heavy DOM
+  // Sample if too many — full table would be heavy DOM.
   const sampled =
     positions.length > 500
       ? positions.filter((_, i) => i % Math.ceil(positions.length / 500) === 0)
       : positions;
+  const rssi = computeRssiStats(sampled);
+  const rssiSpark = rssi.hasAny ? sampled.map((p) => (p.rssi == null ? rssi.median : p.rssi)) : [];
+
+  function toggle(ts: number) {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(ts)) next.delete(ts);
+      else next.add(ts);
+      return next;
+    });
+  }
+
   return (
     <div className="max-h-[480px] overflow-y-auto">
       <Table>
         <THead>
           <TR>
             <TH>Time</TH>
-            <TH>Lat</TH>
-            <TH>Lon</TH>
+            <TH className="hidden md:table-cell">Lat</TH>
+            <TH className="hidden md:table-cell">Lon</TH>
             <TH>Alt</TH>
             <TH>Speed</TH>
-            <TH>RSSI</TH>
-            <TH>Source</TH>
+            <TH>
+              <div className="flex items-center justify-between gap-2">
+                <span>RSSI</span>
+                {rssiSpark.length >= 7 && (
+                  <KpiSparkline
+                    data={rssiSpark}
+                    width={60}
+                    height={16}
+                    ariaLabel="RSSI trend across this flight"
+                  />
+                )}
+              </div>
+            </TH>
+            <TH className="hidden md:table-cell">Source</TH>
           </TR>
         </THead>
         <TBody>
-          {sampled.map((p, i) => (
-            <TR key={i}>
-              <TD className="tabnum text-xs">{fmtTs(p.ts)}</TD>
-              <TD className="font-mono tabnum text-xs">{p.lat?.toFixed(4) ?? '—'}</TD>
-              <TD className="font-mono tabnum text-xs">{p.lon?.toFixed(4) ?? '—'}</TD>
-              <TD className="tabnum text-xs">{fmtAlt(p.alt_baro)}</TD>
-              <TD className="tabnum text-xs">{fmtSpd(p.gs)}</TD>
-              <TD className="tabnum text-xs" style={{ color: rssiColor(p.rssi) }}>
-                {p.rssi == null ? '—' : `${p.rssi.toFixed(1)} dBFS`}
-              </TD>
-              <TD>
-                <SourceBadge source={p.source_type} />
-              </TD>
-            </TR>
-          ))}
+          {sampled.map((p) => {
+            const isOpen = expanded.has(p.ts);
+            return (
+              <Fragment key={p.ts}>
+                <TR
+                  data-testid={`flight-position-row-${p.ts}`}
+                  tabIndex={0}
+                  aria-expanded={isOpen}
+                  onClick={() => toggle(p.ts)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      toggle(p.ts);
+                    }
+                  }}
+                  className="cursor-pointer md:cursor-default"
+                >
+                  <TD
+                    className="tabnum border-l-[3px] text-xs text-[var(--color-text-dim)]"
+                    style={{ borderLeftColor: positionSourceStripe(p.source_type) }}
+                  >
+                    {fmtTs(p.ts)}
+                  </TD>
+                  <TD className="hidden font-mono tabnum text-xs text-[var(--color-text-dim)] md:table-cell">
+                    {p.lat?.toFixed(4) ?? '—'}
+                  </TD>
+                  <TD className="hidden font-mono tabnum text-xs text-[var(--color-text-dim)] md:table-cell">
+                    {p.lon?.toFixed(4) ?? '—'}
+                  </TD>
+                  <TD className="tabnum text-xs text-[var(--color-text-dim)]">
+                    {fmtAlt(p.alt_baro)}
+                  </TD>
+                  <TD className="tabnum text-xs text-[var(--color-text-dim)]">{fmtSpd(p.gs)}</TD>
+                  <TD className="tabnum text-xs">
+                    <RssiCell value={p.rssi} min={rssi.min} max={rssi.max} median={rssi.median} />
+                  </TD>
+                  <TD className="hidden md:table-cell">
+                    <SourceBadge source={p.source_type} size="sm" />
+                  </TD>
+                </TR>
+                {isOpen && (
+                  <TR data-testid={`flight-position-detail-${p.ts}`} className="md:hidden">
+                    <TD
+                      colSpan={4}
+                      className="border-l-[3px] bg-[var(--color-surface-2)]/40 text-xs text-[var(--color-text-dim)]"
+                      style={{ borderLeftColor: positionSourceStripe(p.source_type) }}
+                    >
+                      <div className="grid grid-cols-2 gap-x-3 gap-y-1 py-1">
+                        <span>Lat</span>
+                        <span className="font-mono tabnum">{p.lat?.toFixed(4) ?? '—'}</span>
+                        <span>Lon</span>
+                        <span className="font-mono tabnum">{p.lon?.toFixed(4) ?? '—'}</span>
+                        <span>Track</span>
+                        <span className="tabnum">
+                          {p.track != null ? `${Math.round(p.track)}°` : '—'}
+                        </span>
+                        <span>Source</span>
+                        <span>
+                          <SourceBadge source={p.source_type} size="sm" />
+                        </span>
+                      </div>
+                    </TD>
+                  </TR>
+                )}
+              </Fragment>
+            );
+          })}
         </TBody>
       </Table>
       {sampled.length < positions.length && (
