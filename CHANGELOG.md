@@ -20,15 +20,25 @@ User-visible changes:
   `aria-label` + `title`.
 - **Photo lightbox** on both `/stats/flight/:id` AND `/stats/aircraft/:icao`.
   Aircraft photos in both detail pages are now click-to-enlarge: a
-  centred Radix Dialog opens with the image filling the dialog width
-  (`w-full object-contain`, max-h `calc(100vh - 6rem)`) so small
-  thumbnails upscale to a useful size and full-resolution images
-  preserve their aspect ratio. Footer carries `© photographer` and a
-  `view on source →` link to the original Planespotters listing when
-  `link_url` is present. Esc / outside-click / close button dismiss.
-  Degrades gracefully — when no large URL is available (or the URL
-  fails `safeUrl`'s HTTPS-only check), the thumbnail renders without
-  a click action.
+  centred Radix Dialog opens with the image at its natural pixel size
+  capped by the viewport (`w-fit`, `max-w-[min(960px, calc(100vw -
+  2rem))]`, max-h `calc(100vh - 6rem)`) — small thumbnails shrink-wrap
+  (no blurry upscale) and full-resolution images preserve their aspect
+  ratio. Footer carries `© photographer` and a `view on source →` link
+  to the original listing when `link_url` is present. Esc /
+  outside-click / close button dismiss. Degrades gracefully — when no
+  large URL is available (or the URL fails `safeUrl`'s HTTPS-only
+  check), the thumbnail renders without a click action.
+- **Higher-quality enlarged photos from airport-data.com**. The
+  airport-data source previously returned only a ~150 px thumbnail
+  (~2 KB), which the lightbox displayed at low resolution. The photo
+  fetcher now derives the full-resolution URL from the dedicated CDN
+  host (`image.airport-data.com/aircraft/<basename>`) — ~40× the byte
+  size, sharp at viewport scale. Cached `photos` rows with the
+  previous URL refresh naturally at the 30-day cache TTL.
+- **Route map zoom + start/end markers** circles. After initial visual
+  review, the start/end markers were switched from square to circular
+  to match the receiver dot's shape — colour alone differentiates role.
 
 Internal:
 
