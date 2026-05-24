@@ -400,11 +400,6 @@ def _clamp_caption(caption: str, limit: int = _PHOTO_CAPTION_MAX) -> str:
     return stripped[: limit - 1] + "…"
 
 
-# Back-compat alias for any external callers / tests that still reference the
-# old name.  New code should use ``_clamp_caption``.
-_truncate_caption = _clamp_caption
-
-
 def _dispatch_with_photo(
     caption: str,
     icao: str,

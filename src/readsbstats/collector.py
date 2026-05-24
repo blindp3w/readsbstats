@@ -500,23 +500,6 @@ def _dispatch_one(item: tuple) -> None:
         log.warning("_dispatch_one: unknown notification kind=%r — dropping", kind)
 
 
-def _dispatch_notifications(pending: list) -> None:
-    """Process a batch of queued notifications synchronously.  Retained as a
-    sync entry point for unit tests; production now uses the queue-backed
-    consumer started in ``main()``."""
-    send_failed = 0
-    for item in pending:
-        try:
-            _dispatch_one(item)
-        except Exception:
-            send_failed += 1
-    if send_failed:
-        log.warning(
-            "Notification send failed for %d of %d queued alerts",
-            send_failed, len(pending),
-        )
-
-
 def _notification_consumer() -> None:
     """Long-lived daemon: pull items off the notification queue and dispatch
     them serially.  Opens one sqlite connection at startup and stashes it on
