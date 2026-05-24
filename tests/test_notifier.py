@@ -168,6 +168,13 @@ class TestFmtDist:
         monkeypatch.setattr(config, "TELEGRAM_UNITS", "")
         assert notifier._fmt_dist(100) == "185 km"
 
+    def test_mixed_case_imperial_still_imperial(self, monkeypatch):
+        # Audit-13 A13-035: RSBS_TELEGRAM_UNITS=Imperial silently fell back
+        # to metric because the helpers compared raw config.TELEGRAM_UNITS
+        # (mixed-case) against the lowercase string literal "imperial".
+        monkeypatch.setattr(config, "TELEGRAM_UNITS", "Imperial")
+        assert notifier._fmt_dist(100) == "115 mi"
+
 
 # ---------------------------------------------------------------------------
 # _fmt_alt
@@ -197,6 +204,11 @@ class TestFmtAlt:
         monkeypatch.setattr(config, "TELEGRAM_UNITS", "")
         assert notifier._fmt_alt(10000) == "3,048 m"
 
+    def test_mixed_case_aeronautical_still_uses_feet(self, monkeypatch):
+        # Audit-13 A13-035: mixed-case env vars must not fall back silently.
+        monkeypatch.setattr(config, "TELEGRAM_UNITS", "Aeronautical")
+        assert notifier._fmt_alt(10000) == "10,000 ft"
+
 
 # ---------------------------------------------------------------------------
 # _fmt_spd
@@ -225,6 +237,11 @@ class TestFmtSpd:
     def test_empty_falls_back_to_metric(self, monkeypatch):
         monkeypatch.setattr(config, "TELEGRAM_UNITS", "")
         assert notifier._fmt_spd(100) == "185 km/h"
+
+    def test_mixed_case_imperial_still_imperial(self, monkeypatch):
+        # Audit-13 A13-035: mixed-case env vars must not fall back silently.
+        monkeypatch.setattr(config, "TELEGRAM_UNITS", "IMPERIAL")
+        assert notifier._fmt_spd(100) == "115 mph"
 
 
 # ---------------------------------------------------------------------------
