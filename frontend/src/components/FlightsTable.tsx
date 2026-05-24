@@ -17,6 +17,12 @@ import { cn } from '@/lib/cn';
 // underlying <table> uses `border-collapse` (ui/Table.tsx) which suppresses
 // row-level borders. Stripe colour is also the visible source signal on
 // mobile, where the Source column itself is hidden.
+//
+// IMPORTANT: this maps from `flights.primary_source` only, which collector.py
+// _primary_source() coerces to one of 'adsb' | 'mlat' | 'mixed' | 'other'.
+// Do NOT reuse this helper for `positions.source_type` (raw readsb values
+// like 'adsb_icao_nt') — that taxonomy needs `startsWith('adsb')` instead,
+// the way SourceBadge in FlagBadge.tsx handles it.
 function stripeColor(source: string | null | undefined): string {
   if (!source) return 'var(--color-border-default)';
   const s = source.toLowerCase();
