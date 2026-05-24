@@ -1,5 +1,77 @@
 # Changelog
 
+## 2.5.2 — 2026-05-24
+
+### Audit-13 backlog cleanup — Low-severity sweep
+
+Closes the last items from the audit-13 review queue: the `noImplicitAny`
+half of A13-043 plus 8 of the 43 Low-severity findings that were left
+as opportunistic future work. Production verified — all 5 security
+headers including the new `Content-Security-Policy: default-src 'none'`
+land on `/stats/api/*` responses post-deploy.
+
+User-visible changes:
+
+- **Telegram alerts honour mixed-case `RSBS_TELEGRAM_UNITS`** (A13-035).
+  Setting `RSBS_TELEGRAM_UNITS=Imperial` (or `IMPERIAL`, or any
+  non-lowercase variant) previously fell back to metric silently. Now
+  normalised at every comparison site in `notifier.py`.
+- **`is_anonymous_icao()` no longer flags ICAO-reserved sentinels**
+  (A13-024). `0x000000` (null / no-information) and `0xFFFFFF`
+  (all-call / broadcast) are protocol artifacts, not real aircraft —
+  treating them as anonymous aircraft polluted the Telegram channel
+  and the FLAG_ANONYMOUS retroactive scoring. Both the Python helper
+  and the SQL CASE expression now guard them out.
+
+Internal:
+
+- **TypeScript `noImplicitAny: true`** (A13-043 follow-up). The
+  long-deferred second half of the strict-mode adoption — turned out
+  the codebase was already clean from incremental annotations across
+  v2.3–v2.5, so the flip was a one-line config change with zero tsc
+  errors.
+- **systemd-analyze security verified on Pi** (A13-046 verification).
+  All 6 service units (`readsbstats-collector`, `readsbstats-web`,
+  `notify-telegram@`, `readsbstats-updater`, `readsbstats-dbcheck`,
+  `readsbstats-dbcheck-full`) score **2.9 OK** — well below the
+  audit's <5 target. Remaining ✗ rows are intrinsic to the workload
+  (Internet sockets, RTC) or trivial future hardening (UMask,
+  SystemCallFilter block).
+- **Metrics parse guard** (A13-026). `int(last1min.end)` could raise
+  `ValueError`/`TypeError` on garbage upstream and abort the whole
+  metrics row; now wraps the conversion, logs a warning, and returns
+  `(None, None)` so the next poll picks up cleanly.
+- **Dispatch unknown-kind observability** (A13-027). `_dispatch_one`
+  silently dropped notifications with an unknown `kind`; now logs a
+  warning so the loss is visible in journalctl.
+- **Dead-column drop on existing DBs** (already in v2.5.1, mentioned
+  here for completeness — `watchlist_alerted`).
+- **Hardening / hygiene**:
+  - `http_safe._USER_AGENT` wrapped in `MappingProxyType` so the
+    `photo_sources.PHOTO_UA` re-export can't be `.pop()`'d by a
+    downstream caller (A13-053).
+  - `requirements-dev.txt` `httpx>=0.27.2` removed (was already pinned
+    via `-r requirements.txt`; redundant floor created a path for dev
+    to resolve older than prod) (A13-051).
+  - nginx `/stats/api/` block now re-states all 5 parent security
+    headers including `Content-Security-Policy: default-src 'none'`
+    (strictest possible — JSON endpoints load no scripts/images/frames).
+    Immunises the `add_header` inheritance trap permanently (A13-052).
+- **Dead code removed**: `collector._dispatch_notifications` (no
+  callers anywhere, queue-backed consumer is the only production
+  path) and `notifier._truncate_caption` back-compat alias
+  (A13-091 + A13-092).
+- **Post-commit review fix**: the original A13-052 hardening patch
+  added only 4 of the 5 parent headers to the `/api/*` location and
+  inadvertently triggered the very inheritance trap it was meant to
+  prevent — for `Content-Security-Policy`. Caught by the project's
+  reviewer agent before deploy; CSP added with a JSON-appropriate
+  `default-src 'none'` strict policy.
+
+Test count: 1374 → 1376. Net +3 regression tests added (5 new, -2
+stale: one alias-enforcement test, one assertion of pre-A13-024
+buggy behaviour).
+
 ## 2.5.1 — 2026-05-24
 
 ### Time format and schema cleanup
