@@ -499,7 +499,7 @@ function Records({
         {q.isLoading ? (
           <Skeleton className="h-24 w-full" />
         ) : !q.data ? null : (
-          <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-4">
+          <div className="grid gap-3 xs:grid-cols-2 md:grid-cols-4">
             <RecordCell
               label="Furthest"
               icao={q.data.furthest?.icao_hex}
