@@ -1,5 +1,58 @@
 # Changelog
 
+## 2.9.3 — 2026-05-25
+
+### Statistics page — phone density + KPI deltas everywhere
+
+Mobile-only polish for the Statistics page. The KPI cards used to break
+2-up only at `sm:` (= 600 px under the project's `html { font-size: 15px }`),
+so every iPhone in portrait fell into the 1-col branch and the right half
+of every card sat empty. Companion fix: the delta chips below the big
+numbers had been wired to a backend field that only existed for the 24h
+and 7d windows, so the default 30d view (and 90d / All / Custom) always
+rendered "—" em-dashes regardless of how much trend data was actually
+available.
+
+User-visible changes:
+
+- **2-up KPI grid on phones.** A new `--breakpoint-xs: 22.5rem` Tailwind
+  v4 breakpoint (~337 px at the project's 15 px html font-size) triggers
+  the 2-column layout on every iPhone including the SE. The big-number
+  text in each card scales `text-2xl` → `sm:text-3xl` so 9-char values
+  like "3,102,772" still have room in the narrower half-card. Halves
+  the scroll height of the overview block on mobile.
+- **KPI delta chips work in every window.** Backend `/api/stats` now
+  returns a `previous_window` block (totals for the period of equal
+  length immediately preceding the requested range) whenever `from` /
+  `to` are supplied. Frontend feeds `previous_window.{total_flights,
+  unique_aircraft, total_positions}` into the `prev` prop on the three
+  numeric KPI cards, so a 30d view shows a real `+X (↑Y%) vs previous
+  period` chip instead of an em-dash. `previous_window` is `null` for
+  unfiltered (all-time) requests — there is no equivalent prior all-time
+  period, so the "All" pill correctly continues to show em-dashes.
+  Flights cards still fall back to the legacy `trends.flights_{24h,7d}_prev`
+  field for the unfiltered case so the 24h / 7d windows keep showing
+  their delta there too.
+- **Personal Records and About-receiver footer also 2-up on phones.**
+  Same `sm:` → `xs:` breakpoint shift, fixing the same iPhone-
+  empty-right-side pattern in two more spots: the four record cells
+  (Furthest / Fastest / Highest / Longest) and the six receiver-metadata
+  rows inside the "About this receiver" expandable.
+
+Intentionally **not** changed (1-up on phones is the right call):
+
+- Gallery photo grid — each tile needs enough resolution to be useful.
+- History filters form — DatePicker inputs are too wide for a ~150 px
+  column.
+- Activity-by-hour and Daily-unique-aircraft bar charts — need
+  horizontal room to be legible.
+- FlagBadgeStrip was already `grid-cols-2` on mobile.
+
+Test count: 1409 → 1411 (+2 backend regression tests for the new
+`previous_window` shape). Vitest unchanged at 230/230. No frontend
+component tests for the breakpoint flip — verified visually on the
+deployed Pi at iPhone-portrait widths.
+
 ## 2.9.2 — 2026-05-25
 
 ### Backend audit 2026-05-25 — all 9 findings closed
