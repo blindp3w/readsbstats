@@ -1471,6 +1471,11 @@ def api_stats(
         if window_seconds > 0:
             prev_lo = ts_lo - window_seconds
             prev_hi = ts_lo
+            # Upper bound is exclusive (`< ts_lo`) so a flight whose
+            # first_seen falls on the boundary second is not counted in
+            # both windows. The current-window aggregation uses the
+            # inclusive `<= ts_hi` form, so this is the only place where
+            # the half-open / closed split matters.
             prev_agg = conn.execute(
                 """
                 SELECT
@@ -1478,7 +1483,7 @@ def api_stats(
                     SUM(total_positions)      AS total_positions,
                     COUNT(DISTINCT icao_hex)  AS unique_aircraft
                 FROM flights
-                WHERE first_seen >= ? AND first_seen <= ?
+                WHERE first_seen >= ? AND first_seen < ?
                 """,
                 (prev_lo, prev_hi),
             ).fetchone()

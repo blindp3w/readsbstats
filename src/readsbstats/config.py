@@ -251,8 +251,8 @@ TIME_FORMAT        = _TIME_FORMAT_RAW if _TIME_FORMAT_RAW in ("24h", "12h") else
 # ---------------------------------------------------------------------------
 # Telegram notifications
 # ---------------------------------------------------------------------------
-TELEGRAM_TOKEN        = os.getenv(*_register("telegram_token",        "RSBS_TELEGRAM_TOKEN",    "",        "TELEGRAM_TOKEN"))
-TELEGRAM_CHAT_ID      = os.getenv(*_register("telegram_chat_id",      "RSBS_TELEGRAM_CHAT_ID",  "",        "TELEGRAM_CHAT_ID"))
+TELEGRAM_TOKEN        = os.getenv(*_register("telegram_token",        "RSBS_TELEGRAM_TOKEN",    "",        "TELEGRAM_TOKEN",   secret=True))
+TELEGRAM_CHAT_ID      = os.getenv(*_register("telegram_chat_id",      "RSBS_TELEGRAM_CHAT_ID",  "",        "TELEGRAM_CHAT_ID", secret=True))
 TELEGRAM_SUMMARY_TIME = os.getenv(*_register("telegram_summary_time", "RSBS_SUMMARY_TIME",      "21:00",   "TELEGRAM_SUMMARY_TIME"))  # local HH:MM; "" or "off" to disable
 TELEGRAM_UNITS        = os.getenv(*_register("telegram_units",        "RSBS_TELEGRAM_UNITS",    "metric",  "TELEGRAM_UNITS")) # metric|imperial|aeronautical
 TELEGRAM_PHOTOS       = _int("RSBS_TELEGRAM_PHOTOS",         "1")     # 0 to disable photo enrichment
