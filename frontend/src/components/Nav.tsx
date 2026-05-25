@@ -140,6 +140,7 @@ function MoreNavMenu() {
       <DropdownMenuTrigger asChild>
         <button
           type="button"
+          aria-haspopup="menu"
           aria-label="More navigation items"
           data-testid="nav-more-trigger"
           className={cn(
