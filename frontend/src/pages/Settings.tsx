@@ -1,7 +1,9 @@
 import { useQuery } from '@tanstack/react-query';
+import { toast } from 'sonner';
+import { CopyIcon } from '@radix-ui/react-icons';
 import { apiJson } from '@/lib/api';
+import { copyToClipboard } from '@/lib/clipboard';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
-import { Table, THead, TBody, TR, TH, TD } from '@/components/ui/Table';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { Alert } from '@/components/ui/Alert';
 import { Badge } from '@/components/ui/Badge';
@@ -12,6 +14,12 @@ import { Badge } from '@/components/ui/Badge';
 //
 // Read-only display. No mutations, no "edit settings" UI — env vars are
 // changed by editing the systemd service file, which is intentional.
+
+interface SettingMeta {
+  env_var: string;
+  default: string | number | boolean | null;
+  customized: boolean;
+}
 
 interface SettingsPayload {
   // Receiver
@@ -44,7 +52,7 @@ interface SettingsPayload {
   metrics_enabled: boolean | number;
   metrics_interval: number;
   stats_json: string;
-  // Health (subset shown — full set has 14 thresholds, see web.py)
+  // Health (subset shown — full set has 16 thresholds, see web.py)
   health_heartbeat_warn_s: number;
   health_heartbeat_crit_s: number;
   health_aircraft_gap_s: number;
@@ -68,26 +76,29 @@ interface SettingsPayload {
   page_size: number;
   max_page_size: number;
   time_format: string;
+  map_history_hours?: number;
   // Telegram
   telegram_token: string; // "configured" | "not set"
   telegram_chat_id: string; // "configured" | "not set"
   telegram_summary_time: string;
   telegram_units: string;
   base_url: string;
+  // Backend ships env-var name, parsed default, and customized flag per
+  // payload key so frontend never maintains its own table of env-var
+  // names (drift defence). May be absent during the server-cache
+  // transition window immediately after deploy — handle gracefully.
+  _metadata?: Record<string, SettingMeta>;
 }
 
-type Row = [label: string, value: string | number | boolean, hint?: string];
+// Each row is (label, displayed value, payload key for metadata lookup).
+// The payload key matches a top-level field on `SettingsPayload` so we can
+// resolve env-var + default + customized from `_metadata`.
+type Row = [label: string, value: string | number | boolean, metaKey: string];
 
 type Section = { title: string; rows: Row[]; testid: string };
 
 function buildSections(s: SettingsPayload): Section[] {
-  const fmt = (v: number | string | boolean): string => {
-    if (typeof v === 'boolean') return v ? 'enabled' : 'disabled';
-    if (typeof v === 'number' && (v === 0 || v === 1) && Number.isInteger(v)) {
-      // toggle-style fields — keep as number, caller decides
-    }
-    return String(v);
-  };
+  const fmt = (v: number | string | boolean): string => String(v);
   const toggle = (v: boolean | number): string => (v ? 'enabled' : 'disabled');
 
   return [
@@ -95,112 +106,194 @@ function buildSections(s: SettingsPayload): Section[] {
       title: 'Receiver',
       testid: 'settings-section-receiver',
       rows: [
-        ['Latitude', fmt(s.lat), 'RSBS_LAT'],
-        ['Longitude', fmt(s.lon), 'RSBS_LON'],
-        ['Max range (NM)', fmt(s.max_range), 'RSBS_MAX_RANGE'],
+        ['Latitude', fmt(s.lat), 'lat'],
+        ['Longitude', fmt(s.lon), 'lon'],
+        ['Max range (NM)', fmt(s.max_range), 'max_range'],
       ],
     },
     {
       title: 'Collector',
       testid: 'settings-section-collector',
       rows: [
-        ['Poll interval (s)', fmt(s.poll_interval), 'RSBS_POLL_INTERVAL'],
-        ['Flight gap (s)', fmt(s.flight_gap), 'RSBS_FLIGHT_GAP'],
-        ['Min positions kept', fmt(s.min_positions), 'RSBS_MIN_POSITIONS'],
-        ['Max seen position (s)', fmt(s.max_seen_pos), 'RSBS_MAX_SEEN_POS'],
-        ['Max speed (kts)', fmt(s.max_speed_kts), 'RSBS_MAX_SPEED_KTS'],
+        ['Poll interval (s)', fmt(s.poll_interval), 'poll_interval'],
+        ['Flight gap (s)', fmt(s.flight_gap), 'flight_gap'],
+        ['Min positions kept', fmt(s.min_positions), 'min_positions'],
+        ['Max seen position (s)', fmt(s.max_seen_pos), 'max_seen_pos'],
+        ['Max speed (kts)', fmt(s.max_speed_kts), 'max_speed_kts'],
       ],
     },
     {
       title: 'Database',
       testid: 'settings-section-database',
       rows: [
-        ['Database file', s.db_path, 'RSBS_DB_PATH (basename only)'],
-        ['Retention (days)', fmt(s.retention_days), 'RSBS_RETENTION_DAYS'],
-        ['Purge interval (s)', fmt(s.purge_interval), 'RSBS_PURGE_INTERVAL'],
+        ['Database file', s.db_path, 'db_path'],
+        ['Retention (days)', fmt(s.retention_days), 'retention_days'],
+        ['Purge interval (s)', fmt(s.purge_interval), 'purge_interval'],
       ],
     },
     {
       title: 'Enrichment',
       testid: 'settings-section-enrichment',
       rows: [
-        ['Photo cache (days)', fmt(s.photo_cache_days), 'RSBS_PHOTO_CACHE_DAYS'],
-        ['Airspace GeoJSON', s.airspace_geojson, 'RSBS_AIRSPACE_GEOJSON'],
-        ['Route cache (days)', fmt(s.route_cache_days), 'RSBS_ROUTE_CACHE_DAYS'],
-        ['Route enrich interval (s)', fmt(s.route_interval), 'RSBS_ROUTE_ENRICH_INTERVAL'],
-        ['Route batch size', fmt(s.route_batch), 'RSBS_ROUTE_BATCH'],
-        ['Route rate limit (s)', fmt(s.route_rate_limit), 'RSBS_ROUTE_RATE_LIMIT'],
+        ['Photo cache (days)', fmt(s.photo_cache_days), 'photo_cache_days'],
+        ['Airspace GeoJSON', s.airspace_geojson, 'airspace_geojson'],
+        ['Route cache (days)', fmt(s.route_cache_days), 'route_cache_days'],
+        ['Route enrich interval (s)', fmt(s.route_interval), 'route_interval'],
+        ['Route batch size', fmt(s.route_batch), 'route_batch'],
+        ['Route rate limit (s)', fmt(s.route_rate_limit), 'route_rate_limit'],
       ],
     },
     {
       title: 'External ADS-B (airplanes.live)',
       testid: 'settings-section-adsbx',
       rows: [
-        ['Enabled', toggle(s.adsbx_enabled), 'RSBS_ADSBX_ENABLED'],
-        ['Poll interval (s)', fmt(s.adsbx_interval), 'RSBS_ADSBX_INTERVAL'],
-        ['Range (NM)', fmt(s.adsbx_range), 'RSBS_ADSBX_RANGE'],
-        ['API URL', s.adsbx_url, 'RSBS_ADSBX_URL'],
+        ['Enabled', toggle(s.adsbx_enabled), 'adsbx_enabled'],
+        ['Poll interval (s)', fmt(s.adsbx_interval), 'adsbx_interval'],
+        ['Range (NM)', fmt(s.adsbx_range), 'adsbx_range'],
+        ['API URL', s.adsbx_url, 'adsbx_url'],
       ],
     },
     {
       title: 'Receiver metrics',
       testid: 'settings-section-metrics',
       rows: [
-        ['Enabled', toggle(s.metrics_enabled), 'RSBS_METRICS_ENABLED'],
-        ['Poll interval (s)', fmt(s.metrics_interval), 'RSBS_METRICS_INTERVAL'],
-        ['stats.json path', s.stats_json, 'RSBS_STATS_JSON'],
+        ['Enabled', toggle(s.metrics_enabled), 'metrics_enabled'],
+        ['Poll interval (s)', fmt(s.metrics_interval), 'metrics_interval'],
+        ['stats.json path', s.stats_json, 'stats_json'],
       ],
     },
     {
       title: 'Health checks',
       testid: 'settings-section-health',
       rows: [
-        ['Heartbeat warn (s)', fmt(s.health_heartbeat_warn_s), ''],
-        ['Heartbeat critical (s)', fmt(s.health_heartbeat_crit_s), ''],
-        ['Aircraft gap (s)', fmt(s.health_aircraft_gap_s), ''],
-        ['Noise warn (dB)', fmt(s.health_noise_warn_db), ''],
-        ['Noise critical (dB)', fmt(s.health_noise_crit_db), ''],
-        ['CPU warn (%)', fmt(s.health_cpu_warn_pct), ''],
-        ['CPU critical (%)', fmt(s.health_cpu_crit_pct), ''],
-        ['Baseline window (weeks)', fmt(s.health_baseline_weeks), ''],
-        ['Baseline min samples', fmt(s.health_baseline_min_samples), ''],
-        ['Message drop (%)', fmt(s.health_msg_drop_pct), ''],
-        ['Aircraft drop (%)', fmt(s.health_aircraft_drop_pct), ''],
-        ['Signal drop (dB)', fmt(s.health_signal_drop_db), ''],
-        ['Gain strong (%)', fmt(s.health_gain_strong_pct), ''],
-        ['Range short (days)', fmt(s.health_range_short_days), ''],
-        ['Range long (days)', fmt(s.health_range_long_days), ''],
-        ['Range ratio', fmt(s.health_range_ratio), ''],
+        ['Heartbeat warn (s)', fmt(s.health_heartbeat_warn_s), 'health_heartbeat_warn_s'],
+        ['Heartbeat critical (s)', fmt(s.health_heartbeat_crit_s), 'health_heartbeat_crit_s'],
+        ['Aircraft gap (s)', fmt(s.health_aircraft_gap_s), 'health_aircraft_gap_s'],
+        ['Noise warn (dB)', fmt(s.health_noise_warn_db), 'health_noise_warn_db'],
+        ['Noise critical (dB)', fmt(s.health_noise_crit_db), 'health_noise_crit_db'],
+        ['CPU warn (%)', fmt(s.health_cpu_warn_pct), 'health_cpu_warn_pct'],
+        ['CPU critical (%)', fmt(s.health_cpu_crit_pct), 'health_cpu_crit_pct'],
+        ['Baseline window (weeks)', fmt(s.health_baseline_weeks), 'health_baseline_weeks'],
+        ['Baseline min samples', fmt(s.health_baseline_min_samples), 'health_baseline_min_samples'],
+        ['Message drop (%)', fmt(s.health_msg_drop_pct), 'health_msg_drop_pct'],
+        ['Aircraft drop (%)', fmt(s.health_aircraft_drop_pct), 'health_aircraft_drop_pct'],
+        ['Signal drop (dB)', fmt(s.health_signal_drop_db), 'health_signal_drop_db'],
+        ['Gain strong (%)', fmt(s.health_gain_strong_pct), 'health_gain_strong_pct'],
+        ['Range short (days)', fmt(s.health_range_short_days), 'health_range_short_days'],
+        ['Range long (days)', fmt(s.health_range_long_days), 'health_range_long_days'],
+        ['Range ratio', fmt(s.health_range_ratio), 'health_range_ratio'],
       ],
     },
     {
       title: 'Web server',
       testid: 'settings-section-web',
-      rows: [
-        ['Root path (nginx prefix)', s.root_path, 'RSBS_ROOT_PATH'],
-      ],
+      rows: [['Root path (nginx prefix)', s.root_path, 'root_path']],
     },
     {
       title: 'UI defaults',
       testid: 'settings-section-ui',
       rows: [
-        ['Default page size', fmt(s.page_size), 'RSBS_PAGE_SIZE'],
-        ['Max page size', fmt(s.max_page_size), 'RSBS_MAX_PAGE_SIZE'],
-        ['Clock format', s.time_format, 'RSBS_TIME_FORMAT'],
+        ['Default page size', fmt(s.page_size), 'page_size'],
+        ['Max page size', fmt(s.max_page_size), 'max_page_size'],
+        ['Clock format', s.time_format, 'time_format'],
       ],
     },
     {
       title: 'Telegram notifications',
       testid: 'settings-section-telegram',
       rows: [
-        ['Bot token', s.telegram_token, 'masked'],
-        ['Chat ID', s.telegram_chat_id, 'masked'],
-        ['Summary time (local)', s.telegram_summary_time, 'RSBS_SUMMARY_TIME'],
-        ['Units', s.telegram_units, 'RSBS_TELEGRAM_UNITS'],
-        ['Base URL', s.base_url, 'RSBS_TELEGRAM_BASE_URL'],
+        ['Bot token', s.telegram_token, 'telegram_token'],
+        ['Chat ID', s.telegram_chat_id, 'telegram_chat_id'],
+        ['Summary time (local)', s.telegram_summary_time, 'telegram_summary_time'],
+        ['Units', s.telegram_units, 'telegram_units'],
+        ['Base URL', s.base_url, 'base_url'],
       ],
     },
   ];
+}
+
+// Display strings that already convey "this is the default state" by their
+// own wording. Suppress the "(default)" suffix on these so the value
+// doesn't read as e.g. "not set (default)".
+const IMPLIES_DEFAULT = new Set(['not set', '(not set)', '(bundled poland.geojson)', 'disabled']);
+
+function ValueCell({ value, meta }: { value: string | number | boolean; meta?: SettingMeta }) {
+  const text = typeof value === 'string' ? value : String(value);
+  const showBadge = text === 'configured' || text === 'enabled';
+  const showMutedBadge = text === 'not set' || text === 'disabled';
+  const showDefault = meta != null && meta.customized === false && !IMPLIES_DEFAULT.has(text);
+  return (
+    <span className="text-sm tabnum">
+      {showBadge ? (
+        <Badge variant="success">{text}</Badge>
+      ) : showMutedBadge ? (
+        <Badge variant="muted">{text}</Badge>
+      ) : (
+        text
+      )}
+      {showDefault && <span className="ml-2 text-xs text-[var(--color-text-dim)]">(default)</span>}
+    </span>
+  );
+}
+
+function CopyEnvVarButton({ envVar }: { envVar?: string }) {
+  if (!envVar) return null;
+  const handleCopy = async () => {
+    const ok = await copyToClipboard(envVar);
+    if (ok) {
+      toast(`Copied ${envVar}`);
+    } else {
+      toast(`Couldn't copy — long-press to select`);
+    }
+  };
+  return (
+    <button
+      type="button"
+      onClick={handleCopy}
+      aria-label={`Copy ${envVar}`}
+      className="group inline-flex min-h-[36px] items-center gap-1.5 rounded
+                 px-1.5 py-1 font-mono text-xs text-[var(--color-text-dim)]
+                 transition-colors
+                 hover:bg-[var(--color-surface-3)] hover:text-[var(--color-text)]
+                 focus-visible:outline-none focus-visible:ring-2
+                 focus-visible:ring-[var(--color-accent)]
+                 active:bg-[var(--color-surface-3)]"
+    >
+      <code className="font-mono">{envVar}</code>
+      <CopyIcon
+        aria-hidden="true"
+        className="h-3.5 w-3.5 opacity-0 transition-opacity group-hover:opacity-60 group-focus-visible:opacity-60"
+      />
+    </button>
+  );
+}
+
+function SettingRow({
+  label,
+  value,
+  meta,
+}: {
+  label: string;
+  value: string | number | boolean;
+  meta?: SettingMeta;
+}) {
+  return (
+    <div
+      className="grid grid-cols-1 gap-y-1 border-t border-[var(--color-border-default)]
+                 py-2 first:border-t-0
+                 md:grid-cols-[1fr_auto_minmax(0,1fr)] md:items-center
+                 md:gap-x-4 md:py-1.5"
+      data-testid="settings-row"
+    >
+      <div className="text-sm font-medium text-[var(--color-text)]">{label}</div>
+      <div>
+        <ValueCell value={value} meta={meta} />
+      </div>
+      <div className="md:justify-self-end">
+        <CopyEnvVarButton envVar={meta?.env_var} />
+      </div>
+    </div>
+  );
 }
 
 export default function SettingsPage() {
@@ -249,36 +342,16 @@ export default function SettingsPage() {
               <CardTitle>{section.title}</CardTitle>
             </CardHeader>
             <CardContent>
-              <Table>
-                <THead>
-                  <TR>
-                    <TH className="w-1/2 md:w-1/3">Setting</TH>
-                    <TH>Value</TH>
-                    <TH className="hidden md:table-cell">Env var</TH>
-                  </TR>
-                </THead>
-                <TBody>
-                  {section.rows.map(([label, value, hint]) => (
-                    <TR key={label}>
-                      <TH scope="row" className="font-normal text-[var(--color-text)]">
-                        {label}
-                      </TH>
-                      <TD className="tabnum">
-                        {typeof value === 'string' && (value === 'configured' || value === 'enabled') ? (
-                          <Badge variant="success">{value}</Badge>
-                        ) : typeof value === 'string' && (value === 'not set' || value === 'disabled') ? (
-                          <Badge variant="muted">{value}</Badge>
-                        ) : (
-                          String(value)
-                        )}
-                      </TD>
-                      <TD className="hidden md:table-cell text-xs text-[var(--color-text-dim)]">
-                        {hint ? <code>{hint}</code> : ''}
-                      </TD>
-                    </TR>
-                  ))}
-                </TBody>
-              </Table>
+              <div role="list">
+                {section.rows.map(([label, value, metaKey]) => (
+                  <SettingRow
+                    key={label}
+                    label={label}
+                    value={value}
+                    meta={q.data._metadata?.[metaKey]}
+                  />
+                ))}
+              </div>
             </CardContent>
           </Card>
         ))}
