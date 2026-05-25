@@ -81,8 +81,10 @@ export interface StatsResponse {
     }[];
   };
   squawk_counts?: { '7700'?: number; '7600'?: number; '7500'?: number };
-  // Window-scoped furthest flight. Backend returns the full flight row
-  // (web.py:1636), or null for empty windows.
+  // Window-scoped furthest flight. Backend returns the full flight row,
+  // or null for empty windows. `record_set_at` is the `first_seen` of
+  // the record-holding flight (when the flight started) — used by
+  // MaxRangeCard for the "set {date}" sublabel.
   furthest_aircraft?: {
     icao_hex: string;
     callsign: string | null;
@@ -90,6 +92,7 @@ export interface StatsResponse {
     aircraft_type: string | null;
     type_desc: string | null;
     max_distance_nm: number | null;
+    record_set_at?: number | null;
   } | null;
   // Lifetime block — receiver-wide totals that DO NOT change when the
   // user picks a window. Consumed by the "About this receiver" footer.
@@ -415,7 +418,7 @@ function pickFlightsDelta(
 }
 
 function MaxRangeCard({ furthest }: { furthest: StatsResponse['furthest_aircraft'] }) {
-  const { fmtDist } = useFormat();
+  const { fmtDist, fmtDate } = useFormat();
   if (!furthest || furthest.max_distance_nm == null) {
     return <KpiCard label="Max range" value="—" testid="kpi-max-range" />;
   }
@@ -426,12 +429,19 @@ function MaxRangeCard({ furthest }: { furthest: StatsResponse['furthest_aircraft
       value={fmtDist(furthest.max_distance_nm)}
       testid="kpi-max-range"
       sublabel={
-        <Link
-          to={`/aircraft/${furthest.icao_hex}`}
-          className="font-mono text-[var(--color-accent)] hover:underline"
-        >
-          {linkLabel}
-        </Link>
+        <span>
+          <Link
+            to={`/aircraft/${furthest.icao_hex}`}
+            className="font-mono text-[var(--color-accent)] hover:underline"
+          >
+            {linkLabel}
+          </Link>
+          {furthest.record_set_at != null && (
+            <span className="ml-1 text-[var(--color-text-dim)]">
+              · set {fmtDate(furthest.record_set_at)}
+            </span>
+          )}
+        </span>
       }
     />
   );

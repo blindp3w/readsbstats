@@ -1,8 +1,14 @@
 // Compact horizontal pill strip for the three pilot flags (military /
 // interesting / anonymous) and the three emergency squawk codes
 // (7700 / 7600 / 7500). Each pill is a <Link> into a filtered History
-// view. Non-zero squawks render in danger color; zero values render
-// muted so the strip degrades gracefully on quiet windows.
+// view.
+//
+// Sprint 1 #3: squawk pills only render when their count is > 0 —
+// "no emergency" is the default state on almost every page load, and
+// dashboards conventionally treat empty state as silence (Datadog /
+// New Relic). The three flag pills (military / interesting / anonymous)
+// still render at 0 because they're "kinds of contacts" rather than
+// "emergency events" — "0 military in this window" is informative.
 
 import { Link } from 'react-router-dom';
 import { Badge } from '@/components/ui/Badge';
@@ -100,20 +106,22 @@ export function FlagBadgeStrip({ counts }: Props) {
         testid="flag-pill-anonymous"
         ariaTemplate={(n) => `View ${n} anonymous flights in history`}
       />
-      {(['7700', '7600', '7500'] as const).map((code) => {
-        const n = counts.squawks?.[code] ?? 0;
-        return (
-          <Pill
-            key={code}
-            to={`/history?squawk=${code}`}
-            label={`Sq ${code} · ${SQUAWK_LABELS[code]}`}
-            count={n}
-            variant="danger"
-            testid={`flag-pill-squawk-${code}`}
-            ariaTemplate={(x) => `View ${x} squawk ${code} ${SQUAWK_LABELS[code]} flights`}
-          />
-        );
-      })}
+      {(['7700', '7600', '7500'] as const)
+        .filter((code) => (counts.squawks?.[code] ?? 0) > 0)
+        .map((code) => {
+          const n = counts.squawks?.[code] ?? 0;
+          return (
+            <Pill
+              key={code}
+              to={`/history?squawk=${code}`}
+              label={`Sq ${code} · ${SQUAWK_LABELS[code]}`}
+              count={n}
+              variant="danger"
+              testid={`flag-pill-squawk-${code}`}
+              ariaTemplate={(x) => `View ${x} squawk ${code} ${SQUAWK_LABELS[code]} flights`}
+            />
+          );
+        })}
     </div>
   );
 }

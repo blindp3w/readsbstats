@@ -25,9 +25,21 @@ interface Props {
 }
 
 export function RangeContextLine({ state, isFetching }: Props) {
-  const { fmtTs } = useFormat();
+  const { fmtTs, fmtDate } = useFormat();
   const title = PRESET_TITLE[state.value];
   const prev = PREV_LABEL[state.value];
+
+  // Day-granular windows don't need time in the range tail — operator
+  // doesn't care that the 30d window started at 14:50 on April 25th.
+  // Sub-day ranges (24h, sub-day custom) keep HH:MM precision.
+  const span = state.from != null && state.to != null ? state.to - state.from : 0;
+  const useDateOnly =
+    state.value === '7d' ||
+    state.value === '30d' ||
+    state.value === '90d' ||
+    state.value === 'all' ||
+    (state.value === 'custom' && span >= 86400);
+  const fmt = useDateOnly ? fmtDate : fmtTs;
 
   return (
     <div
@@ -39,7 +51,7 @@ export function RangeContextLine({ state, isFetching }: Props) {
       </span>
       {state.from && state.to ? (
         <span className="tabnum">
-          · {fmtTs(state.from)} → {fmtTs(state.to)}
+          · {fmt(state.from)} → {fmt(state.to)}
         </span>
       ) : null}
       {prev ? (
