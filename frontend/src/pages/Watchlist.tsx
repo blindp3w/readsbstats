@@ -13,7 +13,7 @@ import { Input } from '@/components/ui/Input';
 import { Label } from '@/components/ui/Label';
 import { Button } from '@/components/ui/Button';
 import { Skeleton } from '@/components/ui/Skeleton';
-import { fmtTs } from '@/lib/format';
+import { fmtDate } from '@/lib/format';
 import { Alert } from '@/components/ui/Alert';
 import { Badge } from '@/components/ui/Badge';
 import {
@@ -51,14 +51,6 @@ const VALUE_PLACEHOLDER: Record<MatchType, string> = {
   registration: 'e.g. SP-LRF',
   callsign_prefix: 'e.g. LOT',
 };
-
-// Renamed from `fmtDate` to avoid shadowing the project-level `fmtDate`
-// helper in `lib/format.ts` (which is date-only). This function returns a
-// full timestamp via fmtTs so the user's 12h/24h preference is respected.
-function fmtEntryTs(epoch: number | undefined): string {
-  if (!epoch) return '';
-  return fmtTs(epoch);
-}
 
 export default function WatchlistPage() {
   const qc = useQueryClient();
@@ -264,7 +256,7 @@ export default function WatchlistPage() {
                   <TH>Type</TH>
                   <TH>Value</TH>
                   <TH>Label</TH>
-                  <TH>Added</TH>
+                  <TH className="hidden sm:table-cell">Added</TH>
                   <TH>Status</TH>
                   <TH>
                     <span className="sr-only">Actions</span>
@@ -277,8 +269,8 @@ export default function WatchlistPage() {
                     <TD>{MATCH_TYPE_LABEL[e.match_type] ?? e.match_type}</TD>
                     <TD className="font-mono tabnum">{e.value}</TD>
                     <TD>{e.label ?? '—'}</TD>
-                    <TD className="text-xs text-[var(--color-text-dim)] tabnum">
-                      {fmtEntryTs(e.created_at)}
+                    <TD className="hidden text-xs text-[var(--color-text-dim)] tabnum sm:table-cell">
+                      {fmtDate(e.created_at)}
                     </TD>
                     <TD>
                       {e.airborne ? (
