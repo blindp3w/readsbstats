@@ -300,7 +300,10 @@ function TypePhotoStamp() {
 // Reuses the token names from FlagBadge so the colour vocabulary stays
 // consistent across the app. Keyed on the return value of
 // `primaryFlagLabel` (military > interesting > anonymous precedence).
-const FLAG_PLACEHOLDER: Record<string, { tone: string; pillText: string }> = {
+// Key type is narrowed to the closed set so extending `primaryFlagLabel`
+// without updating this map is a TypeScript error, not a silent fall-through.
+type FlagPlaceholderKey = 'military' | 'interesting' | 'anonymous';
+const FLAG_PLACEHOLDER: Record<FlagPlaceholderKey, { tone: string; pillText: string }> = {
   military: { tone: 'success', pillText: 'military' },
   interesting: { tone: 'warn', pillText: 'interesting' },
   anonymous: { tone: 'danger', pillText: 'non-ICAO hex' },
@@ -310,6 +313,8 @@ function PhotoBox({ photo }: { photo: FlaggedAircraft }) {
   const src = safeUrl(photo.thumbnail_url) || safeUrl(photo.large_url);
   if (!src) {
     // No photo. Pick the placeholder variant by flag precedence.
+    // Lookup is typed: if `primaryFlagLabel`'s return type ever grows a new
+    // member, this assignment fails to compile until the map is extended.
     const flagLabel = primaryFlagLabel(photo.flags ?? 0);
     const feature = flagLabel ? FLAG_PLACEHOLDER[flagLabel] : undefined;
     if (feature) {
@@ -334,7 +339,6 @@ function PhotoBox({ photo }: { photo: FlaggedAircraft }) {
           >
             {feature.pillText}
           </span>
-          {photo.is_type_photo && <TypePhotoStamp />}
         </div>
       );
     }
@@ -347,7 +351,6 @@ function PhotoBox({ photo }: { photo: FlaggedAircraft }) {
         data-testid="gallery-placeholder-quiet"
       >
         <span className="font-mono text-sm text-[var(--color-text-dim)]">{photo.icao_hex}</span>
-        {photo.is_type_photo && <TypePhotoStamp />}
       </div>
     );
   }

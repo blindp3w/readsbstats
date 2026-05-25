@@ -12,7 +12,7 @@ export type FlagFilter = 'military' | 'interesting' | 'anonymous';
 
 // Precedence (matches notifier / Telegram alerts):
 // military > interesting > anonymous > none.
-export function primaryFlagLabel(flags: number | null | undefined): string | null {
+export function primaryFlagLabel(flags: number | null | undefined): FlagFilter | null {
   if (!flags) return null;
   if (flags & FLAG_MILITARY) return 'military';
   if (flags & FLAG_INTERESTING) return 'interesting';
