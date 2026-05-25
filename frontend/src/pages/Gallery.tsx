@@ -8,6 +8,7 @@ import { Card, CardContent } from '@/components/ui/Card';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { Alert } from '@/components/ui/Alert';
 import { FlagBadge } from '@/components/FlagBadge';
+import { primaryFlagLabel } from '@/lib/flags';
 import { Pagination } from '@/components/Pagination';
 import { ToggleGroupRoot, ToggleGroupItem } from '@/components/ui/ToggleGroup';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/Popover';
@@ -295,12 +296,57 @@ function TypePhotoStamp() {
   );
 }
 
+// M8.1: per-flag visual treatment for the featured no-photo placeholder.
+// Reuses the token names from FlagBadge so the colour vocabulary stays
+// consistent across the app. Keyed on the return value of
+// `primaryFlagLabel` (military > interesting > anonymous precedence).
+const FLAG_PLACEHOLDER: Record<string, { tone: string; pillText: string }> = {
+  military: { tone: 'success', pillText: 'military' },
+  interesting: { tone: 'warn', pillText: 'interesting' },
+  anonymous: { tone: 'danger', pillText: 'non-ICAO hex' },
+};
+
 function PhotoBox({ photo }: { photo: FlaggedAircraft }) {
   const src = safeUrl(photo.thumbnail_url) || safeUrl(photo.large_url);
   if (!src) {
+    // No photo. Pick the placeholder variant by flag precedence.
+    const flagLabel = primaryFlagLabel(photo.flags ?? 0);
+    const feature = flagLabel ? FLAG_PLACEHOLDER[flagLabel] : undefined;
+    if (feature) {
+      return (
+        <div
+          className="relative flex aspect-[4/3] items-center justify-center bg-[var(--color-surface-2)]"
+          data-testid="gallery-placeholder-featured"
+        >
+          <span
+            className="font-mono text-3xl tracking-wider"
+            style={{ color: `var(--color-${feature.tone})` }}
+          >
+            {photo.icao_hex}
+          </span>
+          <span
+            className="absolute bottom-2 left-1/2 -translate-x-1/2 rounded-full border px-2 py-0.5 text-[10px]"
+            style={{
+              color: `var(--color-${feature.tone})`,
+              borderColor: `color-mix(in srgb, var(--color-${feature.tone}) 40%, transparent)`,
+            }}
+            data-testid="gallery-placeholder-pill"
+          >
+            {feature.pillText}
+          </span>
+          {photo.is_type_photo && <TypePhotoStamp />}
+        </div>
+      );
+    }
+    // Quiet placeholder: ordinary aircraft, no flags, no photo. Brief
+    // asks for "just the hex in mono, dim, centered" — drop the old
+    // "no photo" text since the hex is more informative on its own.
     return (
-      <div className="relative flex aspect-[4/3] items-center justify-center bg-[var(--color-surface-2)] text-xs text-[var(--color-text-dim)]">
-        no photo
+      <div
+        className="relative flex aspect-[4/3] items-center justify-center bg-[var(--color-surface-2)]"
+        data-testid="gallery-placeholder-quiet"
+      >
+        <span className="font-mono text-sm text-[var(--color-text-dim)]">{photo.icao_hex}</span>
         {photo.is_type_photo && <TypePhotoStamp />}
       </div>
     );
