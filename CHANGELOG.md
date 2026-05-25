@@ -1,5 +1,80 @@
 # Changelog
 
+## 2.9.6 — 2026-05-25
+
+### Sprint 2 — History filter chips + sticky headers (M8.3 + M10.5)
+
+Replaces History's 9-field filter form with a chip-based pattern, makes
+the Gallery filter tabs + new History chip row stick to the bottom of
+the nav as the user scrolls, and lands a global `--rsbs-nav-h` fix that
+also corrects the long-standing Stats RangePicker overlap. Two
+remaining brief milestones close out in one shot.
+
+User-visible changes:
+
+- **History filter chips (M8.3 from the brief).** The form's 9 fields
+  collapse into a compact chip row at the top of the page: each
+  active filter renders as `Label: Value ×` (one chip per field; date
+  range is a single chip spanning both `date_from` + `date_to`).
+  `+ filter…` opens a two-step popover — pick a field, then enter the
+  value — and creates a chip. The chip's `×` removes it; `Clear all`
+  removes everything. The old multi-field form lives behind an
+  `▾ Advanced` toggle for power users.
+- **`▾ Advanced` is a chip-style toggle-button** in row 1, peer to
+  `+ filter…`. Outlined dim when closed; accent-tinted fill +
+  rotated chevron when open. Carries `aria-pressed` so assistive
+  tech announces "Advanced, pressed / not pressed" correctly without
+  pulling in a separate Radix Toggle dep.
+- **Sticky filter rows (M10.5 from the brief).** Both Gallery's
+  filter tabs and the new History chip row now dock under the top
+  nav as the user scrolls, reusing the `--rsbs-nav-h` CSS-var
+  pattern from v2.6.0's Stats RangePicker. The chip row's
+  `▾ Advanced` form expands inside the sticky wrapper itself, so
+  toggling it works regardless of scroll position (the form is
+  always rendered docked to the nav, not in normal document flow).
+- **`/` keyboard shortcut** on the History page focuses the
+  `+ filter…` trigger. Skips when an input / textarea / contenteditable
+  is focused (so typing `/` in a filter input doesn't hijack) and
+  when any modifier is held.
+- **Chip details that matter**:
+  - Source / Flag chips display the option **label** (`ADS-B`,
+    `military`), not the URL value (`adsb`, `military`).
+  - Hovering over the `+ filter…` popover's field picker hides any
+    field that already has an active chip (no point picking ICAO
+    twice).
+  - Partial date range (only `date_from` or only `date_to`) renders
+    as `Date 4/25–` or `Date –5/25` with an em-dash on the empty
+    side.
+  - Removing any chip atomically clears its URL param AND resets
+    `offset` so pagination doesn't strand the user on a
+    non-existent page.
+
+Internal:
+
+- **`--rsbs-nav-h` now measures the real nav height** via
+  `ResizeObserver` in `App.tsx`. The static fallback in `index.css`
+  is updated to `env(safe-area-inset-top) + 64 px` mobile /
+  `+ 40 px` desktop (matches actual current rendering); the observer
+  refines to pixel-perfect at runtime and reacts to viewport-resize /
+  nav content swaps. This **also fixed a pre-existing Stats
+  RangePicker overlap** that nobody had flagged (RangePicker pills
+  hide the issue visually better than a row of tabs / chips would).
+- **Two new components in `History.tsx`** (kept inline rather than
+  separate files for surface-area minimalism): `FilterChip` for the
+  pill rendering, `AddFilterPopover` for the two-step picker.
+  Single source of truth for Source / Flag option labels moved to
+  module-level constants so the Advanced Select and the chip
+  renderer can't drift.
+- **`fmtDate` from v2.9.5** is reused for the chip date renderer.
+  Watchlist's pre-existing local `fmtDate` (full timestamp) was
+  renamed to `fmtEntryTs` in v2.9.4 to avoid that shadow.
+
+Test count: 250 → 266 frontend (+14 chip lifecycle tests in new
+`history-chips.test.tsx`; +2 Gallery sticky tests; existing
+`history-filters.test.tsx` updated with an `openAdvanced` helper so
+the form-level dropdown coverage still runs inside the new disclosure).
+Backend unchanged at 1419 passed. Full suite green.
+
 ## 2.9.5 — 2026-05-25
 
 ### Sprint 1 — paper-cuts + nav overflow + iPad-portrait density
