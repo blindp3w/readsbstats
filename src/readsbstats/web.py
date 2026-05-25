@@ -1773,7 +1773,11 @@ def api_stats(
         _fp,
     ).fetchall()
 
-    # Furthest detected aircraft
+    # Furthest detected aircraft. Sprint 1 #4: surface the record-set
+    # timestamp under the explicit `record_set_at` key so the frontend
+    # MaxRangeCard sublabel can render `{callsign} · set {date}`. This is
+    # the `first_seen` of the flight that holds the max-distance record
+    # (the flight could span hours; `first_seen` is when it started).
     furthest_row = conn.execute(
         f"""
         SELECT {_FLIGHT_COLS}
@@ -1784,7 +1788,11 @@ def api_stats(
         """,
         _fp,
     ).fetchone()
-    furthest = dict(furthest_row) if furthest_row else None
+    if furthest_row:
+        furthest = dict(furthest_row)
+        furthest["record_set_at"] = furthest.get("first_seen")
+    else:
+        furthest = None
 
     result = {
         "total_flights":           agg["total_flights"],

@@ -1836,6 +1836,23 @@ class TestApiStats:
         r = client.get("/api/stats")
         assert r.json().get("previous_window") is None
 
+    def test_furthest_aircraft_includes_record_set_at(
+        self, client, db_conn, clear_web_cache,
+    ):
+        """Sprint 1 #4: MaxRangeCard sublabel needs the timestamp of the
+        record flight to render `{callsign} · set {date}`. Backend ships
+        it as `record_set_at` (aliased from `flights.first_seen` of the
+        record-holding row)."""
+        insert_flight(db_conn, icao="rec001", callsign="MAX1",
+                      first_seen=1_700_000_000, max_distance_nm=999.5)
+        insert_flight(db_conn, icao="rec002", callsign="OTH2",
+                      first_seen=1_700_500_000, max_distance_nm=100.0)
+        r = client.get("/api/stats")
+        furthest = r.json().get("furthest_aircraft")
+        assert furthest is not None
+        assert furthest["icao_hex"] == "rec001"
+        assert furthest["record_set_at"] == 1_700_000_000
+
     def test_previous_window_boundary_flight_not_double_counted(
         self, client, db_conn, clear_web_cache,
     ):
