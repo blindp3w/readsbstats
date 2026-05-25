@@ -1,5 +1,82 @@
 # Changelog
 
+## 2.9.2 — 2026-05-25
+
+### Backend audit 2026-05-25 — all 9 findings closed
+
+Patch release. No user-visible features; addresses every finding from
+`internal_docs/backend_audit_2026-05-25.md`. Production-verified on the
+Pi — both route and ADSBx fetches now connect via the new pinned-IP
+TLS path and continue to return 200.
+
+User-affecting fixes:
+
+- **Route enricher no longer wipes known origin/dest on partial
+  adsbdb responses.** `_apply_to_flights` and `_store_route` now use
+  `COALESCE` / `ON CONFLICT(callsign) DO UPDATE` so an origin-only or
+  destination-only payload from adsbdb refreshes only the side it
+  knows about. Previously a partial response after a 30-day cache
+  expiry could silently NULL out the other column on every flight
+  sharing the callsign.
+- **Photo cache: transient source outages no longer evict known-good
+  rows.** `photo_sources.fetch_photo` now reports `hit`/`miss`/`error`;
+  `resolve_photo` keeps stale positive `photos` / `type_photos` rows
+  when the whole source chain errored (DNS hiccup, rate-limit) instead
+  of writing a NULL sentinel for `PHOTO_CACHE_DAYS`. A confirmed
+  upstream miss still writes the negative cache row exactly as
+  before. Mirrors the per-spot grace already in `web._fetch_photo`.
+- **Collector: a ghost-position sample can no longer queue an
+  emergency alert.** `_poll` was queuing Telegram alerts and mutating
+  `_notified_icao` / `_squawk_notified` *before* the ghost-position
+  filter ran. A bad ADS-B jump carrying squawk `7700` produced an
+  emergency alert for a position the collector then discarded, and
+  locked the flight out of any future legitimate squawk alert. Filters
+  now run before the notification block.
+- **`/api/dates` groups by receiver-local time.** Previously bucketed
+  with `date(first_seen, 'unixepoch')` (UTC), so a Warsaw `00:30`
+  flight showed under the previous date — disagreeing with the
+  receiver-local date filter. Now matches.
+- **Date-filter Query descriptions say "receiver local time".**
+  `/api/flights`, `/api/flights/export.csv`, and `docs/api.md`
+  previously claimed `date=YYYY-MM-DD (UTC)`. The runtime always used
+  host-local midnight (pinned by `test_date_uses_host_local_timezone`);
+  only the docs were wrong.
+
+Internal:
+
+- **`http_safe`: removed the process-wide `_RESOLVER_LOCK`.**
+  `safe_httpx_get` now connects to the pre-validated IP directly using
+  the httpx `extensions={"sni_hostname": ...}` request extension and a
+  `Host:` header override — mirroring the urllib `_PinnedHTTPSConnection`
+  design. The previous `socket.getaddrinfo` monkey-patch was held under
+  a module-level lock spanning the full streaming-body window, so two
+  concurrent httpx calls (even to different hosts) serialized
+  end-to-end. Production logs after deploy confirm pinned-IP URLs
+  (`https://91.99.163.199/v0/callsign/...` to adsbdb,
+  `https://172.67.71.61/v2/point/...` to airplanes.live) negotiate TLS
+  + cert validation correctly via SNI override and return 200.
+- **`web._cache`: bounded `OrderedDict` (cap 256).** Filtered
+  `/api/stats?from=…&to=…` keys are caller-controlled and produced
+  unbounded distinct cache entries (each TTL-expired but never
+  evicted). New cache evicts expired entries opportunistically on
+  `_set_cache`, then falls back to insertion-order eviction at the
+  cap.
+- **`config._parse_feeders`: validate item + field types.** A non-dict
+  `RSBS_FEEDERS` array item (e.g. `[null]`) used to crash config
+  import with a TypeError outside the handled exception set. `port`
+  values are now required to be an int in `1..65535`, name/unit must
+  be non-empty strings, and `status_*` fields must be strings.
+- **`scripts/update.sh`: DuckDB pre-cache hardened.** The home
+  directory is now passed through `RSBS_DUCKDB_HOME_DIR` env var and
+  validated + quoted inside Python using the same
+  `analytics._is_safe_sql_path` / `_quote_sql_string` helpers as the
+  runtime path — instead of being shell-interpolated directly into a
+  `python -c` string and a SQL literal.
+
+Test count: 1383 → 1409. Net +26 regression tests added across
+route_enricher, http_safe, photo_sources, collector, web cache,
+`/api/dates`, and config parsing. Full suite: 1409 passed, 2 skipped.
+
 ## 2.9.1 — 2026-05-24
 
 ### Flight detail polish + photo lightbox
