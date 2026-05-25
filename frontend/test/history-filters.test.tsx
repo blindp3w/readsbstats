@@ -58,15 +58,28 @@ beforeEach(() => {
   globalThis.localStorage.clear();
 });
 
+// M8.3 — the Source / Flag triggers now live inside the Advanced
+// disclosure (collapsed by default). Helper opens it before each
+// assertion so the existing form-level tests keep covering the
+// dropdowns / sentinel translation as before.
+async function openAdvanced(getByTestId: (id: string) => HTMLElement): Promise<void> {
+  fireEvent.click(getByTestId('history-advanced-trigger'));
+  await waitFor(() => {
+    expect(document.querySelector('[data-testid="history-filter-source"]')).toBeTruthy();
+  });
+}
+
 describe('History filter dropdowns', () => {
-  it('Source trigger renders with default "any" label', () => {
+  it('Source trigger renders with default "any" label', async () => {
     const { getByTestId } = renderHistory();
+    await openAdvanced(getByTestId);
     const trigger = getByTestId('history-filter-source');
     expect(trigger.textContent).toContain('any');
   });
 
   it('opening Source shows all 5 options', async () => {
     const { getByTestId } = renderHistory();
+    await openAdvanced(getByTestId);
     const trigger = getByTestId('history-filter-source');
     trigger.focus();
     // Radix Select opens on Enter/Space via keyboard.
@@ -84,6 +97,7 @@ describe('History filter dropdowns', () => {
 
   it('opening Flag shows all 4 options', async () => {
     const { getByTestId } = renderHistory();
+    await openAdvanced(getByTestId);
     const trigger = getByTestId('history-filter-flags');
     trigger.focus();
     fireEvent.keyDown(trigger, { key: 'Enter' });
@@ -94,8 +108,11 @@ describe('History filter dropdowns', () => {
     expect(document.body.textContent).toMatch(/anonymous/);
   });
 
-  it('hydrates the trigger label from a pre-populated URL param', () => {
+  it('hydrates the trigger label from a pre-populated URL param', async () => {
+    // With ?source=mlat present, the chip row renders a "Source ADS-B"
+    // label *and* the Advanced trigger label hydrates from the URL.
     const { getByTestId } = renderHistory('/history?source=mlat');
+    await openAdvanced(getByTestId);
     expect(getByTestId('history-filter-source').textContent).toContain('MLAT');
   });
 });
