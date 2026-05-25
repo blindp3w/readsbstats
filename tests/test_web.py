@@ -905,20 +905,18 @@ class TestApiSettings:
             )
 
     def test_register_present_for_every_payload_key(self, client, clear_web_cache):
-        """Drift defence: for every payload key shipped from /api/settings,
-        config.py source must contain a `_register("<that_key>", ...)`
-        call. Forces developers to register new settings instead of
-        silently shipping them without metadata."""
-        from pathlib import Path
-        config_src = Path("src/readsbstats/config.py").read_text()
+        """Drift defence: every payload key shipped from /api/settings
+        must have a matching entry in `config._META_REGISTRY` populated
+        at module import time. Tests the runtime registry rather than
+        grepping source text — immune to multi-line / reformatted
+        `_register(...)` call sites that a source grep would miss."""
+        from readsbstats import config
         r = client.get("/api/settings")
         payload_keys = {k for k in r.json() if k != "_metadata"}
-        for key in payload_keys:
-            needle = f'_register("{key}",'
-            assert needle in config_src, (
-                f'payload key {key!r} has no `{needle}` in config.py — '
-                f"new settings must be registered for _metadata to ship"
-            )
+        missing = payload_keys - set(config._META_REGISTRY)
+        assert not missing, (
+            f"payload keys with no _register entry in _META_REGISTRY: {missing}"
+        )
 
     def test_metadata_customized_false_when_namespace_matches_defaults(self):
         """`_settings_metadata` is a pure function over (namespace, keys).
@@ -1837,6 +1835,22 @@ class TestApiStats:
         insert_flight(db_conn, first_seen=int(time.time()) - 3600)
         r = client.get("/api/stats")
         assert r.json().get("previous_window") is None
+
+    def test_previous_window_boundary_flight_not_double_counted(
+        self, client, db_conn, clear_web_cache,
+    ):
+        """A flight whose `first_seen` equals `from_ts` belongs to the
+        current window only — the previous window upper bound is
+        exclusive so the same flight cannot inflate both totals."""
+        # Window [2_000_000, 3_000_000]. Boundary flight at exactly 2_000_000.
+        insert_flight(db_conn, icao="bb0000", first_seen=2_000_000,
+                      total_positions=10)
+        r = client.get("/api/stats?from=2000000&to=3000000")
+        data = r.json()
+        # Current window includes the boundary flight.
+        assert data["total_flights"] == 1
+        # Previous window must NOT include it.
+        assert data["previous_window"]["total_flights"] == 0
 
     def test_filtered_cache_distinguishes_ranges(self, client, db_conn, clear_web_cache):
         """Different date ranges must not collide in the cache."""
