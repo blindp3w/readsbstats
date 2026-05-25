@@ -711,59 +711,13 @@ def _poll(conn: sqlite3.Connection) -> None:
                     flight_id = state["flight_id"]
 
             # ----------------------------------------------------------------
-            # Queue notifications (sent after transaction commits)
-            # ----------------------------------------------------------------
-            if _tg:
-                # Military / interesting / anonymous: only on first-ever sighting of this ICAO.
-                # Also fires mid-flight when ADSBx enricher confirms military status
-                # (late-discovery: ADSBx polls every ~60s, may arrive after flight opens).
-                # Precedence (highest first): military > interesting > anonymous. A
-                # single ICAO gets at most one alert kind per first sighting.
-                interest_mask = config.FLAG_MILITARY | config.FLAG_INTERESTING
-                if config.TELEGRAM_ANONYMOUS_ALERT:
-                    interest_mask |= config.FLAG_ANONYMOUS
-                if (flags & interest_mask) and icao not in _notified_icao:
-                    prev = conn.execute(
-                        "SELECT COUNT(*) FROM flights WHERE icao_hex = ? AND id != ?",
-                        (icao, flight_id),
-                    ).fetchone()[0]
-                    if prev == 0:
-                        if flags & config.FLAG_MILITARY:
-                            kind = "mil"
-                        elif flags & config.FLAG_INTERESTING:
-                            kind = "int"
-                        else:
-                            kind = "anon"
-                        _pending.append(
-                            (kind, icao, registration, callsign, type_desc, aircraft_type, distance_nm)
-                        )
-                    _notified_icao.add(icao)
-
-                # Emergency squawk: once per flight
-                if squawk in notifier.EMERGENCY_SQUAWKS and flight_id not in _squawk_notified:
-                    _squawk_notified.add(flight_id)
-                    _pending.append(("sqk", icao, registration, callsign, squawk, distance_nm))
-
-                # Watchlist: once per flight (deduped via is_new_flight check)
-                if is_new_flight and watchlist:
-                    hit = False
-                    hit_label = None
-                    for entry in watchlist:
-                        mt, val, lbl = entry["match_type"], entry["value"], entry["label"]
-                        if mt == "icao" and val == icao:
-                            hit, hit_label = True, lbl; break
-                        elif mt == "registration" and val == (registration or "").lower():
-                            hit, hit_label = True, lbl; break
-                        elif mt == "callsign_prefix" and (callsign or "").lower().startswith(val):
-                            hit, hit_label = True, lbl; break
-                    if hit:
-                        _pending.append(
-                            ("wl", icao, registration, callsign, type_desc, aircraft_type,
-                             distance_nm, hit_label, flight_id)
-                        )
-
-            # ----------------------------------------------------------------
             # Ghost-position filter: reject teleporting ADS-B outliers
+            # Audit 2026-05-25: filters MUST run before the notification block
+            # so a rejected sample cannot queue an alert or mutate the dedupe
+            # sets (`_notified_icao`, `_squawk_notified`). Previously a ghost
+            # ADS-B jump carrying squawk 7x00 produced an emergency alert for
+            # a position the collector then discarded, and locked the flight
+            # out of future legitimate squawk alerts.
             # ----------------------------------------------------------------
             if not is_new_flight:
                 prev_lat = state.get("last_lat")
@@ -833,6 +787,61 @@ def _poll(conn: sqlite3.Connection) -> None:
             _active[icao]["last_lon"] = lon
             if gs is not None:
                 _active[icao]["last_gs"] = gs
+
+            # ----------------------------------------------------------------
+            # Queue notifications (sent after transaction commits).
+            # Runs AFTER the ghost/GS filters and the position write so a
+            # rejected sample cannot produce a spurious alert or poison the
+            # dedupe sets.
+            # ----------------------------------------------------------------
+            if _tg:
+                # Military / interesting / anonymous: only on first-ever sighting of this ICAO.
+                # Also fires mid-flight when ADSBx enricher confirms military status
+                # (late-discovery: ADSBx polls every ~60s, may arrive after flight opens).
+                # Precedence (highest first): military > interesting > anonymous. A
+                # single ICAO gets at most one alert kind per first sighting.
+                interest_mask = config.FLAG_MILITARY | config.FLAG_INTERESTING
+                if config.TELEGRAM_ANONYMOUS_ALERT:
+                    interest_mask |= config.FLAG_ANONYMOUS
+                if (flags & interest_mask) and icao not in _notified_icao:
+                    prev = conn.execute(
+                        "SELECT COUNT(*) FROM flights WHERE icao_hex = ? AND id != ?",
+                        (icao, flight_id),
+                    ).fetchone()[0]
+                    if prev == 0:
+                        if flags & config.FLAG_MILITARY:
+                            kind = "mil"
+                        elif flags & config.FLAG_INTERESTING:
+                            kind = "int"
+                        else:
+                            kind = "anon"
+                        _pending.append(
+                            (kind, icao, registration, callsign, type_desc, aircraft_type, distance_nm)
+                        )
+                    _notified_icao.add(icao)
+
+                # Emergency squawk: once per flight
+                if squawk in notifier.EMERGENCY_SQUAWKS and flight_id not in _squawk_notified:
+                    _squawk_notified.add(flight_id)
+                    _pending.append(("sqk", icao, registration, callsign, squawk, distance_nm))
+
+                # Watchlist: once per flight (deduped via is_new_flight check)
+                if is_new_flight and watchlist:
+                    hit = False
+                    hit_label = None
+                    for entry in watchlist:
+                        mt, val, lbl = entry["match_type"], entry["value"], entry["label"]
+                        if mt == "icao" and val == icao:
+                            hit, hit_label = True, lbl; break
+                        elif mt == "registration" and val == (registration or "").lower():
+                            hit, hit_label = True, lbl; break
+                        elif mt == "callsign_prefix" and (callsign or "").lower().startswith(val):
+                            hit, hit_label = True, lbl; break
+                    if hit:
+                        _pending.append(
+                            ("wl", icao, registration, callsign, type_desc, aircraft_type,
+                             distance_nm, hit_label, flight_id)
+                        )
 
         # Close flights that have gone silent
         expired = [

@@ -211,9 +211,14 @@ def db() -> sqlite3.Connection:
 
 
 # ---------------------------------------------------------------------------
-# Response cache — simple TTL dict, keyed by endpoint name
+# Response cache — bounded TTL store, keyed by endpoint name
 # ---------------------------------------------------------------------------
-_cache: dict[str, tuple[float, object]] = {}
+# Audit 2026-05-25: filtered /api/stats keys are caller-controlled
+# (`stats:{from}:{to}`), so the cache must cap total entries and evict the
+# oldest on overflow. OrderedDict gives us insertion-order eviction without
+# a dependency.
+_cache: "_OrderedDict[str, tuple[float, object]]" = _OrderedDict()
+_CACHE_MAX_ENTRIES = 256
 _CACHE_TTLS: dict[str, int] = {
     "stats":        120,   # seconds — aggregate data, no need to recompute often
     "polar":        300,   # seconds — max range rarely shifts
@@ -233,15 +238,46 @@ _DEFAULT_TTL  = 30    # seconds
 _AIRSPACE_TTL = 3600  # seconds — airspace data rarely changes
 
 
+def _ttl_for(key: str) -> int:
+    # Filtered stats keys arrive as ``stats:{from}:{to}``; the base prefix
+    # ``stats`` already has an entry in _CACHE_TTLS, so look that up first
+    # before falling back to the default.
+    if key in _CACHE_TTLS:
+        return _CACHE_TTLS[key]
+    base = key.split(":", 1)[0]
+    return _CACHE_TTLS.get(base, _DEFAULT_TTL)
+
+
 def _get_cache(key: str) -> object | None:
     entry = _cache.get(key)
-    if entry and time.time() - entry[0] < _CACHE_TTLS.get(key, _DEFAULT_TTL):
+    if entry is None:
+        return None
+    if time.time() - entry[0] < _ttl_for(key):
         return entry[1]
+    # Lazy eviction so an expired key doesn't keep occupying the cap.
+    del _cache[key]
     return None
 
 
 def _set_cache(key: str, value: object) -> None:
-    _cache[key] = (time.time(), value)
+    now = time.time()
+    # Refreshing an existing key keeps insertion order useful only when
+    # we move it to the end; otherwise the same key would be evicted
+    # before never-touched-since keys.
+    if key in _cache:
+        _cache.move_to_end(key)
+    _cache[key] = (now, value)
+    if len(_cache) > _CACHE_MAX_ENTRIES:
+        # Drop any expired entries first; if still over cap, evict in
+        # insertion order (oldest first).
+        for k in list(_cache.keys()):
+            ts, _ = _cache[k]
+            if now - ts >= _ttl_for(k):
+                del _cache[k]
+            if len(_cache) <= _CACHE_MAX_ENTRIES:
+                break
+        while len(_cache) > _CACHE_MAX_ENTRIES:
+            _cache.popitem(last=False)
 
 
 def _fmt_ts(epoch: int | None) -> str:
@@ -625,9 +661,9 @@ def _build_flight_filter(
     """Return (WHERE clause, params list) for the shared flight filter params.
 
     Date filtering supports either:
-      - `date=YYYY-MM-DD`           — single calendar day (UTC)
+      - `date=YYYY-MM-DD`           — single calendar day (receiver local time)
       - `from`/`to` epoch seconds   — browser-local midnight boundaries (preferred)
-      - `date_from=YYYY-MM-DD` and/or `date_to=YYYY-MM-DD` — UTC date strings
+      - `date_from=YYYY-MM-DD` and/or `date_to=YYYY-MM-DD` — receiver local time
         (kept for backward compat; epoch params take priority when both are sent)
 
     If `date` is set, the range params are ignored — single-day takes priority
@@ -714,9 +750,9 @@ def _build_flight_filter(
 
 @app.get("/api/flights")
 def api_flights(
-    date: str | None = Query(None, description="YYYY-MM-DD (UTC)"),
-    date_from: str | None = Query(None, description="YYYY-MM-DD inclusive range start (UTC)"),
-    date_to:   str | None = Query(None, description="YYYY-MM-DD inclusive range end (UTC)"),
+    date: str | None = Query(None, description="YYYY-MM-DD (receiver local time)"),
+    date_from: str | None = Query(None, description="YYYY-MM-DD inclusive range start (receiver local time)"),
+    date_to:   str | None = Query(None, description="YYYY-MM-DD inclusive range end (receiver local time)"),
     from_ts: int | None = Query(None, alias="from", description="Unix timestamp range start (browser-local midnight)"),
     to_ts:   int | None = Query(None, alias="to",   description="Unix timestamp range end (browser-local midnight of next day)"),
     icao: str | None = Query(None),
@@ -779,9 +815,9 @@ _CSV_COLS = [
 
 @app.get("/api/flights/export.csv")
 def api_flights_export(
-    date: str | None = Query(None, description="YYYY-MM-DD (UTC)"),
-    date_from: str | None = Query(None, description="YYYY-MM-DD inclusive range start"),
-    date_to:   str | None = Query(None, description="YYYY-MM-DD inclusive range end"),
+    date: str | None = Query(None, description="YYYY-MM-DD (receiver local time)"),
+    date_from: str | None = Query(None, description="YYYY-MM-DD inclusive range start (receiver local time)"),
+    date_to:   str | None = Query(None, description="YYYY-MM-DD inclusive range end (receiver local time)"),
     icao: str | None = Query(None),
     callsign: str | None = Query(None),
     registration: str | None = Query(None),
@@ -2363,7 +2399,7 @@ def api_dates() -> dict:
     conn = db()
     rows = conn.execute(
         """
-        SELECT date(first_seen, 'unixepoch') AS date,
+        SELECT date(first_seen, 'unixepoch', 'localtime') AS date,
                COUNT(*) AS flight_count
         FROM flights
         GROUP BY date

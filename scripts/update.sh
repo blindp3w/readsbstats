@@ -156,13 +156,30 @@ echo "==> Installing Python dependencies"
 DUCKDB_HOME_DIR="${RSBS_DUCKDB_HOME_DIR:-/mnt/ext/readsbstats/duckdb-home}"
 echo "==> Pre-caching DuckDB sqlite_scanner extension at $DUCKDB_HOME_DIR"
 install -d -o "$SERVICE_USER" -g "$SERVICE_USER" -m 0750 "$DUCKDB_HOME_DIR"
-runuser -u "$SERVICE_USER" -- "$APP_DIR/venv/bin/python" -c "
+# Audit 2026-05-25: pass the directory through the environment and validate +
+# quote it inside Python using the same helpers the runtime uses. The
+# previous version interpolated $DUCKDB_HOME_DIR directly into the python -c
+# string AND the SQL literal, so a path containing a quote / backslash /
+# newline would break the pre-cache step.
+RSBS_DUCKDB_HOME_DIR="$DUCKDB_HOME_DIR" \
+runuser --preserve-environment -u "$SERVICE_USER" -- \
+    "$APP_DIR/venv/bin/python" - <<'PY' \
+|| echo "WARNING: DuckDB extension pre-cache failed; will be downloaded on first use" >&2
+import os, sys
 import duckdb
+from readsbstats.analytics import _is_safe_sql_path, _quote_sql_string
+
+home = os.environ["RSBS_DUCKDB_HOME_DIR"]
+if not _is_safe_sql_path(home):
+    sys.stderr.write(
+        f"ERROR: refusing unsafe RSBS_DUCKDB_HOME_DIR={home!r}\n"
+    )
+    sys.exit(2)
 c = duckdb.connect()
-c.execute(\"SET home_directory='$DUCKDB_HOME_DIR'\")
-c.execute('INSTALL sqlite_scanner')
-c.execute('LOAD sqlite_scanner')
-" || echo "WARNING: DuckDB extension pre-cache failed; will be downloaded on first use" >&2
+c.execute(f"SET home_directory={_quote_sql_string(home)}")
+c.execute("INSTALL sqlite_scanner")
+c.execute("LOAD sqlite_scanner")
+PY
 
 echo "==> Reloading systemd"
 cp "$APP_DIR/systemd/readsbstats-collector.service"     /etc/systemd/system/

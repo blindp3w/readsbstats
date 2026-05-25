@@ -699,6 +699,28 @@ class TestCache:
         web._cache["bar"] = (time.time() - web._DEFAULT_TTL - 1, {"x": 2})
         assert web._get_cache("bar") is None
 
+    def test_set_cache_evicts_oldest_over_cap(self, clear_web_cache):
+        """Audit 2026-05-25: filtered /api/stats requests with caller-controlled
+        from/to range produce unbounded distinct keys. The cache must cap the
+        total entry count and evict the oldest first."""
+        cap = web._CACHE_MAX_ENTRIES
+        for i in range(cap + 50):
+            web._set_cache(f"stats:0:{i}", i)
+        assert len(web._cache) <= cap
+        # The earliest keys should have been evicted; the most recent kept.
+        assert web._get_cache(f"stats:0:{cap + 49}") == cap + 49
+        assert web._get_cache("stats:0:0") is None
+
+    def test_get_cache_drops_expired_entries(self, clear_web_cache, monkeypatch):
+        """Expired entries should be removed lazily on lookup so the cap is
+        not consumed by zombie keys."""
+        web._set_cache("zombie", "ignored")
+        # Fast-forward past the default TTL.
+        future = time.time() + web._DEFAULT_TTL + 5
+        monkeypatch.setattr(web.time, "time", lambda: future)
+        assert web._get_cache("zombie") is None
+        assert "zombie" not in web._cache
+
 
 class TestDbConnection:
     """`db()` must be per-thread in production so requests don't serialize on
@@ -1858,6 +1880,37 @@ class TestApiDates:
         web._cache.clear()
         third = client.get("/api/dates").json()
         assert len(third["dates"]) == 2
+
+    def test_groups_by_receiver_local_time(self, client, db_conn):
+        """/api/dates must group by receiver-local date so it agrees with the
+        date= filter (which uses host-local midnight, see
+        TestBuildFlightFilter::test_date_uses_host_local_timezone). UTC bucketing
+        would put a Warsaw 00:30 flight on the previous date."""
+        import os, time
+        original_tz = os.environ.get("TZ")
+        os.environ["TZ"] = "Europe/Warsaw"  # UTC+1 in January (no DST)
+        time.tzset()
+        try:
+            # Warsaw 2024-01-15 00:30 = 2024-01-14 23:30 UTC
+            ts_local_midnight_edge = int(time.mktime((2024, 1, 15, 0, 30, 0, 0, 0, -1)))
+            # Warsaw 2024-01-15 12:00 = 2024-01-15 11:00 UTC
+            ts_local_noon = int(time.mktime((2024, 1, 15, 12, 0, 0, 0, 0, -1)))
+            insert_flight(db_conn, icao="aa0001", first_seen=ts_local_midnight_edge)
+            insert_flight(db_conn, icao="aa0002", first_seen=ts_local_noon)
+            web._cache.clear()
+            r = client.get("/api/dates")
+            assert r.status_code == 200
+            dates = r.json()["dates"]
+            counts = {d["date"]: d["flight_count"] for d in dates}
+            # Both flights should group under 2024-01-15 in Warsaw-local time.
+            assert counts == {"2024-01-15": 2}
+        finally:
+            web._cache.clear()
+            if original_tz is None:
+                os.environ.pop("TZ", None)
+            else:
+                os.environ["TZ"] = original_tz
+            time.tzset()
 
 
 # ---------------------------------------------------------------------------

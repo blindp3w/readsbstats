@@ -243,11 +243,34 @@ def _parse_feeders(raw: str) -> list[dict]:
         parsed = json.loads(raw)
         if not isinstance(parsed, list):
             raise ValueError("RSBS_FEEDERS must be a JSON array")
-        for item in parsed:
-            if "name" not in item or "unit" not in item:
-                raise ValueError(f"Each feeder needs 'name' and 'unit': {item}")
+        # Audit 2026-05-25: validate item *and* field types so a malformed
+        # deployment value cannot crash config import (`"name" in item` raises
+        # TypeError when item is null/int) or crash /api/feeders later
+        # (`_check_port` blows up if port is a string).
+        for i, item in enumerate(parsed):
+            if not isinstance(item, dict):
+                raise ValueError(f"feeder #{i} must be a JSON object")
+            for key in ("name", "unit"):
+                val = item.get(key)
+                if not isinstance(val, str) or not val.strip():
+                    raise ValueError(
+                        f"feeder #{i} '{key}' must be a non-empty string"
+                    )
+            if "port" in item:
+                port = item["port"]
+                # Reject bool explicitly: bool is a subclass of int in Python
+                # so `isinstance(True, int)` is True and we'd silently accept
+                # `"port": true` as port 1.
+                if (not isinstance(port, int) or isinstance(port, bool)
+                        or not (1 <= port <= 65535)):
+                    raise ValueError(
+                        f"feeder #{i} 'port' must be an int in 1..65535"
+                    )
+            for key in ("status_type", "status_path", "status_url"):
+                if key in item and not isinstance(item[key], str):
+                    raise ValueError(f"feeder #{i} '{key}' must be a string")
         return parsed
-    except (json.JSONDecodeError, ValueError) as exc:
+    except (json.JSONDecodeError, ValueError, TypeError) as exc:
         print(f"ERROR: RSBS_FEEDERS: {exc}, using defaults", file=sys.stderr)
         return _DEFAULT_FEEDERS
 

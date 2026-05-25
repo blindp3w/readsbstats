@@ -6,7 +6,7 @@ The web server exposes a JSON API at `http://YOUR_PI_IP/stats/api/`.
 
 | Method | Path | Description |
 |---|---|---|
-| GET | `/api/flights` | Flight list. Filters: `from`/`to` (Unix epoch, preferred — browser-local midnight), `date`, `date_from`/`date_to` (YYYY-MM-DD UTC, backward compat), `icao`, `callsign`, `reg`, `type`, `source`, `flags`, `squawk`. Sortable, paginated. |
+| GET | `/api/flights` | Flight list. Filters: `from`/`to` (Unix epoch, preferred — browser-local midnight), `date`, `date_from`/`date_to` (YYYY-MM-DD receiver local time, backward compat), `icao`, `callsign`, `reg`, `type`, `source`, `flags`, `squawk`. Sortable, paginated. |
 | GET | `/api/flights/export.csv` | CSV export of flight list (same filters as above, no pagination) |
 | GET | `/api/flights/{id}` | Full flight detail + all positions |
 | GET | `/api/flights/{id}/photo` | Aircraft photo via 6-step ladder: specific-ICAO cache → type cache → DB join → Planespotters/airport-data/hexdb fetch → type probe → Wikipedia. `is_type_photo: bool` in response. |

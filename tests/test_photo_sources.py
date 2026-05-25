@@ -988,3 +988,137 @@ class TestResolvePhoto:
         assert self.conn.execute(
             "SELECT COUNT(*) FROM photos WHERE icao_hex=''"
         ).fetchone()[0] == 0
+
+
+# ---------------------------------------------------------------------------
+# _fetch_photo_with_status — chain status reporting
+# ---------------------------------------------------------------------------
+
+class TestFetchPhotoWithStatus:
+    def test_all_clean_misses_returns_miss(self, monkeypatch):
+        monkeypatch.setattr(photo_sources, "SOURCES", [
+            lambda h: None, lambda h: None, lambda h: None,
+        ])
+        result, status = photo_sources._fetch_photo_with_status("abc")
+        assert result is None
+        assert status == "miss"
+
+    def test_hit_returns_hit(self, monkeypatch):
+        pr = PhotoResult(thumbnail_url="https://x/y.jpg")
+        monkeypatch.setattr(photo_sources, "SOURCES", [
+            lambda h: None, lambda h: pr, lambda h: None,
+        ])
+        result, status = photo_sources._fetch_photo_with_status("abc")
+        assert result is pr
+        assert status == "hit"
+
+    def test_any_exception_returns_error_when_no_hit(self, monkeypatch):
+        def boom(h):
+            raise OSError("network")
+        monkeypatch.setattr(photo_sources, "SOURCES", [
+            lambda h: None, boom, lambda h: None,
+        ])
+        result, status = photo_sources._fetch_photo_with_status("abc")
+        assert result is None
+        assert status == "error"
+
+    def test_all_raise_returns_error(self, monkeypatch):
+        def boom(h):
+            raise OSError("network")
+        monkeypatch.setattr(photo_sources, "SOURCES", [boom, boom, boom])
+        result, status = photo_sources._fetch_photo_with_status("abc")
+        assert result is None
+        assert status == "error"
+
+
+# ---------------------------------------------------------------------------
+# resolve_photo — transient-error grace
+# ---------------------------------------------------------------------------
+
+class TestResolvePhotoErrorGrace:
+    @pytest.fixture(autouse=True)
+    def setup(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(photo_sources, "_WIKIPEDIA_ENABLED", False)
+        db_path = str(tmp_path / "test.db")
+        conn = database.connect(db_path)
+        conn.executescript(database.DDL)
+        database._migrate(conn)
+        self.conn = conn
+        yield
+        conn.close()
+
+    def _stale_positive_row(self, icao: str = "abc123") -> None:
+        # Seed a known-good photo row that pre-dates the cache cutoff so the
+        # step-1 cache check misses, forcing the resolver into the fetch step.
+        old = int(time.time()) - 30 * 86400 - 7200
+        self.conn.execute(
+            "INSERT INTO photos VALUES (?, 'https://ps.com/t.jpg', "
+            "'https://ps.com/big.jpg', 'https://ps.com/page', 'shot-by', ?)",
+            (icao, old),
+        )
+        self.conn.commit()
+
+    def test_source_error_preserves_stale_specific_row(self, monkeypatch):
+        """Audit 2026-05-25: a transient source outage (every source raises)
+        must NOT overwrite a positive cached photo with NULL. The stale row is
+        returned so the caller keeps serving the known-good URL."""
+        self._stale_positive_row("abc123")
+        def boom(h):
+            raise OSError("network")
+        monkeypatch.setattr(photo_sources, "SOURCES", [boom, boom, boom])
+        # No `fetcher=` kwarg → production path → status-aware grace.
+        result, is_type = photo_sources.resolve_photo(self.conn, "abc123", "B738")
+        assert is_type is False
+        assert result is not None
+        assert result["thumbnail_url"] == "https://ps.com/t.jpg"
+        # The stale row was NOT overwritten with NULL.
+        row = self.conn.execute(
+            "SELECT thumbnail_url FROM photos WHERE icao_hex='abc123'"
+        ).fetchone()
+        assert row["thumbnail_url"] == "https://ps.com/t.jpg"
+
+    def test_clean_miss_writes_negative_specific_row(self, monkeypatch):
+        """A clean miss (every source returned None without raising) still
+        writes the negative cache row — that's how the resolver knows not to
+        keep retrying."""
+        monkeypatch.setattr(photo_sources, "SOURCES", [
+            lambda h: None, lambda h: None, lambda h: None,
+        ])
+        result, is_type = photo_sources.resolve_photo(self.conn, "abc123", None)
+        assert result is None and is_type is False
+        row = self.conn.execute(
+            "SELECT thumbnail_url, fetched_at FROM photos WHERE icao_hex='abc123'"
+        ).fetchone()
+        assert row is not None
+        assert row["thumbnail_url"] is None
+
+    def test_source_error_does_not_write_negative_specific_row(self, monkeypatch):
+        """A source-error result with no stale positive row must not poison
+        the cache either — leave it untouched so the next batch can retry."""
+        def boom(h):
+            raise OSError("network")
+        monkeypatch.setattr(photo_sources, "SOURCES", [boom, boom, boom])
+        result, _is_type = photo_sources.resolve_photo(self.conn, "abc123", None)
+        assert result is None
+        assert self.conn.execute(
+            "SELECT COUNT(*) FROM photos WHERE icao_hex='abc123'"
+        ).fetchone()[0] == 0
+
+    def test_source_error_during_probe_does_not_write_negative_type_row(self, monkeypatch):
+        """Same grace for step 5/6: a probe fetch that errors must not poison
+        the type-photo cache. A future request can try again."""
+        # Aircraft_db row so the probe path runs.
+        self.conn.execute(
+            "INSERT INTO aircraft_db (icao_hex, registration, type_code, type_desc, flags)"
+            " VALUES ('probe01', 'G-PRB', 'C152', 'Cessna 152', 0)"
+        )
+        self.conn.commit()
+        def boom(h):
+            raise OSError("network")
+        monkeypatch.setattr(photo_sources, "SOURCES", [boom, boom, boom])
+        # icao_hex="" type-only mode goes straight to probe.
+        result, _is_type = photo_sources.resolve_photo(self.conn, "", "C152")
+        assert result is None
+        assert self.conn.execute(
+            "SELECT COUNT(*) FROM type_photos WHERE type_code='C152'"
+        ).fetchone()[0] == 0

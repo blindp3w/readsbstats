@@ -125,6 +125,60 @@ class TestParseFeeders:
         assert result[0]["name"] == "readsb"
         assert "name" in capsys.readouterr().err
 
+    def test_non_dict_item_falls_back(self, capsys):
+        """Audit 2026-05-25: a JSON array containing a non-mapping value
+        (here `null`) used to raise `TypeError: argument of type 'NoneType'
+        is not iterable` from `"name" not in item` and crash config import.
+        It now falls back to defaults instead."""
+        from readsbstats.config import _parse_feeders
+        result = _parse_feeders('[null]')
+        assert result[0]["name"] == "readsb"
+        err = capsys.readouterr().err
+        assert "RSBS_FEEDERS" in err
+
+    def test_string_list_item_falls_back(self, capsys):
+        """A JSON string in the feeders array (`"string-feeder"`) used to
+        pass the `"name" in item` substring check accidentally for some
+        inputs. Type-checking each item rejects this regardless."""
+        from readsbstats.config import _parse_feeders
+        result = _parse_feeders('["string-feeder"]')
+        assert result[0]["name"] == "readsb"
+        assert "RSBS_FEEDERS" in capsys.readouterr().err
+
+    def test_non_int_port_falls_back(self, capsys):
+        from readsbstats.config import _parse_feeders
+        raw = '[{"name": "t", "unit": "t.service", "port": "80"}]'
+        result = _parse_feeders(raw)
+        assert result[0]["name"] == "readsb"
+        assert "port" in capsys.readouterr().err
+
+    def test_out_of_range_port_falls_back(self, capsys):
+        from readsbstats.config import _parse_feeders
+        raw = '[{"name": "t", "unit": "t.service", "port": 70000}]'
+        result = _parse_feeders(raw)
+        assert result[0]["name"] == "readsb"
+        assert "port" in capsys.readouterr().err
+
+    def test_empty_name_falls_back(self, capsys):
+        from readsbstats.config import _parse_feeders
+        raw = '[{"name": "", "unit": "t.service"}]'
+        result = _parse_feeders(raw)
+        assert result[0]["name"] == "readsb"
+        assert "name" in capsys.readouterr().err
+
+    def test_non_string_status_type_falls_back(self, capsys):
+        from readsbstats.config import _parse_feeders
+        raw = '[{"name": "t", "unit": "t.service", "status_type": 42}]'
+        result = _parse_feeders(raw)
+        assert result[0]["name"] == "readsb"
+        assert "status_type" in capsys.readouterr().err
+
+    def test_valid_port_accepted(self):
+        from readsbstats.config import _parse_feeders
+        raw = '[{"name": "t", "unit": "t.service", "port": 8080}]'
+        result = _parse_feeders(raw)
+        assert result[0]["port"] == 8080
+
 
 class TestMinOrDefaultInt:
     def test_value_above_minimum_unchanged(self):

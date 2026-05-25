@@ -185,6 +185,53 @@ class TestStoreRoute:
         ).fetchone()
         assert row["origin_icao"] == "WAW"
 
+    def test_store_partial_dest_none_preserves_cached_dest(self):
+        # Audit 2026-05-25: a later origin-only response must not wipe a
+        # previously-cached dest in callsign_routes.
+        full = {
+            "origin_icao": "EPWA", "origin_iata": None, "origin_name": None,
+            "origin_country": None, "origin_lat": None, "origin_lon": None,
+            "dest_icao": "EGLL", "dest_iata": None, "dest_name": None,
+            "dest_country": None, "dest_lat": None, "dest_lon": None,
+        }
+        self.re._store_route(self.conn, "PART123", full)
+        partial = dict(full, dest_icao=None)
+        self.re._store_route(self.conn, "PART123", partial)
+        row = self.conn.execute(
+            "SELECT origin_icao, dest_icao FROM callsign_routes WHERE callsign='PART123'"
+        ).fetchone()
+        assert row["origin_icao"] == "EPWA"
+        assert row["dest_icao"] == "EGLL"  # preserved
+
+    def test_store_partial_origin_none_preserves_cached_origin(self):
+        full = {
+            "origin_icao": "EPWA", "origin_iata": None, "origin_name": None,
+            "origin_country": None, "origin_lat": None, "origin_lon": None,
+            "dest_icao": "EGLL", "dest_iata": None, "dest_name": None,
+            "dest_country": None, "dest_lat": None, "dest_lon": None,
+        }
+        self.re._store_route(self.conn, "PART456", full)
+        partial = dict(full, origin_icao=None)
+        self.re._store_route(self.conn, "PART456", partial)
+        row = self.conn.execute(
+            "SELECT origin_icao, dest_icao FROM callsign_routes WHERE callsign='PART456'"
+        ).fetchone()
+        assert row["origin_icao"] == "EPWA"  # preserved
+        assert row["dest_icao"] == "EGLL"
+
+    def test_store_none_clears_negative_cache_with_null_null(self):
+        # The `route is None` negative-cache branch is unchanged: a confirmed
+        # 404 still writes NULL,NULL,fetched_at. Asserted separately because
+        # the upsert change could accidentally inherit the cached partial
+        # path.
+        self.re._store_route(self.conn, "NEG123", None)
+        row = self.conn.execute(
+            "SELECT origin_icao, dest_icao FROM callsign_routes WHERE callsign='NEG123'"
+        ).fetchone()
+        assert row is not None
+        assert row["origin_icao"] is None
+        assert row["dest_icao"] is None
+
 
 # ---------------------------------------------------------------------------
 # _apply_to_flights
@@ -261,6 +308,51 @@ class TestApplyToFlights:
             "SELECT origin_icao, dest_icao FROM flights WHERE callsign='OVER123'"
         ).fetchone()
         assert row["origin_icao"] == "EPWA"
+        assert row["dest_icao"] == "EGLL"
+
+    def test_apply_partial_dest_none_preserves_existing_dest(self):
+        # Audit 2026-05-25: _parse_response accepts origin-only payloads as
+        # valid routes (test_origin_only_still_parsed). Before the COALESCE
+        # fix this would clobber a previously-resolved dest with NULL.
+        fid = insert_flight(self.conn, callsign="PART123")
+        self.conn.execute(
+            "UPDATE flights SET origin_icao = 'EPWA', dest_icao = 'EGLL' WHERE id = ?",
+            (fid,),
+        )
+        self.conn.commit()
+        route = {
+            "origin_icao": "EPWA", "dest_icao": None,
+            "origin_iata": None, "origin_name": None, "origin_country": None,
+            "origin_lat": None, "origin_lon": None,
+            "dest_iata": None, "dest_name": None, "dest_country": None,
+            "dest_lat": None, "dest_lon": None,
+        }
+        self.re._apply_to_flights(self.conn, "PART123", route)
+        row = self.conn.execute(
+            "SELECT origin_icao, dest_icao FROM flights WHERE callsign='PART123'"
+        ).fetchone()
+        assert row["origin_icao"] == "EPWA"
+        assert row["dest_icao"] == "EGLL"  # preserved, not NULL'd
+
+    def test_apply_partial_origin_none_preserves_existing_origin(self):
+        fid = insert_flight(self.conn, callsign="PART456")
+        self.conn.execute(
+            "UPDATE flights SET origin_icao = 'EPWA', dest_icao = 'EGLL' WHERE id = ?",
+            (fid,),
+        )
+        self.conn.commit()
+        route = {
+            "origin_icao": None, "dest_icao": "EGLL",
+            "origin_iata": None, "origin_name": None, "origin_country": None,
+            "origin_lat": None, "origin_lon": None,
+            "dest_iata": None, "dest_name": None, "dest_country": None,
+            "dest_lat": None, "dest_lon": None,
+        }
+        self.re._apply_to_flights(self.conn, "PART456", route)
+        row = self.conn.execute(
+            "SELECT origin_icao, dest_icao FROM flights WHERE callsign='PART456'"
+        ).fetchone()
+        assert row["origin_icao"] == "EPWA"  # preserved, not NULL'd
         assert row["dest_icao"] == "EGLL"
 
 
