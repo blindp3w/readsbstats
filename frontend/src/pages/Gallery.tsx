@@ -296,17 +296,17 @@ function TypePhotoStamp() {
   );
 }
 
-// M8.1: per-flag visual treatment for the featured no-photo placeholder.
+// M8.1: per-flag accent colour for the featured no-photo placeholder.
 // Reuses the token names from FlagBadge so the colour vocabulary stays
 // consistent across the app. Keyed on the return value of
 // `primaryFlagLabel` (military > interesting > anonymous precedence).
 // Key type is narrowed to the closed set so extending `primaryFlagLabel`
 // without updating this map is a TypeScript error, not a silent fall-through.
 type FlagPlaceholderKey = 'military' | 'interesting' | 'anonymous';
-const FLAG_PLACEHOLDER: Record<FlagPlaceholderKey, { tone: string; pillText: string }> = {
-  military: { tone: 'success', pillText: 'military' },
-  interesting: { tone: 'warn', pillText: 'interesting' },
-  anonymous: { tone: 'danger', pillText: 'non-ICAO hex' },
+const FLAG_PLACEHOLDER: Record<FlagPlaceholderKey, { tone: string }> = {
+  military: { tone: 'success' },
+  interesting: { tone: 'warn' },
+  anonymous: { tone: 'danger' },
 };
 
 function PhotoBox({ photo }: { photo: FlaggedAircraft }) {
@@ -318,6 +318,9 @@ function PhotoBox({ photo }: { photo: FlaggedAircraft }) {
     const flagLabel = primaryFlagLabel(photo.flags ?? 0);
     const feature = flagLabel ? FLAG_PLACEHOLDER[flagLabel] : undefined;
     if (feature) {
+      // Flag identity is already conveyed by the corner FlagBadge on the
+      // card, so the in-tile pill would be redundant. Hex + accent colour
+      // is enough signal here.
       return (
         <div
           className="relative flex aspect-[4/3] items-center justify-center bg-[var(--color-surface-2)]"
@@ -328,16 +331,6 @@ function PhotoBox({ photo }: { photo: FlaggedAircraft }) {
             style={{ color: `var(--color-${feature.tone})` }}
           >
             {photo.icao_hex}
-          </span>
-          <span
-            className="absolute bottom-2 left-1/2 -translate-x-1/2 rounded-full border px-2 py-0.5 text-[10px]"
-            style={{
-              color: `var(--color-${feature.tone})`,
-              borderColor: `color-mix(in srgb, var(--color-${feature.tone}) 40%, transparent)`,
-            }}
-            data-testid="gallery-placeholder-pill"
-          >
-            {feature.pillText}
           </span>
         </div>
       );

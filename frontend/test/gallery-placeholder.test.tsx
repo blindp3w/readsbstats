@@ -3,10 +3,10 @@
  * render in one of two variants:
  *
  *   - **Featured**: anonymous / military / interesting (flagged) hex
- *     gets a big mono hex in the flag's accent colour + a coloured
- *     pill labelled with the flag name (`non-ICAO hex`, `military`,
- *     `interesting`). Same precedence as `primaryFlagLabel`
- *     (military > interesting > anonymous).
+ *     gets a big mono hex in the flag's accent colour. Flag identity
+ *     is conveyed by the corner FlagBadge on the card, so the tile
+ *     itself carries no extra label. Precedence follows
+ *     `primaryFlagLabel` (military > interesting > anonymous).
  *   - **Quiet**: ordinary aircraft (no flags or unknown flags) render
  *     a dim mono hex centred, no "no photo" text.
  */
@@ -107,53 +107,82 @@ describe('Gallery placeholder (M8.1)', () => {
     expect(container.querySelector('[data-testid="gallery-placeholder-quiet"]')).toBeNull();
   });
 
-  it('anonymous flagged hex → featured placeholder with "non-ICAO hex" pill', async () => {
+  it('anonymous flagged hex → featured placeholder, hex in danger tone', async () => {
     setupFetchStub([aircraft({ icao_hex: 'bf000f', flags: 16 })]);
     const { container } = renderGallery();
     await waitForGrid(container);
-    const placeholder = container.querySelector('[data-testid="gallery-placeholder-featured"]');
+    const placeholder = container.querySelector(
+      '[data-testid="gallery-placeholder-featured"]',
+    );
     expect(placeholder).toBeTruthy();
-    const pill = container.querySelector('[data-testid="gallery-placeholder-pill"]');
-    expect(pill?.textContent?.toLowerCase()).toContain('non-icao hex');
+    const hex = placeholder?.querySelector('span');
+    expect(hex?.textContent).toContain('bf000f');
+    expect(hex?.getAttribute('style') ?? '').toContain('var(--color-danger)');
   });
 
-  it('military flagged hex → featured placeholder with "military" pill', async () => {
+  it('military flagged hex → featured placeholder, hex in success tone', async () => {
     setupFetchStub([aircraft({ icao_hex: 'ae0125', flags: 1 })]);
     const { container } = renderGallery();
     await waitForGrid(container);
-    const placeholder = container.querySelector('[data-testid="gallery-placeholder-featured"]');
+    const placeholder = container.querySelector(
+      '[data-testid="gallery-placeholder-featured"]',
+    );
     expect(placeholder).toBeTruthy();
-    const pill = container.querySelector('[data-testid="gallery-placeholder-pill"]');
-    expect(pill?.textContent?.toLowerCase()).toContain('military');
+    const hex = placeholder?.querySelector('span');
+    expect(hex?.textContent).toContain('ae0125');
+    expect(hex?.getAttribute('style') ?? '').toContain('var(--color-success)');
   });
 
-  it('interesting flagged hex → featured placeholder with "interesting" pill', async () => {
+  it('interesting flagged hex → featured placeholder, hex in warn tone', async () => {
     setupFetchStub([aircraft({ icao_hex: '4ca123', flags: 2 })]);
     const { container } = renderGallery();
     await waitForGrid(container);
-    const placeholder = container.querySelector('[data-testid="gallery-placeholder-featured"]');
+    const placeholder = container.querySelector(
+      '[data-testid="gallery-placeholder-featured"]',
+    );
     expect(placeholder).toBeTruthy();
-    const pill = container.querySelector('[data-testid="gallery-placeholder-pill"]');
-    expect(pill?.textContent?.toLowerCase()).toContain('interesting');
+    const hex = placeholder?.querySelector('span');
+    expect(hex?.textContent).toContain('4ca123');
+    expect(hex?.getAttribute('style') ?? '').toContain('var(--color-warn)');
   });
 
-  it('military + anonymous → military wins (precedence)', async () => {
+  it('military + anonymous → military wins (success tone, not danger)', async () => {
     setupFetchStub([aircraft({ icao_hex: 'ae0001', flags: 17 })]); // 1 | 16
     const { container } = renderGallery();
     await waitForGrid(container);
-    const pill = container.querySelector('[data-testid="gallery-placeholder-pill"]');
-    expect(pill?.textContent?.toLowerCase()).toContain('military');
-    expect(pill?.textContent?.toLowerCase()).not.toContain('non-icao');
+    const placeholder = container.querySelector(
+      '[data-testid="gallery-placeholder-featured"]',
+    );
+    const hex = placeholder?.querySelector('span');
+    const style = hex?.getAttribute('style') ?? '';
+    expect(style).toContain('var(--color-success)');
+    expect(style).not.toContain('var(--color-danger)');
   });
 
-  it('ordinary unflagged aircraft → quiet placeholder, no pill, no "no photo" text', async () => {
+  it('featured placeholder carries no in-tile pill or label text', async () => {
+    setupFetchStub([aircraft({ icao_hex: 'bf000f', flags: 16 })]);
+    const { container } = renderGallery();
+    await waitForGrid(container);
+    const placeholder = container.querySelector(
+      '[data-testid="gallery-placeholder-featured"]',
+    );
+    expect(placeholder).toBeTruthy();
+    // No leftover pill testid from the previous design.
+    expect(container.querySelector('[data-testid="gallery-placeholder-pill"]')).toBeNull();
+    // No literal flag-name labels rendered inside the tile.
+    const text = (placeholder?.textContent ?? '').toLowerCase();
+    expect(text).not.toContain('non-icao');
+    expect(text).not.toContain('military');
+    expect(text).not.toContain('interesting');
+  });
+
+  it('ordinary unflagged aircraft → quiet placeholder, no "no photo" text', async () => {
     setupFetchStub([aircraft({ icao_hex: '484ce1', flags: 0 })]);
     const { container } = renderGallery();
     await waitForGrid(container);
     const quiet = container.querySelector('[data-testid="gallery-placeholder-quiet"]');
     expect(quiet).toBeTruthy();
     expect(container.querySelector('[data-testid="gallery-placeholder-featured"]')).toBeNull();
-    expect(container.querySelector('[data-testid="gallery-placeholder-pill"]')).toBeNull();
     expect((quiet?.textContent ?? '').toLowerCase()).not.toContain('no photo');
     // The hex itself should be visible.
     expect(quiet?.textContent ?? '').toContain('484ce1');
