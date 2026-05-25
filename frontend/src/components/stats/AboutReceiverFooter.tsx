@@ -46,7 +46,7 @@ export function AboutReceiverFooter({
             About this receiver
           </summary>
           <div
-            className="mt-3 grid gap-x-6 gap-y-1 sm:grid-cols-2 lg:grid-cols-3"
+            className="mt-3 grid gap-x-6 gap-y-1 xs:grid-cols-2 lg:grid-cols-3"
             data-testid="stats-about-rows"
           >
             <Row label="Total flights" value={(totalFlights ?? 0).toLocaleString()} />
