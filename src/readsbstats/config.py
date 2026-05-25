@@ -69,6 +69,52 @@ def _bool(name: str, default: bool) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Settings metadata registry — drift defence for /api/settings
+# ---------------------------------------------------------------------------
+# `_register(payload_key, env_var, default, config_attr)` records the
+# env-var name and default at the same call site that reads the env var,
+# so the frontend can render the env-var name and a "(default)" indicator
+# without ever maintaining its own table that could drift. Returns
+# (env_var, default) as a tuple so it can be splatted into _int / _float /
+# _bool / os.getenv:
+#
+#   RECEIVER_LAT = _float(*_register("lat", "RSBS_LAT", "52.24199", "RECEIVER_LAT"))
+#
+# Removing the `_register(...)` removes the env-var name passed to the
+# parser, so the failure mode is "the line stops compiling" rather than
+# "the metadata silently drifts". Only settings shipped by /api/settings
+# need registration; purely internal tunables (DuckDB, MLAT outlier
+# filter, etc.) are left untouched.
+_META_REGISTRY: dict[str, dict] = {}
+
+
+def _register(payload_key: str, env_var: str, default, config_attr: str,
+              *, secret: bool = False):
+    """Record `payload_key → (env_var, default, config_attr, secret)` and
+    return (env_var, default) for splatting into the parser call.
+
+    `secret=True` marks keys whose default is a filesystem path or other
+    sensitive string. The metadata builder masks the default for these so
+    the path doesn't leak through /api/settings — matches the existing
+    masking applied to the payload value itself.
+
+    Raises if the same payload key is registered twice — a load-time check
+    that catches copy-paste mistakes immediately.
+    """
+    if payload_key in _META_REGISTRY:
+        raise RuntimeError(
+            f"settings registry collision: {payload_key!r} registered twice"
+        )
+    _META_REGISTRY[payload_key] = {
+        "env_var":     env_var,
+        "default":     default,
+        "config_attr": config_attr,
+        "secret":      secret,
+    }
+    return env_var, default
+
+
+# ---------------------------------------------------------------------------
 # Aircraft flag bitmask constants (shared across all modules)
 # ---------------------------------------------------------------------------
 FLAG_MILITARY    = 1
@@ -85,11 +131,11 @@ AIRCRAFT_JSON = os.getenv("RSBS_AIRCRAFT_JSON", "/run/readsb/aircraft.json")
 # ---------------------------------------------------------------------------
 # Collector behaviour
 # ---------------------------------------------------------------------------
-POLL_INTERVAL_SEC  = _int("RSBS_POLL_INTERVAL", "5")
-FLIGHT_GAP_SEC     = _int("RSBS_FLIGHT_GAP",    "1800")   # 30 min gap = new flight
-MIN_POSITIONS_KEEP = _int("RSBS_MIN_POSITIONS",  "2")      # discard ghost tracks
-MAX_SEEN_POS_SEC   = _int("RSBS_MAX_SEEN_POS",   "60")     # skip stale positions
-MAX_SPEED_KTS      = _int("RSBS_MAX_SPEED_KTS",  "2000")   # ghost-position filter
+POLL_INTERVAL_SEC  = _int(*_register("poll_interval", "RSBS_POLL_INTERVAL", "5",    "POLL_INTERVAL_SEC"))
+FLIGHT_GAP_SEC     = _int(*_register("flight_gap",    "RSBS_FLIGHT_GAP",    "1800", "FLIGHT_GAP_SEC"))   # 30 min gap = new flight
+MIN_POSITIONS_KEEP = _int(*_register("min_positions", "RSBS_MIN_POSITIONS", "2",    "MIN_POSITIONS_KEEP"))  # discard ghost tracks
+MAX_SEEN_POS_SEC   = _int(*_register("max_seen_pos",  "RSBS_MAX_SEEN_POS",  "60",   "MAX_SEEN_POS_SEC"))    # skip stale positions
+MAX_SPEED_KTS      = _int(*_register("max_speed_kts", "RSBS_MAX_SPEED_KTS", "2000", "MAX_SPEED_KTS"))   # ghost-position filter
 MAX_GS_CIVIL_KTS    = _int("RSBS_MAX_GS_CIVIL",      "750")  # null gs above this for civil aircraft
 MAX_GS_MILITARY_KTS = _int("RSBS_MAX_GS_MILITARY",  "1800") # null gs above this for military/unknown
 MAX_GS_DEVIATION_KTS = _int("RSBS_MAX_GS_DEVIATION", "100")  # null gs when it disagrees with position-derived speed by more than this
@@ -100,43 +146,43 @@ MLAT_OUTLIER_MIN_READINGS = _int("RSBS_MLAT_OUTLIER_MIN",       "10")    # minim
 # ---------------------------------------------------------------------------
 # Database
 # ---------------------------------------------------------------------------
-DB_PATH            = os.getenv("RSBS_DB_PATH",         "/mnt/ext/readsbstats/history.db")
-RETENTION_DAYS     = _int("RSBS_RETENTION_DAYS", "0")      # 0 = keep forever
-PURGE_INTERVAL_SEC = _int("RSBS_PURGE_INTERVAL", "3600")
+DB_PATH            = os.getenv(*_register("db_path",        "RSBS_DB_PATH",         "/mnt/ext/readsbstats/history.db", "DB_PATH", secret=True))
+RETENTION_DAYS     = _int(*_register("retention_days", "RSBS_RETENTION_DAYS",  "0",    "RETENTION_DAYS"))      # 0 = keep forever
+PURGE_INTERVAL_SEC = _int(*_register("purge_interval", "RSBS_PURGE_INTERVAL",  "3600", "PURGE_INTERVAL_SEC"))
 
 # ---------------------------------------------------------------------------
 # Receiver location
 # ---------------------------------------------------------------------------
-RECEIVER_LAT       = _float("RSBS_LAT",       "52.24199")
-RECEIVER_LON       = _float("RSBS_LON",       "21.02872")
-RECEIVER_MAX_RANGE = _int("RSBS_MAX_RANGE",    "450")      # nmi
+RECEIVER_LAT       = _float(*_register("lat",       "RSBS_LAT",       "52.24199", "RECEIVER_LAT"))
+RECEIVER_LON       = _float(*_register("lon",       "RSBS_LON",       "21.02872", "RECEIVER_LON"))
+RECEIVER_MAX_RANGE = _int(*_register("max_range",   "RSBS_MAX_RANGE", "450",      "RECEIVER_MAX_RANGE"))      # nmi
 
 # ---------------------------------------------------------------------------
 # Enrichment / photo cache
 # ---------------------------------------------------------------------------
-PHOTO_CACHE_DAYS      = _int("RSBS_PHOTO_CACHE_DAYS",    "30")
+PHOTO_CACHE_DAYS      = _int(*_register("photo_cache_days", "RSBS_PHOTO_CACHE_DAYS",    "30",  "PHOTO_CACHE_DAYS"))
 WIKIPEDIA_PHOTO       = _bool("RSBS_WIKIPEDIA_PHOTO", default=True)   # type-photo fallback via Wikipedia REST API
-AIRSPACE_GEOJSON      = os.getenv("RSBS_AIRSPACE_GEOJSON",        "")      # empty = use bundled poland.geojson
-ROUTE_CACHE_DAYS      = _int("RSBS_ROUTE_CACHE_DAYS",    "30")
-ROUTE_ENRICH_INTERVAL = _int("RSBS_ROUTE_INTERVAL",      "60")    # seconds between batch runs
-ROUTE_BATCH_SIZE      = _int("RSBS_ROUTE_BATCH",         "20")    # callsigns per batch
-ROUTE_RATE_LIMIT_SEC  = _float("RSBS_ROUTE_RATE_LIMIT",  "1.0")  # seconds between API calls
+AIRSPACE_GEOJSON      = os.getenv(*_register("airspace_geojson", "RSBS_AIRSPACE_GEOJSON", "", "AIRSPACE_GEOJSON"))      # empty = use bundled poland.geojson
+ROUTE_CACHE_DAYS      = _int(*_register("route_cache_days", "RSBS_ROUTE_CACHE_DAYS",    "30",  "ROUTE_CACHE_DAYS"))
+ROUTE_ENRICH_INTERVAL = _int(*_register("route_interval",   "RSBS_ROUTE_INTERVAL",      "60",  "ROUTE_ENRICH_INTERVAL"))    # seconds between batch runs
+ROUTE_BATCH_SIZE      = _int(*_register("route_batch",      "RSBS_ROUTE_BATCH",         "20",  "ROUTE_BATCH_SIZE"))    # callsigns per batch
+ROUTE_RATE_LIMIT_SEC  = _float(*_register("route_rate_limit", "RSBS_ROUTE_RATE_LIMIT",  "1.0", "ROUTE_RATE_LIMIT_SEC"))  # seconds between API calls
 
 # ---------------------------------------------------------------------------
 # External ADS-B enrichment (airplanes.live — free, no auth)
 # ---------------------------------------------------------------------------
-ADSBX_ENABLED       = _bool("RSBS_ADSBX_ENABLED", default=True)
-ADSBX_POLL_INTERVAL = _int("RSBS_ADSBX_INTERVAL", "60")       # seconds between area polls
-ADSBX_RANGE_NM      = _int("RSBS_ADSBX_RANGE",    "250")      # radius in nautical miles
-ADSBX_API_URL       = os.getenv("RSBS_ADSBX_URL",
-                                "https://api.airplanes.live/v2")
+ADSBX_ENABLED       = _bool(*_register("adsbx_enabled",  "RSBS_ADSBX_ENABLED", True, "ADSBX_ENABLED"))
+ADSBX_POLL_INTERVAL = _int(*_register("adsbx_interval",  "RSBS_ADSBX_INTERVAL", "60",  "ADSBX_POLL_INTERVAL"))       # seconds between area polls
+ADSBX_RANGE_NM      = _int(*_register("adsbx_range",     "RSBS_ADSBX_RANGE",    "250", "ADSBX_RANGE_NM"))      # radius in nautical miles
+ADSBX_API_URL       = os.getenv(*_register("adsbx_url",  "RSBS_ADSBX_URL",
+                                "https://api.airplanes.live/v2", "ADSBX_API_URL"))
 
 # ---------------------------------------------------------------------------
 # Receiver metrics (metrics_collector) — disabled by default
 # ---------------------------------------------------------------------------
-METRICS_ENABLED  = _bool("RSBS_METRICS_ENABLED", default=False)
-METRICS_INTERVAL = _int("RSBS_METRICS_INTERVAL", "60")
-STATS_JSON       = os.getenv("RSBS_STATS_JSON", "/run/readsb/stats.json")
+METRICS_ENABLED  = _bool(*_register("metrics_enabled",  "RSBS_METRICS_ENABLED", False, "METRICS_ENABLED"))
+METRICS_INTERVAL = _int(*_register("metrics_interval",  "RSBS_METRICS_INTERVAL", "60", "METRICS_INTERVAL"))
+STATS_JSON       = os.getenv(*_register("stats_json",   "RSBS_STATS_JSON", "/run/readsb/stats.json", "STATS_JSON", secret=True))
 
 # ---------------------------------------------------------------------------
 # DuckDB analytical accelerator (web process only) — disabled by default
@@ -162,56 +208,56 @@ PREWARM_MAP_CACHE = _bool("RSBS_PREWARM_MAP_CACHE", default=True)
 # ---------------------------------------------------------------------------
 # Receiver health dashboard (rule-based checks over receiver_stats)
 # ---------------------------------------------------------------------------
-HEALTH_HEARTBEAT_CRIT_S = _int("RSBS_HEALTH_HEARTBEAT_CRIT_S", "300")  # no metrics row in 5 min
-HEALTH_HEARTBEAT_WARN_S = _int("RSBS_HEALTH_HEARTBEAT_WARN_S", "120")  # last row 2+ min old
-HEALTH_AIRCRAFT_GAP_S   = _int("RSBS_HEALTH_AIRCRAFT_GAP_S",   "600")  # 0 aircraft for 10 min => critical
-HEALTH_NOISE_CRIT_DB    = _float("RSBS_HEALTH_NOISE_CRIT_DB",  "-25")  # dBFS, higher is worse
-HEALTH_NOISE_WARN_DB    = _float("RSBS_HEALTH_NOISE_WARN_DB",  "-28")
-HEALTH_CPU_CRIT_PCT     = _float("RSBS_HEALTH_CPU_CRIT_PCT",   "90")   # demod % of one core
-HEALTH_CPU_WARN_PCT     = _float("RSBS_HEALTH_CPU_WARN_PCT",   "80")
+HEALTH_HEARTBEAT_CRIT_S = _int(*_register("health_heartbeat_crit_s",   "RSBS_HEALTH_HEARTBEAT_CRIT_S", "300", "HEALTH_HEARTBEAT_CRIT_S"))  # no metrics row in 5 min
+HEALTH_HEARTBEAT_WARN_S = _int(*_register("health_heartbeat_warn_s",   "RSBS_HEALTH_HEARTBEAT_WARN_S", "120", "HEALTH_HEARTBEAT_WARN_S"))  # last row 2+ min old
+HEALTH_AIRCRAFT_GAP_S   = _int(*_register("health_aircraft_gap_s",     "RSBS_HEALTH_AIRCRAFT_GAP_S",   "600", "HEALTH_AIRCRAFT_GAP_S"))  # 0 aircraft for 10 min => critical
+HEALTH_NOISE_CRIT_DB    = _float(*_register("health_noise_crit_db",    "RSBS_HEALTH_NOISE_CRIT_DB",    "-25", "HEALTH_NOISE_CRIT_DB"))  # dBFS, higher is worse
+HEALTH_NOISE_WARN_DB    = _float(*_register("health_noise_warn_db",    "RSBS_HEALTH_NOISE_WARN_DB",    "-28", "HEALTH_NOISE_WARN_DB"))
+HEALTH_CPU_CRIT_PCT     = _float(*_register("health_cpu_crit_pct",     "RSBS_HEALTH_CPU_CRIT_PCT",     "90",  "HEALTH_CPU_CRIT_PCT"))   # demod % of one core
+HEALTH_CPU_WARN_PCT     = _float(*_register("health_cpu_warn_pct",     "RSBS_HEALTH_CPU_WARN_PCT",     "80",  "HEALTH_CPU_WARN_PCT"))
 # Phase 2 — baseline-aware checks (same hour-of-week, prior weeks)
-HEALTH_BASELINE_WEEKS       = _int("RSBS_HEALTH_BASELINE_WEEKS",       "4")
-HEALTH_BASELINE_MIN_SAMPLES = _int("RSBS_HEALTH_BASELINE_MIN_SAMPLES", "3")
-HEALTH_MSG_DROP_PCT         = _float("RSBS_HEALTH_MSG_DROP_PCT",      "50")  # warn below this % of baseline
-HEALTH_AIRCRAFT_DROP_PCT    = _float("RSBS_HEALTH_AIRCRAFT_DROP_PCT", "25")
-HEALTH_SIGNAL_DROP_DB       = _float("RSBS_HEALTH_SIGNAL_DROP_DB",    "3")   # warn if signal drops this many dB below baseline
+HEALTH_BASELINE_WEEKS       = _int(*_register("health_baseline_weeks",        "RSBS_HEALTH_BASELINE_WEEKS",       "4",  "HEALTH_BASELINE_WEEKS"))
+HEALTH_BASELINE_MIN_SAMPLES = _int(*_register("health_baseline_min_samples",  "RSBS_HEALTH_BASELINE_MIN_SAMPLES", "3",  "HEALTH_BASELINE_MIN_SAMPLES"))
+HEALTH_MSG_DROP_PCT         = _float(*_register("health_msg_drop_pct",        "RSBS_HEALTH_MSG_DROP_PCT",         "50", "HEALTH_MSG_DROP_PCT"))  # warn below this % of baseline
+HEALTH_AIRCRAFT_DROP_PCT    = _float(*_register("health_aircraft_drop_pct",   "RSBS_HEALTH_AIRCRAFT_DROP_PCT",    "25", "HEALTH_AIRCRAFT_DROP_PCT"))
+HEALTH_SIGNAL_DROP_DB       = _float(*_register("health_signal_drop_db",      "RSBS_HEALTH_SIGNAL_DROP_DB",       "3",  "HEALTH_SIGNAL_DROP_DB"))   # warn if signal drops this many dB below baseline
 # Phase 3 — gain hints
-HEALTH_GAIN_STRONG_PCT  = _float("RSBS_HEALTH_GAIN_STRONG_PCT",  "5")   # warn above this % strong-signals/messages
-HEALTH_RANGE_SHORT_DAYS = _int("RSBS_HEALTH_RANGE_SHORT_DAYS",   "7")
-HEALTH_RANGE_LONG_DAYS  = _int("RSBS_HEALTH_RANGE_LONG_DAYS",   "30")
-HEALTH_RANGE_RATIO      = _float("RSBS_HEALTH_RANGE_RATIO",     "0.85") # info if 7d max < 30d max × this
+HEALTH_GAIN_STRONG_PCT  = _float(*_register("health_gain_strong_pct",   "RSBS_HEALTH_GAIN_STRONG_PCT",  "5",    "HEALTH_GAIN_STRONG_PCT"))   # warn above this % strong-signals/messages
+HEALTH_RANGE_SHORT_DAYS = _int(*_register("health_range_short_days",    "RSBS_HEALTH_RANGE_SHORT_DAYS", "7",    "HEALTH_RANGE_SHORT_DAYS"))
+HEALTH_RANGE_LONG_DAYS  = _int(*_register("health_range_long_days",     "RSBS_HEALTH_RANGE_LONG_DAYS",  "30",   "HEALTH_RANGE_LONG_DAYS"))
+HEALTH_RANGE_RATIO      = _float(*_register("health_range_ratio",       "RSBS_HEALTH_RANGE_RATIO",      "0.85", "HEALTH_RANGE_RATIO")) # info if 7d max < 30d max × this
 
 # ---------------------------------------------------------------------------
 # Map / historical replay
 # ---------------------------------------------------------------------------
-MAP_HISTORY_HOURS  = _int("RSBS_MAP_HISTORY_HOURS", "24")    # slider reach (hours)
+MAP_HISTORY_HOURS  = _int(*_register("map_history_hours", "RSBS_MAP_HISTORY_HOURS", "24", "MAP_HISTORY_HOURS"))    # slider reach (hours)
 
 # ---------------------------------------------------------------------------
 # Web server
 # ---------------------------------------------------------------------------
 WEB_HOST           = os.getenv("RSBS_WEB_HOST",  "0.0.0.0")
 WEB_PORT           = _int("RSBS_WEB_PORT", "8080")
-ROOT_PATH          = os.getenv("RSBS_ROOT_PATH", "/stats")          # reverse-proxy subpath
+ROOT_PATH          = os.getenv(*_register("root_path", "RSBS_ROOT_PATH", "/stats", "ROOT_PATH"))          # reverse-proxy subpath
 
 # ---------------------------------------------------------------------------
 # UI
 # ---------------------------------------------------------------------------
-DEFAULT_PAGE_SIZE  = _int("RSBS_PAGE_SIZE",     "100")
-MAX_PAGE_SIZE      = _int("RSBS_MAX_PAGE_SIZE", "500")
+DEFAULT_PAGE_SIZE  = _int(*_register("page_size",     "RSBS_PAGE_SIZE",     "100", "DEFAULT_PAGE_SIZE"))
+MAX_PAGE_SIZE      = _int(*_register("max_page_size", "RSBS_MAX_PAGE_SIZE", "500", "MAX_PAGE_SIZE"))
 MAX_EXPORT_ROWS    = _int("RSBS_MAX_EXPORT",    "50000")
-_TIME_FORMAT_RAW   = os.getenv("RSBS_TIME_FORMAT", "24h").strip().lower()
+_TIME_FORMAT_RAW   = os.getenv(*_register("time_format", "RSBS_TIME_FORMAT", "24h", "TIME_FORMAT")).strip().lower()
 TIME_FORMAT        = _TIME_FORMAT_RAW if _TIME_FORMAT_RAW in ("24h", "12h") else "24h"
 
 # ---------------------------------------------------------------------------
 # Telegram notifications
 # ---------------------------------------------------------------------------
-TELEGRAM_TOKEN        = os.getenv("RSBS_TELEGRAM_TOKEN",    "")
-TELEGRAM_CHAT_ID      = os.getenv("RSBS_TELEGRAM_CHAT_ID",  "")
-TELEGRAM_SUMMARY_TIME = os.getenv("RSBS_SUMMARY_TIME",      "21:00")  # local HH:MM; "" or "off" to disable
-TELEGRAM_UNITS        = os.getenv("RSBS_TELEGRAM_UNITS",    "metric") # metric|imperial|aeronautical
+TELEGRAM_TOKEN        = os.getenv(*_register("telegram_token",        "RSBS_TELEGRAM_TOKEN",    "",        "TELEGRAM_TOKEN"))
+TELEGRAM_CHAT_ID      = os.getenv(*_register("telegram_chat_id",      "RSBS_TELEGRAM_CHAT_ID",  "",        "TELEGRAM_CHAT_ID"))
+TELEGRAM_SUMMARY_TIME = os.getenv(*_register("telegram_summary_time", "RSBS_SUMMARY_TIME",      "21:00",   "TELEGRAM_SUMMARY_TIME"))  # local HH:MM; "" or "off" to disable
+TELEGRAM_UNITS        = os.getenv(*_register("telegram_units",        "RSBS_TELEGRAM_UNITS",    "metric",  "TELEGRAM_UNITS")) # metric|imperial|aeronautical
 TELEGRAM_PHOTOS       = _int("RSBS_TELEGRAM_PHOTOS",         "1")     # 0 to disable photo enrichment
 TELEGRAM_ANONYMOUS_ALERT = _int("RSBS_TELEGRAM_ANONYMOUS_ALERT", "1")  # 0 to mute first-sighting alerts for non-ICAO hex addresses
-TELEGRAM_BASE_URL     = os.getenv("RSBS_TELEGRAM_BASE_URL", "http://homepi.local/stats")
+TELEGRAM_BASE_URL     = os.getenv(*_register("base_url",              "RSBS_TELEGRAM_BASE_URL", "http://homepi.local/stats", "TELEGRAM_BASE_URL"))
 
 # ---------------------------------------------------------------------------
 # Feeders health monitoring

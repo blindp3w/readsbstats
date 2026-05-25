@@ -864,6 +864,140 @@ class TestApiSettings:
         payload = r.json()
         assert payload["airspace_geojson"] == "(bundled poland.geojson)"
 
+    def test_metadata_block_present_for_every_payload_key(self, client, clear_web_cache):
+        """Audit Settings 2026-05-25: backend ships a sibling `_metadata`
+        block with one entry per displayed setting, so frontend env-var
+        names can never drift from config.py. The set of metadata keys
+        must equal the set of displayed keys exactly."""
+        r = client.get("/api/settings")
+        data = r.json()
+        meta = data.get("_metadata")
+        assert isinstance(meta, dict), "/api/settings must include a _metadata dict"
+        payload_keys = {k for k in data if k != "_metadata"}
+        meta_keys = set(meta.keys())
+        missing = payload_keys - meta_keys
+        orphan = meta_keys - payload_keys
+        assert not missing, f"payload keys without metadata: {missing}"
+        assert not orphan, f"metadata keys without payload: {orphan}"
+        # Each metadata entry has the required shape.
+        for key, entry in meta.items():
+            assert isinstance(entry, dict), f"metadata[{key!r}] must be a dict"
+            assert "env_var" in entry, f"metadata[{key!r}] missing env_var"
+            assert "default" in entry, f"metadata[{key!r}] missing default"
+            assert "customized" in entry, f"metadata[{key!r}] missing customized"
+            assert isinstance(entry["env_var"], str)
+            assert isinstance(entry["customized"], bool)
+
+    def test_metadata_env_vars_resolve_in_config_source(self, client, clear_web_cache):
+        """Drift defence: every env-var name shipped in _metadata must
+        appear in config.py source. Closes the gap where a new payload
+        key could be registered against a misspelled or removed env var."""
+        import re
+        from pathlib import Path
+        config_src = Path("src/readsbstats/config.py").read_text()
+        env_vars_in_source = set(re.findall(r'"(RSBS_[A-Z0-9_]+)"', config_src))
+        r = client.get("/api/settings")
+        meta = r.json()["_metadata"]
+        for key, entry in meta.items():
+            assert entry["env_var"] in env_vars_in_source, (
+                f"_metadata[{key!r}].env_var={entry['env_var']!r} is not "
+                f"read anywhere in config.py — drift bug"
+            )
+
+    def test_register_present_for_every_payload_key(self, client, clear_web_cache):
+        """Drift defence: for every payload key shipped from /api/settings,
+        config.py source must contain a `_register("<that_key>", ...)`
+        call. Forces developers to register new settings instead of
+        silently shipping them without metadata."""
+        from pathlib import Path
+        config_src = Path("src/readsbstats/config.py").read_text()
+        r = client.get("/api/settings")
+        payload_keys = {k for k in r.json() if k != "_metadata"}
+        for key in payload_keys:
+            needle = f'_register("{key}",'
+            assert needle in config_src, (
+                f'payload key {key!r} has no `{needle}` in config.py — '
+                f"new settings must be registered for _metadata to ship"
+            )
+
+    def test_metadata_customized_false_when_namespace_matches_defaults(self):
+        """`_settings_metadata` is a pure function over (namespace, keys).
+        When the namespace's attributes equal the registered defaults
+        (parsed to the right type), every customized flag is False."""
+        from types import SimpleNamespace
+        from readsbstats import config, web as web_mod
+        # Build a stub namespace where every registered config_attr is set
+        # to a value matching the registered default (after parsing).
+        stub = SimpleNamespace()
+        for payload_key, reg in config._META_REGISTRY.items():
+            default = reg["default"]
+            attr = reg["config_attr"]
+            # Mirror what the parsers do at startup.
+            if isinstance(default, bool):
+                setattr(stub, attr, default)
+            elif isinstance(default, str):
+                try:
+                    # int-typed defaults shipped as strings
+                    setattr(stub, attr, int(default))
+                except ValueError:
+                    try:
+                        setattr(stub, attr, float(default))
+                    except ValueError:
+                        # Genuinely a string default (paths, urls, etc.)
+                        setattr(stub, attr, default)
+            else:
+                setattr(stub, attr, default)
+        meta = web_mod._settings_metadata(stub, list(config._META_REGISTRY.keys()))
+        not_default = [k for k, v in meta.items() if v["customized"]]
+        assert not_default == [], (
+            f"customized=True when value equals default for: {not_default}"
+        )
+
+    def test_metadata_customized_true_when_one_value_differs(self):
+        from types import SimpleNamespace
+        from readsbstats import config, web as web_mod
+        # Same defaulted stub as above, but flip one int value.
+        stub = SimpleNamespace()
+        for payload_key, reg in config._META_REGISTRY.items():
+            default = reg["default"]
+            attr = reg["config_attr"]
+            if isinstance(default, bool):
+                setattr(stub, attr, default)
+            elif isinstance(default, str):
+                try:
+                    setattr(stub, attr, int(default))
+                except ValueError:
+                    try:
+                        setattr(stub, attr, float(default))
+                    except ValueError:
+                        setattr(stub, attr, default)
+            else:
+                setattr(stub, attr, default)
+        # Override one well-known integer setting.
+        stub.POLL_INTERVAL_SEC = 999
+        meta = web_mod._settings_metadata(stub, list(config._META_REGISTRY.keys()))
+        assert meta["poll_interval"]["customized"] is True
+        # No others should flip.
+        others_customized = [k for k, v in meta.items()
+                              if k != "poll_interval" and v["customized"]]
+        assert others_customized == []
+
+    def test_metadata_telegram_token_customized_from_raw_value(self, client, monkeypatch):
+        """The display value for telegram_token is masked ("configured" or
+        "not set"). The customized flag must be computed from the raw
+        config attribute, not the masked display string — otherwise
+        every "not set" row would falsely report customized."""
+        from readsbstats import config
+        monkeypatch.setattr(config, "TELEGRAM_TOKEN", "")
+        r = client.get("/api/settings")
+        assert r.json()["_metadata"]["telegram_token"]["customized"] is False
+        # Repeat with a real-looking value.
+        monkeypatch.setattr(config, "TELEGRAM_TOKEN", "1234:secret")
+        from readsbstats import web as web_mod
+        web_mod._cache.clear()
+        r2 = client.get("/api/settings")
+        assert r2.json()["_metadata"]["telegram_token"]["customized"] is True
+
 
 class TestApiFeeders:
     def test_api_feeders_returns_json(self, client, monkeypatch):

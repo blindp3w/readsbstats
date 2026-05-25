@@ -558,9 +558,74 @@ def _settings_payload() -> dict:
     }
 
 
+# Falsy bool strings — kept in sync with `config._BOOL_FALSY`. Duplicated
+# rather than imported to avoid widening config.py's public API surface.
+_SETTINGS_BOOL_FALSY = frozenset({"", "0", "false", "no", "off"})
+
+
+def _settings_default_as_parsed(default, current):
+    """Cast `default` (as recorded in `_META_REGISTRY`) to the type of
+    `current` (the parsed config attribute). Mirrors what the
+    `_int/_float/_bool/os.getenv` parsers do at module load."""
+    if isinstance(current, bool):
+        if isinstance(default, bool):
+            return default
+        return str(default).strip().lower() not in _SETTINGS_BOOL_FALSY
+    if isinstance(current, int):
+        return int(default)
+    if isinstance(current, float):
+        return float(default)
+    return str(default) if default is not None else ""
+
+
+def _settings_metadata(config_namespace, payload_keys) -> dict:
+    """Build the `_metadata` block keyed by payload_key. Pure function so
+    tests can pass a `SimpleNamespace` stub.
+
+    For each payload key it emits ``{env_var, default, customized}``.
+    `customized` compares the **raw** config attribute against the
+    registered default, not the masked display value — otherwise
+    `telegram_token` would always read as customized regardless of
+    whether the operator actually set it.
+    """
+    registry = getattr(config, "_META_REGISTRY", {})
+    out: dict[str, dict] = {}
+    for key in payload_keys:
+        reg = registry.get(key)
+        if reg is None:
+            continue
+        attr = reg["config_attr"]
+        raw_value = getattr(config_namespace, attr, None)
+        parsed_default = _settings_default_as_parsed(reg["default"], raw_value)
+        customized = raw_value != parsed_default
+        # Float tolerance: parsed defaults can re-roundtrip to a slightly
+        # different float (e.g. "-25" → -25.0). Treat exact-equal-after-
+        # round as not-customized.
+        if isinstance(raw_value, float) and isinstance(parsed_default, float):
+            customized = abs(raw_value - parsed_default) > 1e-9
+        # Filesystem-path / secret defaults are masked: shipping the raw
+        # default would leak install paths through /api/settings. The
+        # `customized` flag is still meaningful, and the displayed payload
+        # value is already masked by the corresponding `_settings_*` helper.
+        if reg.get("secret"):
+            out_default = None
+        else:
+            out_default = parsed_default
+        out[key] = {
+            "env_var":    reg["env_var"],
+            "default":    out_default,
+            "customized": bool(customized),
+        }
+    return out
+
+
 @app.get("/api/settings")
 def api_settings() -> dict:
-    return _settings_payload()
+    payload = _settings_payload()
+    payload["_metadata"] = _settings_metadata(
+        config, [k for k in payload if k != "_metadata"]
+    )
+    return payload
 
 
 # ---------------------------------------------------------------------------
