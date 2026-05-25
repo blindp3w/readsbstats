@@ -1671,6 +1671,39 @@ class TestApiStats:
         r2 = client.get("/api/stats?from=500000&to=1500000")
         assert r2.json()["total_flights"] == 1
 
+    def test_previous_window_returns_prev_period_totals_when_filtered(
+        self, client, db_conn, clear_web_cache,
+    ):
+        """For a filtered range [from, to] (length D), previous_window should
+        contain totals for [from - D, from] so the frontend can render delta
+        chips on every KPI card, not just the legacy 24h/7d ones."""
+        # Window: 2_000_000..3_000_000 (length 1_000_000). Prev: 1_000_000..2_000_000.
+        # Seed 3 flights in current, 5 in prev, 1 outside both.
+        for i, ts in enumerate([2_100_000, 2_500_000, 2_900_000]):
+            insert_flight(db_conn, icao=f"cc{i:04d}", first_seen=ts,
+                          total_positions=10)
+        for i, ts in enumerate([1_100_000, 1_300_000, 1_500_000, 1_700_000, 1_900_000]):
+            insert_flight(db_conn, icao=f"pp{i:04d}", first_seen=ts,
+                          total_positions=20)
+        insert_flight(db_conn, icao="oo0001", first_seen=500_000,
+                      total_positions=1)  # outside both windows
+
+        r = client.get("/api/stats?from=2000000&to=3000000")
+        data = r.json()
+        pw = data.get("previous_window")
+        assert pw is not None, "filtered stats must include previous_window"
+        assert pw["from_ts"] == 1_000_000
+        assert pw["to_ts"] == 2_000_000
+        assert pw["total_flights"] == 5
+        assert pw["unique_aircraft"] == 5
+        assert pw["total_positions"] == 100  # 5 × 20
+
+    def test_previous_window_null_when_unfiltered(self, client, db_conn, clear_web_cache):
+        """Unfiltered (all-time) has no meaningful previous window."""
+        insert_flight(db_conn, first_seen=int(time.time()) - 3600)
+        r = client.get("/api/stats")
+        assert r.json().get("previous_window") is None
+
     def test_filtered_cache_distinguishes_ranges(self, client, db_conn, clear_web_cache):
         """Different date ranges must not collide in the cache."""
         insert_flight(db_conn, icao="aa0001", first_seen=1_000_000)

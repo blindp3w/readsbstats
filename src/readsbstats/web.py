@@ -1394,6 +1394,37 @@ def api_stats(
     mlat_pct  = agg["mlat_pct"]  or 0
     other_pct = round(100.0 - adsb_pct - mlat_pct, 1)
 
+    # Previous-window deltas. Frontend KPI cards have a `prev` slot that
+    # was previously only fed by `trends.flights_*_prev` (24h/7d only),
+    # leaving every other range with empty em-dashes. Compute totals over
+    # `[ts_lo - D, ts_lo]` where D = current window length so Flights /
+    # Unique aircraft / Position fixes all show a real comparison. Skipped
+    # for unfiltered (all-time) since there's no equivalent prior window.
+    previous_window: dict | None = None
+    if filtered:
+        window_seconds = ts_hi - ts_lo
+        if window_seconds > 0:
+            prev_lo = ts_lo - window_seconds
+            prev_hi = ts_lo
+            prev_agg = conn.execute(
+                """
+                SELECT
+                    COUNT(*)                  AS total_flights,
+                    SUM(total_positions)      AS total_positions,
+                    COUNT(DISTINCT icao_hex)  AS unique_aircraft
+                FROM flights
+                WHERE first_seen >= ? AND first_seen <= ?
+                """,
+                (prev_lo, prev_hi),
+            ).fetchone()
+            previous_window = {
+                "from_ts":         prev_lo,
+                "to_ts":           prev_hi,
+                "total_flights":   prev_agg["total_flights"] or 0,
+                "total_positions": prev_agg["total_positions"] or 0,
+                "unique_aircraft": prev_agg["unique_aircraft"] or 0,
+            }
+
     try:
         db_size = os.path.getsize(config.DB_PATH)
     except OSError:
@@ -1724,6 +1755,7 @@ def api_stats(
             "flights_24h_prev": flights_prev_24h,
             "flights_7d_prev":  flights_prev_7d,
         },
+        "previous_window": previous_window,
         "lifetime": {
             "total_flights":    lifetime_total_flights,
             "total_positions":  lifetime_total_positions,

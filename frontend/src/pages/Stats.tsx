@@ -45,6 +45,17 @@ export interface StatsResponse {
   heatmap: { dow: number; hour: number; count: number }[];
   top_countries: { country: string; flights: number }[];
   trends?: { flights_24h_prev: number; flights_7d_prev: number };
+  // Totals for the period of equal length immediately preceding the
+  // requested window. Backend returns this only when `from`/`to` are
+  // supplied; unfiltered (all-time) requests get `null`. Drives the
+  // delta chip on every numeric KPI card.
+  previous_window?: {
+    from_ts: number;
+    to_ts: number;
+    total_flights: number;
+    total_positions: number;
+    unique_aircraft: number;
+  } | null;
   frequent_aircraft: {
     icao_hex: string;
     registration: string | null;
@@ -192,13 +203,14 @@ export default function StatsPage() {
             <KpiCard
               label="Flights"
               value={stats?.total_flights ?? 0}
-              prev={flightsDelta?.prev ?? null}
+              prev={stats?.previous_window?.total_flights ?? flightsDelta?.prev ?? null}
               series={flightsSeries}
               testid="kpi-flights"
             />
             <KpiCard
               label="Unique aircraft"
               value={stats?.unique_aircraft ?? 0}
+              prev={stats?.previous_window?.unique_aircraft ?? null}
               series={uniqueSeries}
               sublabel={`${(stats?.unique_airlines ?? 0).toLocaleString()} unique airlines`}
               testid="kpi-unique-aircraft"
@@ -206,6 +218,7 @@ export default function StatsPage() {
             <KpiCard
               label="Position fixes"
               value={stats?.total_positions ?? 0}
+              prev={stats?.previous_window?.total_positions ?? null}
               series={positionsSeries}
               sublabel={
                 stats
