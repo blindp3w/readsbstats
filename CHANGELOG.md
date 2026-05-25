@@ -1,5 +1,89 @@
 # Changelog
 
+## 2.9.5 — 2026-05-25
+
+### Sprint 1 — paper-cuts + nav overflow + iPad-portrait density
+
+Five-item polish release. The "Sprint 1" scope was identified in the
+post-v2.9.4 design review as Tier-1 quick wins: items in the 10–45 min
+range each that ship together to address a coherent set of paper-cuts
+surfaced during the recent mobile-density work. Plus one iPad-portrait
+follow-up that escaped the original sprint.
+
+User-visible changes:
+
+- **Top nav: `More ▾` overflow at iPad portrait and small laptop.**
+  M10.1 from `CLAUDE_DESIGN_BRIEF`. The 8-item desktop nav wrapped to
+  two rows at 834 px (iPad portrait) because the hamburger only kicks
+  in below md (720 px under the project's 15 px html font-size) and the
+  inline 8-item nav needed ~800–920 px against ~928 px of content
+  width. The last four items (Watchlist / Feeders / Metrics / Settings)
+  now collapse into a `More ▾` dropdown at md and lg (720–1199 px);
+  all eight render inline at xl (≥1200 px); mobile hamburger
+  unchanged at <md. The trigger inherits the inline-link styling and
+  gets the same active underline when the current route is in the
+  overflow set, so it reads as a peer of the inline links rather than
+  a generic button. **Deviates from the brief one breakpoint**: the
+  brief proposed full nav at lg+ but lg=960 px leaves only ~10 px
+  slack — zero headroom for a future 9th nav item.
+- **Statistics KPI grid goes 4-up at md.** Same "blank space on the
+  right" problem as the iPhone fix in v2.9.3, one tier up. iPad
+  portrait (1024 px) was still showing the 4 KPI cards in a 2-up grid
+  because the breakpoint set was `xs:grid-cols-2 xl:grid-cols-4` —
+  4-up only at xl (≥1200 px). New tier: `xs:grid-cols-2
+  md:grid-cols-4` so phones stay 2-up but iPad portrait + small
+  laptops get the proper 4-up density. KpiSkeletons updated to match.
+- **Range-context line drops seconds (and time for ≥1-day windows).**
+  The 30-day Stats view used to read `Showing last 30 days · 4/25/2026,
+  14:50:03 → 5/25/2026, 14:50:03`. Seconds are noise for 1 Hz ADS-B
+  polling; the time portion is meaningless for 7d / 30d / 90d / All /
+  sub-day Custom ranges. Now reads `Showing last 30 days · 4/25/2026 →
+  5/25/2026`. The 24h window keeps `HH:MM` precision (time matters
+  for "the last 24 hours") but loses the trailing `:SS`. Project-wide:
+  every `fmtTs` caller (FlightsTable rows, MapCommandBar snapshot,
+  AboutReceiverFooter oldest-flight, Gallery last-seen, Map rewind
+  label) lost its seconds in the same pass.
+- **FlagBadgeStrip hides zero-count squawk pills.** `Sq 7700 · 0`,
+  `Sq 7600 · 0`, `Sq 7500 · 0` used to render on every page load. Now
+  each emergency squawk pill renders only when its count is > 0 —
+  matches dashboard convention (Datadog / New Relic) that empty state
+  is silence, not a card. The three flag pills (Military / Interesting
+  / Anonymous) still render at 0 because they're "kinds of contacts"
+  rather than "emergency events"; 0 is informative there.
+- **MaxRangeCard sublabel shows the record date.** Previously the only
+  KPI card with a flat dim placeholder where the others have a
+  sparkline. Sublabel now reads `{callsign} · set {date}` so the card
+  visually balances with the other three. Backend `/api/stats`
+  `furthest_aircraft` block ships a new `record_set_at` field
+  (timestamp of when the record-holding flight started; aliased from
+  `flights.first_seen` of that row, the original `first_seen` key
+  removed to keep the response shape clean).
+
+Internal:
+
+- **New `fmtDate(epoch)` helper** in `lib/format.ts` (date-only via
+  `toLocaleDateString()`) — date sibling to `fmtTs`. Used by
+  RangeContextLine and MaxRangeCard. Watchlist's pre-existing local
+  `fmtDate` (which returns a full timestamp) renamed to `fmtEntryTs`
+  to avoid the shadow.
+- **Code-review fixes** landed in the same release:
+  - `MoreNavMenu` trigger sets `aria-haspopup="menu"` explicitly in
+    source rather than relying on Radix Slot prop-merge — refactor-safe.
+  - `furthest_aircraft.first_seen` removed from the response (was a
+    duplicate of `record_set_at`); no consumer was reading it.
+  - MaxRangeCard sublabel guard tightened to `record_set_at != null
+    && > 0` so the rendered output stays sane if the backend ever
+    ships epoch 0.
+- **Frontend audit finding #1 (ESLint broken) marked stale** in the
+  internal audit doc — `@eslint/js` v10.0.1 is present in
+  devDependencies; the original finding pre-dates a fix that landed
+  between the audit (2026-05-22) and v2.9.0. No code change.
+
+Test count: 1418 → 1419 backend (+1 furthest_aircraft.record_set_at);
+240 → 250 frontend (+4 range-context date-only behaviour, +3
+flag-strip zero-squawk filtering, +3 nav More-trigger / dropdown /
+active-state). Full suite green.
+
 ## 2.9.4 — 2026-05-25
 
 ### Settings page — env-var copy + default indicator + drift defence
