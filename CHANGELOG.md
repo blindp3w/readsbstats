@@ -1,5 +1,81 @@
 # Changelog
 
+## 2.9.4 — 2026-05-25
+
+### Settings page — env-var copy + default indicator + drift defence
+
+Settings was a read-only env-var dump that hardcoded env-var names in the
+frontend (frontend audit finding #5) and gave the operator no signal about
+which values were the shipped default vs. their own overrides. M5's
+search-first command-palette redesign was descoped as over-engineered for a
+low-frequency, single-operator reference page; this release instead lands
+three small correctness + ergonomics fixes that match how the page is
+actually used (glance during troubleshooting, find the env var, copy its
+name, edit the systemd override, restart).
+
+User-visible changes:
+
+- **Click-to-copy on every env-var name.** The env-var cell on each row
+  is a `<button>` that copies the name to the clipboard. On desktop a
+  small icon reveals on hover; on mobile the env-var is visible by
+  default with a 44 × min-height tap target. Includes a `document.execCommand('copy')`
+  fallback for plain-HTTP LAN contexts where `navigator.clipboard` is
+  undefined — that's the **primary** runtime path on the Pi, not an
+  edge case.
+- **"(default)" muted suffix** on rows whose value matches the shipped
+  default, computed against the raw config attribute on the backend so
+  masked fields like `telegram_token` don't always read as customized.
+  Suppressed when the displayed value already implies default
+  (`"not set"`, `"(bundled poland.geojson)"`, etc.) so the page doesn't
+  show e.g. `"not set (default)"`.
+- **Env-var names ship from the backend, not hardcoded in the
+  frontend.** The drift bug from `internal_docs/frontend_audit_2026-05-22.md`
+  finding #5 is now structurally impossible: if a `config.py`
+  registration is removed, the env-var name passed to the parser
+  disappears with it and the line stops compiling. Frontend reads the
+  name out of the new `_metadata` block on `/api/settings`.
+- **Settings rows work on every viewport** (xs through xl). Dropped
+  the `<Table>` primitive entirely for these rows in favour of a CSS
+  grid that switches `grid-template-columns` at the `md:` breakpoint
+  with a one-class swap. Env-var column was previously
+  `hidden md:table-cell` (unreachable on phones); now it's stacked
+  vertically per row on mobile with the copy button bottom-right.
+
+Internal:
+
+- **`config._register(payload_key, env_var, default, config_attr, *, secret)`**
+  wrapper records env-var reads at their call site and returns
+  `(env_var, default)` for splatting into `_int / _float / _bool /
+  os.getenv`. 49 payload-bound call sites wrapped. Internal tunables
+  (DuckDB, MLAT outlier filter, etc.) left untouched. Raises on
+  duplicate payload-key registration at module load.
+- **`web._settings_metadata(config_namespace, payload_keys)`** —
+  pure function that builds the `_metadata: { key: {env_var, default,
+  customized} }` block from `config._META_REGISTRY`. `customized`
+  compares the **raw** config attribute against the registered default
+  (not the masked display value); `secret=True` keys (`db_path`,
+  `stats_json`, `telegram_token`, `telegram_chat_id`) have their
+  default masked to `null` to keep the metadata masking consistent
+  with the payload masking.
+- **`previous_window` upper bound is now exclusive** (`first_seen <
+  ts_lo`) so a flight whose `first_seen` falls on the boundary second
+  is not double-counted between current and previous. Delta chips
+  happened to net out before, but raw `previous_window.total_flights`
+  was off by 1 for boundary-second flights. New regression test
+  `test_previous_window_boundary_flight_not_double_counted`.
+- **Vitest build-constants stub** — `__APP_VERSION__` and
+  `__FRONTEND_BUILD__` are now defined in `vitest.config.ts` so the
+  Build info card doesn't throw `ReferenceError` in jsdom (those
+  constants are vite-define only at build time).
+- **Drift defence tests**: `test_metadata_block_present_for_every_payload_key`
+  (set equality), `test_metadata_env_vars_resolve_in_config_source`
+  (regex grep), `test_register_present_for_every_payload_key`
+  (runtime `_META_REGISTRY` membership check — more robust than the
+  source-text grep an earlier draft used).
+
+Test count: 1411 → 1418 backend (+7), 230 → 240 frontend (+10 across
+new `clipboard.test.ts` and `settings-row.test.tsx`). Full suite green.
+
 ## 2.9.3 — 2026-05-25
 
 ### Statistics page — phone density + KPI deltas everywhere
