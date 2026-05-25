@@ -59,14 +59,32 @@ export function distLabel(units: UnitSystem): string {
 // Default clockFormat = getClockFormat() so non-render callers (CSV export,
 // notifier proxies) automatically pick up the user's setting. The reactive
 // path is via useFormat().fmtTs which subscribes to the store.
+//
+// Sprint 1 #2: explicit options strip seconds — they're noise in every UI
+// label (1 Hz polling means the second-place digit is essentially random
+// anyway). Output shape: `5/24/2026, 14:50` (24h) or `5/24/2026, 2:50 PM`
+// (12h). Date order follows the user's locale.
 export function fmtTs(
   epoch: number | null | undefined,
   clockFormat: ClockFormat = getClockFormat(),
 ): string {
   if (!epoch) return '—';
   return new Date(epoch * 1000).toLocaleString(undefined, {
+    year: 'numeric',
+    month: 'numeric',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
     hour12: clockFormat === '12h',
   });
+}
+
+// Date-only formatter for day-granular displays (≥1-day range context,
+// max-range record date, etc.). Sibling to `fmtTs`; no time portion at
+// all. Locale picks the date-component order (MM/DD vs DD/MM).
+export function fmtDate(epoch: number | null | undefined): string {
+  if (!epoch) return '—';
+  return new Date(epoch * 1000).toLocaleDateString();
 }
 
 // Short HH:MM form for chart axis ticks. Full timestamps from `fmtTs` are too

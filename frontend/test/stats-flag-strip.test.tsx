@@ -19,14 +19,16 @@ function renderStrip(counts: FlagCounts = baseCounts) {
 }
 
 describe('FlagBadgeStrip', () => {
-  it('renders all six pills with counts', () => {
+  it('renders the three flag pills with counts and any non-zero squawks', () => {
+    // Sprint 1 #3: only non-zero squawks render. baseCounts has only 7700=1.
     renderStrip();
     expect(screen.getByTestId('flag-pill-military').textContent).toContain('12');
     expect(screen.getByTestId('flag-pill-interesting').textContent).toContain('4');
     expect(screen.getByTestId('flag-pill-anonymous').textContent).toContain('47');
     expect(screen.getByTestId('flag-pill-squawk-7700').textContent).toContain('1');
-    expect(screen.getByTestId('flag-pill-squawk-7600').textContent).toContain('0');
-    expect(screen.getByTestId('flag-pill-squawk-7500').textContent).toContain('0');
+    // 7600 and 7500 are 0 — must NOT render.
+    expect(screen.queryByTestId('flag-pill-squawk-7600')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('flag-pill-squawk-7500')).not.toBeInTheDocument();
   });
 
   it('squawk pills link to the right /history filter URL', () => {
@@ -55,13 +57,44 @@ describe('FlagBadgeStrip', () => {
     );
   });
 
-  it('falls back to 0 when a squawk code is missing from the payload', () => {
+  it('hides all squawk pills when every squawk count is zero', () => {
+    // Sprint 1 #3: dashboards treat empty state as silence (Datadog
+    // convention). All-zero squawks should leave the strip showing only
+    // the three flag pills, with no "0 emergencies" placeholder.
+    renderStrip({
+      military: 0,
+      interesting: 0,
+      anonymous: 0,
+      squawks: { '7700': 0, '7600': 0, '7500': 0 },
+    });
+    expect(screen.queryByTestId('flag-pill-squawk-7700')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('flag-pill-squawk-7600')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('flag-pill-squawk-7500')).not.toBeInTheDocument();
+  });
+
+  it('hides all squawk pills when the squawks object is empty/missing', () => {
     renderStrip({
       military: 0,
       interesting: 0,
       anonymous: 0,
       squawks: {},
     });
-    expect(screen.getByTestId('flag-pill-squawk-7500').textContent).toContain('0');
+    expect(screen.queryByTestId('flag-pill-squawk-7700')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('flag-pill-squawk-7500')).not.toBeInTheDocument();
+  });
+
+  it('still renders Military / Interesting / Anonymous pills at count 0', () => {
+    // The three flag types are "kinds of contacts" — 0 is informative
+    // ("I've seen no military"), so they stay visible. Only emergency
+    // squawks are hidden at 0.
+    renderStrip({
+      military: 0,
+      interesting: 0,
+      anonymous: 0,
+      squawks: {},
+    });
+    expect(screen.getByTestId('flag-pill-military')).toBeInTheDocument();
+    expect(screen.getByTestId('flag-pill-interesting')).toBeInTheDocument();
+    expect(screen.getByTestId('flag-pill-anonymous')).toBeInTheDocument();
   });
 });
