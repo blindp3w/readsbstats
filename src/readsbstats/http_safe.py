@@ -25,35 +25,35 @@ DNS-rebinding TOCTOU
 
 A hostile authoritative DNS server can return a public IP first (passing
 ``validate_url``) and a private IP on the second lookup (the rebinding
-attack). Audit 12 closed this at the protocol level:
+attack). Both code paths close this at the protocol level:
 
   * **urllib path** uses a custom :class:`_PinnedHTTPSConnection` that
     connects to the pre-validated IP directly. No DNS lookup happens
     between ``validate_url`` and the connect, so there is no second
     lookup to rebind. SNI / cert validation use the original hostname.
 
-  * **httpx path** wraps the call in :func:`_pinned_socket_resolver`, a
-    context-manager that temporarily redirects ``socket.getaddrinfo``
-    to return the pre-validated info tuple for the duration of the
-    single request (and only for the host we care about). The
-    redirection is undone in ``finally``; no module-load global patch.
-    Other ``socket.getaddrinfo`` callers in the process (uvicorn,
-    background threads, tests) are unaffected outside the brief
-    redirection window.
+  * **httpx path** (audit 2026-05-25 rewrite) rebuilds the request URL
+    against the pre-validated IP and uses the httpx
+    ``extensions={"sni_hostname": hostname}`` request extension to keep
+    SNI + cert validation pinned to the original hostname. A ``Host``
+    header override preserves the original host:port for virtual-host
+    routing on the upstream. There is no ``socket.getaddrinfo``
+    mutation — concurrent calls from different threads / hosts no
+    longer serialize. Previously this path patched the process-wide
+    resolver under a mutex (`Audit-13 A13-015`); see git history for the
+    rationale and the bug that prompted the rewrite.
 
 Async httpx is rejected with a clear error (see :func:`safe_httpx_get`)
-because the scoped redirection above uses ``socket.getaddrinfo`` which
-async httpx bypasses via ``anyio.getaddrinfo``. We don't currently use
-async httpx anywhere; the guard is defensive against future drift.
+because no production path uses it today and reviewing the async-only
+edge cases (cancel + transport teardown) is out of scope for the SSRF
+funnel.
 """
 from __future__ import annotations
 
-import contextlib
 import http.client
 import ipaddress
 import socket
 import ssl
-import threading
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -326,45 +326,48 @@ def safe_urlopen(
 
 
 # ---------------------------------------------------------------------------
-# httpx path — scoped socket.getaddrinfo redirection
+# httpx path — direct-IP URL + sni_hostname extension
 # ---------------------------------------------------------------------------
 
-_RESOLVER_LOCK = threading.Lock()
-
-
-@contextlib.contextmanager
-def _pinned_socket_resolver(hostname: str, infos):
-    """Temporarily redirect ``socket.getaddrinfo`` so that lookups for
-    *hostname* return *infos* (and only this hostname is affected; other
-    lookups fall through to the real resolver).
-
-    Used by :func:`safe_httpx_get` to close the rebinding TOCTOU on the
-    httpx path. Restores ``socket.getaddrinfo`` in ``finally`` — no
-    module-load global patch.
-
-    Audit-13 A13-015: protected by a module-level lock so two concurrent
-    httpx requests can't nest each other's patch — previously a nested
-    capture left the inner resolver stuck as the module-level
-    ``socket.getaddrinfo`` after the outer ``finally`` ran. The lock
-    serializes concurrent pins; urllib is unaffected (it uses
-    ``_PinnedHTTPSConnection``, not the global resolver).
-    """
-    with _RESOLVER_LOCK:
-        original = socket.getaddrinfo
-
-        def _resolver(host, *args, **kwargs):
-            if host == hostname:
-                return infos
-            return original(host, *args, **kwargs)
-
-        socket.getaddrinfo = _resolver  # type: ignore[assignment]
-        try:
-            yield
-        finally:
-            socket.getaddrinfo = original  # type: ignore[assignment]
-
-
 _REDIRECT_CODES = {301, 302, 303, 307, 308}
+
+
+def _build_pinned_httpx_request(url: str) -> tuple[str, dict, dict]:
+    """Resolve+validate *url* and return the per-request ``(pinned_url,
+    headers, extensions)`` triple that connects to the validated IP while
+    keeping TLS/SNI/Host pinned to the original hostname.
+
+    Audit 2026-05-25: this replaces the previous ``socket.getaddrinfo``
+    monkey-patch. There is no process-wide mutation, so concurrent httpx
+    requests no longer serialize through ``_RESOLVER_LOCK``.
+    """
+    parsed, infos = _resolve_and_validate(url)
+    hostname = parsed.hostname  # validated non-empty above
+    assert hostname is not None  # for the type checker
+    target_ip = infos[0][4][0]
+
+    # Bracket IPv6 literals so they're a valid URL netloc.
+    netloc_ip = f"[{target_ip}]" if ":" in target_ip else target_ip
+    if parsed.port:
+        netloc_ip = f"{netloc_ip}:{parsed.port}"
+
+    pinned_url = urllib.parse.urlunparse((
+        parsed.scheme,
+        netloc_ip,
+        parsed.path or "/",
+        parsed.params,
+        parsed.query,
+        "",  # drop fragment — never sent over the wire anyway
+    ))
+
+    # Host header keeps the original host[:port] so virtual-host upstreams
+    # (CloudFront, shared backends) still route the request to the right
+    # site, and any Host-aware request signing on the upstream still works.
+    headers = {"Host": parsed.netloc}
+    # sni_hostname overrides the SNI extension AND the cert hostname
+    # verification target in httpx 0.24+.
+    extensions = {"sni_hostname": hostname}
+    return pinned_url, headers, extensions
 
 
 def safe_httpx_get(
@@ -380,16 +383,15 @@ def safe_httpx_get(
     user-agent configuration remains the caller's concern.  This helper
     enforces:
       * pre-call URL validation (HTTPS + public IP)
-      * the validated IP is pinned for the duration of the call via a
-        scoped ``socket.getaddrinfo`` redirection
+      * the validated IP is connected to directly by rewriting the URL
+        netloc; SNI + cert validation stay pinned to the original
+        hostname via the ``sni_hostname`` httpx request extension
       * ``follow_redirects=False`` — any 3xx surfaces as ``ValueError``
       * post-call body size check (``len(resp.content) <= max_bytes``)
 
-    Async clients are rejected (audit-12 H2 guard): the scoped pin uses
-    ``socket.getaddrinfo`` which ``httpx.AsyncClient`` bypasses via
-    ``anyio.getaddrinfo``. We don't use async httpx anywhere today;
-    surface the limitation loudly so a future use doesn't silently
-    bypass the rebinding guard.
+    Async clients are rejected: no production path uses them today and
+    routing async cancel + transport teardown through this funnel is out
+    of scope.
 
     Returns the response on success.  Raises ``UnsafeURLError`` (a
     ``ValueError`` subclass) on policy violations (non-HTTPS, private IP,
@@ -400,14 +402,16 @@ def safe_httpx_get(
     if httpx is not None and isinstance(client, httpx.AsyncClient):
         raise RuntimeError(
             "safe_httpx_get does not support httpx.AsyncClient — "
-            "async DNS resolution bypasses our rebinding guard."
+            "async paths are not routed through this SSRF funnel."
         )
 
-    parsed, infos = _resolve_and_validate(url)
-    hostname = parsed.hostname  # already validated non-empty above
-    assert hostname is not None  # for the type checker
+    pinned_url, pin_headers, extensions = _build_pinned_httpx_request(url)
 
-    kwargs: dict = {"follow_redirects": False}
+    kwargs: dict = {
+        "follow_redirects": False,
+        "headers": pin_headers,
+        "extensions": extensions,
+    }
     if timeout is not None:
         kwargs["timeout"] = timeout
 
@@ -418,36 +422,35 @@ def safe_httpx_get(
     # check rejected it — OOM exposure on the Pi. Test fakes without a
     # `.stream()` method fall back to `.get()` + post-check.
     can_stream = hasattr(client, "stream") and callable(getattr(client, "stream", None))
-    with _pinned_socket_resolver(hostname, infos):
-        if can_stream:
-            with client.stream("GET", url, **kwargs) as resp:
-                if resp.status_code in _REDIRECT_CODES:
+    if can_stream:
+        with client.stream("GET", pinned_url, **kwargs) as resp:
+            if resp.status_code in _REDIRECT_CODES:
+                raise UnsafeURLError(
+                    f"redirect blocked: GET {url} -> {resp.status_code} "
+                    f"-> {resp.headers.get('Location', '?')!r}"
+                )
+            buf = bytearray()
+            for chunk in resp.iter_bytes(8192):
+                buf.extend(chunk)
+                if len(buf) > max_bytes:
                     raise UnsafeURLError(
-                        f"redirect blocked: GET {url} -> {resp.status_code} "
-                        f"-> {resp.headers.get('Location', '?')!r}"
+                        f"response from {url} exceeded max_bytes={max_bytes} "
+                        f"(streamed {len(buf)} before cutoff)"
                     )
-                buf = bytearray()
-                for chunk in resp.iter_bytes(8192):
-                    buf.extend(chunk)
-                    if len(buf) > max_bytes:
-                        raise UnsafeURLError(
-                            f"response from {url} exceeded max_bytes={max_bytes} "
-                            f"(streamed {len(buf)} before cutoff)"
-                        )
-                # iter_bytes consumed the stream; patch the body in for
-                # callers that read .content or .json() afterwards.
-                resp._content = bytes(buf)  # type: ignore[attr-defined]
-            return resp
-        # Compatibility path for test fakes that only mock .get().
-        resp = client.get(url, **kwargs)
-        if resp.status_code in _REDIRECT_CODES:
-            raise UnsafeURLError(
-                f"redirect blocked: GET {url} -> {resp.status_code} "
-                f"-> {resp.headers.get('Location', '?')!r}"
-            )
-        if len(resp.content) > max_bytes:
-            raise UnsafeURLError(
-                f"response from {url} exceeded max_bytes={max_bytes} "
-                f"(got {len(resp.content)})"
-            )
+            # iter_bytes consumed the stream; patch the body in for
+            # callers that read .content or .json() afterwards.
+            resp._content = bytes(buf)  # type: ignore[attr-defined]
         return resp
+    # Compatibility path for test fakes that only mock .get().
+    resp = client.get(pinned_url, **kwargs)
+    if resp.status_code in _REDIRECT_CODES:
+        raise UnsafeURLError(
+            f"redirect blocked: GET {url} -> {resp.status_code} "
+            f"-> {resp.headers.get('Location', '?')!r}"
+        )
+    if len(resp.content) > max_bytes:
+        raise UnsafeURLError(
+            f"response from {url} exceeded max_bytes={max_bytes} "
+            f"(got {len(resp.content)})"
+        )
+    return resp

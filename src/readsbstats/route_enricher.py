@@ -111,9 +111,17 @@ def _store_route(conn: sqlite3.Connection, callsign: str, route: dict | None) ->
                         now,
                     ),
                 )
+        # Audit 2026-05-25: adsbdb sometimes returns origin-only or dest-only
+        # payloads (see _parse_response). INSERT OR REPLACE would let the
+        # missing side overwrite a previously-cached value with NULL; the
+        # COALESCE upsert keeps the known side while refreshing fetched_at.
         conn.execute(
-            "INSERT OR REPLACE INTO callsign_routes "
-            "(callsign, origin_icao, dest_icao, fetched_at) VALUES (?,?,?,?)",
+            "INSERT INTO callsign_routes (callsign, origin_icao, dest_icao, fetched_at) "
+            "VALUES (?,?,?,?) "
+            "ON CONFLICT(callsign) DO UPDATE SET "
+            "    origin_icao = COALESCE(excluded.origin_icao, callsign_routes.origin_icao), "
+            "    dest_icao   = COALESCE(excluded.dest_icao,   callsign_routes.dest_icao), "
+            "    fetched_at  = excluded.fetched_at",
             (callsign, route.get("origin_icao"), route.get("dest_icao"), now),
         )
 
@@ -129,13 +137,21 @@ def _apply_to_flights(conn: sqlite3.Connection, callsign: str, route: dict | Non
     if adsbdb later dropped the route. The negative result is still
     persisted in `callsign_routes` by the caller; flight rows that were
     already resolved must remain so.
+
+    Audit 2026-05-25: adsbdb also returns origin-only or dest-only payloads
+    (see `_parse_response`'s `not origin and not dest` guard). Writing the
+    missing side as NULL was the same data-loss bug; the COALESCE keeps
+    any previously-resolved column when the incoming side is NULL.
     """
     if route is None:
         return
     origin = route.get("origin_icao")
     dest   = route.get("dest_icao")
     conn.execute(
-        "UPDATE flights SET origin_icao = ?, dest_icao = ? WHERE callsign = ?",
+        "UPDATE flights SET "
+        "    origin_icao = COALESCE(?, origin_icao), "
+        "    dest_icao   = COALESCE(?, dest_icao) "
+        "WHERE callsign = ?",
         (origin, dest, callsign),
     )
     conn.commit()

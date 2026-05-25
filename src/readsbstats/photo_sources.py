@@ -258,16 +258,51 @@ def _fetch_wikipedia_type(type_desc: str) -> PhotoResult | None:
 SOURCES: list = [_fetch_planespotters, _fetch_airport_data, _fetch_hexdb]
 
 
-def fetch_photo(icao_hex: str) -> PhotoResult | None:
-    """Try each source in SOURCES order; return the first hit or None."""
+def _fetch_photo_with_status(icao_hex: str) -> tuple[PhotoResult | None, str]:
+    """Try each source in SOURCES order; return ``(result, status)``.
+
+    ``status`` is one of:
+
+    * ``"hit"``   — a source returned a usable result.
+    * ``"miss"``  — every source completed cleanly and returned ``None``.
+    * ``"error"`` — no source returned a result AND at least one raised.
+
+    Audit 2026-05-25: the ``"miss"`` vs ``"error"`` distinction lets
+    :func:`resolve_photo` skip writing a negative cache row when the chain
+    failed transiently (DNS hiccup, rate-limit, source schema change). A
+    confirmed unknown stays in the cache; a transient outage leaves a
+    previously-resolved positive row in place so subsequent requests keep
+    serving it instead of an empty result for ``PHOTO_CACHE_DAYS``.
+    """
+    had_error = False
     for source in SOURCES:
         try:
             result = source(icao_hex)
             if result:
-                return result
+                return result, "hit"
         except Exception as exc:
             log.debug("%s failed for %s: %s", source.__name__, icao_hex, exc)
-    return None
+            had_error = True
+    return None, ("error" if had_error else "miss")
+
+
+def fetch_photo(icao_hex: str) -> PhotoResult | None:
+    """Try each source in SOURCES order; return the first hit or None.
+
+    Thin wrapper over :func:`_fetch_photo_with_status` that drops the status
+    string for callers that only need the result.
+    """
+    result, _status = _fetch_photo_with_status(icao_hex)
+    return result
+
+
+# Captured at module load so :func:`resolve_photo` can tell whether tests
+# have monkey-patched ``fetch_photo`` away from this wrapper. When patched,
+# the patched function is authoritative and the status-aware grace is
+# bypassed (tests inject deterministic results and don't want the resolver
+# to second-guess them). In production this identity check is True so the
+# resolver uses :func:`_fetch_photo_with_status` directly.
+_DEFAULT_FETCH_PHOTO = fetch_photo
 
 
 # ---------------------------------------------------------------------------
@@ -357,10 +392,23 @@ def resolve_photo(
     aircraft type rather than the specific airframe.
     """
     # Resolve fetcher at call-time so monkeypatched ``fetch_photo`` is honoured.
+    # When no fetcher is injected AND ``fetch_photo`` has not been
+    # monkey-patched (production path), use the status-aware helper so
+    # transient source outages don't poison the cache (audit 2026-05-25).
+    # Tests that inject a ``fetcher`` or patch ``fetch_photo`` directly keep
+    # the legacy "None == confirmed miss" contract since they control the
+    # return value deterministically.
     if fetcher is None:
         fetcher = fetch_photo
+    use_status_helper = fetcher is _DEFAULT_FETCH_PHOTO
     now = int(time.time())
     cutoff = now - cache_seconds
+
+    def _call_fetcher(target: str) -> tuple[PhotoResult | None, str]:
+        if use_status_helper:
+            return _fetch_photo_with_status(target)
+        photo = fetcher(target)
+        return photo, ("hit" if photo else "miss")
 
     # 1. specific aircraft cache (type-only callers pass icao_hex="" and skip here)
     if icao_hex:
@@ -399,9 +447,15 @@ def resolve_photo(
             _write_type(conn, type_code, result, now)
             return result, True
 
+    # Track whether any source chain hit a transient error during this call.
+    # An error anywhere (specific fetch or probe fetch) suppresses the
+    # type-level negative write at step 6 too, so a flaky source doesn't
+    # poison the type cache for `PHOTO_CACHE_DAYS`.
+    chain_errored = False
+
     # 4. fetch for specific ICAO (skip in type-only mode, icao_hex="")
     if icao_hex:
-        photo = fetcher(icao_hex)
+        photo, status = _call_fetcher(icao_hex)
         if photo:
             result = {
                 "thumbnail_url": photo.thumbnail_url,
@@ -411,7 +465,22 @@ def resolve_photo(
             }
             _write_specific(conn, icao_hex, result, now)
             return result, False
-        _write_specific(conn, icao_hex, None, now)
+        if status == "error":
+            chain_errored = True
+            # Stale-grace: return any previously-resolved positive row rather
+            # than evicting it. Mirrors the per-spot grace in
+            # `web._fetch_photo` so the shared resolver behaves the same way.
+            stale = conn.execute(
+                "SELECT thumbnail_url, large_url, link_url, photographer "
+                "FROM photos WHERE icao_hex = ? AND thumbnail_url IS NOT NULL",
+                (icao_hex,),
+            ).fetchone()
+            if stale:
+                return _row_to_result(stale), False
+            # No stale row to serve and no confirmed miss — leave the cache
+            # untouched so the next batch retries.
+        else:
+            _write_specific(conn, icao_hex, None, now)
 
     # 5. probe one ICAO of the same type
     if type_code:
@@ -423,7 +492,7 @@ def resolve_photo(
         if probe_row:
             probe_icao = probe_row["icao_hex"]
             probe_desc = (probe_row["type_desc"] or "").strip()
-            probe = fetcher(probe_icao)
+            probe, probe_status = _call_fetcher(probe_icao)
             if probe:
                 result = {
                     "thumbnail_url": probe.thumbnail_url,
@@ -434,6 +503,8 @@ def resolve_photo(
                 _write_specific(conn, probe_icao, result, now)
                 _write_type(conn, type_code, result, now)
                 return result, True
+            if probe_status == "error":
+                chain_errored = True
 
         # 6. Wikipedia fallback — keyed on aircraft_db.type_desc.  Logs are at
         # DEBUG to match the rest of the photo chain; for ongoing visibility,
@@ -458,6 +529,19 @@ def resolve_photo(
                 return result, True
             log.debug("wikipedia type-photo miss for %s (%r)", type_code, probe_desc)
 
-        _write_type(conn, type_code, None, now)
+        if chain_errored:
+            # A transient source error during the specific or probe fetch
+            # means we can't tell "type has no photo anywhere" from "we
+            # couldn't reach a source this minute". Serve any stale positive
+            # type row, or just return None — but don't poison the cache.
+            stale = conn.execute(
+                "SELECT thumbnail_url, large_url, link_url, photographer "
+                "FROM type_photos WHERE type_code = ? AND thumbnail_url IS NOT NULL",
+                (type_code,),
+            ).fetchone()
+            if stale:
+                return _row_to_result(stale), True
+        else:
+            _write_type(conn, type_code, None, now)
 
     return None, False

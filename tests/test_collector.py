@@ -1701,6 +1701,48 @@ class TestPollEdgeCases:
         fid = self.conn.execute("SELECT id FROM flights").fetchone()[0]
         assert fid in _squawk_notified
 
+    def test_ghost_position_with_emergency_squawk_does_not_notify(self, monkeypatch):
+        """Audit 2026-05-25: notifications used to be queued and dedupe sets
+        mutated BEFORE the ghost-position filter. A bad ADS-B jump carrying a
+        7x00 squawk produced an emergency alert for a position the collector
+        then rejected, and the flight_id was added to `_squawk_notified` so
+        later legitimate emergencies on the same flight were suppressed."""
+        from readsbstats import collector, config as cfg
+        from readsbstats.collector import _poll, _squawk_notified
+        monkeypatch.setattr(cfg, "MAX_SPEED_KTS", 1500)
+        now = time.time()
+
+        # First sample: real flight, no emergency squawk.
+        self._write_json([
+            {"hex": "aabbcc", "lat": 52.6, "lon": 20.75, "seen_pos": 0,
+             "type": "mlat"},
+        ], now)
+        _poll(self.conn)
+        fid = self.conn.execute(
+            "SELECT id FROM flights WHERE icao_hex='aabbcc'"
+        ).fetchone()[0]
+
+        # Second sample 5 s later: ghost (~323 000 kts implied) AND squawk 7700.
+        self.json_path.write_text(json.dumps({
+            "now": now + 5,
+            "aircraft": [
+                {"hex": "aabbcc", "lat": 59.7, "lon": 21.5, "seen_pos": 0,
+                 "type": "adsb_icao", "squawk": "7700"},
+            ],
+        }))
+        _poll(self.conn)
+        collector._drain_notifications(timeout=1.0)
+
+        # Position must not have been recorded.
+        total = self.conn.execute(
+            "SELECT total_positions FROM flights WHERE id=?", (fid,)
+        ).fetchone()["total_positions"]
+        assert total == 1
+        # No emergency notification must have been queued or sent.
+        assert self.squawk_calls == []
+        # The flight_id must not be locked out of future legitimate alerts.
+        assert fid not in _squawk_notified
+
     def test_squawk_notified_dropped_on_close_flight(self):
         """Audit-12 #186 — `_squawk_notified` historically grew unboundedly:
         every emergency-squawk flight_id was kept forever. Now the flight_id

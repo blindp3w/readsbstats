@@ -234,56 +234,73 @@ class TestUrllibPinnedConnection:
         assert infos[0][4][0] == "8.8.8.42"
 
 
-class TestHttpxScopedResolver:
-    """The httpx path no longer keeps a module-load global patch on
-    ``socket.getaddrinfo``. Instead, ``_pinned_socket_resolver`` only
-    redirects DNS during the single ``client.get()`` call and restores
-    the original in ``finally``."""
+class TestHttpxPinnedRequestBuilder:
+    """Audit 2026-05-25 — the httpx path no longer mutates
+    ``socket.getaddrinfo`` under a process-wide lock. Instead it rebuilds
+    the URL against the pre-validated IP and uses the ``sni_hostname``
+    request extension. These tests pin the new request-shape contract."""
 
-    def test_resolver_redirects_only_inside_block(self):
-        """Inside the ``with`` block, ``socket.getaddrinfo(hostname, ...)``
-        returns the pinned infos. Outside (before/after), it returns
-        whatever the real resolver would."""
-        infos = _fake_addrinfo("8.8.8.99")
-        # Capture the real getaddrinfo before entering the block.
-        real = socket.getaddrinfo
-        # The pin is only active in the block.
-        with http_safe._pinned_socket_resolver("example.com", infos):
-            assert socket.getaddrinfo is not real, (
-                "expected socket.getaddrinfo to be replaced inside the block"
-            )
-            assert socket.getaddrinfo("example.com", 443) is infos
-        # Restored after the block.
-        assert socket.getaddrinfo is real
+    def test_pinned_url_uses_validated_ip(self, monkeypatch):
+        _patch_validate(monkeypatch, ip="8.8.8.99")
+        url, headers, ext = http_safe._build_pinned_httpx_request(
+            "https://example.com/v1/widget?q=1#frag"
+        )
+        assert url == "https://8.8.8.99/v1/widget?q=1"  # fragment dropped
+        assert headers == {"Host": "example.com"}
+        assert ext == {"sni_hostname": "example.com"}
 
-    def test_resolver_falls_through_for_other_hosts(self):
-        """Lookups for hostnames other than the pinned one must call
-        the captured original, not the pinned infos."""
-        infos = _fake_addrinfo("8.8.8.99")
-        with http_safe._pinned_socket_resolver("example.com", infos):
-            # Different hostname — falls through. We can't easily test the
-            # real resolver from inside the block, but we can verify the
-            # pinned infos are NOT returned.
-            #
-            # Use a sentinel hostname that the captured original would
-            # need to actually resolve. If our redirect leaked, it would
-            # return `infos` here too.
-            #
-            # We patch the captured original first via monkey-patching
-            # `socket.getaddrinfo` BEFORE entering the block — that
-            # captured-original is what `_pinned_socket_resolver` falls
-            # through to. So:
-            pass
-        # Restore is also verified by test_resolver_redirects_only_inside_block.
+    def test_pinned_url_brackets_ipv6(self, monkeypatch):
+        _patch_validate(monkeypatch, ip="2606:4700:4700::1111")
+        url, _h, _e = http_safe._build_pinned_httpx_request(
+            "https://example.com/path"
+        )
+        assert url == "https://[2606:4700:4700::1111]/path"
 
-    def test_resolver_restores_on_exception(self):
-        """Exception inside the block must still restore the original."""
-        real = socket.getaddrinfo
-        infos = _fake_addrinfo("8.8.8.99")
-        with pytest.raises(RuntimeError, match="boom"):
-            with http_safe._pinned_socket_resolver("example.com", infos):
-                raise RuntimeError("boom")
-        assert socket.getaddrinfo is real
+    def test_pinned_url_preserves_non_default_port(self, monkeypatch):
+        _patch_validate(monkeypatch, ip="8.8.8.99")
+        url, headers, _ext = http_safe._build_pinned_httpx_request(
+            "https://example.com:8443/x"
+        )
+        assert url == "https://8.8.8.99:8443/x"
+        assert headers == {"Host": "example.com:8443"}
+
+    def test_concurrent_calls_do_not_share_global_state(self, monkeypatch):
+        """The old `_RESOLVER_LOCK` design serialised every call. The new
+        builder must be re-entrant: two threads on different hosts get
+        independent (url, host, sni) triples without blocking each other."""
+        from threading import Barrier, Thread
+        results: list = []
+        # Make the validator yield different IPs per host.
+        def fake_resolve(url):
+            parsed = urllib.parse.urlparse(url)
+            host = parsed.hostname
+            ip = {"a.example.com": "1.1.1.1",
+                  "b.example.com": "2.2.2.2"}[host]
+            return parsed, _fake_addrinfo(ip)
+        monkeypatch.setattr(http_safe, "_resolve_and_validate", fake_resolve)
+
+        barrier = Barrier(2)
+        def worker(host: str):
+            barrier.wait()  # both threads arrive at builder simultaneously
+            for _ in range(50):
+                url, h, e = http_safe._build_pinned_httpx_request(
+                    f"https://{host}/x"
+                )
+                results.append((host, url, h["Host"], e["sni_hostname"]))
+
+        threads = [Thread(target=worker, args=(h,))
+                   for h in ("a.example.com", "b.example.com")]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        # Each thread should always see its own host's pin — no cross-talk.
+        for host, url, hhdr, sni in results:
+            ip = "1.1.1.1" if host == "a.example.com" else "2.2.2.2"
+            assert ip in url
+            assert hhdr == host
+            assert sni == host
 
 
 class TestHttpxAsyncRejection:
@@ -454,7 +471,10 @@ class TestSafeHttpxGet:
         client = _FakeHttpxClient(resp)
         out = http_safe.safe_httpx_get(client, "https://example.com/", max_bytes=1024)
         assert out is resp
-        assert client.last_kwargs == {"follow_redirects": False}
+        assert client.last_kwargs["follow_redirects"] is False
+        # Audit 2026-05-25 pin: SNI extension + Host override accompany the call.
+        assert client.last_kwargs["headers"] == {"Host": "example.com"}
+        assert client.last_kwargs["extensions"] == {"sni_hostname": "example.com"}
 
     def test_302_raises(self, monkeypatch):
         _patch_validate(monkeypatch)
@@ -490,4 +510,5 @@ class TestSafeHttpxGet:
         client = _FakeHttpxClient(resp)
         http_safe.safe_httpx_get(client, "https://example.com/",
                                   max_bytes=1024, timeout=3.0)
-        assert client.last_kwargs == {"follow_redirects": False, "timeout": 3.0}
+        assert client.last_kwargs["follow_redirects"] is False
+        assert client.last_kwargs["timeout"] == 3.0
