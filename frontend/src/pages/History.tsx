@@ -302,21 +302,11 @@ export default function HistoryPage() {
             activeFieldKeys={activeFieldKeys}
             onAdd={addFilter}
           />
-          <a
-            href={apiUrl(`flights/export.csv?${exportQs.toString()}`)}
-            className={cn(buttonClass('secondary', 'sm'), 'ml-auto')}
-            data-testid="history-export-csv"
-          >
-            Export CSV
-          </a>
-        </div>
-        <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-[var(--color-text-dim)]">
-          <span>{q.data ? q.data.total.toLocaleString() : '—'} flights match</span>
           {/* Toggle-button semantics via aria-pressed + data-state. A
               standalone `@radix-ui/react-toggle` would just wrap these
               same attributes around a <button>, so we set them directly
-              and skip the extra dep. data-state drives both the
-              chevron rotation and the open-state colour fill. */}
+              and skip the extra dep. data-state drives the chevron
+              rotation; open-state fills the pill with an accent tint. */}
           <button
             type="button"
             onClick={() => setAdvancedOpen((s) => !s)}
@@ -325,7 +315,7 @@ export default function HistoryPage() {
             data-state={advancedOpen ? 'on' : 'off'}
             data-testid="history-advanced-trigger"
             className={cn(
-              'inline-flex min-h-[28px] items-center gap-1 rounded-full border px-3 text-xs font-medium transition-colors',
+              'inline-flex min-h-[36px] items-center gap-1.5 rounded-full border px-3 text-xs font-medium transition-colors',
               'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)]',
               advancedOpen
                 ? 'border-[var(--color-accent)] bg-[var(--color-accent)]/15 text-[var(--color-accent)]'
@@ -341,6 +331,16 @@ export default function HistoryPage() {
             />
             Advanced
           </button>
+          <a
+            href={apiUrl(`flights/export.csv?${exportQs.toString()}`)}
+            className={cn(buttonClass('secondary', 'sm'), 'ml-auto')}
+            data-testid="history-export-csv"
+          >
+            Export CSV
+          </a>
+        </div>
+        <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-[var(--color-text-dim)]">
+          <span>{q.data ? q.data.total.toLocaleString() : '—'} flights match</span>
           {anyActive && (
             <button
               type="button"
