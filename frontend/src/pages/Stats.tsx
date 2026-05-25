@@ -436,7 +436,11 @@ function MaxRangeCard({ furthest }: { furthest: StatsResponse['furthest_aircraft
           >
             {linkLabel}
           </Link>
-          {furthest.record_set_at != null && (
+          {furthest.record_set_at != null && furthest.record_set_at > 0 && (
+            // > 0 guard mirrors fmtDate's `!epoch` semantics — both treat
+            // 0 as "no value". Backend guarantees first_seen > 0 today,
+            // but pairing the guards keeps the rendered output sane if
+            // that ever changes.
             <span className="ml-1 text-[var(--color-text-dim)]">
               · set {fmtDate(furthest.record_set_at)}
             </span>

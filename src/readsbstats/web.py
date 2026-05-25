@@ -1790,7 +1790,12 @@ def api_stats(
     ).fetchone()
     if furthest_row:
         furthest = dict(furthest_row)
-        furthest["record_set_at"] = furthest.get("first_seen")
+        # Rename, don't duplicate: keep a single timestamp key in the
+        # response so a future cleanup of `first_seen` from the projection
+        # doesn't leave a stale alias behind. No external consumer reads
+        # the original `first_seen` from `furthest_aircraft` — the
+        # Personal Records section uses `/api/stats/records` instead.
+        furthest["record_set_at"] = furthest.pop("first_seen", None)
     else:
         furthest = None
 

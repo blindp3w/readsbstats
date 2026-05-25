@@ -52,11 +52,11 @@ const VALUE_PLACEHOLDER: Record<MatchType, string> = {
   callsign_prefix: 'e.g. LOT',
 };
 
-function fmtDate(epoch: number | undefined): string {
+// Renamed from `fmtDate` to avoid shadowing the project-level `fmtDate`
+// helper in `lib/format.ts` (which is date-only). This function returns a
+// full timestamp via fmtTs so the user's 12h/24h preference is respected.
+function fmtEntryTs(epoch: number | undefined): string {
   if (!epoch) return '';
-  // Use the project's fmtTs so the 12h/24h preference (Settings → time_format)
-  // is respected. The bare toLocaleString() picks the OS locale, which gives
-  // 12h on macOS regardless of the user's app setting.
   return fmtTs(epoch);
 }
 
@@ -278,7 +278,7 @@ export default function WatchlistPage() {
                     <TD className="font-mono tabnum">{e.value}</TD>
                     <TD>{e.label ?? '—'}</TD>
                     <TD className="text-xs text-[var(--color-text-dim)] tabnum">
-                      {fmtDate(e.created_at)}
+                      {fmtEntryTs(e.created_at)}
                     </TD>
                     <TD>
                       {e.airborne ? (
