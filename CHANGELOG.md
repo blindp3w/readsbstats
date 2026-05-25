@@ -1,5 +1,56 @@
 # Changelog
 
+## 2.9.7 — 2026-05-25
+
+### Sprint 3 — Gallery M8.1 placeholder + Watchlist polish
+
+Closes **M8** entirely (Gallery non-ICAO hex placeholder + the v2.8.0
+type-photo stamp now form the full Gallery photo story). Plus two
+~10-minute Watchlist paper-cuts bundled in the same release.
+
+User-visible changes:
+
+- **Gallery placeholder (M8.1 from the brief).** Aircraft cards with
+  no photo now render in one of two variants, deciding by
+  `primaryFlagLabel` (military > interesting > anonymous precedence):
+  - **Featured** — for flagged hex (military / interesting / anonymous),
+    the ICAO hex renders large in the flag's accent colour
+    (`text-3xl font-mono tracking-wider`, green / amber / red). Flag
+    identity is still labelled by the existing corner FlagBadge, so
+    the placeholder itself is just the coloured hex — no additional
+    in-tile label or pill.
+  - **Quiet** — ordinary unflagged aircraft show a dim grey mono hex
+    centred. The old `"no photo"` caption is gone — the hex is the
+    information.
+- **Watchlist `Added` column** — shows date-only (`5/24/2026`) instead
+  of full timestamp (`5/24/2026, 14:50`). Matches the v2.9.5 project-
+  wide date-only convention.
+- **Watchlist mobile column trim** — `Added` hides on phones (`<sm` /
+  <600 px), narrowing the table from 6 to 5 columns on iPhone. Less
+  (or no) horizontal scroll.
+
+Internal:
+
+- `primaryFlagLabel` return type narrowed from `string | null` to the
+  closed literal union `FlagFilter | null`. Gallery's per-flag colour
+  lookup `FLAG_PLACEHOLDER` keys against that union, so extending
+  `primaryFlagLabel` without updating the placeholder map is a
+  TypeScript compile error rather than a silent fall-through to the
+  quiet variant.
+
+Dependencies (Dependabot, merged on GitHub during this sprint):
+
+- `fastapi` 0.136.1 → 0.136.3
+- `uvicorn` 0.47.0 → 0.48.0
+- `@tanstack/react-query` 5.100.11 → 5.100.14
+- `vite` 8.0.13 → 8.0.14
+
+Test count: 266 → 274 frontend (+8 placeholder lifecycle tests in new
+`gallery-placeholder.test.tsx` — featured vs quiet selection, accent
+colour per flag, military > anonymous precedence, defensive
+`?? 0` guard for `undefined` flags). Backend unchanged at 1419 passed.
+Full suite green.
+
 ## 2.9.6 — 2026-05-25
 
 ### Sprint 2 — History filter chips + sticky headers (M8.3 + M10.5)
