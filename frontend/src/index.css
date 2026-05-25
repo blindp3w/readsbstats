@@ -33,6 +33,12 @@
     'Inter', 'Segoe UI', system-ui, -apple-system, BlinkMacSystemFont, 'Helvetica Neue', sans-serif;
   --font-mono:
     ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+
+  /* Sub-`sm` breakpoint so 2-up grids can trigger on phones. With the
+     project's html font-size of 15 px, 22.5rem = 337.5 px — below
+     iPhone SE (375 px). Default Tailwind `sm` at 40rem resolves to
+     600 px here, leaving every phone in the 1-col branch otherwise. */
+  --breakpoint-xs: 22.5rem;
 }
 
 @layer base {
