@@ -24,14 +24,20 @@ const EXPECTED_LABELS = [
   'settings',
 ];
 
-function renderNav() {
+// Sprint 1 #1 (M10.1): the last 4 labels live behind a `More ▾` dropdown
+// at md/lg viewports. They're still rendered inline in the DOM at xl
+// (and in jsdom because no CSS is loaded), but the dropdown is the
+// reachable surface at iPad-portrait width.
+const OVERFLOW_LABELS = ['watchlist', 'feeders', 'metrics', 'settings'];
+
+function renderNav(initialEntry: string = '/') {
   const qc = new QueryClient({
     defaultOptions: { queries: { retry: false, gcTime: 0 } },
   });
   return render(
     <QueryClientProvider client={qc}>
       <TooltipProvider>
-        <MemoryRouter initialEntries={['/']}>
+        <MemoryRouter initialEntries={[initialEntry]}>
           <Nav />
         </MemoryRouter>
       </TooltipProvider>
@@ -104,6 +110,44 @@ describe('Nav', () => {
     expect(text).toContain('km · m · km/h');
     expect(text).toContain('Imperial');
     expect(text).toContain('mi · ft · mph');
+  });
+
+  it('renders a More ▾ overflow trigger with menu ARIA attributes', () => {
+    // Sprint 1 #1: at md/lg the last 4 nav items collapse into a
+    // dropdown menu so the row fits on iPad portrait.
+    const { getByTestId } = renderNav();
+    const trigger = getByTestId('nav-more-trigger');
+    expect(trigger.getAttribute('aria-haspopup')).toBe('menu');
+    expect(trigger.tagName.toLowerCase()).toBe('button');
+  });
+
+  it('opening More ▾ via keyboard reveals the 4 overflow items', async () => {
+    const { getByTestId } = renderNav();
+    const trigger = getByTestId('nav-more-trigger');
+    trigger.focus();
+    fireEvent.keyDown(trigger, { key: 'Enter' });
+    await waitFor(() => {
+      expect(document.querySelector('[data-testid="nav-more-item-settings"]')).toBeTruthy();
+    });
+    for (const label of OVERFLOW_LABELS) {
+      expect(
+        document.querySelector(`[data-testid="nav-more-item-${label}"]`),
+      ).toBeTruthy();
+    }
+  });
+
+  it('More ▾ trigger highlights when the current route is one of the overflow items', () => {
+    const { getByTestId } = renderNav('/settings');
+    const trigger = getByTestId('nav-more-trigger');
+    // Active marker: shares the same border-b-2 + accent class the
+    // inline desktop links use for the active state.
+    expect(trigger.className).toMatch(/border-b-2/);
+  });
+
+  it('More ▾ trigger is NOT highlighted when the current route is an inline item', () => {
+    const { getByTestId } = renderNav('/history');
+    const trigger = getByTestId('nav-more-trigger');
+    expect(trigger.className).not.toMatch(/border-b-2/);
   });
 
   it('open units dropdown also shows unit-list subtitles (touch fallback)', async () => {
