@@ -3,7 +3,6 @@ import { Cross2Icon, PlusIcon } from '@radix-ui/react-icons';
 import { useQuery } from '@tanstack/react-query';
 import { apiJson, apiUrl } from '@/lib/api';
 import { useSearchParam, useSearchParamBatch } from '@/hooks/useSearchParam';
-import { useFormat } from '@/hooks/useFormat';
 import { cn } from '@/lib/cn';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Input } from '@/components/ui/Input';
@@ -745,8 +744,3 @@ function Field({
     </div>
   );
 }
-
-// Silence unused-import warning when useFormat isn't called in dev builds.
-// useFormat() will be needed when date chips localise via the user's
-// time_format preference in a future iteration; keep the import wired.
-void useFormat;

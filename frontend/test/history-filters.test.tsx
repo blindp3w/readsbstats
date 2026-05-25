@@ -109,7 +109,7 @@ describe('History filter dropdowns', () => {
   });
 
   it('hydrates the trigger label from a pre-populated URL param', async () => {
-    // With ?source=mlat present, the chip row renders a "Source ADS-B"
+    // With ?source=mlat present, the chip row renders a "Source: MLAT"
     // label *and* the Advanced trigger label hydrates from the URL.
     const { getByTestId } = renderHistory('/history?source=mlat');
     await openAdvanced(getByTestId);
