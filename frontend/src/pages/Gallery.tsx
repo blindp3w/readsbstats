@@ -80,42 +80,50 @@ export default function GalleryPage() {
 
   return (
     <div className="mx-auto max-w-7xl space-y-4 px-4 py-6" data-testid="page-gallery">
-      <header className="flex flex-wrap items-center justify-between gap-3">
-        <div className="min-w-0">
-          <h1 className="text-xl font-semibold">Gallery</h1>
-          <p className="text-xs text-[var(--color-text-dim)]">
-            Flagged aircraft — military, interesting, anonymous (non-ICAO hex).
-            {q.data ? ` ${q.data.total.toLocaleString()} matching.` : ''}
-          </p>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <ToggleGroupRoot
-            type="single"
-            value={String(filter) || 'all'}
-            onValueChange={(v) => {
-              update({ flags: v === 'all' ? null : v, offset: 0 });
-            }}
-            aria-label="Filter by flag"
-            data-testid="gallery-filter-group"
-            className="flex-nowrap"
-          >
-            {FILTER_OPTIONS.map((opt) => (
-              <ToggleGroupItem
-                key={opt.value || 'all'}
-                value={opt.value || 'all'}
-                data-testid={`gallery-filter-${opt.value || 'all'}`}
-              >
-                {opt.label}
-              </ToggleGroupItem>
-            ))}
-          </ToggleGroupRoot>
-          <SortPopover
-            value={String(sort)}
-            currentLabel={currentSortLabel}
-            onChange={(v) => update({ sort_by: v === 'last_seen' ? null : v, offset: 0 })}
-          />
-        </div>
+      <header className="min-w-0">
+        <h1 className="text-xl font-semibold">Gallery</h1>
+        <p className="text-xs text-[var(--color-text-dim)]">
+          Flagged aircraft — military, interesting, anonymous (non-ICAO hex).
+          {q.data ? ` ${q.data.total.toLocaleString()} matching.` : ''}
+        </p>
       </header>
+
+      {/* M10.5: filter row sticks under the nav as the user scrolls the
+          photo grid. `-mx-4 px-4` lets the sticky element bleed to the
+          page container edge while the parent has `px-4` outer padding;
+          `top: var(--rsbs-nav-h)` docks it directly under the nav (same
+          pattern as Stats RangePicker, v2.6.0). z-20 < nav's z-1000. */}
+      <div
+        className="sticky z-20 -mx-4 flex flex-wrap items-center gap-2 border-b border-[var(--color-border-default)] bg-[var(--color-surface)]/85 px-4 py-2 backdrop-blur supports-[backdrop-filter]:bg-[var(--color-surface)]/70"
+        style={{ top: 'var(--rsbs-nav-h, 41px)' }}
+        data-testid="gallery-filter-sticky"
+      >
+        <ToggleGroupRoot
+          type="single"
+          value={String(filter) || 'all'}
+          onValueChange={(v) => {
+            update({ flags: v === 'all' ? null : v, offset: 0 });
+          }}
+          aria-label="Filter by flag"
+          data-testid="gallery-filter-group"
+          className="flex-nowrap"
+        >
+          {FILTER_OPTIONS.map((opt) => (
+            <ToggleGroupItem
+              key={opt.value || 'all'}
+              value={opt.value || 'all'}
+              data-testid={`gallery-filter-${opt.value || 'all'}`}
+            >
+              {opt.label}
+            </ToggleGroupItem>
+          ))}
+        </ToggleGroupRoot>
+        <SortPopover
+          value={String(sort)}
+          currentLabel={currentSortLabel}
+          onChange={(v) => update({ sort_by: v === 'last_seen' ? null : v, offset: 0 })}
+        />
+      </div>
 
       {q.isError && <Alert variant="error">Failed to load: {(q.error as Error).message}</Alert>}
 
