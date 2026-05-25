@@ -91,7 +91,7 @@ export function KpiCard({ label, value, prev, series, sublabel, testid }: Props)
             <div className="text-xs font-medium uppercase tracking-wide text-[var(--color-text-dim)]">
               {label}
             </div>
-            <div className="tabnum text-3xl font-bold leading-tight">{valueText}</div>
+            <div className="tabnum text-2xl font-bold leading-tight sm:text-3xl">{valueText}</div>
             <div className="text-xs tabnum min-h-[1rem]">{deltaLine}</div>
             {/* Sublabel slot: always reserved so cards line up across the
                 row even when one card has nothing useful to put here. */}
