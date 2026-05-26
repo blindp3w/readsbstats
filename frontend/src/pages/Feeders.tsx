@@ -67,9 +67,7 @@ export default function FeedersPage() {
         </Button>
       </header>
 
-      {q.isError && (
-        <Alert variant="error">Failed to load: {(q.error as Error).message}</Alert>
-      )}
+      {q.isError && <Alert variant="error">Failed to load: {(q.error as Error).message}</Alert>}
 
       {q.data && !q.data.has_feeders && (
         <Alert variant="info" data-testid="feeders-not-configured">
@@ -80,9 +78,9 @@ export default function FeedersPage() {
 
       {allUnavailable && (
         <Alert variant="info" data-testid="feeders-all-unavailable">
-          All feeder statuses are <code>unavailable</code> — this is expected when the web server
-          is running on a different host than the receiver. Verify the <code>readsbstats</code>{' '}
-          user is in the <code>systemd-journal</code> group on the Pi.
+          All feeder statuses are <code>unavailable</code> — this is expected when the web server is
+          running on a different host than the receiver. Verify the <code>readsbstats</code> user is
+          in the <code>systemd-journal</code> group on the Pi.
         </Alert>
       )}
 
@@ -97,9 +95,9 @@ export default function FeedersPage() {
               <THead>
                 <TR>
                   <TH>Name</TH>
-                  <TH>Service</TH>
+                  <TH className="hidden sm:table-cell">Service</TH>
                   <TH>Systemd</TH>
-                  <TH>Port</TH>
+                  <TH className="hidden sm:table-cell">Port</TH>
                   <TH>Overall</TH>
                 </TR>
               </THead>
@@ -107,9 +105,9 @@ export default function FeedersPage() {
                 {q.data.feeders.map((f) => (
                   <TR key={f.unit} data-testid={`feeders-row-${f.name}`}>
                     <TD className="font-medium">{f.name}</TD>
-                    <TD className="font-mono text-xs">{f.unit}</TD>
+                    <TD className="hidden font-mono text-xs sm:table-cell">{f.unit}</TD>
                     <TD>{systemdBadge(f.systemd)}</TD>
-                    <TD>
+                    <TD className="hidden sm:table-cell">
                       {f.port_status ? (
                         f.port_status === 'open' ? (
                           <Badge variant="success">open</Badge>

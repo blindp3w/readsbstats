@@ -230,7 +230,7 @@ function OtherFlightsTable({ rows }: { rows: OtherFlight[] }) {
           <TH>Callsign</TH>
           <TH>Route</TH>
           <TH>Duration</TH>
-          <TH>Source</TH>
+          <TH className="hidden md:table-cell">Source</TH>
         </TR>
       </THead>
       <TBody>
@@ -248,7 +248,7 @@ function OtherFlightsTable({ rows }: { rows: OtherFlight[] }) {
                 : '—'}
             </TD>
             <TD className="tabnum text-xs">{fmtDur(r.duration_sec)}</TD>
-            <TD>
+            <TD className="hidden md:table-cell">
               <SourceBadge source={r.primary_source} />
             </TD>
           </TR>

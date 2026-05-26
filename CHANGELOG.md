@@ -1,5 +1,34 @@
 # Changelog
 
+## 2.9.9 — 2026-05-26
+
+### M10.2 — responsive sweep at 393 / 834 / 1512 px
+
+Closes the last active item from `internal_docs/uiux/CLAUDE_DESIGN_BRIEF.md`.
+Walked every page through the three reference viewports under
+Playwright; fixed the three pages whose tables overflowed
+horizontally on iPhone (393 px). Stats / Gallery / Map / Metrics /
+Settings / Watchlist / Aircraft all already responsive.
+
+- **History flights table** no longer overflows on phones. The
+  `Type` column was escaping the responsive system because the body
+  TDs were rendered separately from the header `ColDef` — added
+  `hidden md:table-cell` to both. Note: this also hides the
+  `FlagBadge` (military / interesting / anonymous) on phones; the
+  badge is still visible on aircraft detail rows.
+- **Feeders status table** no longer overflows on phones.
+  `Service` and `Port` columns hide at `<sm`; `Name` / `Systemd` /
+  `Overall` carry the essential info. Service is duplicative with
+  Name (`<name>.service`); Port is `—` for 7 of 9 rows.
+- **Flight detail "Other flights" table** no longer overflows on
+  phones. `Source` column hides at `<sm` (source is already
+  encoded as the per-row left-border stripe on the main History
+  table; here the badge was decorative).
+
+No new components, no new colours, no new breakpoints — only
+existing `hidden md:table-cell` utilities, the same pattern the
+rest of the table uses for hideOnMobile columns.
+
 ## 2.9.8 — 2026-05-26
 
 ### Audit 14 — full sweep follow-up
