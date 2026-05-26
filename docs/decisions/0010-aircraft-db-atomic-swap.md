@@ -22,23 +22,40 @@ catastrophically with no signal that anything was wrong.
 
 ## Decision
 
-Three-step atomic swap inside `update_aircraft_db()`:
+Five-step rename-rename-drop swap inside `update_aircraft_db()`:
 
-1. **Build** a staging table `aircraft_db_new` (transient — created
+1. **Recover** at the top of every call: `_recover_aborted_swap()`
+   detects state left by a previous interrupted run (orphan
+   `aircraft_db_old` or `aircraft_db_new`) and restores the canonical
+   table before anything else proceeds.
+2. **Build** a staging table `aircraft_db_new` (transient — created
    and dropped within the same function call, never persisted in DDL
    or `_migrate()`). Streaming INSERTs run in chunked transactions
    exactly as before, so the writer-lock cooperation Audit-13 A13-061
    established is preserved. The *old* `aircraft_db` stays intact and
    queryable throughout this phase.
-2. **Validate** the new row count against the previous count. If
+3. **Validate** the new row count against the previous count. If
    `new_count < AIRCRAFT_DB_MIN_RATIO × prev_count` (default 0.8),
    raise `RuntimeError` and refuse the swap. First-ever imports
    (`prev_count == 0`) bypass this check.
-3. **Swap** with a brief two-statement transaction:
-   `DROP TABLE aircraft_db; ALTER TABLE aircraft_db_new RENAME TO aircraft_db`.
-
-A bare-except cleanup drops `aircraft_db_new` on failure so a crashed
-run does not leave the staging table behind to confuse the next one.
+4. **Swap** via three sequential statements that each auto-commit:
+   ```
+   ALTER TABLE aircraft_db     RENAME TO aircraft_db_old
+   ALTER TABLE aircraft_db_new RENAME TO aircraft_db
+   DROP TABLE aircraft_db_old
+   ```
+   Critical: Python's `sqlite3` module **commits DDL immediately**,
+   regardless of any surrounding `with conn:` block (verified
+   experimentally on Python 3.12). A `DROP TABLE aircraft_db; RENAME`
+   pair would leave `aircraft_db` permanently absent if the second
+   statement failed for any reason. The rename-rename-drop pattern
+   keeps a canonical copy queryable at every observable moment:
+   between steps 4a and 4b the old data lives under
+   `aircraft_db_old`; between 4b and 4c both copies exist.
+5. **Cleanup-on-failure** drops `aircraft_db_new` if the build phase
+   crashed. It does NOT touch `aircraft_db_old` — if the failure was
+   between steps 4a and 4b that table holds the only surviving
+   copy; the next call's `_recover_aborted_swap` restores it.
 
 ## Alternatives considered
 
