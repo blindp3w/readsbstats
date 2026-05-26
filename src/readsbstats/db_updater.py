@@ -85,6 +85,36 @@ def _parse_flags(flags_str: str) -> int:
     return sum(bit for bit, ch in zip(_FLAG_BITS, flags_str) if ch == "1")
 
 
+_HEX_CHARS = frozenset("0123456789abcdef")
+
+
+def _parse_aircraft_csv_row(parts: list[str]) -> tuple | None:
+    """Parse one tar1090-db CSV row into a row tuple for aircraft_db.
+
+    Returns None for an empty row or any row whose first column is not
+    a valid 6-character lowercase hex ICAO address. Extracted from
+    update_aircraft_db so streaming and unit tests share the same path.
+
+    Format (no header): icao_hex; registration; type_code; flags; type_desc
+    """
+    if not parts:
+        return None
+    icao_hex = parts[0].strip().lower()
+    if len(icao_hex) != 6 or not all(c in _HEX_CHARS for c in icao_hex):
+        return None
+    reg       = parts[1].strip() if len(parts) > 1 else ""
+    type_code = parts[2].strip() if len(parts) > 2 else ""
+    flags_str = parts[3].strip() if len(parts) > 3 else "0"
+    type_desc = parts[4].strip() if len(parts) > 4 else ""
+    return (
+        icao_hex,
+        reg or None,
+        type_code or None,
+        type_desc or None,
+        _parse_flags(flags_str),
+    )
+
+
 def update_aircraft_db(conn: sqlite3.Connection) -> int:
     """Download tar1090-db CSV and replace aircraft_db table. Returns row count."""
     log.info("Downloading aircraft database from tar1090-db…")
@@ -92,54 +122,78 @@ def update_aircraft_db(conn: sqlite3.Connection) -> int:
     raw = _fetch(AIRCRAFT_CSV_URL)
     log.info("Downloaded %.1f MB in %.1fs", len(raw) / 1_048_576, time.time() - t0)
 
-    # Decompress
-    with gzip.open(io.BytesIO(raw)) as gz:
-        text = gz.read().decode("utf-8", errors="replace")
-
-    # Use csv.reader to correctly handle quoted fields
-    # Format (no header): icao_hex, registration, type_code, flags, type_desc
-    _HEX = frozenset("0123456789abcdef")
-    rows = []
-    for parts in csv.reader(io.StringIO(text), delimiter=";"):
-        if not parts:
-            continue
-        icao_hex = parts[0].strip().lower()
-        # ICAO addresses are always exactly 6 hex characters
-        if len(icao_hex) != 6 or not all(c in _HEX for c in icao_hex):
-            continue
-        reg       = parts[1].strip() if len(parts) > 1 else ""
-        type_code = parts[2].strip() if len(parts) > 2 else ""
-        flags_str = parts[3].strip() if len(parts) > 3 else "0"
-        type_desc = parts[4].strip() if len(parts) > 4 else ""
-
-        flags = _parse_flags(flags_str)
-
-        rows.append((
-            icao_hex,
-            reg       or None,
-            type_code or None,
-            type_desc or None,
-            flags,
-        ))
+    # Audit 2026-05-26: stream decode + parse instead of materialising
+    # the full decompressed text in memory. The compressed payload is
+    # already buffered by safe_urlopen (~10 MB), but the decoded text is
+    # ~50 MB — keeping it as bytes on the heap during parsing was the
+    # bulk of the Pi's update-time RSS.
+    gz = gzip.GzipFile(fileobj=io.BytesIO(raw))
+    text_stream = io.TextIOWrapper(gz, encoding="utf-8", errors="replace")
+    rows: list[tuple] = []
+    for parts in csv.reader(text_stream, delimiter=";"):
+        row = _parse_aircraft_csv_row(parts)
+        if row is not None:
+            rows.append(row)
 
     log.info("Parsed %d aircraft records", len(rows))
 
-    # Audit-13 A13-061: chunk the bulk reload so the writer lock is
-    # released between chunks. The previous single-transaction DELETE +
-    # INSERT held the lock for the entire 620k-row reload (several
-    # seconds on a Pi 4); concurrent collector writes hit the 30 s
-    # busy_timeout. Each chunk commits independently so other writers
-    # can interleave.
+    # Audit 2026-05-26: atomic staging-table swap.
+    # The previous DELETE + chunked INSERT pattern committed the DELETE
+    # before the INSERTs ran, so any failure between them (process kill,
+    # disk error, exception) left aircraft_db empty or half-populated
+    # and degraded enrichment/flags until the next successful run.
+    #
+    # New pattern:
+    #   1. Drop any stale staging table from a previous failed run.
+    #   2. Build `aircraft_db_new` in chunks. Each chunk commits so the
+    #      collector writer-lock contention from Audit-13 A13-061 is
+    #      preserved — the old aircraft_db remains intact and queryable
+    #      throughout this phase.
+    #   3. Compare new count against previous. Refuse a destructive
+    #      shrink (see config.AIRCRAFT_DB_MIN_RATIO).
+    #   4. Atomic swap: DROP old + RENAME new, in one transaction.
+    prev_count = conn.execute("SELECT COUNT(*) FROM aircraft_db").fetchone()[0]
     _CHUNK = 5000
-    with conn:
-        conn.execute("DELETE FROM aircraft_db")
-    for i in range(0, len(rows), _CHUNK):
+    try:
         with conn:
-            conn.executemany(
-                "INSERT OR IGNORE INTO aircraft_db "
-                "(icao_hex, registration, type_code, type_desc, flags) VALUES (?,?,?,?,?)",
-                rows[i:i + _CHUNK],
+            conn.execute("DROP TABLE IF EXISTS aircraft_db_new")
+            conn.execute(
+                "CREATE TABLE aircraft_db_new ("
+                "icao_hex TEXT PRIMARY KEY, registration TEXT, type_code TEXT, "
+                "type_desc TEXT, flags INTEGER DEFAULT 0)"
             )
+
+        for i in range(0, len(rows), _CHUNK):
+            with conn:
+                conn.executemany(
+                    "INSERT OR IGNORE INTO aircraft_db_new "
+                    "(icao_hex, registration, type_code, type_desc, flags) "
+                    "VALUES (?,?,?,?,?)",
+                    rows[i:i + _CHUNK],
+                )
+
+        new_count = conn.execute(
+            "SELECT COUNT(*) FROM aircraft_db_new"
+        ).fetchone()[0]
+        if prev_count > 0 and new_count < int(prev_count * config.AIRCRAFT_DB_MIN_RATIO):
+            raise RuntimeError(
+                f"aircraft_db swap refused: new={new_count} prev={prev_count} "
+                f"(ratio {new_count / prev_count:.2f} < "
+                f"{config.AIRCRAFT_DB_MIN_RATIO}); upstream may be truncated"
+            )
+
+        with conn:
+            conn.execute("DROP TABLE aircraft_db")
+            conn.execute("ALTER TABLE aircraft_db_new RENAME TO aircraft_db")
+    except Exception:
+        # Best-effort cleanup; the original aircraft_db is intact either
+        # way because the swap step is the only DROP of the old table.
+        try:
+            with conn:
+                conn.execute("DROP TABLE IF EXISTS aircraft_db_new")
+        except sqlite3.Error:
+            pass
+        raise
 
     # Audit-13 A13-018: clear cache immediately after the write so
     # readers don't serve pre-refresh data between the commit here and

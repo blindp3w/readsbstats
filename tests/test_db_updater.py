@@ -200,6 +200,100 @@ class TestUpdateAircraftDb:
         monkeypatch.setattr(db_updater, "_fetch", lambda url: buf.getvalue())
         assert db_updater.update_aircraft_db(conn) == 2
 
+    def test_atomic_swap_preserves_old_on_failure(self, monkeypatch):
+        """Audit 2026-05-26: a crash mid-import must leave aircraft_db
+        intact. Previously the function `DELETE FROM aircraft_db`-d
+        before bulk-inserting, so any exception left the table empty
+        or partially populated; enrichment/flags degraded until the
+        next successful run.
+        """
+        conn = self.conn
+        # Seed an "existing" aircraft_db row that must survive.
+        conn.execute(
+            "INSERT INTO aircraft_db (icao_hex, registration, type_code, type_desc, flags) "
+            "VALUES ('aaaaaa', 'OLD-REG', 'A320', 'Airbus A320', 0)"
+        )
+        conn.commit()
+
+        # Patch _parse_flags to raise mid-import — once enough rows have
+        # been buffered, the parsing helper blows up. Exercises the
+        # try/except cleanup path in update_aircraft_db.
+        n_calls = {"n": 0}
+        original_parse = db_updater._parse_flags
+        def _boom_parse(s):
+            n_calls["n"] += 1
+            if n_calls["n"] > 1:
+                raise RuntimeError("simulated parse failure")
+            return original_parse(s)
+        monkeypatch.setattr(db_updater, "_parse_flags", _boom_parse)
+
+        monkeypatch.setattr(db_updater, "_fetch", lambda url: _aircraft_gz(
+            ["488001", "SP-NEW",  "B738", "0", ""],
+            ["488002", "SP-NEW2", "B738", "0", ""],
+            ["488003", "SP-NEW3", "B738", "0", ""],
+        ))
+
+        with pytest.raises(Exception):
+            db_updater.update_aircraft_db(conn)
+
+        # Original row preserved.
+        rows = conn.execute(
+            "SELECT registration FROM aircraft_db WHERE icao_hex='aaaaaa'"
+        ).fetchall()
+        assert len(rows) == 1
+        assert rows[0]["registration"] == "OLD-REG"
+
+        # No half-baked staging table left behind.
+        staging = conn.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type='table' AND name='aircraft_db_new'"
+        ).fetchall()
+        assert staging == [], (
+            "staging table aircraft_db_new must be dropped on failure"
+        )
+
+    def test_relative_size_floor_refuses_drastic_shrink(self, monkeypatch):
+        """Audit 2026-05-26: refuse a swap whose new row count is below
+        AIRCRAFT_DB_MIN_RATIO × prev_count. Protects against truncated
+        upstream downloads that would otherwise wipe most of the DB."""
+        from readsbstats import config
+        conn = self.conn
+        # Seed 10 existing rows; we'll then try to import 3 rows (30%) which
+        # is well below the 80% floor.
+        for i in range(10):
+            conn.execute(
+                "INSERT INTO aircraft_db (icao_hex, registration, type_code, type_desc, flags) "
+                f"VALUES ('00{i:04x}', 'REG{i}', 'A320', '', 0)"
+            )
+        conn.commit()
+        monkeypatch.setattr(config, "AIRCRAFT_DB_MIN_RATIO", 0.8)
+
+        monkeypatch.setattr(db_updater, "_fetch", lambda url: _aircraft_gz(
+            ["488001", "SP-1", "B738", "0", ""],
+            ["488002", "SP-2", "B738", "0", ""],
+            ["488003", "SP-3", "B738", "0", ""],
+        ))
+        with pytest.raises(Exception):
+            db_updater.update_aircraft_db(conn)
+
+        # Original 10 rows intact.
+        n = conn.execute("SELECT COUNT(*) FROM aircraft_db").fetchone()[0]
+        assert n == 10
+
+    def test_first_ever_import_skips_size_check(self, monkeypatch):
+        """When aircraft_db is empty (prev_count == 0), import succeeds
+        no matter how few rows the upstream provides — there's nothing
+        to compare against."""
+        from readsbstats import config
+        conn = self.conn
+        # aircraft_db is empty (make_db seeded nothing).
+        monkeypatch.setattr(config, "AIRCRAFT_DB_MIN_RATIO", 0.8)
+        monkeypatch.setattr(db_updater, "_fetch", lambda url: _aircraft_gz(
+            ["488001", "SP-1", "B738", "0", ""],
+        ))
+        assert db_updater.update_aircraft_db(conn) == 1
+        assert conn.execute("SELECT COUNT(*) FROM aircraft_db").fetchone()[0] == 1
+
     def test_cache_cleared_immediately_after_write(self, monkeypatch):
         # Audit-13 A13-018: enrichment cache used to be cleared only at
         # the end of main() — a stale-cache window opened between the

@@ -52,6 +52,9 @@ def _velocity_pass(
     survivors = 0
 
     for pos in seq:
+        # Skip rows without coordinates — haversine_nm would crash on None.
+        if pos["lat"] is None or pos["lon"] is None:
+            continue
         if prev is not None:
             dt = abs(pos["ts"] - prev["ts"])
             if dt > 0:
@@ -83,7 +86,9 @@ def find_ghost_ids(
     eliminated.
     """
     cursor = conn.execute(
-        "SELECT flight_id, id, ts, lat, lon FROM positions ORDER BY flight_id, ts"
+        "SELECT flight_id, id, ts, lat, lon FROM positions "
+        "WHERE lat IS NOT NULL AND lon IS NOT NULL "
+        "ORDER BY flight_id, ts"
     )
 
     ghosts: dict[int, list[int]] = {}

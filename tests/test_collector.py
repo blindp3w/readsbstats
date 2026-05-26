@@ -683,6 +683,84 @@ class TestPoll:
         assert row is not None
         assert row["icao_hex"] == "aabbcc"
 
+    def test_poll_rejects_malformed_icao_hex(self):
+        """Audit 2026-05-26: ICAO must be 6 lowercase hex chars after ~ strip.
+
+        Before the fix the collector accepted any non-empty hex, letting
+        corrupt feed data persist arbitrary identifiers into
+        flights.icao_hex and pollute joins, watchlist matches, and
+        country classification.
+
+        The sentinels 000000 and ffffff are ADS-B placeholders for
+        "no transponder address" and are rejected too.
+        """
+        from readsbstats.collector import _poll
+        self._write_json([
+            {"hex": "",        "lat": 52.0, "lon": 21.0, "seen_pos": 0},  # empty
+            {"hex": "abc",     "lat": 52.0, "lon": 21.0, "seen_pos": 0},  # too short
+            {"hex": "abcdefg", "lat": 52.0, "lon": 21.0, "seen_pos": 0},  # too long
+            {"hex": "zzzzzz",  "lat": 52.0, "lon": 21.0, "seen_pos": 0},  # non-hex
+            {"hex": "000000",  "lat": 52.0, "lon": 21.0, "seen_pos": 0},  # sentinel
+            {"hex": "ffffff",  "lat": 52.0, "lon": 21.0, "seen_pos": 0},  # sentinel
+            {"hex": "~A1B2C3", "lat": 52.0, "lon": 21.0, "seen_pos": 0},  # valid mlat
+        ])
+        _poll(self.conn)
+        rows = self.conn.execute("SELECT icao_hex FROM flights").fetchall()
+        assert [r["icao_hex"] for r in rows] == ["a1b2c3"]
+
+    def test_poll_skips_malformed_numeric_fields(self):
+        """Audit 2026-05-26: non-numeric values must not abort the whole
+        poll. Two-tier policy:
+
+        * Strict-skip fields (lat, lon, seen_pos, hex): bad value drops
+          just that aircraft, with no DB writes.
+        * Flexible fields (alt_baro, gs, track, baro_rate, rssi,
+          messages, alt_geom): bad value coerces to NULL and the row
+          still processes.
+
+        Verifies the coerce-upfront-before-DB-write pattern: bad
+        strict-field records produce zero flights AND zero positions
+        (no partial writes); flexible-field records persist with NULL.
+        """
+        from readsbstats.collector import _poll
+        self._write_json([
+            # Strict-skip failures (each invalid on lat/lon/seen_pos/hex):
+            {"hex": "aaaa01", "lat": "not-a-number", "lon": 21.0, "seen_pos": 0},
+            {"hex": "aaaa02", "lat": 52.0, "lon": "wrong", "seen_pos": 0},
+            {"hex": "aaaa03", "lat": 52.0, "lon": 21.0, "seen_pos": "bad"},
+            {"hex": 12345,   "lat": 52.0, "lon": 21.0, "seen_pos": 0},  # non-string hex
+            # Flexible-field bad coercion → NULL, row still inserts:
+            {"hex": "cccc04", "lat": 52.0, "lon": 21.0, "seen_pos": 0,
+             "alt_baro": "cloud"},
+            {"hex": "cccc05", "lat": 52.0, "lon": 21.0, "seen_pos": 0, "gs": "fast"},
+            # All-good baseline:
+            {"hex": "bbbb01", "lat": 52.0, "lon": 21.0, "seen_pos": 0},
+            {"hex": "bbbb02", "lat": 52.1, "lon": 21.1, "seen_pos": 0},
+            {"hex": "bbbb03", "lat": 52.2, "lon": 21.2, "seen_pos": 0},
+        ])
+        _poll(self.conn)
+
+        icaos = [r["icao_hex"] for r in self.conn.execute(
+            "SELECT icao_hex FROM flights ORDER BY icao_hex"
+        ).fetchall()]
+        # Strict-skipped IDs absent:
+        for skipped in ("aaaa01", "aaaa02", "aaaa03"):
+            assert skipped not in icaos
+        # Flexible-field rows still landed (NULL on the bad column):
+        assert "cccc04" in icaos
+        assert "cccc05" in icaos
+        # Good baseline intact:
+        for good in ("bbbb01", "bbbb02", "bbbb03"):
+            assert good in icaos
+
+        # No partial flights from the strict-skip rows: nothing matching
+        # aaaa* should have positions either.
+        bad_positions = self.conn.execute(
+            "SELECT COUNT(*) FROM positions p JOIN flights f ON f.id = p.flight_id "
+            "WHERE f.icao_hex LIKE 'aaaa%'"
+        ).fetchone()[0]
+        assert bad_positions == 0
+
     def test_poll_unchanged_file_is_noop(self):
         """If mtime hasn't changed, _poll should not process the file again."""
         from readsbstats.collector import _poll
@@ -852,16 +930,16 @@ class TestPoll:
         monkeypatch.setattr(config, "MAX_GS_MILITARY_KTS", 1800)
         self.conn.execute(
             "INSERT INTO aircraft_db (icao_hex, registration, type_code, flags)"
-            " VALUES ('mil001', 'MIL-1', 'F16', 1)"  # flags=1 = military
+            " VALUES ('ae0001', 'MIL-1', 'F16', 1)"  # flags=1 = military
         )
         self.conn.commit()
         self._write_json([
-            {"hex": "mil001", "lat": 52.0, "lon": 21.0, "seen_pos": 0, "gs": 1200.0},
+            {"hex": "ae0001", "lat": 52.0, "lon": 21.0, "seen_pos": 0, "gs": 1200.0},
         ])
         _poll(self.conn)
         row = self.conn.execute(
             "SELECT p.gs FROM positions p JOIN flights f ON f.id = p.flight_id"
-            " WHERE f.icao_hex = 'mil001'"
+            " WHERE f.icao_hex = 'ae0001'"
         ).fetchone()
         assert row["gs"] == pytest.approx(1200.0)
 
@@ -873,16 +951,16 @@ class TestPoll:
         monkeypatch.setattr(config, "MAX_GS_MILITARY_KTS", 1800)
         self.conn.execute(
             "INSERT INTO aircraft_db (icao_hex, registration, type_code, flags)"
-            " VALUES ('mil001', 'MIL-1', 'F16', 1)"
+            " VALUES ('ae0001', 'MIL-1', 'F16', 1)"
         )
         self.conn.commit()
         self._write_json([
-            {"hex": "mil001", "lat": 52.0, "lon": 21.0, "seen_pos": 0, "gs": 1900.0},
+            {"hex": "ae0001", "lat": 52.0, "lon": 21.0, "seen_pos": 0, "gs": 1900.0},
         ])
         _poll(self.conn)
         row = self.conn.execute(
             "SELECT p.gs FROM positions p JOIN flights f ON f.id = p.flight_id"
-            " WHERE f.icao_hex = 'mil001'"
+            " WHERE f.icao_hex = 'ae0001'"
         ).fetchone()
         assert row["gs"] is None
 
@@ -892,14 +970,14 @@ class TestPoll:
         from readsbstats.collector import _poll
         monkeypatch.setattr(config, "MAX_GS_CIVIL_KTS", 750)
         monkeypatch.setattr(config, "MAX_GS_MILITARY_KTS", 1800)
-        # No aircraft_db row for 'unknown1'
+        # No aircraft_db row for 'cabbed'
         self._write_json([
-            {"hex": "unknown1", "lat": 52.0, "lon": 21.0, "seen_pos": 0, "gs": 1900.0},
+            {"hex": "cabbed", "lat": 52.0, "lon": 21.0, "seen_pos": 0, "gs": 1900.0},
         ])
         _poll(self.conn)
         row = self.conn.execute(
             "SELECT p.gs FROM positions p JOIN flights f ON f.id = p.flight_id"
-            " WHERE f.icao_hex = 'unknown1'"
+            " WHERE f.icao_hex = 'cabbed'"
         ).fetchone()
         assert row["gs"] is None
 
@@ -910,12 +988,12 @@ class TestPoll:
         monkeypatch.setattr(config, "MAX_GS_CIVIL_KTS", 750)
         monkeypatch.setattr(config, "MAX_GS_MILITARY_KTS", 1800)
         self._write_json([
-            {"hex": "unknown1", "lat": 52.0, "lon": 21.0, "seen_pos": 0, "gs": 800.0},
+            {"hex": "cabbed", "lat": 52.0, "lon": 21.0, "seen_pos": 0, "gs": 800.0},
         ])
         _poll(self.conn)
         row = self.conn.execute(
             "SELECT p.gs FROM positions p JOIN flights f ON f.id = p.flight_id"
-            " WHERE f.icao_hex = 'unknown1'"
+            " WHERE f.icao_hex = 'cabbed'"
         ).fetchone()
         assert row["gs"] == pytest.approx(800.0)
 
@@ -2298,14 +2376,14 @@ class TestLoadNotified:
     def test_loads_military_icao(self):
         from readsbstats import collector
         self.conn.execute(
-            "INSERT INTO flights (icao_hex, first_seen, last_seen) VALUES ('mil001', 1000, 1000)"
+            "INSERT INTO flights (icao_hex, first_seen, last_seen) VALUES ('ae0001', 1000, 1000)"
         )
         self.conn.execute(
-            "INSERT INTO aircraft_db (icao_hex, registration, flags) VALUES ('mil001', 'MIL-1', 1)"
+            "INSERT INTO aircraft_db (icao_hex, registration, flags) VALUES ('ae0001', 'MIL-1', 1)"
         )
         self.conn.commit()
         collector._load_notified(self.conn)
-        assert "mil001" in collector._notified_icao
+        assert "ae0001" in collector._notified_icao
 
     def test_loads_interesting_icao(self):
         from readsbstats import collector

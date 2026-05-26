@@ -479,6 +479,37 @@ class TestEnrichBatch:
         assert count == 2
         assert len(calls) == 2
 
+    def test_apply_failure_rolls_back_route_cache(self, monkeypatch):
+        """Audit 2026-05-26: _store_route and _apply_to_flights must
+        commit atomically. Before the fix _store_route committed first,
+        so a crash inside _apply_to_flights left callsign_routes claiming
+        the callsign was freshly fetched while flights stayed stale.
+
+        Verifies that an injected sqlite.Error from _apply_to_flights
+        rolls back the callsign_routes insert too.
+        """
+        monkeypatch.setattr(config, "ROUTE_CACHE_DAYS", 30)
+        monkeypatch.setattr(config, "ROUTE_BATCH_SIZE", 10)
+        monkeypatch.setattr(config, "ROUTE_RATE_LIMIT_SEC", 0.0)
+        insert_flight(self.conn, callsign="LOT789", active=False)
+
+        monkeypatch.setattr(self.re, "_fetch_route", lambda cs: self._mock_route())
+
+        def _boom(*args, **kwargs):
+            raise sqlite3.IntegrityError("simulated apply failure")
+        monkeypatch.setattr(self.re, "_apply_to_flights", _boom)
+
+        self.re._enrich_batch(self.conn)
+
+        # Both sides should be empty: no route cached, no flight backfilled.
+        cached = self.conn.execute(
+            "SELECT * FROM callsign_routes WHERE callsign='LOT789'"
+        ).fetchone()
+        assert cached is None, (
+            "callsign_routes was committed even though _apply_to_flights "
+            "raised — atomicity contract violated"
+        )
+
     def test_network_failure_does_not_store_confirmed_unknown(self, monkeypatch):
         """A transient network error must NOT write a NULL sentinel to callsign_routes.
 

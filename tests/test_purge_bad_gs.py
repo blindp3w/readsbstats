@@ -673,3 +673,42 @@ class TestMain:
         out = capsys.readouterr().out
         assert "LOT123" in out
         assert "SP-LRA" in out
+
+
+# ---------------------------------------------------------------------------
+# Audit 2026-05-26: NULL-coordinate defence
+# ---------------------------------------------------------------------------
+
+
+class TestNullCoordinateGuard:
+    """purge_bad_gs's cross-validation step calls haversine_nm with the
+    previous and current positions. NULL lat/lon would crash via
+    math.radians(None) — must skip cleanly."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        self.conn = make_db()
+        yield
+        self.conn.close()
+
+    def test_scan_flights_skips_null_coord_rows(self):
+        fid = insert_flight(self.conn)
+        # Row with NULL coords but a valid gs value — cross-validation
+        # against the previous row would have crashed.
+        self.conn.execute(
+            "INSERT INTO positions (flight_id, ts, lat, lon, gs, source_type) "
+            "VALUES (?,?,NULL,NULL,400.0,'adsb_icao')",
+            (fid, 1500),
+        )
+        # Bracketing valid positions
+        insert_pos(self.conn, fid, 1000, 52.6,  20.75, 400.0, "adsb_icao")
+        insert_pos(self.conn, fid, 2000, 52.65, 20.80, 400.0, "adsb_icao")
+        self.conn.commit()
+
+        # Before the fix: TypeError. After: the NULL row is skipped, no
+        # bad_ids reported because gs values are within the civil limit.
+        result = scan_flights(
+            self.conn, civil_limit=700, military_limit=1500, deviation=200,
+        )
+        # No flagged positions (slow enough to be plausible)
+        assert result == {}

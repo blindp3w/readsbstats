@@ -90,7 +90,8 @@ def scan_flights(
 
     cursor = conn.execute(
         "SELECT flight_id, id, ts, lat, lon, gs, source_type FROM positions "
-        "WHERE gs IS NOT NULL ORDER BY flight_id, ts"
+        "WHERE gs IS NOT NULL AND lat IS NOT NULL AND lon IS NOT NULL "
+        "ORDER BY flight_id, ts"
     )
 
     bad: dict[int, list[int]] = {}
@@ -133,7 +134,12 @@ def scan_flights(
                 dt = ts - pts
                 is_adsb = (source_type or "").startswith("adsb")
                 min_dt = _MIN_DT_ADSB if is_adsb else _MIN_DT_OTHER
-                if min_dt <= dt <= _MAX_DT:
+                # Defensive: the WHERE clause already filters NULLs from
+                # the cursor, but cross-validation pairs current+previous,
+                # so a defensive call-site guard catches future schema or
+                # query-source changes that bypass the SELECT.
+                if (min_dt <= dt <= _MAX_DT
+                        and None not in (plat, plon, lat, lon)):
                     dist = haversine_nm(plat, plon, lat, lon)
                     implied = dist / (dt / 3600.0)
                     if abs(gs - implied) > deviation:

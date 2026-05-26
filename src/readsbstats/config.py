@@ -199,6 +199,18 @@ DUCKDB_TEMP_DIR   = os.getenv("RSBS_DUCKDB_TEMP_DIR",
 # writable for this user, survives across deploys, doesn't clutter /opt).
 DUCKDB_HOME_DIR   = os.getenv("RSBS_DUCKDB_HOME_DIR",
                               "/mnt/ext/readsbstats/duckdb-home")
+
+# Audit 2026-05-26: minimum fraction of the previous aircraft_db row count
+# that a freshly-imported tar1090-db CSV must contain before the swap is
+# allowed. Protects against truncated upstream downloads (a successful 200
+# OK with a half-streamed body) silently wiping most of the local cache.
+# 0.8 = refuse a swap that loses >20% of rows compared to last successful
+# import. First-ever imports (prev_count == 0) bypass the check.
+AIRCRAFT_DB_MIN_RATIO = _min_or_default_float(
+    "RSBS_AIRCRAFT_DB_MIN_RATIO",
+    _float("RSBS_AIRCRAFT_DB_MIN_RATIO", "0.8"),
+    0.0, 0.8,
+)
 # Background prewarmer for map heatmap/coverage caches. On when DuckDB is
 # on; harmless to leave on with DuckDB off (the prewarmer self-disables if
 # the analytics engine isn't available — running the heavy SQLite query

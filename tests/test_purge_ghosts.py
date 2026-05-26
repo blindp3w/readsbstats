@@ -379,3 +379,36 @@ class TestMainCli:
         # Exactly one backup file should now sit next to the DB.
         backups = list(tmp_path.glob("test.db.backup-*.db"))
         assert len(backups) == 1, f"expected 1 snapshot, got {backups}"
+
+
+# ---------------------------------------------------------------------------
+# Audit 2026-05-26: NULL-coordinate defence
+# ---------------------------------------------------------------------------
+
+
+class TestNullCoordinateGuard:
+    """Historical rows can have NULL lat/lon (collector crashes, schema
+    migrations, dirty shutdowns). Passing None to haversine_nm crashes
+    with TypeError; the purge must skip those rows."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        self.conn = make_db()
+        yield
+        self.conn.close()
+
+    def test_find_ghost_ids_skips_null_coord_rows(self):
+        fid = insert_flight(self.conn)
+        # Direct insert that bypasses the helper so we can set lat=NULL
+        self.conn.execute(
+            "INSERT INTO positions (flight_id, ts, lat, lon) VALUES (?,?,NULL,NULL)",
+            (fid, 1000),
+        )
+        # Valid positions on either side of the null
+        insert_pos(self.conn, fid, 999, 52.6, 20.75)
+        insert_pos(self.conn, fid, 1001, 52.61, 20.76)
+        self.conn.commit()
+
+        # Before the fix: TypeError(math.radians(None)) aborts the scan.
+        ghosts = find_ghost_ids(self.conn, MAX_SPEED)
+        assert ghosts == {}  # neighbouring rows are slow enough not to be ghosts
