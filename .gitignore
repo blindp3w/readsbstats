@@ -66,3 +66,6 @@ CLAUDE.old.md
 # Claude Code (AI assistant local context — not for public repo)
 .claude/
 CLAUDE.md
+
+# Playwright MCP output (screenshots / console / snapshots)
+.playwright-mcp/

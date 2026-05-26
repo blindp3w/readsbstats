@@ -100,7 +100,7 @@ export function FlightsTable({ flights, isLoading, error, sortBy, sortDir, onSor
     { key: 'icao_hex', label: 'ICAO' },
     { key: 'callsign', label: 'Callsign' },
     { key: 'registration', label: 'Reg' },
-    { key: 'aircraft_type', label: 'Type' },
+    { key: 'aircraft_type', label: 'Type', hideOnMobile: true },
     ...(hasAnyRoute ? ([{ key: null, label: 'Route', hideOnMobile: true }] as ColDef[]) : []),
     { key: 'primary_source', label: 'Source', hideOnMobile: true },
     { key: 'max_alt_baro', label: altLabel(), hideOnMobile: true },
@@ -216,7 +216,7 @@ export function FlightsTable({ flights, isLoading, error, sortBy, sortDir, onSor
             </TD>
             <TD>{f.callsign ?? '—'}</TD>
             <TD>{f.registration ?? '—'}</TD>
-            <TD>
+            <TD className="hidden md:table-cell">
               <span className="inline-flex items-center gap-1.5">
                 {f.aircraft_type ?? '—'}
                 <FlagBadge flags={f.flags} />
