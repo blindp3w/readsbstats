@@ -16,12 +16,97 @@ Public surface:
 
 from __future__ import annotations
 
+import fnmatch
 import logging
 import os
 import threading
 from pathlib import Path
 
 from . import config
+
+# Audit 2026-05-26: cleanup must only target a directory readsbstats owns.
+# The marker file is created on first init in an empty/new temp dir; later
+# inits refuse to scan or delete anything from a non-empty dir without it.
+_TEMP_MARKER = ".readsbstats-duckdb-tmp"
+
+# Only filenames matching these patterns are eligible for cleanup, even
+# inside an owned directory. Prevents collateral damage if a user mounts
+# a useful directory at the same path.
+_DUCKDB_TEMP_PATTERNS = (
+    "duckdb_temporary_*",
+    "*.parquet.tmp",
+    "*.tmp",
+)
+
+# Paths that must never be used as the temp dir, even if writable. The
+# match is exact or "is a subdir of"; both cases would let `os.scandir`
+# walk into directories that contain unrelated user data.
+_DANGEROUS_TEMP_PREFIXES = ("/", "/tmp", "/var/tmp", "/home", "/root", "/etc", "/var")
+
+
+def _is_dangerous_temp_dir(p: str) -> bool:
+    """Check whether ``p`` is one of the always-unsafe parent paths.
+
+    Compares both the literal string and the symlink-resolved form
+    against the denylist — on macOS ``/home`` resolves to
+    ``/System/Volumes/Data/home`` via autofs, and we want to refuse the
+    user-typed form regardless.
+    """
+    if not p:
+        return True
+    candidates = {p.rstrip("/")}
+    try:
+        candidates.add(str(Path(p).resolve()).rstrip("/"))
+    except OSError:
+        return True
+    for bad in _DANGEROUS_TEMP_PREFIXES:
+        if bad in candidates:
+            return True
+    # Don't reject subdirs of /tmp — pytest uses tmp_path under
+    # /private/var/folders on macOS and /tmp on Linux, which is fine.
+    return False
+
+
+def _cleanup_owned_temp_dir(temp_dir: Path) -> None:
+    """Delete only DuckDB-pattern files from an owned temp dir.
+
+    Owned = the marker file exists. If absent and the directory is
+    non-empty, refuse to touch anything. If absent and the directory is
+    empty, write the marker so future inits recognise the dir as ours."""
+    if not temp_dir.is_dir():
+        return
+    marker = temp_dir / _TEMP_MARKER
+    if not marker.exists():
+        # Don't touch anything in a directory we don't own.
+        try:
+            has_content = any(temp_dir.iterdir())
+        except OSError:
+            return
+        if has_content:
+            log.warning(
+                "analytics: DUCKDB_TEMP_DIR=%s exists but has no %s marker — "
+                "refusing to scan/delete. Either point RSBS_DUCKDB_TEMP_DIR at "
+                "an empty dir or delete the contents manually.",
+                temp_dir, _TEMP_MARKER,
+            )
+            raise OSError("temp dir not owned by readsbstats")
+        try:
+            marker.touch()
+        except OSError:
+            return
+        return
+    for entry in os.scandir(temp_dir):
+        if not entry.is_file():
+            continue
+        name = entry.name
+        if name == _TEMP_MARKER:
+            continue
+        if not any(fnmatch.fnmatch(name, pat) for pat in _DUCKDB_TEMP_PATTERNS):
+            continue
+        try:
+            os.unlink(entry.path)
+        except OSError:
+            pass
 
 try:
     import duckdb
@@ -79,15 +164,20 @@ def _init_connection() -> None:
         )
         return
 
+    if _is_dangerous_temp_dir(temp_dir):
+        _INFRA_OK = False
+        log.warning(
+            "analytics: refusing DuckDB init — DUCKDB_TEMP_DIR=%s is a "
+            "shared system directory; point RSBS_DUCKDB_TEMP_DIR at a "
+            "dedicated subdirectory the readsbstats user owns",
+            temp_dir,
+        )
+        return
+
     try:
         Path(home_dir).mkdir(parents=True, exist_ok=True, mode=0o750)
         Path(temp_dir).mkdir(parents=True, exist_ok=True, mode=0o700)
-        for entry in os.scandir(temp_dir):
-            if entry.is_file():
-                try:
-                    os.unlink(entry.path)
-                except OSError:
-                    pass
+        _cleanup_owned_temp_dir(Path(temp_dir))
     except OSError as exc:
         _INFRA_OK = False
         log.warning("analytics: cannot prepare DuckDB dirs: %s", exc)
@@ -268,13 +358,8 @@ def close() -> None:
             _CONN = None
         try:
             temp_dir = config.DUCKDB_TEMP_DIR
-            if temp_dir and Path(temp_dir).is_dir():
-                for entry in os.scandir(temp_dir):
-                    if entry.is_file():
-                        try:
-                            os.unlink(entry.path)
-                        except OSError:
-                            pass
+            if temp_dir and not _is_dangerous_temp_dir(temp_dir):
+                _cleanup_owned_temp_dir(Path(temp_dir))
         except OSError:
             pass
 

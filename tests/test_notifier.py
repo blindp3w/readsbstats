@@ -322,6 +322,21 @@ class TestTelegramEnabled:
             notifier.telegram_enabled()
         assert any("RSBS_TELEGRAM_CHAT_ID" in r.message for r in caplog.records)
 
+    def test_invalid_chat_id_not_logged_verbatim(self, monkeypatch, caplog):
+        """Audit 2026-05-26: the raw chat ID value must not appear in logs
+        when it fails numeric validation — it can be a private group
+        identifier that the configuration treats as sensitive."""
+        import logging
+        secret = "not-a-number-XYZ-private-group-tag"
+        monkeypatch.setattr(config, "TELEGRAM_TOKEN", "123456:ABC")
+        monkeypatch.setattr(config, "TELEGRAM_CHAT_ID", secret)
+        with caplog.at_level(logging.WARNING):
+            notifier.telegram_enabled()
+        formatted = [r.getMessage() for r in caplog.records]
+        assert all(secret not in msg for msg in formatted), (
+            "chat ID was logged verbatim: " + repr(formatted)
+        )
+
     def test_no_warning_when_both_empty(self, monkeypatch, caplog):
         """Both empty = intentionally disabled, no warning needed."""
         import logging

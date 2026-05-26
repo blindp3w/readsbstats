@@ -439,3 +439,86 @@ def test_shutdown_race_no_warning(file_db, monkeypatch, caplog):
     assert result_c is None
     # No WARNING should appear — shutdown races must be silent
     assert not caplog.records, f"unexpected log records: {caplog.records}"
+
+
+# ---------------------------------------------------------------------------
+# Audit 2026-05-26: DuckDB temp dir cleanup hardening
+# ---------------------------------------------------------------------------
+
+
+class TestDuckdbTempCleanup:
+    """The DuckDB init/shutdown previously called `os.unlink` on every file
+    in ``DUCKDB_TEMP_DIR``. A misconfigured ``RSBS_DUCKDB_TEMP_DIR`` (e.g.
+    ``/tmp``) would delete unrelated files. The fix requires a marker file
+    in the directory and only cleans known DuckDB temp patterns; it also
+    refuses to use dangerous parent paths."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self, monkeypatch, tmp_path):
+        # Ensure each test starts from a clean module state — the analytics
+        # module memoises infra state across calls.
+        analytics._reset_for_tests()
+        # All tests will write a benign DB_PATH so init doesn't fail there.
+        db = tmp_path / "history.db"
+        conn = _make_file_db(db)
+        conn.close()
+        monkeypatch.setattr(config, "DB_PATH", str(db))
+        monkeypatch.setattr(config, "DUCKDB_HOME_DIR", str(tmp_path / "duckdb-home"))
+        monkeypatch.setattr(config, "USE_DUCKDB", True)
+        yield
+        analytics._reset_for_tests()
+
+    def test_refuses_marker_absent_with_foreign_files(
+        self, monkeypatch, tmp_path, caplog
+    ):
+        """If the temp dir contains files but no marker, init must NOT
+        delete anything — it disables DuckDB and logs a warning instead."""
+        import logging
+        tmp = tmp_path / "duckdb-tmp"
+        tmp.mkdir()
+        sentinel = tmp / "user-data.txt"
+        sentinel.write_text("DO NOT DELETE")
+
+        monkeypatch.setattr(config, "DUCKDB_TEMP_DIR", str(tmp))
+        with caplog.at_level(logging.WARNING, logger="readsbstats.analytics"):
+            assert analytics.is_available() is False
+        assert sentinel.exists(), "foreign file was deleted from un-claimed temp dir"
+
+    def test_marker_present_preserves_foreign_files(self, monkeypatch, tmp_path):
+        """With the marker present, init cleans ONLY DuckDB-shaped temp
+        files — foreign files alongside the marker survive."""
+        tmp = tmp_path / "duckdb-tmp"
+        tmp.mkdir()
+        marker = tmp / ".readsbstats-duckdb-tmp"
+        marker.write_text("")
+        foreign = tmp / "user-data.txt"
+        foreign.write_text("KEEP ME")
+        duck_tmp = tmp / "duckdb_temporary_storage-0.tmp"
+        duck_tmp.write_text("scratch")
+
+        monkeypatch.setattr(config, "DUCKDB_TEMP_DIR", str(tmp))
+        # We don't care whether DuckDB itself succeeds (depends on
+        # binary), we only care about the file-system side effects.
+        analytics._ensure_initialised()
+        assert foreign.exists()
+        assert marker.exists()
+        assert not duck_tmp.exists()
+
+    def test_empty_dir_gets_marker(self, monkeypatch, tmp_path):
+        """First-ever init on an empty / non-existent dir writes the
+        marker so subsequent runs know the directory is owned."""
+        tmp = tmp_path / "duckdb-tmp-fresh"
+        monkeypatch.setattr(config, "DUCKDB_TEMP_DIR", str(tmp))
+        analytics._ensure_initialised()
+        assert (tmp / ".readsbstats-duckdb-tmp").exists()
+
+    @pytest.mark.parametrize("bad", ["/", "/tmp", "/var/tmp", "/home"])
+    def test_rejects_dangerous_temp_paths(self, monkeypatch, bad, caplog):
+        """Refuse to operate when DUCKDB_TEMP_DIR points at a shared
+        system directory — even if it would happen to be empty."""
+        import logging
+        monkeypatch.setattr(config, "DUCKDB_TEMP_DIR", bad)
+        with caplog.at_level(logging.WARNING, logger="readsbstats.analytics"):
+            assert analytics.is_available() is False
+        assert any("temp" in r.message.lower() or "duckdb" in r.message.lower()
+                   for r in caplog.records)

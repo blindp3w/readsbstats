@@ -76,8 +76,11 @@ def telegram_enabled() -> bool:
     try:
         int(chat_id)
     except ValueError:
-        log.warning("Telegram disabled: RSBS_TELEGRAM_CHAT_ID=%r is not a "
-                     "valid numeric chat ID", chat_id)
+        # Never log the value itself — it can be a private group/channel
+        # identifier. Length is enough for diagnosis.
+        log.warning("Telegram disabled: RSBS_TELEGRAM_CHAT_ID is not a "
+                     "valid numeric chat ID (length=%d)",
+                     len(chat_id) if isinstance(chat_id, str) else 0)
         _tg_enabled = False
         return False
 
