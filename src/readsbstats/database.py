@@ -182,6 +182,12 @@ CREATE TABLE IF NOT EXISTS positions (
 
 CREATE INDEX IF NOT EXISTS idx_positions_flight ON positions(flight_id);
 CREATE INDEX IF NOT EXISTS idx_positions_ts     ON positions(ts);
+-- Audit 2026-05-26: composite for the hot `WHERE flight_id=? ORDER BY ts`
+-- pattern used by flight-detail rendering and the purge scripts. Built
+-- once per fresh install via DDL; existing DBs get it via
+-- run_background_migrations() because the index build is too slow for
+-- _migrate() on a millions-row positions table.
+CREATE INDEX IF NOT EXISTS idx_positions_flight_ts ON positions(flight_id, ts);
 
 -- Persists currently open flights across collector restarts
 CREATE TABLE IF NOT EXISTS active_flights (
@@ -455,6 +461,12 @@ def _build_positions_indexes(path: str = config.DB_PATH) -> None:
             "CREATE INDEX IF NOT EXISTS idx_positions_flight_id_desc "
             "ON positions(flight_id, id DESC)"
         )
+        # Audit 2026-05-26: composite covering `WHERE flight_id=? ORDER BY ts`
+        # used by /api/flights/{id} positions, purge_ghosts, purge_bad_gs.
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_positions_flight_ts "
+            "ON positions(flight_id, ts)"
+        )
         pos_cols = {row[1] for row in conn.execute("PRAGMA table_info(positions)")}
         if "ts" in pos_cols:
             conn.execute(
@@ -533,6 +545,61 @@ def _drop_dead_watchlist_alerted_column(path: str = config.DB_PATH) -> None:
             conn.close()
 
 
+def _backfill_flights_enrichment(path: str = config.DB_PATH) -> None:
+    """Populate flights.registration / flights.aircraft_type from
+    aircraft_db where flights have NULL values.
+
+    Audit 2026-05-26: groundwork for dropping the
+    `COALESCE(f.registration, adb.registration)` filter in
+    `_build_flight_filter()`. Once every existing row has a stored
+    effective registration/type, the WHERE clause can become a direct
+    column predicate and hit the existing `idx_flights_registration` /
+    `idx_flights_type` indexes. The COALESCE drop is deferred to a
+    follow-up commit gated on confirmation that this backfill has
+    completed in production.
+
+    Uses correlated subqueries (not ``UPDATE ... FROM ...``) to avoid
+    the SQLite "ambiguous column name" error documented in CLAUDE.md.
+    """
+    _log = logging.getLogger(__name__)
+    conn: sqlite3.Connection | None = None
+    try:
+        conn = connect(path)
+        conn.execute("PRAGMA busy_timeout = 30000")
+        conn.execute(
+            """
+            UPDATE flights SET registration = (
+                SELECT registration FROM aircraft_db
+                WHERE icao_hex = flights.icao_hex
+            )
+            WHERE registration IS NULL
+              AND EXISTS (
+                SELECT 1 FROM aircraft_db
+                WHERE icao_hex = flights.icao_hex
+              )
+            """
+        )
+        conn.execute(
+            """
+            UPDATE flights SET aircraft_type = (
+                SELECT type_code FROM aircraft_db
+                WHERE icao_hex = flights.icao_hex
+            )
+            WHERE aircraft_type IS NULL
+              AND EXISTS (
+                SELECT 1 FROM aircraft_db
+                WHERE icao_hex = flights.icao_hex
+              )
+            """
+        )
+        conn.commit()
+    except Exception:
+        _log.exception("_backfill_flights_enrichment failed")
+    finally:
+        if conn is not None:
+            conn.close()
+
+
 def run_background_migrations(path: str = config.DB_PATH) -> None:
     """Run slow one-time migrations in a background thread (after READY=1).
     Builds positions indexes, backfills max_distance_bearing, and sets
@@ -540,6 +607,7 @@ def run_background_migrations(path: str = config.DB_PATH) -> None:
     _build_positions_indexes(path)
     backfill_bearing(path)
     _backfill_primary_source(path)
+    _backfill_flights_enrichment(path)
     _drop_dead_watchlist_alerted_column(path)
 
 

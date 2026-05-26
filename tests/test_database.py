@@ -299,6 +299,74 @@ class TestMigrate:
         assert "idx_positions_flight_id_desc" in indexes
         conn.close()
 
+    def test_idx_positions_flight_ts_built(self, tmp_path):
+        """Audit 2026-05-26: composite (flight_id, ts) index must exist on
+        fresh installs (DDL) AND on existing DBs after background
+        migration runs."""
+        db_path = str(tmp_path / "fts.db")
+        database.init_db(db_path)
+        conn = database.connect(db_path)
+        # DDL path: fresh init already creates the composite.
+        indexes = {
+            row[1]
+            for row in conn.execute("PRAGMA index_list(positions)").fetchall()
+        }
+        assert "idx_positions_flight_ts" in indexes
+        conn.close()
+
+        # Existing-DB path: drop the index, run background migrations,
+        # ensure it comes back.
+        conn = database.connect(db_path)
+        conn.execute("DROP INDEX idx_positions_flight_ts")
+        conn.commit()
+        conn.close()
+        database.run_background_migrations(db_path)
+        conn = database.connect(db_path)
+        indexes = {
+            row[1]
+            for row in conn.execute("PRAGMA index_list(positions)").fetchall()
+        }
+        assert "idx_positions_flight_ts" in indexes
+        conn.close()
+
+    def test_backfill_flights_enrichment_populates_null_columns(self, tmp_path):
+        """Audit 2026-05-26: rows in flights with NULL registration /
+        aircraft_type and a matching aircraft_db row must be populated
+        by the background backfill."""
+        db_path = str(tmp_path / "bf.db")
+        database.init_db(db_path)
+        conn = database.connect(db_path)
+        conn.execute(
+            "INSERT INTO aircraft_db (icao_hex, registration, type_code) "
+            "VALUES ('aabbcc', 'SP-ABC', 'A320')"
+        )
+        conn.execute(
+            "INSERT INTO flights (icao_hex, first_seen, last_seen) "
+            "VALUES ('aabbcc', 1000, 2000)"
+        )
+        # Row with no matching aircraft_db entry must stay NULL.
+        conn.execute(
+            "INSERT INTO flights (icao_hex, first_seen, last_seen) "
+            "VALUES ('ffffff', 1100, 2100)"
+        )
+        conn.commit()
+        conn.close()
+
+        database._backfill_flights_enrichment(db_path)
+
+        conn = database.connect(db_path)
+        row = conn.execute(
+            "SELECT registration, aircraft_type FROM flights WHERE icao_hex='aabbcc'"
+        ).fetchone()
+        assert row["registration"] == "SP-ABC"
+        assert row["aircraft_type"] == "A320"
+        unmatched = conn.execute(
+            "SELECT registration, aircraft_type FROM flights WHERE icao_hex='ffffff'"
+        ).fetchone()
+        assert unmatched["registration"] is None
+        assert unmatched["aircraft_type"] is None
+        conn.close()
+
     def test_background_migrations_swallow_connect_failure(self, monkeypatch):
         """If connect() itself raises, the helpers must not crash with
         UnboundLocalError trying to close a connection that was never opened."""
