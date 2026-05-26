@@ -7,6 +7,7 @@ Safe to run against a live WAL writer — opens read-only via URI.
 import argparse
 import sqlite3
 import sys
+from pathlib import Path
 
 from readsbstats import config
 
@@ -23,7 +24,11 @@ def main() -> None:
     args = p.parse_args()
 
     try:
-        conn = sqlite3.connect(f"file:{args.db}?mode=ro", uri=True)
+        # Path.as_uri() percent-encodes spaces, ?, #, %, etc. — direct
+        # f-string concatenation would let those characters split the URI
+        # into bogus query parameters and silently open a different file.
+        db_uri = Path(args.db).resolve().as_uri() + "?mode=ro"
+        conn = sqlite3.connect(db_uri, uri=True)
         conn.execute("PRAGMA busy_timeout = 10000")
     except sqlite3.Error as exc:
         print(f"ERROR: cannot open {args.db}: {exc}", file=sys.stderr)
