@@ -16,20 +16,23 @@ export async function copyToClipboard(value: string): Promise<boolean> {
       // Permission denied / iframe sandbox — fall through to execCommand.
     }
   }
+  const ta = document.createElement('textarea');
+  ta.value = value;
+  ta.setAttribute('readonly', '');
+  ta.style.position = 'fixed';
+  ta.style.opacity = '0';
+  ta.style.pointerEvents = 'none';
+  document.body.appendChild(ta);
   try {
-    const ta = document.createElement('textarea');
-    ta.value = value;
-    ta.setAttribute('readonly', '');
-    ta.style.position = 'fixed';
-    ta.style.opacity = '0';
-    ta.style.pointerEvents = 'none';
-    document.body.appendChild(ta);
     ta.focus();
     ta.select();
-    const ok = document.execCommand('copy');
-    document.body.removeChild(ta);
-    return ok;
+    return document.execCommand('copy');
   } catch {
     return false;
+  } finally {
+    // Audit 2026-05-26: removal must run even when execCommand throws,
+    // otherwise repeated copy failures leak hidden DOM nodes and steal
+    // focus from interactive controls.
+    ta.remove();
   }
 }

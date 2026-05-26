@@ -81,9 +81,17 @@ describe('fmtTs', () => {
   it('locale string for non-zero', () => {
     expect(fmtTs(1_700_000_000)).not.toBe('—');
   });
-  it('— for zero/null', () => {
-    expect(fmtTs(0)).toBe('—');
+  it('— for null/undefined/NaN', () => {
     expect(fmtTs(null)).toBe('—');
+    expect(fmtTs(undefined)).toBe('—');
+    expect(fmtTs(Number.NaN)).toBe('—');
+  });
+  // Audit 2026-05-26: epoch 0 (1970-01-01T00:00:00Z) is a valid
+  // timestamp and must format to a real string, not the em dash. The
+  // earlier `if (!epoch)` shortcut treated 0 as missing.
+  it('formats epoch 0 as a real string, not the missing-data dash', () => {
+    expect(fmtTs(0)).not.toBe('—');
+    expect(fmtTs(0)).toContain('1970');
   });
 });
 
@@ -92,10 +100,16 @@ describe('fmtTs clockFormat', () => {
   // (incl. Vitest's default UTC) land in the 13..23 range for 24h.
   const AFTERNOON_EPOCH = 1_700_000_000;
 
-  it('null/undefined/zero return dash regardless of format', () => {
+  it('null/undefined return dash regardless of format', () => {
     expect(fmtTs(null, '24h')).toBe('—');
     expect(fmtTs(undefined, '12h')).toBe('—');
-    expect(fmtTs(0, '24h')).toBe('—');
+  });
+
+  // Audit 2026-05-26: epoch 0 is a valid datetime; the formatter must
+  // honour the clock-format selector and emit a real string.
+  it('epoch 0 renders with the chosen clock format', () => {
+    expect(fmtTs(0, '24h')).not.toBe('—');
+    expect(fmtTs(0, '24h')).toContain('1970');
   });
 
   it('12h and 24h outputs differ for an afternoon/evening epoch', () => {

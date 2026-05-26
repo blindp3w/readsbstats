@@ -100,6 +100,29 @@ export default function FlightPage() {
     enabled: Number.isFinite(flightId),
   });
 
+  // Audit 2026-05-26: chart + map consume the LTTB-downsampled
+  // endpoint so long flights (>5k positions) stay responsive. The
+  // inspection PositionTable keeps using detailQ.data.positions —
+  // it already client-side-samples to 500 rows.
+  const chartQ = useQuery<{ total: number; target: number; positions: Position[] }>({
+    queryKey: ['flight-chart', flightId],
+    queryFn: () =>
+      apiJson<{ total: number; target: number; positions: Position[] }>(
+        `flights/${flightId}/positions/chart?target=500`,
+      ),
+    enabled: Number.isFinite(flightId),
+    staleTime: 300_000,
+  });
+  const mapPositionsQ = useQuery<{ total: number; target: number; positions: Position[] }>({
+    queryKey: ['flight-chart', flightId, 'map'],
+    queryFn: () =>
+      apiJson<{ total: number; target: number; positions: Position[] }>(
+        `flights/${flightId}/positions/chart?target=2000`,
+      ),
+    enabled: Number.isFinite(flightId),
+    staleTime: 300_000,
+  });
+
   const photoQ = useQuery<PhotoResp | null>({
     queryKey: ['flight-photo', flightId],
     queryFn: () => apiJson<PhotoResp | null>(`flights/${flightId}/photo`),
@@ -149,7 +172,7 @@ export default function FlightPage() {
               <div className="h-[420px] w-full lg:h-[520px]" data-testid="flight-map">
                 <Suspense fallback={<Skeleton className="h-full w-full" />}>
                   <RouteMap
-                    positions={detailQ.data.positions}
+                    positions={mapPositionsQ.data?.positions ?? detailQ.data.positions}
                     receiverLat={detailQ.data.receiver_lat}
                     receiverLon={detailQ.data.receiver_lon}
                   />
@@ -162,7 +185,7 @@ export default function FlightPage() {
               <CardTitle>Altitude + speed</CardTitle>
             </CardHeader>
             <CardContent>
-              <FlightProfileChart positions={detailQ.data.positions} />
+              <FlightProfileChart positions={chartQ.data?.positions ?? detailQ.data.positions} />
             </CardContent>
           </Card>
           <Card data-testid="flight-positions-card">
