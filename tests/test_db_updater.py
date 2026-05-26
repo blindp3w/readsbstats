@@ -200,12 +200,14 @@ class TestUpdateAircraftDb:
         monkeypatch.setattr(db_updater, "_fetch", lambda url: buf.getvalue())
         assert db_updater.update_aircraft_db(conn) == 2
 
-    def test_atomic_swap_preserves_old_on_failure(self, monkeypatch):
-        """Audit 2026-05-26: a crash mid-import must leave aircraft_db
-        intact. Previously the function `DELETE FROM aircraft_db`-d
-        before bulk-inserting, so any exception left the table empty
-        or partially populated; enrichment/flags degraded until the
-        next successful run.
+    def test_parse_failure_before_swap_preserves_old(self, monkeypatch):
+        """Audit 2026-05-26: a parse failure (which fires *before* the
+        staging-table machinery starts) must leave aircraft_db intact.
+
+        This is the cheap-to-reach branch — the try/except cleanup is a
+        no-op because aircraft_db_new was never created. See
+        `test_staging_cleanup_runs_on_inside_try_failure` for the
+        cleanup-path-exercising variant.
         """
         conn = self.conn
         # Seed an "existing" aircraft_db row that must survive.
@@ -215,9 +217,6 @@ class TestUpdateAircraftDb:
         )
         conn.commit()
 
-        # Patch _parse_flags to raise mid-import — once enough rows have
-        # been buffered, the parsing helper blows up. Exercises the
-        # try/except cleanup path in update_aircraft_db.
         n_calls = {"n": 0}
         original_parse = db_updater._parse_flags
         def _boom_parse(s):
@@ -236,21 +235,121 @@ class TestUpdateAircraftDb:
         with pytest.raises(Exception):
             db_updater.update_aircraft_db(conn)
 
-        # Original row preserved.
         rows = conn.execute(
             "SELECT registration FROM aircraft_db WHERE icao_hex='aaaaaa'"
         ).fetchall()
         assert len(rows) == 1
         assert rows[0]["registration"] == "OLD-REG"
 
-        # No half-baked staging table left behind.
+    def test_staging_cleanup_runs_on_inside_try_failure(self, monkeypatch):
+        """Audit 2026-05-26 — code-review follow-up: a failure that
+        fires *after* the staging table has been created (e.g.
+        mid-chunk-insert) must (a) leave aircraft_db intact, and (b)
+        drop the staging table so the next run is not confused by
+        leftovers.
+
+        Failure is injected via the min-ratio check, which raises
+        RuntimeError from inside the try block after the staging
+        INSERTs complete. The except handler should then drop
+        aircraft_db_new.
+        """
+        from readsbstats import config
+        conn = self.conn
+        # Seed 100 existing rows so the min-ratio check has something
+        # to reject against.
+        for i in range(100):
+            conn.execute(
+                "INSERT INTO aircraft_db (icao_hex, registration, type_code, type_desc, flags) "
+                f"VALUES ('aa{i:04x}', 'OLD{i}', 'A320', '', 0)"
+            )
+        conn.commit()
+        monkeypatch.setattr(config, "AIRCRAFT_DB_MIN_RATIO", 0.8)
+
+        # Import only 10 rows — 10% of previous, well below 0.8 floor.
+        monkeypatch.setattr(db_updater, "_fetch", lambda url: _aircraft_gz(
+            *[[f"48{i:04x}", f"NEW{i}", "B738", "0", ""] for i in range(10)]
+        ))
+
+        with pytest.raises(RuntimeError, match="swap refused"):
+            db_updater.update_aircraft_db(conn)
+
+        # aircraft_db intact at original count.
+        assert conn.execute("SELECT COUNT(*) FROM aircraft_db").fetchone()[0] == 100
+        # Staging table cleaned up (this is the path the original
+        # test claimed to verify but never reached).
         staging = conn.execute(
             "SELECT name FROM sqlite_master "
             "WHERE type='table' AND name='aircraft_db_new'"
         ).fetchall()
         assert staging == [], (
-            "staging table aircraft_db_new must be dropped on failure"
+            "staging table aircraft_db_new must be dropped after a "
+            "min-ratio refusal"
         )
+
+    def test_recovery_restores_aircraft_db_old_after_interrupted_swap(
+        self, monkeypatch
+    ):
+        """Audit 2026-05-26 — code-review follow-up: if the process
+        died between the two RENAMEs, ``aircraft_db`` is absent and
+        ``aircraft_db_old`` is the only surviving copy. The next call
+        to update_aircraft_db must restore it via
+        ``_recover_aborted_swap`` before any other work.
+        """
+        conn = self.conn
+        # Simulate post-step-3-pre-step-4 state: aircraft_db_old has
+        # the data, aircraft_db is gone, aircraft_db_new doesn't
+        # exist (was renamed but the rename didn't happen).
+        conn.execute("ALTER TABLE aircraft_db RENAME TO aircraft_db_old")
+        conn.execute(
+            "INSERT INTO aircraft_db_old "
+            "(icao_hex, registration, type_code, type_desc, flags) "
+            "VALUES ('aaaaaa', 'RESTORED', 'A320', '', 0)"
+        )
+        conn.commit()
+
+        monkeypatch.setattr(db_updater, "_fetch", lambda url: _aircraft_gz(
+            ["488001", "SP-NEW", "B738", "0", ""],
+        ))
+        # Successful run: the recovery should put aircraft_db back
+        # before the run starts, the new import replaces it, and the
+        # 'RESTORED' row is gone because the new dataset is canonical.
+        db_updater.update_aircraft_db(conn)
+
+        names = {
+            r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                "AND name LIKE 'aircraft_db%'"
+            ).fetchall()
+        }
+        assert names == {"aircraft_db"}, (
+            f"recovery + swap should leave only aircraft_db; got {names}"
+        )
+
+    def test_recovery_drops_stale_aircraft_db_new(self, monkeypatch):
+        """Audit 2026-05-26 — code-review follow-up: a leftover
+        aircraft_db_new from a previous crashed build must not
+        contaminate the next run."""
+        conn = self.conn
+        conn.execute(
+            "CREATE TABLE aircraft_db_new ("
+            "icao_hex TEXT PRIMARY KEY, registration TEXT, type_code TEXT, "
+            "type_desc TEXT, flags INTEGER DEFAULT 0)"
+        )
+        conn.execute(
+            "INSERT INTO aircraft_db_new VALUES ('deaddd', 'STALE', '', '', 0)"
+        )
+        conn.commit()
+
+        # Recovery alone, without running the full update.
+        db_updater._recover_aborted_swap(conn)
+        names = {
+            r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                "AND name LIKE 'aircraft_db%'"
+            ).fetchall()
+        }
+        assert "aircraft_db_new" not in names
+        assert "aircraft_db" in names  # original untouched
 
     def test_relative_size_floor_refuses_drastic_shrink(self, monkeypatch):
         """Audit 2026-05-26: refuse a swap whose new row count is below

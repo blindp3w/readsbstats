@@ -115,6 +115,40 @@ def _parse_aircraft_csv_row(parts: list[str]) -> tuple | None:
     )
 
 
+def _recover_aborted_swap(conn: sqlite3.Connection) -> None:
+    """Detect and recover from a swap interrupted between RENAMEs.
+
+    Three table-name presences are possible after an interrupted run:
+      * `aircraft_db_new` only → build phase crashed; drop the stale
+        staging table.
+      * `aircraft_db_old` only (no `aircraft_db`) → first RENAME
+        succeeded but the second didn't. Rename old back to canonical.
+      * `aircraft_db` + `aircraft_db_old` → second RENAME succeeded but
+        the final DROP didn't. Drop the leftover old copy.
+
+    Runs at the top of `update_aircraft_db` before anything else
+    touches these tables.
+    """
+    names = {
+        row[0] for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' "
+            "AND name IN ('aircraft_db', 'aircraft_db_new', 'aircraft_db_old')"
+        ).fetchall()
+    }
+    if "aircraft_db" not in names and "aircraft_db_old" in names:
+        log.warning(
+            "aircraft_db recovery: restoring aircraft_db_old after "
+            "interrupted swap"
+        )
+        conn.execute("ALTER TABLE aircraft_db_old RENAME TO aircraft_db")
+    elif "aircraft_db_old" in names:
+        log.info("aircraft_db recovery: dropping leftover aircraft_db_old")
+        conn.execute("DROP TABLE aircraft_db_old")
+    if "aircraft_db_new" in names:
+        log.info("aircraft_db recovery: dropping leftover aircraft_db_new")
+        conn.execute("DROP TABLE aircraft_db_new")
+
+
 def update_aircraft_db(conn: sqlite3.Connection) -> int:
     """Download tar1090-db CSV and replace aircraft_db table. Returns row count."""
     log.info("Downloading aircraft database from tar1090-db…")
@@ -137,26 +171,31 @@ def update_aircraft_db(conn: sqlite3.Connection) -> int:
 
     log.info("Parsed %d aircraft records", len(rows))
 
-    # Audit 2026-05-26: atomic staging-table swap.
-    # The previous DELETE + chunked INSERT pattern committed the DELETE
-    # before the INSERTs ran, so any failure between them (process kill,
-    # disk error, exception) left aircraft_db empty or half-populated
-    # and degraded enrichment/flags until the next successful run.
+    # Audit 2026-05-26: staging-table swap. The previous DELETE + chunked
+    # INSERT pattern left aircraft_db empty between the DELETE commit and
+    # the final INSERT — any crash in that window degraded enrichment
+    # until the next successful run.
     #
-    # New pattern:
-    #   1. Drop any stale staging table from a previous failed run.
-    #   2. Build `aircraft_db_new` in chunks. Each chunk commits so the
-    #      collector writer-lock contention from Audit-13 A13-061 is
-    #      preserved — the old aircraft_db remains intact and queryable
-    #      throughout this phase.
-    #   3. Compare new count against previous. Refuse a destructive
-    #      shrink (see config.AIRCRAFT_DB_MIN_RATIO).
-    #   4. Atomic swap: DROP old + RENAME new, in one transaction.
+    # CRITICAL: Python's sqlite3 module commits DDL (CREATE/DROP/ALTER)
+    # immediately regardless of any surrounding `with conn:` block, so we
+    # cannot wrap the swap statements in a transaction. Instead we use a
+    # rename-rename-drop sequence that never leaves `aircraft_db` absent:
+    #   1. Build `aircraft_db_new` in chunks (collector lock cooperation
+    #      preserved; old aircraft_db stays queryable).
+    #   2. Validate new count vs. previous (config.AIRCRAFT_DB_MIN_RATIO).
+    #   3. RENAME aircraft_db → aircraft_db_old   (atomic per statement)
+    #   4. RENAME aircraft_db_new → aircraft_db   (atomic per statement)
+    #   5. DROP aircraft_db_old
+    #
+    # If the process dies between steps 3 and 4, `aircraft_db_old` holds
+    # the only surviving copy. `_recover_aborted_swap` runs at the start
+    # of each call to detect that case and rename it back.
+    _recover_aborted_swap(conn)
+
     prev_count = conn.execute("SELECT COUNT(*) FROM aircraft_db").fetchone()[0]
     _CHUNK = 5000
     try:
         with conn:
-            conn.execute("DROP TABLE IF EXISTS aircraft_db_new")
             conn.execute(
                 "CREATE TABLE aircraft_db_new ("
                 "icao_hex TEXT PRIMARY KEY, registration TEXT, type_code TEXT, "
@@ -182,15 +221,19 @@ def update_aircraft_db(conn: sqlite3.Connection) -> int:
                 f"{config.AIRCRAFT_DB_MIN_RATIO}); upstream may be truncated"
             )
 
-        with conn:
-            conn.execute("DROP TABLE aircraft_db")
-            conn.execute("ALTER TABLE aircraft_db_new RENAME TO aircraft_db")
+        # Steps 3-5: rename-rename-drop. Each DDL auto-commits; the
+        # invariant is that `aircraft_db` is queryable as either the old
+        # or new copy at every observable moment.
+        conn.execute("ALTER TABLE aircraft_db RENAME TO aircraft_db_old")
+        conn.execute("ALTER TABLE aircraft_db_new RENAME TO aircraft_db")
+        conn.execute("DROP TABLE aircraft_db_old")
     except Exception:
-        # Best-effort cleanup; the original aircraft_db is intact either
-        # way because the swap step is the only DROP of the old table.
+        # Cleanup the staging table only. Do NOT touch aircraft_db_old
+        # — if the failure happened between the two RENAMEs, it holds
+        # the only surviving copy and `_recover_aborted_swap` on the
+        # next call will restore it.
         try:
-            with conn:
-                conn.execute("DROP TABLE IF EXISTS aircraft_db_new")
+            conn.execute("DROP TABLE IF EXISTS aircraft_db_new")
         except sqlite3.Error:
             pass
         raise
