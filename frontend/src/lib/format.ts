@@ -68,7 +68,7 @@ export function fmtTs(
   epoch: number | null | undefined,
   clockFormat: ClockFormat = getClockFormat(),
 ): string {
-  if (!epoch) return '—';
+  if (epoch == null || Number.isNaN(epoch)) return '—';
   return new Date(epoch * 1000).toLocaleString(undefined, {
     year: 'numeric',
     month: 'numeric',
@@ -83,7 +83,7 @@ export function fmtTs(
 // max-range record date, etc.). Sibling to `fmtTs`; no time portion at
 // all. Locale picks the date-component order (MM/DD vs DD/MM).
 export function fmtDate(epoch: number | null | undefined): string {
-  if (!epoch) return '—';
+  if (epoch == null || Number.isNaN(epoch)) return '—';
   return new Date(epoch * 1000).toLocaleDateString();
 }
 
@@ -134,7 +134,7 @@ export function fmtBytes(n: number | null | undefined): string {
 }
 
 export function fmtAgo(epoch: number | null | undefined, now: number = Date.now() / 1000): string {
-  if (!epoch) return '—';
+  if (epoch == null || Number.isNaN(epoch)) return '—';
   const dt = now - epoch;
   if (dt < 60) return `${Math.round(dt)}s ago`;
   if (dt < 3600) return `${Math.round(dt / 60)}m ago`;

@@ -78,4 +78,22 @@ describe('copyToClipboard', () => {
     const ok = await copyToClipboard('RSBS_X');
     expect(ok).toBe(false);
   });
+
+  // Audit 2026-05-26: the textarea fallback used to skip cleanup when
+  // execCommand threw — leaking hidden DOM and stealing focus. The
+  // try/finally guarantees removal on every code path.
+  it('removes the textarea even when execCommand throws', async () => {
+    Object.defineProperty(window, 'isSecureContext', {
+      configurable: true,
+      value: false,
+    });
+    document.execCommand = vi.fn(() => {
+      throw new Error('execCommand blew up');
+    });
+    const before = document.querySelectorAll('textarea').length;
+    const ok = await copyToClipboard('RSBS_BOOM');
+    expect(ok).toBe(false);
+    const after = document.querySelectorAll('textarea').length;
+    expect(after).toBe(before);
+  });
 });

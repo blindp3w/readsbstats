@@ -17,17 +17,22 @@ export default function App() {
   // Seed clock format from /api/settings on first boot only. After the user
   // has touched localStorage.rsbs_clock_format, their choice wins. Shares
   // queryKey ['settings'] with the Settings page so we make only one request.
-  useQuery({
+  //
+  // Audit 2026-05-26: the seeding lives in a useEffect rather than the
+  // React Query `select` because `select` is expected to be a pure
+  // transformation. Side-effecting from inside it would run more often
+  // than expected and make caching behaviour harder to reason about.
+  const settingsQ = useQuery({
     queryKey: ['settings'],
     queryFn: () => apiJson<{ time_format?: string }>('settings'),
     staleTime: 60_000,
-    select: (d) => {
-      if (!hasStoredClockFormat() && (d.time_format === '12h' || d.time_format === '24h')) {
-        useClockStore.getState().setClockFormat(d.time_format);
-      }
-      return d;
-    },
   });
+  useEffect(() => {
+    const fmt = settingsQ.data?.time_format;
+    if (!hasStoredClockFormat() && (fmt === '12h' || fmt === '24h')) {
+      useClockStore.getState().setClockFormat(fmt);
+    }
+  }, [settingsQ.data?.time_format]);
 
   // Keep `--rsbs-nav-h` in sync with the Nav's actual rendered height so
   // sticky elements (Stats RangePicker, Gallery filter tabs, History
