@@ -1,5 +1,117 @@
 # Changelog
 
+## 2.9.8 — 2026-05-26
+
+### Audit 14 — full sweep follow-up
+
+Closes 18 of 20 findings from the 2026-05-26 codebase audit. Two
+findings were deliberately scoped out as documented design choices
+(TS strict-mode phased rollout, caret-range dependencies with
+`npm ci`). Three items deferred to a follow-up branch (COALESCE
+drop after backfill confirmed; redundant `idx_positions_flight`
+drop after EXPLAIN confirms the composite; full `main()` smoke
+tests).
+
+User-visible changes:
+
+- **Flight detail page loads faster on long flights.** The chart
+  and route map now fetch from new LTTB-downsampled endpoints
+  (`/api/flights/{id}/positions/chart`) — long flights (5k+
+  positions) no longer transfer or render every raw sample.
+  The legacy `/api/flights/{id}` shape is unchanged for backward
+  compatibility.
+- **History CSV export respects the visible date range.** Before
+  the fix the `from`/`to` epoch params the History page sent
+  were silently ignored by the export endpoint; the CSV dumped
+  the entire DB regardless of the filter.
+- **Unix epoch `0` timestamps render correctly.** `fmtTs(0)`,
+  `fmtDate(0)`, and `fmtAgo(0)` no longer return the
+  missing-data em dash.
+- **Watchlist / clipboard fallback no longer leaks hidden DOM**
+  on copy failures (e.g. ad-blockers blocking `execCommand`).
+  The fallback textarea is now removed in a `finally` block.
+
+Reliability:
+
+- **`aircraft_db` weekly refresh is now atomic.** Switched from
+  `DELETE + INSERT` (which left the table empty if any chunk
+  failed) to a rename-rename-drop staging-table swap. New
+  `_recover_aborted_swap()` restores `aircraft_db` from a
+  surviving `aircraft_db_old` on the next run if a previous
+  attempt died between renames. A relative-size floor
+  (`RSBS_AIRCRAFT_DB_MIN_RATIO`, default 0.8) refuses a swap
+  that loses >20% of rows, protecting against truncated upstream
+  downloads.
+- **Route enrichment commits atomically per callsign.**
+  `_store_route` and `_apply_to_flights` now share one
+  `with conn:` block; a crash in the latter no longer leaves
+  `callsign_routes` claiming the route was fresh while
+  matching `flights` rows stayed stale.
+- **Collector no longer aborts a whole poll cycle** on a single
+  malformed aircraft record. New `_coerce_float` /
+  `_coerce_int` helpers normalise numeric fields before any DB
+  write; a string `lat`, non-numeric `seen_pos`, or non-hex
+  `hex` skips just that aircraft. ICAO is validated against
+  `[0-9a-f]{6}` and the ADS-B sentinels `000000`/`ffffff` are
+  rejected.
+- **Purge scripts defend against NULL coordinates.** Historical
+  rows with missing `lat`/`lon` no longer crash `purge_ghosts`
+  or `purge_bad_gs` mid-run via `haversine_nm(None, …)`.
+
+Security:
+
+- **DuckDB temp directory cleanup now requires a marker file.**
+  `DUCKDB_TEMP_DIR` cleanup unlinks only files matching known
+  DuckDB temp patterns and only inside a directory that contains
+  the `.readsbstats-duckdb-tmp` marker. A misconfigured
+  `RSBS_DUCKDB_TEMP_DIR` pointing at `/tmp`, `/home`, or any
+  other shared system directory is rejected outright with a
+  warning instead of being scanned.
+- **`scripts/check_db.py` percent-encodes the DB path** before
+  embedding it in a SQLite URI. Paths containing `?`, `#`,
+  or `%` no longer split the URI into bogus query parameters
+  and silently open a different file.
+- **Invalid `RSBS_TELEGRAM_CHAT_ID` is no longer logged
+  verbatim** — only its length is reported, since the value
+  may be a private group/channel identifier.
+
+Schema / performance:
+
+- **New composite index `idx_positions_flight_ts`** covers the
+  `WHERE flight_id=? ORDER BY ts` pattern used by flight
+  detail and the purge scripts. Built in DDL for fresh installs
+  and in `run_background_migrations()` for existing DBs.
+- **`flights.registration` / `flights.aircraft_type` are now
+  backfilled** from `aircraft_db` via a background migration
+  and on every `db_updater` run. Groundwork for dropping the
+  COALESCE-based filter in `_build_flight_filter()` in a
+  follow-up branch (see ADR-0012).
+- **New endpoints** `/api/flights/{id}/positions`
+  (paginated raw) and `/api/flights/{id}/positions/chart`
+  (LTTB-downsampled). See ADR-0011.
+- **`tar1090-db` CSV decode streams** via `GzipFile` +
+  `TextIOWrapper` instead of materialising the full decoded
+  text on the heap during the weekly refresh.
+
+Internal:
+
+- New `src/readsbstats/downsample.py` — pure-Python LTTB
+  implementation. Returns indices so multiple parallel
+  series (alt, gs, lat/lon) stay row-aligned with one
+  bucket selection.
+- New ADRs: 0010 (aircraft_db atomic swap), 0011 (positions
+  endpoints split), 0012 (COALESCE drop deferral).
+- React Query `select` callback in `App.tsx` no longer
+  side-effects into the Zustand clock-format store — seeding
+  now lives in a `useEffect` per React Query's purity
+  contract for `select`.
+
+Tests: backend 1430 → **1460** (+30); frontend Vitest
+276 → **277** (+1; existing format/clipboard tests
+updated/added).
+
+---
+
 ## 2.9.7 — 2026-05-25
 
 ### Sprint 3 — Gallery M8.1 placeholder + Watchlist polish
