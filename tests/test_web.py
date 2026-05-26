@@ -524,6 +524,36 @@ class TestApiFlightsExport:
         cd = r.headers.get("content-disposition", "")
         assert "flights.csv" in cd
 
+    def test_csv_export_respects_epoch_from_to(self, client, db_conn):
+        """Audit 2026-05-26: /api/flights/export.csv must accept the same
+        epoch ``from``/``to`` params the History page sends to
+        /api/flights. Before the fix the export silently ignored them
+        and dumped the entire DB regardless of the visible filter.
+        """
+        # Three flights spanning ~3 days
+        insert_flight(db_conn, first_seen=1_700_000_000)
+        insert_flight(db_conn, first_seen=1_700_100_000, icao="000001")
+        insert_flight(db_conn, first_seen=1_700_200_000, icao="000002")
+
+        # Pull only the middle one via the epoch params.
+        from_ts = 1_700_050_000
+        to_ts   = 1_700_150_000
+        r = client.get(
+            f"/api/flights/export.csv?from={from_ts}&to={to_ts}"
+        )
+        assert r.status_code == 200
+        lines = r.text.splitlines()
+        assert len(lines) == 2, (
+            "Expected header + 1 row (the middle flight); got "
+            f"{len(lines)} rows. The from/to filter was ignored."
+        )
+
+        # Confirm /api/flights with the same filter yields the same set
+        # — the export and the JSON view must agree.
+        r2 = client.get(f"/api/flights?from={from_ts}&to={to_ts}")
+        flights = r2.json()["flights"]
+        assert len(flights) == 1
+
 
 # ---------------------------------------------------------------------------
 # API: /api/flights/{flight_id}
@@ -569,6 +599,81 @@ class TestApiFlightDetail:
         data = r.json()
         assert data["receiver_lat"] == 51.5
         assert data["receiver_lon"] == -0.1
+
+
+# ---------------------------------------------------------------------------
+# Audit 2026-05-26: split positions endpoints
+# ---------------------------------------------------------------------------
+
+
+class TestApiFlightPositionsSplit:
+    def _seed(self, db_conn, n: int) -> int:
+        fid = insert_flight(db_conn)
+        # Bulk insert n synthetic positions for the flight
+        db_conn.executemany(
+            "INSERT INTO positions "
+            "(flight_id, ts, lat, lon, alt_baro, gs, source_type) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [
+                (fid, 1_000_000 + i, 52.0 + i * 0.0001, 21.0 + i * 0.0001,
+                 1000 + i, 200.0 + (i % 50), "adsb_icao")
+                for i in range(n)
+            ],
+        )
+        db_conn.commit()
+        return fid
+
+    def test_chart_endpoint_caps_at_target(self, client, db_conn):
+        fid = self._seed(db_conn, 5000)
+        r = client.get(f"/api/flights/{fid}/positions/chart?target=200")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["total"] == 5000
+        assert data["target"] == 200
+        assert len(data["positions"]) == 200
+        # First and last preserved → first position's ts is the seed ts.
+        assert data["positions"][0]["ts"] == 1_000_000
+        assert data["positions"][-1]["ts"] == 1_000_000 + 4999
+
+    def test_chart_endpoint_returns_all_when_below_target(self, client, db_conn):
+        fid = self._seed(db_conn, 50)
+        r = client.get(f"/api/flights/{fid}/positions/chart?target=500")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["total"] == 50
+        assert len(data["positions"]) == 50
+
+    def test_positions_pagination(self, client, db_conn):
+        fid = self._seed(db_conn, 250)
+        r1 = client.get(f"/api/flights/{fid}/positions?limit=100&offset=0")
+        r2 = client.get(f"/api/flights/{fid}/positions?limit=100&offset=100")
+        r3 = client.get(f"/api/flights/{fid}/positions?limit=100&offset=200")
+        assert r1.status_code == r2.status_code == r3.status_code == 200
+        d1, d2, d3 = r1.json(), r2.json(), r3.json()
+        assert d1["total"] == d2["total"] == d3["total"] == 250
+        assert len(d1["positions"]) == 100
+        assert len(d2["positions"]) == 100
+        assert len(d3["positions"]) == 50
+        # Pages don't overlap
+        ts1 = [p["ts"] for p in d1["positions"]]
+        ts2 = [p["ts"] for p in d2["positions"]]
+        assert max(ts1) < min(ts2)
+
+    def test_positions_limit_clamped(self, client, db_conn):
+        """Requesting more than the server cap (2000) is a 422 — FastAPI
+        Query validators enforce the upper bound."""
+        fid = self._seed(db_conn, 100)
+        r = client.get(f"/api/flights/{fid}/positions?limit=5000")
+        assert r.status_code == 422
+
+    def test_legacy_detail_still_embeds_all_positions(self, client, db_conn):
+        """Backward compat: /api/flights/{id} keeps its embedded
+        `positions` list at full size. The new endpoints are additive,
+        not replacing."""
+        fid = self._seed(db_conn, 200)
+        r = client.get(f"/api/flights/{fid}")
+        assert r.status_code == 200
+        assert len(r.json()["positions"]) == 200
 
 
 # ---------------------------------------------------------------------------

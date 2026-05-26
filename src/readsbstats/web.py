@@ -31,7 +31,7 @@ from fastapi.responses import JSONResponse, RedirectResponse, Response, Streamin
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import analytics, config, database, enrichment, geo, health, icao_ranges, photo_sources, route_enricher
+from . import analytics, config, database, downsample, enrichment, geo, health, icao_ranges, photo_sources, route_enricher
 
 logging.basicConfig(
     level=logging.INFO,
@@ -883,6 +883,10 @@ def api_flights_export(
     date: str | None = Query(None, description="YYYY-MM-DD (receiver local time)"),
     date_from: str | None = Query(None, description="YYYY-MM-DD inclusive range start (receiver local time)"),
     date_to:   str | None = Query(None, description="YYYY-MM-DD inclusive range end (receiver local time)"),
+    from_ts: int | None = Query(None, alias="from",
+        description="Unix timestamp range start (browser-local midnight)"),
+    to_ts:   int | None = Query(None, alias="to",
+        description="Unix timestamp range end (browser-local midnight of next day)"),
     icao: str | None = Query(None),
     callsign: str | None = Query(None),
     registration: str | None = Query(None),
@@ -893,9 +897,12 @@ def api_flights_export(
     sort_by: str | None = Query(None),
     sort_dir: str | None = Query(None, description="asc | desc"),
 ) -> Response:
+    # Audit 2026-05-26: accept the same epoch from/to params the History
+    # page sends to /api/flights. Without these the export ignored the
+    # visible date range and produced an unfiltered CSV.
     where, params = _build_flight_filter(
         date, icao, callsign, registration, aircraft_type, source, flags, squawk,
-        date_from=date_from, date_to=date_to,
+        date_from=date_from, date_to=date_to, from_ts=from_ts, to_ts=to_ts,
     )
     sort_col = _SORT_COLS.get(sort_by or "", "f.first_seen")
     sort_order = "ASC" if sort_dir == "asc" else "DESC"
@@ -993,6 +1000,99 @@ def api_flight_detail(flight_id: int) -> dict:
         "other_flights": [dict(f) for f in other_flights],
         "receiver_lat": config.RECEIVER_LAT,
         "receiver_lon": config.RECEIVER_LON,
+    }
+
+
+# Audit 2026-05-26: split positions endpoints.
+# The embedded `positions` list in /api/flights/{id} is preserved for
+# backward compat; the frontend chart + map now pull from the new
+# endpoints below so long flights (>5k positions) don't transfer the
+# raw timeline on every page load.
+_POSITIONS_DEFAULT_LIMIT = 1000
+_POSITIONS_MAX_LIMIT = 2000
+_CHART_DEFAULT_TARGET = 500
+_CHART_MAX_TARGET = 2000
+
+
+@app.get("/api/flights/{flight_id}/positions")
+def api_flight_positions(
+    flight_id: int,
+    limit: int = Query(_POSITIONS_DEFAULT_LIMIT, ge=1, le=_POSITIONS_MAX_LIMIT),
+    offset: int = Query(0, ge=0),
+) -> dict:
+    """Paginated raw positions for inspection. Uses the new
+    `idx_positions_flight_ts` composite (3a) for the
+    ``WHERE flight_id = ? ORDER BY ts LIMIT ? OFFSET ?`` pattern."""
+    conn = db()
+    total = conn.execute(
+        "SELECT COUNT(*) AS n FROM positions WHERE flight_id = ?",
+        (flight_id,),
+    ).fetchone()["n"]
+    rows = conn.execute(
+        """
+        SELECT ts, lat, lon, alt_baro, alt_geom, gs, track,
+               baro_rate, rssi, source_type
+        FROM positions
+        WHERE flight_id = ?
+        ORDER BY ts
+        LIMIT ? OFFSET ?
+        """,
+        (flight_id, limit, offset),
+    ).fetchall()
+    return {
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "positions": [dict(r) for r in rows],
+    }
+
+
+@app.get("/api/flights/{flight_id}/positions/chart")
+def api_flight_positions_chart(
+    flight_id: int,
+    target: int = Query(_CHART_DEFAULT_TARGET, ge=2, le=_CHART_MAX_TARGET),
+) -> dict:
+    """LTTB-downsampled positions for chart/map rendering.
+
+    Picks ``target`` rows from the full positions stream using altitude
+    as the LTTB signal (falling back to ground speed when altitude is
+    NULL — common on positions before climbout). The same row picks
+    drive every parallel series in the response so the chart, map
+    polyline, and any future overlay stay row-aligned.
+    """
+    conn = db()
+    rows = conn.execute(
+        """
+        SELECT ts, lat, lon, alt_baro, alt_geom, gs, track, source_type
+        FROM positions
+        WHERE flight_id = ?
+        ORDER BY ts
+        """,
+        (flight_id,),
+    ).fetchall()
+
+    if not rows:
+        return {"total": 0, "target": target, "positions": []}
+
+    # Build (ts, signal) tuples for LTTB. Prefer alt_baro; fall back to
+    # gs so ground/taxi rows still contribute. Last-ditch zero keeps the
+    # index well-defined when both are NULL.
+    signal: list[tuple[float, float]] = []
+    for r in rows:
+        ts = r["ts"]
+        y = r["alt_baro"]
+        if y is None:
+            y = r["gs"]
+        if y is None:
+            y = 0.0
+        signal.append((float(ts), float(y)))
+
+    indices = downsample.lttb_indices(signal, target)
+    picked = [dict(rows[i]) for i in indices]
+    return {
+        "total": len(rows),
+        "target": target,
+        "positions": picked,
     }
 
 
@@ -2747,11 +2847,19 @@ async def _check_port(port: int, host: str = "127.0.0.1") -> dict:
 
 
 def _read_json_file(path: str) -> dict | None:
-    """Read and parse a JSON file, returning None on any error."""
+    """Read and parse a JSON file, returning None on any error.
+
+    Missing files are a normal "feeder not configured" signal — silent.
+    Malformed JSON / OS errors are logged at debug level so operators
+    can correlate a missing feeder card with the underlying cause.
+    """
     try:
         with open(path) as f:
             return json.load(f)
-    except Exception:
+    except FileNotFoundError:
+        return None
+    except (OSError, json.JSONDecodeError) as exc:
+        log.debug("feeder status %s unreadable: %s", path, type(exc).__name__)
         return None
 
 
