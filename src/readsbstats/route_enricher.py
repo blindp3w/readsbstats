@@ -125,7 +125,10 @@ def _store_route(conn: sqlite3.Connection, callsign: str, route: dict | None) ->
             (callsign, route.get("origin_icao"), route.get("dest_icao"), now),
         )
 
-    conn.commit()
+    # Audit 2026-05-26: commit lives in `_enrich_batch` so this call and
+    # the matching `_apply_to_flights` form one atomic unit. A crash
+    # between them previously left `callsign_routes` claiming the route
+    # was fresh while matching `flights` rows stayed stale.
 
 
 def _apply_to_flights(conn: sqlite3.Connection, callsign: str, route: dict | None) -> None:
@@ -154,7 +157,7 @@ def _apply_to_flights(conn: sqlite3.Connection, callsign: str, route: dict | Non
         "WHERE callsign = ?",
         (origin, dest, callsign),
     )
-    conn.commit()
+    # Audit 2026-05-26: commit lives in `_enrich_batch` — see _store_route.
 
 
 # ---------------------------------------------------------------------------
@@ -261,8 +264,14 @@ def _enrich_batch(conn: sqlite3.Connection, client: httpx.Client | None = None) 
             # Pass client only when we own one (loop path). Direct test calls
             # and the no-client path use _fetch_route's own context manager.
             route = _fetch_route(cs) if client is None else _fetch_route(cs, client=client)
-            _store_route(conn, cs, route)
-            _apply_to_flights(conn, cs, route)
+            # Audit 2026-05-26: `_store_route` + `_apply_to_flights` are
+            # one transaction — either both write or neither. Previously
+            # `_store_route` committed first, so a crash in
+            # `_apply_to_flights` left the route cache claiming the
+            # callsign was fresh while flights stayed stale.
+            with conn:
+                _store_route(conn, cs, route)
+                _apply_to_flights(conn, cs, route)
             # Success clears any prior failure record so future operational
             # state isn't sticky.
             _transient_failure_at.pop(cs, None)

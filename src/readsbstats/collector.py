@@ -15,6 +15,7 @@ import math
 import os
 import pathlib
 import queue
+import re
 import signal
 import socket
 import sqlite3
@@ -24,6 +25,37 @@ import threading
 import time
 
 from . import adsbx_enricher, config, database, enrichment, geo, icao_ranges, metrics_collector, notifier
+
+# 24-bit Mode-S address, lowercase hex. Validated *after* stripping the
+# leading ~ that marks MLAT entries. 000000 / ffffff are ADS-B sentinels
+# for "no transponder address" and are rejected at the call site.
+_ICAO_RE = re.compile(r"[0-9a-f]{6}")
+
+
+def _coerce_float(v) -> float | None:
+    """Return ``v`` as a finite float, or None for anything that would
+    raise inside a comparison or arithmetic (strings, bools, NaN/Inf).
+
+    bool is excluded explicitly because ``isinstance(True, int)`` is
+    True in Python and we want to reject feed data like ``"gs": true``."""
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, (int, float)):
+        f = float(v)
+        return f if math.isfinite(f) else None
+    return None
+
+
+def _coerce_int(v) -> int | None:
+    """Like ``_coerce_float`` but for integer-typed columns. Floats are
+    truncated; non-finite values return None."""
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, int):
+        return v
+    if isinstance(v, float):
+        return int(v) if math.isfinite(v) else None
+    return None
 
 # Sentinel written at startup, removed only on clean shutdown.
 # Presence on next startup → previous run ended uncleanly → run quick_check.
@@ -603,28 +635,33 @@ def _poll(conn: sqlite3.Connection) -> None:
 
     with conn:
         for ac in aircraft_list:
-            lat = ac.get("lat")
-            lon = ac.get("lon")
-
+            # ── Strict-skip fields: any non-numeric / out-of-range value
+            # for lat/lon/seen_pos/hex skips just this aircraft. All
+            # coercion happens here, BEFORE the first DB write, so a
+            # malformed record cannot leave a partial flight behind.
+            # (Audit 2026-05-26: previously a string lat raised TypeError
+            # at the `<=` comparison, swallowed by the outer except,
+            # aborting the entire poll cycle.)
+            lat = _coerce_float(ac.get("lat"))
+            lon = _coerce_float(ac.get("lon"))
             if lat is None or lon is None:
                 continue
             if not (-90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0):
                 continue
 
-            seen_pos = ac.get("seen_pos")
-            # Explicit None or missing → treat as stale (skip).
-            # Without this guard `None > config.MAX_SEEN_POS_SEC` raises
-            # TypeError, which the outer `except Exception` swallows by
-            # aborting the whole poll cycle.
+            seen_pos = _coerce_float(ac.get("seen_pos"))
             if seen_pos is None or seen_pos > config.MAX_SEEN_POS_SEC:
                 continue
-
             pos_ts = int(ref_time - seen_pos)
 
             raw_hex = ac.get("hex", "")
+            if not isinstance(raw_hex, str):
+                continue
             is_mlat_hex = raw_hex.startswith("~")
             icao = raw_hex.lstrip("~").lower()
-            if not icao:
+            if not _ICAO_RE.fullmatch(icao):
+                continue
+            if icao in ("000000", "ffffff"):  # ADS-B "no transponder" sentinels
                 continue
 
             source_type = ac.get("type")
@@ -637,23 +674,33 @@ def _poll(conn: sqlite3.Connection) -> None:
             if state is not None and pos_ts < state["last_pos_ts"]:
                 continue
 
-            # Raw fields from readsb
-            callsign      = ac.get("flight", "").strip() or None
+            # ── Flexible fields: bad coercion becomes NULL, the record
+            # still processes. Callsign/registration/squawk are strings
+            # in the feed; non-string trash becomes None.
+            callsign      = (ac.get("flight") or "").strip() or None \
+                if isinstance(ac.get("flight"), str) else None
             if callsign and "@" in callsign:
                 callsign = None
-            registration  = ac.get("r") or None
-            aircraft_type = ac.get("t") or None
-            squawk        = ac.get("squawk") or None
-            category      = ac.get("category") or None
+            registration  = ac.get("r") if isinstance(ac.get("r"), str) else None
+            registration  = registration or None
+            aircraft_type = ac.get("t") if isinstance(ac.get("t"), str) else None
+            aircraft_type = aircraft_type or None
+            squawk        = ac.get("squawk") if isinstance(ac.get("squawk"), str) else None
+            squawk        = squawk or None
+            category      = ac.get("category") if isinstance(ac.get("category"), str) else None
+            category      = category or None
 
-            raw_alt  = ac.get("alt_baro")
-            alt_baro = 0 if raw_alt == "ground" else (int(raw_alt) if raw_alt is not None else None)
-            alt_geom  = ac.get("alt_geom")
-            gs        = ac.get("gs")
-            track     = ac.get("track")
-            baro_rate = ac.get("baro_rate")
-            rssi      = ac.get("rssi")
-            messages  = ac.get("messages")
+            raw_alt = ac.get("alt_baro")
+            if raw_alt == "ground":
+                alt_baro = 0
+            else:
+                alt_baro = _coerce_int(raw_alt)
+            alt_geom  = _coerce_int(ac.get("alt_geom"))
+            gs        = _coerce_float(ac.get("gs"))
+            track     = _coerce_float(ac.get("track"))
+            baro_rate = _coerce_int(ac.get("baro_rate"))
+            rssi      = _coerce_float(ac.get("rssi"))
+            messages  = _coerce_int(ac.get("messages"))
 
             # Enrich with local aircraft_db (cached); always called to get flags
             registration, aircraft_type, type_desc, flags, found_in_db = _enrich(
