@@ -387,7 +387,10 @@ def _clamp_caption(caption: str, limit: int = _PHOTO_CAPTION_MAX) -> str:
 
     Strategy (only invoked when over-limit):
       1. Drop the optional trailing ``<i>Photo: …</i>`` note line.
-      2. Drop the trailing ``<a href="…">…</a>`` link line(s).
+      2. Drop the trailing ``<a href="…">…</a>`` link line (audit-13
+         A13-029: the regex is anchored at the end of string and matches
+         exactly one line; if the caption ever grows multiple trailing
+         link lines, only the last is stripped before plain-truncation).
       3. Plain-truncate the body with ``…`` as a last resort.
 
     Steps 1 and 2 use anchored regexes so they only match well-formed

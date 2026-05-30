@@ -1,0 +1,52 @@
+name: CodeQL
+
+# Audit-13 A13-054: the previous CodeQL run lived in GitHub's default-setup
+# UI (not version-controlled), which means a maintainer-flipped switch could
+# silently disable security scanning. Committing the workflow makes the
+# scanning configuration part of the repo history and PR review surface.
+#
+# Languages: python + javascript-typescript (covers the FastAPI backend and
+# the React SPA). Each runs in its own job so a transient failure in one
+# language doesn't mask the other's findings.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Weekly full scan, Sunday 06:00 UTC. The push/PR triggers cover
+    # incremental diffs; the schedule catches drift in dependencies and
+    # any rule-update changes from upstream CodeQL packs.
+    - cron: '0 6 * * 0'
+
+permissions:
+  actions: read
+  contents: read
+  security-events: write
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [python, javascript-typescript]
+    steps:
+      # Action versions tag-pinned here; Dependabot's github-actions group
+      # (see .github/dependabot.yml) will convert them to commit SHAs on the
+      # first automated update PR — matching the pattern in test.yml.
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: '/language:${{ matrix.language }}'

@@ -64,9 +64,13 @@ def _check_heartbeat(conn: sqlite3.Connection, now: int) -> Check:
     row = conn.execute("SELECT MAX(ts) AS ts FROM receiver_stats").fetchone()
     last_ts = row["ts"] if row and row["ts"] is not None else None
     if last_ts is None:
+        # Audit-13 A13-025: a fresh install with metrics disabled is not a
+        # failure mode — the absence of receiver_stats rows is the operator's
+        # decision (RSBS_METRICS_ENABLED=0). `info` reads as "everything is
+        # fine, here's a note" on the stripe; `warn` was over-claiming.
         return Check(
             name="heartbeat",
-            severity="warn",
+            severity="info",
             message="No receiver metrics recorded yet — set RSBS_METRICS_ENABLED=1 in the collector",
         )
     age = now - last_ts

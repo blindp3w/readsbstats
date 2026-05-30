@@ -1,5 +1,68 @@
 # Changelog
 
+## 2.10.1 — 2026-05-30
+
+### Audit 13 Low-severity close-out (Phases 1–4)
+
+Drift-prevention release: 11 named Low-severity items from
+`audit-13-2026-05-20.md` either closed or verified-already-closed.
+No user-visible behaviour change except for one health-stripe
+semantic correction (next bullet).
+
+- **Health stripe**: `_check_heartbeat` on a fresh install (no
+  `receiver_stats` rows) now reports `info` instead of `warn`.
+  The previous `warn` over-claimed — the absence of metrics is
+  the operator's deliberate `RSBS_METRICS_ENABLED=0` choice, not
+  a failure. (Audit-13 A13-025.)
+- **Database hygiene**: a redundant `idx_flights_reg` index on
+  `flights(registration)` lived alongside the newer
+  `idx_flights_registration` on existing DBs. DDL line renamed to
+  match; `_migrate()` drops the old name via `DROP INDEX IF EXISTS`
+  on the next collector start. (Audit-13 A13-063.)
+- **Collector startup**: `_load_notified` switched from per-row
+  `set.add` loop to a single `.update(generator)` call. Saves
+  ~50 ms on the production-DB warm-up; existing 6 tests cover the
+  regression. (Audit-13 A13-034.)
+
+### Code hygiene
+
+- `_BATCH_SIZE = 100` centralised in `scripts/_purge_helpers.py`
+  (`BATCH_SIZE`); three purge scripts import it. (A13-084.)
+- `make_db()` extracted from 13 test files into
+  `tests/_helpers.py::make_db()` with a docstring documenting the
+  production-startup-equivalent path. ~65 LOC removed. (A13-085.)
+- `CountingConn` extracted from three purge test files into
+  `tests/_helpers.py::CountingConn`. (A13-086.)
+- `Stats.tsx::formatLongest` deleted; one call site now uses
+  `fmtDur` from `lib/format.ts`. (A13-087.)
+- `sim.py`: `import os` lifted from inside the main poll loop body
+  to module top. (A13-093.)
+- Unreferenced `docs/Realistic ADS-B and MLAT Reception Ranges
+  for Home Receivers.md` deleted (28 KB, zero inbound links).
+  (A13-094.)
+- `notifier._clamp_caption` docstring corrected: the regex strips
+  exactly one trailing link line, not "line(s)". (A13-029.)
+
+### Tooling
+
+- New `.github/workflows/codeql.yml` — Python + JS/TS matrix,
+  push/PR triggers + weekly Sunday scan. Action tags will be
+  SHA-pinned by Dependabot on its first update PR. (A13-054.)
+
+### Silent triage closures
+
+Items found already closed during Phase 0 triage but never
+bookkept anywhere: A13-024, A13-026, A13-027, A13-030, A13-035,
+A13-051, A13-052, A13-053, A13-062, A13-071, A13-072, A13-073,
+A13-088, A13-091, A13-092, A13-095/096/097. A13-074, A13-089
+verified N/A after the LiveMap MapLibre rewrite. Full
+reconciliation in `internal_docs/security/audit-13-lowfix-status.md`.
+
+### Internal
+
+No API changes, no schema changes, no SPA bundle changes other
+than the `formatLongest` deletion (-~120 bytes gz).
+
 ## 2.10.0 — 2026-05-30
 
 ### Audit 15 — strict ESLint gate + react-hooks v7 compliance

@@ -11,6 +11,13 @@ from __future__ import annotations
 import sqlite3
 
 
+# Audit-13 A13-084: commit every N flights — see purge_ghosts comment
+# block for the rationale. Lives here so the three purge scripts can't
+# drift; the constant is small enough that the per-script comment is
+# overhead, not documentation.
+BATCH_SIZE = 100
+
+
 def new_max_gs(
     conn: sqlite3.Connection,
     flight_id: int,

@@ -140,7 +140,9 @@ def max_distance_after_purge(
 # SQLite write lock for the whole run (would starve the collector). The
 # delete/update for a single flight stays in one transaction; only the
 # batch boundary commits early.
-_BATCH_SIZE = 100
+# Audit-13 A13-084: constant lives in `_purge_helpers.BATCH_SIZE` so the
+# three purge scripts can't drift.
+from _purge_helpers import BATCH_SIZE as _BATCH_SIZE
 
 
 def apply_purge(

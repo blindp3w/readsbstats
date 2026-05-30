@@ -16,11 +16,7 @@ from readsbstats import database, db_updater
 # Helpers
 # ---------------------------------------------------------------------------
 
-def make_db() -> sqlite3.Connection:
-    conn = database.connect(":memory:")
-    conn.executescript(database.DDL)
-    database._migrate(conn)
-    return conn
+from tests._helpers import make_db  # noqa: E402 — kept under section header
 
 
 def _aircraft_gz(*rows: list[str]) -> bytes:

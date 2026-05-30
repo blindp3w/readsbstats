@@ -9,11 +9,7 @@ from readsbstats import config, database, health
 # Shared in-memory DB fixture
 # ---------------------------------------------------------------------------
 
-def make_db():
-    conn = database.connect(":memory:")
-    conn.executescript(database.DDL)
-    database._migrate(conn)
-    return conn
+from tests._helpers import make_db  # noqa: E402 — kept under section header
 
 
 @pytest.fixture()
@@ -39,9 +35,13 @@ def insert_metrics_row(conn, ts, **cols):
 # ---------------------------------------------------------------------------
 
 class TestHeartbeat:
-    def test_no_rows_warns(self, conn):
+    def test_no_rows_returns_info(self, conn):
+        # Audit-13 A13-025: a fresh install with metrics disabled
+        # (RSBS_METRICS_ENABLED=0) is not a failure state. The check must
+        # surface as `info` so the health stripe shows it green/blue,
+        # not yellow. `warn` was over-claiming.
         check = health._check_heartbeat(conn, now=1_000_000)
-        assert check.severity == "warn"
+        assert check.severity == "info"
         assert check.name == "heartbeat"
 
     def test_fresh_row_ok(self, conn):
@@ -170,10 +170,14 @@ class TestCpuSaturation:
 # ---------------------------------------------------------------------------
 
 class TestComputeHealth:
-    def test_empty_db_overall_warn(self, conn):
+    def test_empty_db_overall_info(self, conn):
+        # Audit-13 A13-025: a fresh DB with no receiver_stats is not a
+        # warning state — it's the operator's choice
+        # (RSBS_METRICS_ENABLED=0). Heartbeat returns `info`, all other
+        # checks bail out at "no recent samples" (also info), so overall
+        # is `info`.
         report = health.compute_health(conn, now=1_000_000)
-        # Heartbeat warns ("no rows yet"), others return info → overall = warn
-        assert report.overall == "warn"
+        assert report.overall == "info"
         names = [c.name for c in report.checks]
         assert set(names) == {
             "heartbeat", "aircraft_visibility", "noise_floor", "cpu_saturation",
