@@ -699,3 +699,85 @@ class TestNullCoordinateGuard:
         )
         # No flagged positions (slow enough to be plausible)
         assert result == {}
+
+
+# ---------------------------------------------------------------------------
+# Audit-13 A13-031 — `gs IS NOT NULL` SELECT filter, not the Python guard
+#
+# The audit flagged "scan_flights advances `prev` on gs=None positions
+# regardless of geographic plausibility" (purge_bad_gs.py:119-121).
+# Round-2 triage found this concern is moot: the SELECT at line 93
+# already filters `WHERE gs IS NOT NULL`, so the cursor never yields a
+# gs=None row. The Python `if gs is None: prev = pos; continue` block
+# is defence-in-depth dead code — kept in case someone loosens the
+# SELECT, but never exercised in practice.
+#
+# This regression test pins the SELECT filter, which is the actual
+# guarantee. If a future refactor removes `WHERE gs IS NOT NULL` from
+# the cursor, gs=None rows would reach the Python guard and the audit's
+# hypothetical concern would become live — at which point we'd need to
+# revisit the per-row branch. The test fails loudly if that happens.
+# ---------------------------------------------------------------------------
+
+class TestScanFiltersGsNoneAtSql:
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        self.conn = make_db()
+        yield
+        self.conn.close()
+
+    def test_gs_none_rows_excluded_by_select(self):
+        """Insert a flight with two valid gs positions plus one gs=NULL
+        position between them at a wildly-implausible location. If the
+        SELECT filter is ever removed, the next valid gs's
+        cross-validation reference would shift to the gs=NULL row's
+        coords and this test would fail.
+        """
+        fid = insert_flight(self.conn)
+        # Position A: valid gs, at origin.
+        insert_pos(self.conn, fid, 1000, 52.00, 21.0, gs=400.0, source_type="adsb_icao")
+        # Position B: gs=NULL, claims to be 1° north (huge jump). If the
+        # SELECT filter is removed, B becomes the cross-validation
+        # reference for C below.
+        self.conn.execute(
+            "INSERT INTO positions (flight_id, ts, lat, lon, gs, source_type) "
+            "VALUES (?, ?, ?, ?, NULL, 'adsb_icao')",
+            (fid, 1030, 53.0, 21.0),
+        )
+        # Position C: valid gs, ~6.67 nm north of A (400 kts × 60 s).
+        # 0.111° of latitude = 6.67 nm — within deviation tolerance.
+        insert_pos(self.conn, fid, 1060, 52.111, 21.0, gs=400.0, source_type="adsb_icao")
+        self.conn.commit()
+
+        import purge_bad_gs as pbg
+        recorded: list[tuple] = []
+        orig = pbg.haversine_nm
+
+        def spy(plat, plon, lat, lon):
+            recorded.append((plat, plon, lat, lon))
+            return orig(plat, plon, lat, lon)
+
+        pbg.haversine_nm = spy
+        try:
+            bad = scan_flights(
+                self.conn,
+                civil_limit=CIVIL_LIMIT,
+                military_limit=MILITARY_LIMIT,
+                deviation=DEVIATION,
+            )
+        finally:
+            pbg.haversine_nm = orig
+
+        # Sanity: nothing flagged — A→C is plausible.
+        assert bad == {}
+
+        # The cross-validation reference must never be B (lat=53).
+        # If `WHERE gs IS NOT NULL` is ever removed from the SELECT,
+        # B leaks in and this assertion fires.
+        b_used_as_reference = [
+            (plat, plon) for plat, plon, _, _ in recorded if plat == 53.0
+        ]
+        assert b_used_as_reference == [], (
+            f"gs=NULL row leaked through the SELECT filter into the "
+            f"cross-validation reference: {b_used_as_reference}"
+        )

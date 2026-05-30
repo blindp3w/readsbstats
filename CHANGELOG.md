@@ -1,5 +1,81 @@
 # Changelog
 
+## 2.10.3 — 2026-05-30
+
+### Audit-13 round 2 — correctness + Phase 6 round 2 + cleanup
+
+Seven items closed across three audit-13 categories. **+29 tests**
+(+8 Python, +21 Vitest). One small production-code fix
+(`_check_signal_drop` guard), one production-code refactor
+(`Map.tsx` Date.now → queryFn) that eliminates the last
+react-hooks/purity violation and the audit's "extra fetch per
+slider tick" concern. The rest is coverage backfill or cleanup
+sweeps.
+
+### Production code
+
+- **`Map.tsx` `Date.now()` in `useMemo`** (A13-033) — moved into
+  `queryFn`. Query key now uses the deterministic inputs
+  (mode + rewindOffsetSec + histAt); `Date.now()` runs once per
+  actual fetch instead of every render. Last react-hooks/purity
+  violation; the original audit-flagged extra-fetch concern is
+  eliminated by construction.
+- **`_check_signal_drop` baseline guard** (A13-023) — added a
+  `baseline >= 0` short-circuit mirroring `_check_message_rate`'s
+  `baseline <= 0` branch. Signal in dBFS is normally negative;
+  a baseline of 0 or above is physically degenerate and would
+  trigger spurious "antenna degraded" warns without the guard.
+- **`_top1()` allowlist hoist** (A13-040) — moved
+  `_TOP1_ALLOWLIST` and new `_assert_top1_column()` helper to
+  module scope so the SQL-injection-defence guard is
+  unit-testable. Behaviour unchanged.
+
+### Tests added (+29)
+
+- **A13-040 `_top1` allowlist** — 6 tests (immutability, exact
+  set, accepts, rejects unknown / SQL-injection payload /
+  empty).
+- **A13-023 signal_drop guard** — 1 regression test pinning the
+  new info-severity branch.
+- **A13-031 SELECT filter** — 1 regression test pinning the
+  `WHERE gs IS NOT NULL` SQL guard (the audit's "advances prev
+  on gs=None" concern is moot because the SELECT excludes those
+  rows).
+- **`Heatmap.tsx` max-normalisation** — `rampColor` extracted to
+  `chartMath.ts`; 10 tests cover empty/zero, single-non-zero,
+  mixed quintile bucketing, overflow clamping.
+- **`PolarRange.tsx` bearing→XY** — `polarToXY` extracted to
+  `chartMath.ts`; 11 tests cover four cardinals, four 45°
+  intermediates, zero distance, half distance.
+
+### Cleanup
+
+- **Playwright `wait_until="networkidle"` → `"load"`** — 27
+  sites swept across `tests/ui/test_mobile_smoke.py`. The
+  deprecated networkidle wait is replaced with `load`; the
+  three Playwright regression-lock tests stay green.
+
+### New helper modules
+
+- `frontend/src/components/charts/chartMath.ts` — both
+  `rampColor` and `polarToXY` live here so the page files stay
+  pure component-export modules (react-refresh/only-export-
+  components hygiene, same pattern Audit-15 applied to chart
+  option builders).
+
+### Deferred to a future PR
+
+- `_stop_prewarmer` graceful-shutdown test (timing-sensitive on
+  CI).
+- `adsbx_enricher.run_enricher_loop` exponential-backoff math
+  (timing-sensitive on CI).
+
+### Test totals
+
+- Python: 1484 → **1492** (+8)
+- Vitest: 299 → **320** (+21)
+- Coverage: stays at 95.54%
+
 ## 2.10.2 — 2026-05-30
 
 ### Audit 13 Phase 6 — test coverage backfill (round 1)

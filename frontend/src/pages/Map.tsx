@@ -104,20 +104,24 @@ export default function MapPage() {
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState<PlaybackSpeed>(1);
 
-  const at = useMemo(() => {
-    if (mode === 'live') return null;
-    if (mode === 'hist') return histAt;
-    return Math.floor(Date.now() / 1000) - rewindOffsetSec;
-  }, [mode, rewindOffsetSec, histAt]);
-
   // In HIST mode with no date picked, don't fire a snapshot fetch — `at == null`
   // would otherwise be interpreted as Live by the backend.
   const snapshotEnabled = mode !== 'hist' || histAt != null;
 
+  // Audit-13 A13-033 + react-hooks/purity: previously `at` was computed in
+  // a useMemo that read `Date.now()` during render. The non-determinism
+  // (a) flagged the audit's "extra fetch per slider tick" concern because
+  // each render produced a slightly-different query key, and (b) was
+  // impure under react-hooks v7. The query key now uses the deterministic
+  // inputs (mode + rewindOffsetSec + histAt) and `Date.now()` runs once
+  // per actual fetch inside queryFn.
   const snapshot = useQuery<SnapshotResp>({
-    queryKey: ['map-snapshot', at ?? 'live'],
+    queryKey: ['map-snapshot', mode, mode === 'rewind' ? rewindOffsetSec : null, histAt ?? null],
     queryFn: () => {
       const qs = new URLSearchParams({ trail: '20' });
+      let at: number | null = null;
+      if (mode === 'hist') at = histAt;
+      else if (mode === 'rewind') at = Math.floor(Date.now() / 1000) - rewindOffsetSec;
       if (at != null) qs.set('at', String(at));
       return apiJson<SnapshotResp>(`map/snapshot?${qs.toString()}`);
     },

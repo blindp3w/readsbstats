@@ -4,6 +4,7 @@
 
 import { useFormat } from '@/hooks/useFormat';
 import { CHART_COLORS } from './theme';
+import { polarToXY } from './chartMath';
 
 interface Bucket {
   bearing: number; // degrees
@@ -38,12 +39,11 @@ export function PolarRange({ buckets, size = SIZE_DEFAULT }: Props) {
   const cy = size / 2;
   const radius = size / 2 - 24;
 
-  // Convert bearing (0=N, clockwise) to SVG coords. SVG +x=east, +y=south.
-  function toXY(bearingDeg: number, distance: number): [number, number] {
-    const r = (distance / max) * radius;
-    const a = ((bearingDeg - 90) * Math.PI) / 180;
-    return [cx + r * Math.cos(a), cy + r * Math.sin(a)];
-  }
+  // bearing→SVG coords lives in module-scoped `polarToXY` (above) so the
+  // math is unit-testable. The closure inside the component just binds
+  // the per-render geometry (cx, cy, radius, max) into a curried call.
+  const toXY = (bearingDeg: number, distance: number): [number, number] =>
+    polarToXY(bearingDeg, distance, max, cx, cy, radius);
 
   // Build polygon path through buckets (sorted by bearing).
   const sorted = [...buckets].sort((a, b) => a.bearing - b.bearing);
@@ -82,8 +82,22 @@ export function PolarRange({ buckets, size = SIZE_DEFAULT }: Props) {
           />
         ))}
         {/* Cross hairs */}
-        <line x1={cx} y1={cy - radius} x2={cx} y2={cy + radius} stroke={CHART_COLORS.grid} strokeDasharray="2 4" />
-        <line x1={cx - radius} y1={cy} x2={cx + radius} y2={cy} stroke={CHART_COLORS.grid} strokeDasharray="2 4" />
+        <line
+          x1={cx}
+          y1={cy - radius}
+          x2={cx}
+          y2={cy + radius}
+          stroke={CHART_COLORS.grid}
+          strokeDasharray="2 4"
+        />
+        <line
+          x1={cx - radius}
+          y1={cy}
+          x2={cx + radius}
+          y2={cy}
+          stroke={CHART_COLORS.grid}
+          strokeDasharray="2 4"
+        />
 
         {/* Data polygon */}
         <polygon
@@ -119,9 +133,7 @@ export function PolarRange({ buckets, size = SIZE_DEFAULT }: Props) {
           );
         })}
       </svg>
-      <div className="text-xs text-[var(--color-text-dim)] tabnum">
-        max {fmtDist(max)}
-      </div>
+      <div className="text-xs text-[var(--color-text-dim)] tabnum">max {fmtDist(max)}</div>
     </div>
   );
 }
