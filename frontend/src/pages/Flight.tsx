@@ -2,7 +2,6 @@ import { Fragment, lazy, Suspense, useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { ArrowLeftIcon } from '@radix-ui/react-icons';
-import type { EChartsOption } from 'echarts';
 import { apiJson } from '@/lib/api';
 import { safeUrl } from '@/lib/safeUrl';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
@@ -13,8 +12,9 @@ import { Table, THead, TBody, TR, TH, TD } from '@/components/ui/Table';
 import { FlagBadge, SourceBadge } from '@/components/FlagBadge';
 import { useFormat } from '@/hooks/useFormat';
 import { fmtDur } from '@/lib/format';
-import { CHART_COLORS, baseOption, timeAxis, valueAxis } from '@/components/charts/theme';
+import { CHART_COLORS } from '@/components/charts/theme';
 import { EChart } from '@/components/charts/EChart';
+import { buildFlightProfileOption, type ProfileRow } from './flightCharts';
 import { IsolationPills } from '@/components/charts/IsolationPills';
 import { KpiSparkline } from '@/components/stats/KpiSparkline';
 import { MetricCell } from '@/components/flight/MetricCell';
@@ -488,95 +488,8 @@ function FlightHeader({
 }
 
 // ---------------------------------------------------------------------------
-// Altitude + speed profile chart
+// Altitude + speed profile chart — option builder lives in ./flightCharts.
 // ---------------------------------------------------------------------------
-
-interface ProfileRow {
-  ts: number;
-  alt: number | null;
-  gs: number | null;
-}
-
-// Exported for unit tests. Series carry STABLE keys ('alt' / 'gs') as
-// their `name` so the `isolated` lookup doesn't break when the user
-// toggles units (altLabel changes from "Alt (m)" to "Alt (ft)").
-export function buildFlightProfileOption(
-  rows: ProfileRow[],
-  altLabel: string,
-  spdLabel: string,
-  fmtAxisTime: (epoch: number) => string,
-  fmtTs: (epoch: number) => string,
-  // M3.2: when set to 'alt' or 'gs', the OTHER series fades to 0.2
-  // opacity. null = both at full opacity. Companion to the HTML pill
-  // row rendered by IsolationPills above the chart.
-  isolated?: string | null,
-): EChartsOption {
-  const base = baseOption();
-  const tAxis = timeAxis() as Exclude<EChartsOption['xAxis'], undefined | unknown[]>;
-  const leftAxis = valueAxis() as any;
-  const rightAxis = valueAxis() as any;
-  const altFaded = isolated != null && isolated !== 'alt';
-  const gsFaded = isolated != null && isolated !== 'gs';
-  // Orange gradient under altitude (top 30% alpha → bottom transparent).
-  // Replaces the previous solid 40% area flood.
-  const altAreaGradient = {
-    type: 'linear' as const,
-    x: 0,
-    y: 0,
-    x2: 0,
-    y2: 1,
-    colorStops: [
-      { offset: 0, color: CHART_COLORS.orange + '4d' /* ~30% alpha */ },
-      { offset: 1, color: CHART_COLORS.orange + '00' /* fully transparent */ },
-    ],
-  };
-  return {
-    ...base,
-    // Legend removed — the HTML pill row above the chart replaces it.
-    grid: { top: 16, right: 40, bottom: 28, left: 44, containLabel: false },
-    xAxis: {
-      ...tAxis,
-      axisLabel: {
-        ...(tAxis as any).axisLabel,
-        formatter: (v: number) => fmtAxisTime(v / 1000),
-        hideOverlap: true,
-      },
-      axisPointer: {
-        label: { formatter: (p: any) => fmtTs(p.value / 1000) },
-      },
-    },
-    yAxis: [leftAxis, { ...rightAxis, position: 'right' }],
-    dataZoom: [{ type: 'inside' }],
-    series: [
-      {
-        // STABLE name for isolation lookup; the pill row renders the
-        // unit-dependent label separately.
-        name: 'alt',
-        // Friendly tooltip / external label still uses the unit-aware string.
-        tooltip: { valueFormatter: (v: number) => `${v} (${altLabel})` },
-        type: 'line',
-        yAxisIndex: 0,
-        color: CHART_COLORS.orange,
-        data: rows.map((r) => [r.ts * 1000, r.alt]),
-        showSymbol: false,
-        sampling: 'lttb',
-        lineStyle: { width: 1.5, opacity: altFaded ? 0.2 : 1 },
-        areaStyle: { color: altAreaGradient, opacity: altFaded ? 0.06 : 1 },
-      },
-      {
-        name: 'gs',
-        tooltip: { valueFormatter: (v: number) => `${v} (${spdLabel})` },
-        type: 'line',
-        yAxisIndex: 1,
-        color: CHART_COLORS.accent,
-        data: rows.map((r) => [r.ts * 1000, r.gs]),
-        showSymbol: false,
-        sampling: 'lttb',
-        lineStyle: { width: 1.5, opacity: gsFaded ? 0.2 : 1 },
-      },
-    ],
-  };
-}
 
 function FlightProfileChart({ positions }: { positions: Position[] }) {
   const { altLabel, spdLabel, fmtTs, fmtAxisTime } = useFormat();

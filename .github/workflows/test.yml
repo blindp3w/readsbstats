@@ -74,7 +74,51 @@ jobs:
         working-directory: frontend
         run: npm run build
 
+      # Audit-15: strict gate. Errors and warnings both block merge. The
+      # zero-warnings baseline was reached by:
+      # (1) typing all source-file `any` casts in chart formatters;
+      # (2) allowlisting test-file `any` via per-file override in
+      #     `eslint.config.mjs`;
+      # (3) disabling `react-refresh/only-export-components` for the
+      #     shadcn-style UI primitives (multi-component Radix wrappers
+      #     export several parts from one file by design);
+      # (4) extracting non-component exports (chart option builders,
+      #     `useRange` hook) to sibling files so page components stay
+      #     pure component-export modules;
+      # (5) fixing the 8 react-hooks v7 purity / set-state-in-effect
+      #     violations (RangePicker, HealthStripe, TimePicker, History,
+      #     Metrics).
+      - name: Lint frontend (ESLint, strict)
+        if: matrix.python-version == '3.12'
+        working-directory: frontend
+        run: npm run lint -- --max-warnings 0
+
       - name: Run frontend unit tests (Vitest)
         if: matrix.python-version == '3.12'
         working-directory: frontend
         run: npm test
+
+      # Audit-15 regression-lock job. Runs the three Playwright tests that
+      # pin today's bug fixes:
+      #   - HealthStripe second-square click re-focuses the new row
+      #     (was: focus stuck on first row when panel already open)
+      #   - History `+ filter…` resets on reopen after submit
+      #     (was: previously-submitted field/value persisted)
+      #   - Custom range form re-initialises with the new preset's window
+      #     after the popover closes via preset-click outside-click.
+      # The wider device-matrix UI suite (tests/ui/*) stays local-only —
+      # the goal here is to gate the specific regressions, not to mirror
+      # the manual pre-release smoke pass.
+      - name: Install Playwright extras + browsers
+        if: matrix.python-version == '3.12'
+        run: |
+          pip install -e ".[ui-tests]"
+          playwright install --with-deps webkit chromium
+
+      - name: Run Playwright regression locks
+        if: matrix.python-version == '3.12'
+        run: |
+          pytest -q \
+            tests/ui/test_mobile_smoke.py::test_v2_health_stripe_second_square_click_re_focuses \
+            tests/ui/test_mobile_smoke.py::test_v2_history_add_filter_resets_after_submit \
+            tests/ui/test_mobile_smoke.py::test_v2_range_picker_reopen_after_preset_reflects_new_window

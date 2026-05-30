@@ -45,9 +45,7 @@ if (typeof window !== 'undefined' && typeof window.ResizeObserver === 'undefined
     unobserve(): void {}
     disconnect(): void {}
   }
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (window as any).ResizeObserver = ResizeObserverShim;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (globalThis as any).ResizeObserver = ResizeObserverShim;
 }
 
@@ -56,7 +54,6 @@ if (typeof window !== 'undefined' && typeof window.ResizeObserver === 'undefined
 // `matches: false` (desktop). Individual tests can override via
 // `Object.defineProperty(window, 'matchMedia', { value: ... })`.
 if (typeof window !== 'undefined' && !window.matchMedia) {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (window as any).matchMedia = (query: string) => ({
     matches: false,
     media: query,
@@ -81,8 +78,6 @@ if (typeof window !== 'undefined' && typeof window.IntersectionObserver === 'und
       return [];
     }
   }
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (window as any).IntersectionObserver = IntersectionObserverShim;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (globalThis as any).IntersectionObserver = IntersectionObserverShim;
 }

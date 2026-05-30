@@ -1,5 +1,4 @@
-import { useEffect, useState, type ReactNode } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useState, type ReactNode } from 'react';
 import { ChevronDownIcon, ChevronUpIcon } from '@radix-ui/react-icons';
 import { ToggleGroupRoot, ToggleGroupItem } from '@/components/ui/ToggleGroup';
 import { Button } from '@/components/ui/Button';
@@ -8,18 +7,16 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/Popover
 import { DatePicker } from '@/components/ui/DatePicker';
 import { TimePicker } from '@/components/ui/TimePicker';
 import { cn } from '@/lib/cn';
+import type { RangeState, RangeValue } from './useRange';
 
-// Range picker — URL-state.
-//
-// Two storage shapes:
-//   ?range=24h|7d|30d|90d|all   — relative-to-now window
-//   ?from=<epoch>&to=<epoch>     — explicit absolute window (Custom)
-//
-// Custom takes precedence over `range`. When the user picks a preset, the
-// from/to params are cleared from the URL so the page stays bookmarkable.
-// The Custom UI floats in a Radix Popover anchored to the "Custom" button.
+// Range picker UI. The `useRange` hook + RangeValue / RangeState types
+// live in ./useRange so this file only exports the component itself
+// (react-refresh/only-export-components hygiene). Consumers import
+// `useRange` from '@/components/useRange' directly. Type-only
+// re-exports below cost nothing at runtime and keep the
+// `import type { RangeValue }` ergonomics co-located with RangePicker.
 
-export type RangeValue = 'all' | '24h' | '7d' | '30d' | '90d' | 'custom';
+export type { RangeValue, RangeState } from './useRange';
 
 const PRESETS: { value: RangeValue; label: string }[] = [
   { value: '24h', label: '24h' },
@@ -28,89 +25,6 @@ const PRESETS: { value: RangeValue; label: string }[] = [
   { value: '90d', label: '90d' },
   { value: 'all', label: 'All' },
 ];
-
-const PRESET_VALUES = new Set<RangeValue>(['24h', '7d', '30d', '90d', 'all']);
-
-export interface RangeState {
-  // Active preset (used to color the toggle). 'custom' is implied when from/to
-  // are present without an explicit `range=custom`.
-  value: RangeValue;
-  // Resolved absolute window (always present for non-'all').
-  from?: number;
-  to?: number;
-}
-
-export function useRange(defaultValue: RangeValue = '24h'): {
-  state: RangeState;
-  setPreset: (v: RangeValue) => void;
-  setCustom: (from: number, to: number) => void;
-  clearCustom: () => void;
-} {
-  const [params, setParams] = useSearchParams();
-  const fromRaw = params.get('from');
-  const toRaw = params.get('to');
-  const rangeRaw = params.get('range') as RangeValue | null;
-
-  const hasCustom = fromRaw != null && toRaw != null;
-  let value: RangeValue;
-  if (hasCustom) value = 'custom';
-  else if (rangeRaw && PRESET_VALUES.has(rangeRaw)) value = rangeRaw;
-  else value = defaultValue;
-
-  let from: number | undefined;
-  let to: number | undefined;
-  if (hasCustom) {
-    from = Number(fromRaw);
-    to = Number(toRaw);
-    if (!Number.isFinite(from) || !Number.isFinite(to)) {
-      from = undefined;
-      to = undefined;
-    }
-  } else {
-    const w = presetWindow(value);
-    from = w.from;
-    to = w.to;
-  }
-
-  const setPreset = (v: RangeValue) => {
-    setParams((prev) => {
-      const out = new URLSearchParams(prev);
-      out.delete('from');
-      out.delete('to');
-      if (v === defaultValue) out.delete('range');
-      else out.set('range', v);
-      return out;
-    });
-  };
-
-  const setCustom = (from_: number, to_: number) => {
-    setParams((prev) => {
-      const out = new URLSearchParams(prev);
-      out.set('from', String(Math.floor(from_)));
-      out.set('to', String(Math.floor(to_)));
-      out.delete('range');
-      return out;
-    });
-  };
-
-  const clearCustom = () => setPreset(defaultValue);
-
-  return { state: { value, from, to }, setPreset, setCustom, clearCustom };
-}
-
-function presetWindow(range: RangeValue): { from?: number; to?: number } {
-  if (range === 'all' || range === 'custom') return {};
-  const now = Math.floor(Date.now() / 1000);
-  const sec =
-    range === '24h'
-      ? 86400
-      : range === '7d'
-        ? 7 * 86400
-        : range === '30d'
-          ? 30 * 86400
-          : 90 * 86400;
-  return { from: now - sec, to: now };
-}
 
 interface PickerProps {
   state: RangeState;
@@ -205,9 +119,14 @@ export function RangePicker({
           </button>
         </PopoverTrigger>
         <PopoverContent className="w-[320px]" data-testid="range-custom-panel">
+          {/* Key on the (from, to) pair forces a remount whenever the
+              parent's range changes externally (preset click while the
+              popover is open). The form's `useState` initialisers then
+              re-run, so we don't need a reset effect — see CustomRangeForm. */}
           <CustomRangeForm
-            initialFrom={state.from ?? Math.floor(Date.now() / 1000) - 86400}
-            initialTo={state.to ?? Math.floor(Date.now() / 1000)}
+            key={`${state.from ?? 'n'}-${state.to ?? 'n'}`}
+            initialFrom={state.from ?? null}
+            initialTo={state.to ?? null}
             onApply={(from, to) => {
               onCustom(from, to);
               setOpen(false);
@@ -241,24 +160,27 @@ function CustomRangeForm({
   initialTo,
   onApply,
 }: {
-  initialFrom: number;
-  initialTo: number;
+  initialFrom: number | null;
+  initialTo: number | null;
   onApply: (from: number, to: number) => void;
 }) {
-  const [fromDate, setFromDate] = useState(() => epochToLocalDate(initialFrom));
-  const [fromTime, setFromTime] = useState(() => epochToLocalTime(initialFrom));
-  const [toDate, setToDate] = useState(() => epochToLocalDate(initialTo));
-  const [toTime, setToTime] = useState(() => epochToLocalTime(initialTo));
+  // Defaults computed inside the useState initialiser so `Date.now()`
+  // runs once per mount, not during render. Combined with the parent's
+  // `key={…}` prop, external range changes trigger a remount and the
+  // initialisers run with the new values.
+  const [fromDate, setFromDate] = useState(() =>
+    epochToLocalDate(initialFrom ?? Math.floor(Date.now() / 1000) - 86400),
+  );
+  const [fromTime, setFromTime] = useState(() =>
+    epochToLocalTime(initialFrom ?? Math.floor(Date.now() / 1000) - 86400),
+  );
+  const [toDate, setToDate] = useState(() =>
+    epochToLocalDate(initialTo ?? Math.floor(Date.now() / 1000)),
+  );
+  const [toTime, setToTime] = useState(() =>
+    epochToLocalTime(initialTo ?? Math.floor(Date.now() / 1000)),
+  );
   const [error, setError] = useState<string | null>(null);
-
-  // Reset to current state if the popover re-opens after URL changed.
-  useEffect(() => {
-    setFromDate(epochToLocalDate(initialFrom));
-    setFromTime(epochToLocalTime(initialFrom));
-    setToDate(epochToLocalDate(initialTo));
-    setToTime(epochToLocalTime(initialTo));
-    setError(null);
-  }, [initialFrom, initialTo]);
 
   const apply = () => {
     const a = localDateTimeToEpoch(fromDate, fromTime);

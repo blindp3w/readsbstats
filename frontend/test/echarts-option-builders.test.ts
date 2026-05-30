@@ -1,9 +1,9 @@
 import { describe, it, expect, vi } from 'vitest';
 
-import { buildPanelOption, buildSignalSmallMultiplesOption } from '@/pages/Metrics';
-import { buildBarOption } from '@/pages/Stats';
-import { buildFlightProfileOption } from '@/pages/Flight';
-import { buildTopChartOption, type Row } from '@/components/charts/TopChart';
+import { buildPanelOption, buildSignalSmallMultiplesOption } from '@/pages/metricsCharts';
+import { buildBarOption } from '@/pages/statsCharts';
+import { buildFlightProfileOption } from '@/pages/flightCharts';
+import { buildTopChartOption, type Row } from '@/components/charts/topRows';
 import { abbreviateAxis } from '@/components/charts/topRows';
 
 const fakeFmtTs = (epoch: number) => new Date(epoch * 1000).toISOString();

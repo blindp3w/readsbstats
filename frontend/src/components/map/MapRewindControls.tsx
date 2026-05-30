@@ -3,7 +3,10 @@ import { PlayIcon, PauseIcon } from '@radix-ui/react-icons';
 import { cn } from '@/lib/cn';
 
 export type PlaybackSpeed = 1 | 2 | 5 | 10;
-export const PLAYBACK_SPEEDS: PlaybackSpeed[] = [1, 2, 5, 10];
+// Module-local (not exported) — `react-refresh/only-export-components`
+// allows type-only exports alongside the component, but value exports of
+// non-literal arrays trigger it. No external consumer needs this.
+const PLAYBACK_SPEEDS: PlaybackSpeed[] = [1, 2, 5, 10];
 
 interface Props {
   // Scrubber bounds + value in a generic unit (seconds for both rewind and

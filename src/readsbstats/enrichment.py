@@ -9,6 +9,7 @@ Provides fast in-process lookups against locally downloaded databases:
 import sqlite3
 import threading
 from collections import OrderedDict
+from typing import Any
 
 # ---------------------------------------------------------------------------
 # In-memory caches — populated on first lookup, evict oldest when full.
@@ -27,7 +28,7 @@ class _LRUDict(OrderedDict):
         self._maxsize = maxsize
         self._lock = threading.Lock()
 
-    def get_cached(self, key):
+    def get_cached(self, key: str) -> tuple[bool, dict[str, Any] | None]:
         """Return (True, value) if key is cached, else (False, None)."""
         with self._lock:
             if key in self:
@@ -35,14 +36,14 @@ class _LRUDict(OrderedDict):
                 return True, self[key]
         return False, None
 
-    def put(self, key, value):
+    def put(self, key: str, value: dict[str, Any] | None) -> None:
         with self._lock:
             self[key] = value
             self.move_to_end(key)
             if len(self) > self._maxsize:
                 self.popitem(last=False)
 
-    def invalidate(self, key) -> None:
+    def invalidate(self, key: str) -> None:
         """Remove `key` from the cache if present (no-op otherwise)."""
         with self._lock:
             self.pop(key, None)

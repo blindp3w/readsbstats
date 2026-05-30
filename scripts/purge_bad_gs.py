@@ -59,7 +59,7 @@ _MIN_GS_XVAL  = 300
 # ---------------------------------------------------------------------------
 
 def _is_military(flags: int) -> bool:
-    return bool(flags & 1)
+    return bool(flags & config.FLAG_MILITARY)
 
 
 def scan_flights(

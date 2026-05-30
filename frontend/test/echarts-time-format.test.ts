@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 
 import { useClockStore } from '@/store/clockFormat';
-import { buildPanelOption } from '@/pages/Metrics';
+import { buildPanelOption } from '@/pages/metricsCharts';
 import {
   fmtTs as bareFmtTs,
   fmtAxisTime as bareFmtAxisTime,

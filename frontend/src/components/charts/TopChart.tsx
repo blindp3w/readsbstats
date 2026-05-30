@@ -13,11 +13,6 @@ import {
 import { EChart } from '@/components/charts/EChart';
 import { type RankingsData, type ViewKey, VIEWS, buildRows, buildTopChartOption } from './topRows';
 
-// Re-exports kept for any out-of-tree imports (and the existing
-// frontend/test/top-chart-click.test.tsx which imports the option builder).
-export { buildTopChartOption } from './topRows';
-export type { Row, ViewKey } from './topRows';
-
 interface TopChartProps extends RankingsData {
   loading: boolean;
 }

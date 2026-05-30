@@ -11,7 +11,10 @@ interface Section {
   label: string;
 }
 
-export const SECTIONS: Section[] = [
+// Module-local (not exported) so the file's only export is the component
+// itself — `react-refresh/only-export-components` hygiene. Nothing
+// outside this file references SECTIONS.
+const SECTIONS: Section[] = [
   { id: 'overview', label: 'Overview' },
   { id: 'activity', label: 'Activity' },
   { id: 'rankings', label: 'Rankings' },

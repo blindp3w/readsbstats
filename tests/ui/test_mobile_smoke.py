@@ -507,6 +507,168 @@ def test_v2_aircraft_page_renders(request, v2_server, device_name):
         page.close()
 
 
+def test_v2_health_stripe_second_square_click_re_focuses(request, v2_server):
+    """Audit-15 regression lock: clicking a SECOND stripe square while the
+    detail panel is already open must move keyboard focus to the new
+    target row. The previous refactor of HealthStripe.tsx stored the
+    focus target in a ref and depended a `[open]`-keyed useEffect; the
+    second click left `open === true`, the no-op `setOpen(true)` didn't
+    re-run the effect, and the ref-set focus target never landed.
+
+    The seeded DB has no `receiver_stats` rows, so /api/metrics/health
+    returns an empty checks array. We intercept the endpoint and return
+    a payload with at least two checks so the stripe renders multiple
+    squares.
+    """
+    import json as _json
+
+    ctx = request.getfixturevalue("ctx_iphone_15")
+    base_url, _ = v2_server
+    page = ctx.new_page()
+    try:
+        # Mock /api/metrics/health so the stripe has two clickable squares.
+        # apiFetch normalises the URL through `/api/` — match any path that
+        # ends with `/api/metrics/health`.
+        payload = {
+            "overall": "warn",
+            "as_of": 0,
+            "checks": [
+                {"name": "heartbeat", "severity": "ok", "message": "fresh"},
+                {"name": "message_rate", "severity": "warn", "message": "1000/min vs 700 baseline"},
+                {"name": "signal_drop", "severity": "critical", "message": "-39 vs -41 dBFS"},
+            ],
+        }
+        page.route(
+            "**/api/metrics/health",
+            lambda route: route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=_json.dumps(payload),
+            ),
+        )
+
+        page.goto(f"{base_url}/metrics", wait_until="networkidle")
+
+        # Three squares should now be visible.
+        squares = page.locator('[data-testid="health-stripe-square"]')
+        expect(squares).to_have_count(3)
+
+        first = page.locator('[data-testid="health-stripe-square"][data-name="heartbeat"]')
+        second = page.locator('[data-testid="health-stripe-square"][data-name="signal_drop"]')
+
+        # Click the first square — detail panel opens, heartbeat row is focused.
+        first.click()
+        expect(page.locator('[data-testid="metrics-health-detail"]')).to_be_visible()
+        focused_id = page.evaluate("document.activeElement && document.activeElement.id")
+        assert focused_id == "health-check-heartbeat", (
+            f"after first click expected #health-check-heartbeat, got {focused_id!r}"
+        )
+
+        # Click a different square — panel stays open, but focus must move
+        # to the new row. This is the path the audit-15 bug broke.
+        second.click()
+        focused_id = page.evaluate("document.activeElement && document.activeElement.id")
+        assert focused_id == "health-check-signal_drop", (
+            f"after second click expected #health-check-signal_drop, got {focused_id!r}"
+        )
+    finally:
+        page.close()
+
+
+def test_v2_history_add_filter_resets_after_submit(request, v2_server):
+    """Audit-15 regression lock: after submitting a filter, reopening the
+    `+ filter…` popover must return to the field-picker step (Step 1),
+    not the value-input step (Step 2) for the previously-submitted field.
+
+    The previous refactor moved the reset from a `useEffect` keyed on
+    `[open]` into `handleOpenChange`. `submit()` calls `setOpen(false)`
+    directly, which Radix's `onOpenChange` doesn't fire for — so the
+    reset never ran and reopening the popover left the form dirty.
+    """
+    ctx = request.getfixturevalue("ctx_iphone_15")
+    base_url, _ = v2_server
+    page = ctx.new_page()
+    try:
+        page.goto(f"{base_url}/history", wait_until="networkidle")
+
+        # Open the wizard, pick callsign, enter a value, submit via Enter.
+        page.locator('[data-testid="history-add-filter-trigger"]').click()
+        expect(page.locator('[data-testid="history-add-filter-content"]')).to_be_visible()
+        page.locator('[data-testid="history-add-filter-field-callsign"]').click()
+        value_input = page.locator('[data-testid="history-add-filter-value-input"]')
+        expect(value_input).to_be_visible()
+        value_input.fill("LOT")
+        value_input.press("Enter")
+
+        # Popover closes after submit, chip appears.
+        expect(page.locator('[data-testid="history-add-filter-content"]')).not_to_be_visible()
+        expect(page.locator('[data-testid="history-chip-callsign"]')).to_be_visible()
+
+        # Reopen — should be back at Step 1 (field picker). The value
+        # input from Step 2 must NOT be visible, and the icao field
+        # option (any non-callsign field — callsign is now "in use" so it
+        # won't appear in availableFields, which is also good evidence
+        # the chip submission persisted) must be visible as a picker row.
+        page.locator('[data-testid="history-add-filter-trigger"]').click()
+        expect(page.locator('[data-testid="history-add-filter-content"]')).to_be_visible()
+        expect(page.locator('[data-testid="history-add-filter-value-input"]')).not_to_be_visible()
+        expect(page.locator('[data-testid="history-add-filter-field-icao"]')).to_be_visible()
+    finally:
+        page.close()
+
+
+def test_v2_range_picker_reopen_after_preset_reflects_new_window(request, v2_server):
+    """Audit-15 regression lock: after clicking a preset chip (which
+    closes the Custom popover via Radix outside-click), reopening the
+    Custom popover must show the form initialised with the new preset's
+    window — `state.from` / `state.to` must flow into CustomRangeForm's
+    useState initialisers.
+
+    The previous refactor removed a reset-on-prop-change `useEffect` and
+    relies instead on (a) Radix unmounting PopoverContent on close, so
+    CustomRangeForm fresh-mounts on reopen, AND (b) a parent
+    `key={state.from-state.to}` prop on CustomRangeForm as a defensive
+    backstop in case a future Radix change keeps PopoverContent alive
+    across the open transition. Either mechanism alone is enough to make
+    this test pass; the test verifies the observable behaviour.
+    """
+    import re
+
+    ctx = request.getfixturevalue("ctx_iphone_15")
+    base_url, _ = v2_server
+    page = ctx.new_page()
+    try:
+        page.goto(f"{base_url}/", wait_until="networkidle")
+
+        # First open: Stats uses useRange('all'), so state.from/to are
+        # undefined and the form falls back to now-24h / now defaults.
+        page.locator('[data-testid="range-custom-toggle"]').click()
+        expect(page.locator('[data-testid="range-custom-panel"]')).to_be_visible()
+        first_from = page.locator('[data-testid="range-custom-from"]').inner_text().strip()
+
+        # Click 7d preset — Radix detects outside-click, closes the popover
+        # and the URL gains ?range=7d.
+        page.locator('[data-testid="range-7d"]').click()
+        expect(page.locator('[data-testid="range-custom-panel"]')).not_to_be_visible()
+        expect(page).to_have_url(re.compile(r"[?&]range=7d"))
+
+        # Reopen — form initialiser should now consume state.from = now-7d,
+        # producing a From date approximately six days earlier than the
+        # previous now-24h. Exact locale-formatted text varies; we just
+        # assert the strings differ.
+        page.locator('[data-testid="range-custom-toggle"]').click()
+        expect(page.locator('[data-testid="range-custom-panel"]')).to_be_visible()
+        second_from = page.locator('[data-testid="range-custom-from"]').inner_text().strip()
+
+        assert second_from != first_from, (
+            f"From-date trigger did not reflect new preset on reopen: "
+            f"first={first_from!r} second={second_from!r}. "
+            f"CustomRangeForm may not be re-reading state.from / state.to."
+        )
+    finally:
+        page.close()
+
+
 def test_csrf_required_on_watchlist_post(v2_server):
     """Belt-and-suspenders: a direct fetch without X-Requested-With must 403.
 

@@ -581,16 +581,22 @@ function AddFilterPopover({
   const [dateFromValue, setDateFromValue] = useState('');
   const [dateToValue, setDateToValue] = useState('');
 
-  // Reset step + value buffers each time the popover opens.
-  useEffect(() => {
-    if (!open) {
-      setPickedField(null);
-      setTextValue('');
-      setSelectValue('');
-      setDateFromValue('');
-      setDateToValue('');
-    }
-  }, [open]);
+  // Reset the step + value buffers when the popover closes. Inlined in
+  // the onOpenChange handler (rather than a useEffect keyed on `open`)
+  // so the reset doesn't cascade through a render —
+  // react-hooks/set-state-in-effect.
+  const resetBuffers = () => {
+    setPickedField(null);
+    setTextValue('');
+    setSelectValue('');
+    setDateFromValue('');
+    setDateToValue('');
+  };
+
+  const handleOpenChange = (next: boolean) => {
+    if (!next) resetBuffers();
+    setOpen(next);
+  };
 
   const availableFields = FIELD_DEFS.filter((f) => !activeFieldKeys.has(f.key));
 
@@ -606,11 +612,16 @@ function AddFilterPopover({
       if (!textValue.trim()) return;
       onAdd(pickedField, textValue.trim());
     }
+    // Reset BEFORE closing: Radix's `onOpenChange` only fires for its own
+    // close events (ESC, outside click, PopoverClose). A direct
+    // `setOpen(false)` here bypasses `handleOpenChange`, so the next open
+    // would see the previously-submitted field/value still selected.
+    resetBuffers();
     setOpen(false);
   };
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    <Popover open={open} onOpenChange={handleOpenChange}>
       <PopoverTrigger asChild>
         <button
           ref={triggerRef}

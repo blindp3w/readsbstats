@@ -117,7 +117,6 @@ export function ActivityHeatmap({ rows }: { rows: HeatmapRow[] }) {
             </div>
           ))}
           {DOW.map((label, d) => (
-            // eslint-disable-next-line react/no-unknown-property
             <div key={label} className="contents" data-row={d}>
               <div className="pr-1 text-right text-[var(--color-text-dim)]">{label}</div>
               {HOURS.map((h) => (

@@ -63,41 +63,47 @@ export function TimePicker({
   const [touchedH, setTouchedH] = useState(false);
   const [touchedM, setTouchedM] = useState(false);
 
-  useEffect(() => {
-    if (open) {
+  // Commit + close once the user has touched both columns in this session.
+  // Inlined into the pick handlers (rather than driven by a useEffect on
+  // pendingH/pendingM) so the close action doesn't cascade through a
+  // render — react-hooks/set-state-in-effect.
+  const tryCommit = (h: number | null, m: number | null) => {
+    if (h == null || m == null) return;
+    const next = `${pad2(h)}:${pad2(m)}`;
+    if (next !== value) onChange(next);
+    setOpen(false);
+  };
+
+  const pickH = (n: number) => {
+    setPendingH(n);
+    setTouchedH(true);
+    if (touchedM) tryCommit(n, pendingM);
+  };
+  const pickM = (n: number) => {
+    setPendingM(n);
+    setTouchedM(true);
+    if (touchedH) tryCommit(pendingH, n);
+  };
+
+  const handleOpenChange = (next: boolean) => {
+    // On open, reset the pending/touched state so a fresh interaction
+    // starts cleanly. Doing the reset here (event handler) rather than
+    // in a useEffect avoids cascading-render warnings.
+    if (next) {
       setPendingH(parsed?.h ?? null);
       setPendingM(parsed?.m ?? null);
       setTouchedH(false);
       setTouchedM(false);
     }
-  }, [open, parsed?.h, parsed?.m]);
-
-  const pickH = (n: number) => {
-    setPendingH(n);
-    setTouchedH(true);
+    setOpen(next);
   };
-  const pickM = (n: number) => {
-    setPendingM(n);
-    setTouchedM(true);
-  };
-
-  // Commit + close once the user has touched both columns in this session.
-  useEffect(() => {
-    if (!open) return;
-    if (!touchedH || !touchedM) return;
-    if (pendingH == null || pendingM == null) return;
-    const next = `${pad2(pendingH)}:${pad2(pendingM)}`;
-    if (next !== value) onChange(next);
-    setOpen(false);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [touchedH, touchedM, pendingH, pendingM]);
 
   const hours = Array.from({ length: 24 }, (_, i) => i);
   const minutes: number[] = [];
   for (let m = 0; m < 60; m += minuteStep) minutes.push(m);
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    <Popover open={open} onOpenChange={handleOpenChange}>
       <PopoverTrigger asChild>
         <button
           id={id}
