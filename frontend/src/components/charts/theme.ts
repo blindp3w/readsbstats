@@ -3,6 +3,18 @@
 
 import type { EChartsOption } from 'echarts';
 
+// Axis-pointer label formatter param. ECharts' real type
+// (`LabelFormatterParams`) is a deep union covering tooltip / mark-line
+// / axis-pointer cases; `value` is `ScaleDataValue` (= `string | number
+// | Date`). Page-level chart builders here are time-axis only and the
+// time axis surfaces ms-since-epoch numbers — callers coerce defensively
+// via `Number(p.value)` so a Date or string at runtime still produces
+// a sensible value (Date.toString → NaN, string → its numeric form).
+export interface AxisPointerLabelFormatterParam {
+  value: number | string | Date;
+  seriesData?: unknown[];
+}
+
 export const CHART_COLORS = {
   accent: '#5b9af9',
   success: '#22c55e',
@@ -43,20 +55,27 @@ export function baseOption(): Partial<EChartsOption> {
   };
 }
 
-export function timeAxis(): EChartsOption['xAxis'] {
+// `as const` on `type` keeps the literal discriminant when builders
+// spread the result, so the returned shape stays structurally
+// compatible with ECharts' axis-union (time-axis vs value-axis etc.)
+// without an explicit cast at the call site. Return type is inferred —
+// an explicit `XAXisComponentOption` would re-widen the union and
+// re-introduce the spread-pattern type errors this helper was added
+// to remove.
+export function timeAxis() {
   return {
-    type: 'time',
+    type: 'time' as const,
     axisLine: { lineStyle: { color: CHART_COLORS.grid } },
     axisLabel: { color: CHART_COLORS.textDim },
     splitLine: { show: false },
   };
 }
 
-export function valueAxis(opts?: { formatter?: (v: number) => string }): EChartsOption['yAxis'] {
+export function valueAxis(opts?: { formatter?: (v: number) => string }) {
   return {
-    type: 'value',
+    type: 'value' as const,
     axisLine: { show: false },
     axisLabel: { color: CHART_COLORS.textDim, formatter: opts?.formatter },
-    splitLine: { lineStyle: { color: CHART_COLORS.grid, type: 'dashed' } },
+    splitLine: { lineStyle: { color: CHART_COLORS.grid, type: 'dashed' as const } },
   };
 }

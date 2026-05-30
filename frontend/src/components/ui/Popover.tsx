@@ -10,7 +10,7 @@ export const PopoverTrigger = Pop.Trigger;
 export const PopoverAnchor = Pop.Anchor;
 export const PopoverClose = Pop.Close;
 
-interface ContentProps extends React.ComponentPropsWithoutRef<typeof Pop.Content> {}
+type ContentProps = React.ComponentPropsWithoutRef<typeof Pop.Content>;
 
 export const PopoverContent = forwardRef<HTMLDivElement, ContentProps>(
   ({ className, sideOffset = 6, align = 'end', collisionPadding = 8, ...props }, ref) => (

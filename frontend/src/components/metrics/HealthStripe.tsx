@@ -14,7 +14,7 @@
 // Data comes verbatim from /api/metrics/health; check.message is already
 // human-readable so the inline summaries just render it.
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   CheckCircledIcon,
   ChevronDownIcon,
@@ -53,8 +53,10 @@ interface Props {
 }
 
 // statusColor + StatusIcon were previously inline in Metrics.tsx; moved
-// here so the stripe is self-contained.
-export function statusColor(severity: string): string {
+// here so the stripe is self-contained. Not exported (drop `export`):
+// no other file references it, and a non-component function export
+// breaks `react-refresh/only-export-components`.
+function statusColor(severity: string): string {
   if (severity === 'ok') return CHART_COLORS.success;
   if (severity === 'warn') return CHART_COLORS.warn;
   if (severity === 'critical') return CHART_COLORS.danger;
@@ -83,16 +85,22 @@ function checkRowId(name: string): string {
 export function HealthStripe({ q }: Props) {
   const [open, setOpen] = useState(false);
   // Name of the check whose detail row should receive focus once `open`
-  // is true. Cleared after the effect runs so a subsequent re-render
-  // doesn't keep re-focusing.
-  const [focusName, setFocusName] = useState<string | null>(null);
+  // becomes true. Held in a ref (not state) so clearing it after focus
+  // doesn't trigger a cascading render — react-hooks/set-state-in-effect.
+  // The ref is only consulted on the open→true transition (effect below).
+  // Click-while-already-open takes the synchronous path in
+  // `openAndFocus` instead, since `setOpen(true)` is a no-op and would
+  // not re-run this effect.
+  const focusNameRef = useRef<string | null>(null);
 
   useEffect(() => {
-    if (!open || !focusName) return;
-    const el = document.getElementById(checkRowId(focusName));
+    if (!open) return;
+    const name = focusNameRef.current;
+    if (!name) return;
+    const el = document.getElementById(checkRowId(name));
     if (el) el.focus();
-    setFocusName(null);
-  }, [open, focusName]);
+    focusNameRef.current = null;
+  }, [open]);
 
   if (q.isLoading) return <Skeleton className="h-16 w-full" data-testid="metrics-health-loading" />;
   if (q.isError || !q.data) {
@@ -111,8 +119,17 @@ export function HealthStripe({ q }: Props) {
     .slice(0, 2);
 
   const openAndFocus = (name: string) => {
+    if (open) {
+      // Panel already expanded — the target row is mounted, focus it
+      // synchronously. Going via the ref + effect would not work here
+      // because `setOpen(true)` bails out (state unchanged), the effect
+      // wouldn't re-run, and the second-click target would never gain
+      // focus.
+      document.getElementById(checkRowId(name))?.focus();
+      return;
+    }
+    focusNameRef.current = name;
     setOpen(true);
-    setFocusName(name);
   };
 
   return (

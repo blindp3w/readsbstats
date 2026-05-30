@@ -22,7 +22,6 @@ describe('copyToClipboard', () => {
       Object.defineProperty(window, 'isSecureContext', originalIsSecureContext);
     }
     // Drop any test-set navigator.clipboard so tests don't leak.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     delete (navigator as any).clipboard;
   });
 

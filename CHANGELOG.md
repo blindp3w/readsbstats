@@ -1,5 +1,56 @@
 # Changelog
 
+## 2.10.0 — 2026-05-30
+
+### Audit 15 — strict ESLint gate + react-hooks v7 compliance
+
+Lint hygiene release. CI now runs `npm run lint -- --max-warnings 0`
+on every push; the baseline went from 74 errors + 37 warnings to
+zero. Two latent UX bugs surfaced and were fixed in the same branch.
+
+- **Bug fix — `HealthStripe`:** clicking a second receiver-health
+  square while the detail panel was already open no longer fails to
+  move keyboard focus to the new row. The previous implementation
+  stored the focus target in a ref and waited for `[open]` to change;
+  the no-op `setOpen(true)` on the second click never re-ran the
+  effect. `openAndFocus` now takes a synchronous-focus path when the
+  panel is already open.
+- **Bug fix — `History.AddFilterPopover`:** submitting a filter
+  (Enter) now resets the form before closing. The previous refactor
+  had moved the reset into Radix's `onOpenChange`, which doesn't fire
+  when the parent calls `setOpen(false)` directly — so the next time
+  the user opened `+ filter…` they saw the just-submitted field's
+  value-input step instead of the field picker.
+- **react-hooks v7 compliance (8 violations):** `purity` and
+  `set-state-in-effect` errors fixed in `RangePicker.tsx`,
+  `Metrics.tsx`, `HealthStripe.tsx`, `TimePicker.tsx`, and
+  `History.tsx`. `Date.now()` in render moved into `useState`
+  initialisers; reset-on-prop-change `useEffect`s replaced with
+  key-prop remounts or `onOpenChange` handlers; one
+  `setState`-in-effect replaced with a ref.
+- **Type safety:** all `any` casts in production chart code removed
+  (`Flight.tsx`, `Metrics.tsx`, `topRows.ts`); new
+  `AxisPointerLabelFormatterParam` type exported from
+  `components/charts/theme.ts`. `timeAxis()` / `valueAxis()` use
+  `as const` literal discriminants so spreads stay structurally
+  compatible with ECharts' axis union. Test-file `any`s allowlisted
+  via a per-file ESLint override.
+- **react-refresh hygiene:** chart option builders extracted to
+  sibling files — `pages/flightCharts.ts`, `pages/statsCharts.ts`,
+  `pages/metricsCharts.ts`. The URL-state hook extracted to
+  `components/useRange.ts`. Page components now export only the
+  component itself. shadcn-style Radix-wrapper UI primitives keep
+  their multi-export pattern via a scoped per-file ESLint override.
+- **CI**: new Playwright regression-lock job runs three tests on
+  every push (`test.yml` Python 3.12 matrix). The tests pin the
+  two bug fixes above plus the `CustomRangeForm` re-initialise
+  flow on preset-after-Custom-popover-close.
+- **Backend cleanups:** `scripts/purge_bad_gs.py:62` now uses
+  `config.FLAG_MILITARY` instead of bare `1`;
+  `enrichment._LRUDict` public methods carry type hints.
+
+No functional API changes.
+
 ## 2.9.9 — 2026-05-26
 
 ### M10.2 — responsive sweep at 393 / 834 / 1512 px

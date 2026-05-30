@@ -2,8 +2,8 @@
 // Extracted from TopChart.tsx so both the single-card switcher (md/<sm)
 // and the xl small-multiples grid render from the same option builder.
 
-import type { EChartsOption } from 'echarts';
-import type { StatsResponse } from '@/pages/Stats';
+import type { DefaultLabelFormatterCallbackParams, EChartsOption } from 'echarts';
+import type { StatsResponse } from '@/pages/statsCharts';
 import { CHART_COLORS, baseOption } from './theme';
 
 export type ViewKey = 'aircraft' | 'airlines' | 'countries' | 'visitors' | 'routes' | 'airports';
@@ -99,8 +99,13 @@ export function buildTopChartOption(rows: Row[], clickable: boolean): EChartsOpt
       backgroundColor: CHART_COLORS.surface,
       borderColor: CHART_COLORS.grid,
       textStyle: { color: CHART_COLORS.text, fontSize: 12 },
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      formatter: (p: any) => `${p.data.fullLabel} — ${p.data.value}`,
+      // ECharts types `data` on the callback as `OptionDataValue |
+      // OptionDataValue[]` — our `series.data` is the `Row[]` set below,
+      // so we narrow at the boundary.
+      formatter: (p: DefaultLabelFormatterCallbackParams) => {
+        const row = p.data as Row;
+        return `${row.fullLabel} — ${row.value}`;
+      },
     },
     grid: { top: 8, right: 32, bottom: 8, left: 110, containLabel: false },
     xAxis: {
