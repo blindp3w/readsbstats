@@ -1,5 +1,66 @@
 # Changelog
 
+## 2.10.2 — 2026-05-30
+
+### Audit 13 Phase 6 — test coverage backfill (round 1)
+
+Additive release: +46 tests across seven previously-untested
+public surfaces. No production-code changes, no API changes, no
+schema changes. Coverage stays at 95.51% (the added surfaces
+were already in coverage gates; tests now pin behaviour
+explicitly).
+
+- **`/live` redirect endpoint**: 3 tests in `TestRedirectLive`
+  pin the 302→`/map` behaviour, `root_path` honouring, and the
+  A13-049 same-origin invariant.
+- **`geo.haversine_nm`**: 6 direct tests — identical points,
+  one-degree lat/lon at equator, one-degree lon at 60°N (cos
+  shrink), symmetry, antipodal ≈ π·R.
+- **`geo.bearing`**: 8 direct tests — four cardinal directions,
+  NE/SW quadrant guards, 0–360° normalisation invariant, and
+  `destination_point` roundtrip.
+- **`db_updater._parse_aircraft_csv_row`**: 7 direct tests —
+  full row, empty row, invalid ICAOs (length / hex / overflow),
+  uppercase normalisation, missing-tail defaults, empty-string →
+  None, whitespace stripping.
+- **`components/Pagination.tsx`**: 11 off-by-one regression
+  locks — zero results, exact-page boundaries, last partial
+  page, `pageCount` floor for zero total, Prev/Next handler
+  offset math.
+- **`store/clockFormat.ts`**: 6 direct tests mirroring the
+  `units` store shape — defaults, persistence,
+  `hasStoredClockFormat`, throw-resilience for both getter
+  and setter.
+- **`hooks/useFormat.ts`**: 5 tests pinning the
+  re-render-on-store-change contract for both the units store
+  and the clockFormat store.
+
+### Silent triage closures (no new test needed)
+
+- A13-011 `_check_range_degradation` zero-division — covered
+  by `test_long_max_zero_returns_info` with explicit audit ref.
+- A13-008 `compute_health` exception isolation — covered by
+  `TestComputeHealthIsolation` class.
+- A13-003 `route_enricher._apply_to_flights route=None` —
+  covered by `test_apply_none_does_not_overwrite_existing_origin_dest`
+  with explicit audit ref.
+
+### Deferred (not testable in scope)
+
+- `_top1()` allowlist — closure-local constant; would need
+  module-scope hoist to be unit-testable. Behaviour pinned by
+  existing integration coverage on the stats records endpoint.
+- `_stop_prewarmer` graceful shutdown — complex thread test;
+  deferred to a dedicated coverage PR.
+- `adsbx_enricher.run_enricher_loop` exponential-backoff math
+  — complex thread test; same.
+- `charts/Heatmap.tsx` max-normalisation,
+  `charts/PolarRange.tsx` bearing→XY — chart-math tests on the
+  Phase 6 round 2 list.
+
+Test totals: **Python 1460 → 1484** (+24), **Vitest 277 → 299**
+(+22).
+
 ## 2.10.1 — 2026-05-30
 
 ### Audit 13 Low-severity close-out (Phases 1–4)

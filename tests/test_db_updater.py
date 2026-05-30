@@ -658,3 +658,71 @@ class TestMain:
         with pytest.raises(SystemExit) as exc_info:
             db_updater.main()
         assert exc_info.value.code == 1
+
+# ---------------------------------------------------------------------------
+# Audit-13 Phase 6: direct tests for _parse_aircraft_csv_row
+#
+# Pulled out of the update_aircraft_db full-flow test so the parser's
+# row-level behaviour (ICAO validation, missing/extra columns, flags
+# binary parsing) can be exercised in isolation.
+# ---------------------------------------------------------------------------
+
+class TestParseAircraftCsvRow:
+    def test_full_row(self):
+        row = db_updater._parse_aircraft_csv_row(
+            ["3c4b26", "D-AIBF", "A320", "1000", "AIRBUS A320"]
+        )
+        assert row is not None
+        icao, reg, type_code, type_desc, flags = row
+        assert icao == "3c4b26"
+        assert reg == "D-AIBF"
+        assert type_code == "A320"
+        assert type_desc == "AIRBUS A320"
+        # '1000' binary → military bit (LSB of FLAG_BITS is military)
+        assert isinstance(flags, int)
+
+    def test_empty_row_returns_none(self):
+        assert db_updater._parse_aircraft_csv_row([]) is None
+
+    def test_invalid_icao_returns_none(self):
+        # Too short
+        assert db_updater._parse_aircraft_csv_row(["abc"]) is None
+        # Non-hex
+        assert db_updater._parse_aircraft_csv_row(["zzzzzz"]) is None
+        # Too long
+        assert db_updater._parse_aircraft_csv_row(["3c4b261"]) is None
+
+    def test_uppercase_icao_normalised(self):
+        row = db_updater._parse_aircraft_csv_row(["3C4B26", "", "", "", ""])
+        assert row is not None
+        assert row[0] == "3c4b26"
+
+    def test_missing_trailing_columns_default(self):
+        # Only the ICAO is required; the rest default to empty / 0-flags.
+        row = db_updater._parse_aircraft_csv_row(["3c4b26"])
+        assert row is not None
+        icao, reg, type_code, type_desc, flags = row
+        assert icao == "3c4b26"
+        assert reg is None
+        assert type_code is None
+        assert type_desc is None
+        assert flags == 0
+
+    def test_empty_string_fields_become_none(self):
+        row = db_updater._parse_aircraft_csv_row(["3c4b26", "", "", "0", ""])
+        assert row is not None
+        icao, reg, type_code, type_desc, flags = row
+        assert reg is None
+        assert type_code is None
+        assert type_desc is None
+
+    def test_whitespace_stripped(self):
+        row = db_updater._parse_aircraft_csv_row(
+            ["  3c4b26  ", " D-AIBF ", " A320 ", "0", " AIRBUS "]
+        )
+        assert row is not None
+        assert row[0] == "3c4b26"
+        assert row[1] == "D-AIBF"
+        assert row[2] == "A320"
+        assert row[3] == "AIRBUS"
+
