@@ -3772,6 +3772,40 @@ class TestFetchTypePhoto:
 # Audit-13 Phase 6: previously-untested public surfaces
 # ---------------------------------------------------------------------------
 
+class TestTop1Allowlist:
+    """Audit-13 A13-040: the `_top1()` closure inside
+    `api_stats_records` f-strings `order_col` into SQL. The allowlist
+    guard fires at function entry; tests pin it directly against the
+    module-scoped `_TOP1_ALLOWLIST` + `_assert_top1_column`."""
+
+    def test_allowlist_contains_exactly_the_three_known_columns(self):
+        # Lock in the set so a future addition is intentional.
+        assert web._TOP1_ALLOWLIST == frozenset(
+            {"max_distance_nm", "max_gs", "max_alt_baro"}
+        )
+
+    def test_allowlist_is_frozen(self):
+        # frozenset → no `.add()`. A regular `set()` would silently allow
+        # mutation, which would defeat the guarantee.
+        assert isinstance(web._TOP1_ALLOWLIST, frozenset)
+
+    def test_assert_accepts_each_allowed_column(self):
+        for col in ("max_distance_nm", "max_gs", "max_alt_baro"):
+            web._assert_top1_column(col)  # must not raise
+
+    def test_assert_rejects_unknown_column(self):
+        with pytest.raises(ValueError, match="unsupported order column"):
+            web._assert_top1_column("first_seen")
+
+    def test_assert_rejects_sql_injection_payload(self):
+        with pytest.raises(ValueError, match="unsupported order column"):
+            web._assert_top1_column("max_gs; DROP TABLE flights --")
+
+    def test_assert_rejects_empty_string(self):
+        with pytest.raises(ValueError, match="unsupported order column"):
+            web._assert_top1_column("")
+
+
 class TestRedirectLive:
     """Audit-13 untested-surface: `/live` is a server-side 302 alias for
     `/map`. No SPA routing involved. The handler must (a) honour

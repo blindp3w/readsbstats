@@ -332,6 +332,15 @@ def _check_signal_drop(conn: sqlite3.Connection, now: int) -> Check:
     baseline, n = _baseline_avg(conn, "signal", now, lookback_weeks=config.HEALTH_BASELINE_WEEKS)
     if baseline is None or n < config.HEALTH_BASELINE_MIN_SAMPLES:
         return _insufficient_baseline("signal_drop", n)
+    # Audit-13 A13-023: defensive guard mirroring `_check_message_rate`'s
+    # `baseline <= 0` short-circuit. Signal in dBFS is normally negative
+    # (~−40 strong, ~−50 moderate); a baseline of exactly 0 dBFS is
+    # physically improbable and most likely indicates degenerate
+    # historical data. Without the guard, current=−42 vs baseline=0
+    # produces delta=−42, which slams every threshold and surfaces a
+    # spurious "antenna degraded" warn.
+    if baseline >= 0:
+        return Check(name="signal_drop", severity="info", message="Baseline is non-negative dBFS — historical data degenerate")
     delta = current - baseline
     threshold = -config.HEALTH_SIGNAL_DROP_DB
     msg = f"{current:.1f} dBFS vs {baseline:.1f} dBFS baseline (Δ {delta:+.1f} dB)"

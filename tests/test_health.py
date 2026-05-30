@@ -405,6 +405,21 @@ class TestSignalDropCheck:
         check = health._check_signal_drop(conn, NOW)
         assert check.severity == "warn"
 
+    def test_zero_baseline_returns_info(self, conn):
+        # Audit-13 A13-023: dBFS signal is normally negative (strong
+        # signal ≈ -40, moderate ≈ -50). A baseline of exactly 0 dBFS
+        # is physically degenerate; without the guard, current=-42
+        # against baseline=0 would compute delta=-42 and surface a
+        # bogus "antenna degraded" warn. The guard short-circuits to
+        # `info` mirroring `_check_message_rate`'s `baseline <= 0`
+        # branch.
+        for off in (0, 60, 120):
+            insert_metrics_row(conn, ts=NOW - off, signal=-42.0)
+        _seed_hour_of_week_history(conn, 0.0, weeks_back=3, col="signal")
+        check = health._check_signal_drop(conn, NOW)
+        assert check.severity == "info"
+        assert "degenerate" in check.message.lower()
+
 
 # ---------------------------------------------------------------------------
 # Phase 2 — aircraft_drop

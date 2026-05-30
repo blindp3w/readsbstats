@@ -341,6 +341,27 @@ _FLIGHT_JOIN = """
     LEFT JOIN airports         ap_dest ON ap_dest.icao_code = f.dest_icao
 """
 
+# Audit-13 A13-040: allowlist for the `_top1()` closure inside
+# `api_stats_records`. Hoisted to module scope so the guard is
+# unit-testable; otherwise the closure-local frozenset was unreachable
+# from tests, and a future refactor that loosened the check would
+# silently land. `_assert_top1_column` is the canonical entry point;
+# both the helper and the constant are public-by-convention (no leading
+# underscore on the assertion to encourage direct test imports).
+_TOP1_ALLOWLIST: frozenset[str] = frozenset({"max_distance_nm", "max_gs", "max_alt_baro"})
+
+
+def _assert_top1_column(order_col: str) -> None:
+    """Raise `ValueError` if *order_col* is not in `_TOP1_ALLOWLIST`.
+
+    Defends against a future caller f-stringing a tainted column name
+    into the SQL inside `_top1()`. The check fires before any SQL is
+    built; tests pin the negative path directly without needing a DB.
+    """
+    if order_col not in _TOP1_ALLOWLIST:
+        raise ValueError(f"unsupported order column: {order_col!r}")
+
+
 # Whitelist of sortable columns for /api/flights
 _SORT_COLS: dict[str, str] = {
     "first_seen":     "f.first_seen",
@@ -1978,12 +1999,10 @@ def api_stats_records() -> dict:
 
     # Audit-13 A13-040: previously accepted any string as `order_col` and
     # f-stringed it into SQL — latent SQLi if a future caller forwarded a
-    # query param. Explicit allowlist enforced at function entry.
-    _TOP1_ALLOWLIST = frozenset({"max_distance_nm", "max_gs", "max_alt_baro"})
-
+    # query param. Explicit allowlist (now module-scoped — see
+    # `_TOP1_ALLOWLIST` near top of file) enforced at function entry.
     def _top1(order_col: str, extra_where: str = "", extra_params: tuple = ()) -> dict | None:
-        if order_col not in _TOP1_ALLOWLIST:
-            raise ValueError(f"unsupported order column: {order_col!r}")
+        _assert_top1_column(order_col)
         row = conn.execute(
             f"""
             SELECT {_FLIGHT_COLS}

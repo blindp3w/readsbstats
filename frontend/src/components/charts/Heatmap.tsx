@@ -18,15 +18,7 @@
 
 import { HEATMAP_RAMP } from './theme';
 import { SimpleTooltip } from '@/components/ui/Tooltip';
-
-// Bucket a non-zero count into one of the ramp's 5 stops based on its
-// fraction of `max`. Linear, inclusive on both ends: count==max → stop 4.
-function rampColor(count: number, max: number): string {
-  if (max === 0 || count === 0) return 'transparent';
-  const frac = Math.min(1, count / max);
-  const idx = Math.min(HEATMAP_RAMP.length - 1, Math.floor(frac * HEATMAP_RAMP.length));
-  return HEATMAP_RAMP[idx];
-}
+import { rampColor } from './chartMath';
 
 interface HeatmapRow {
   dow: number; // 0=Sun .. 6=Sat
