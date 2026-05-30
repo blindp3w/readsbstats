@@ -157,11 +157,15 @@ CREATE TABLE IF NOT EXISTS flights (
     dest_icao       TEXT            -- destination airport ICAO (from adsbdb.com)
 );
 
-CREATE INDEX IF NOT EXISTS idx_flights_icao     ON flights(icao_hex);
-CREATE INDEX IF NOT EXISTS idx_flights_first    ON flights(first_seen DESC);
-CREATE INDEX IF NOT EXISTS idx_flights_callsign ON flights(callsign);
-CREATE INDEX IF NOT EXISTS idx_flights_reg      ON flights(registration);
-CREATE INDEX IF NOT EXISTS idx_flights_type     ON flights(aircraft_type);
+CREATE INDEX IF NOT EXISTS idx_flights_icao         ON flights(icao_hex);
+CREATE INDEX IF NOT EXISTS idx_flights_first        ON flights(first_seen DESC);
+CREATE INDEX IF NOT EXISTS idx_flights_callsign     ON flights(callsign);
+-- Audit-13 A13-063: was `idx_flights_reg` historically; renamed to
+-- `idx_flights_registration` so fresh installs match the name used by
+-- `_migrate()` and the docstring at `_backfill_flights_enrichment`.
+-- `_migrate()` drops the old `idx_flights_reg` on existing DBs.
+CREATE INDEX IF NOT EXISTS idx_flights_registration ON flights(registration);
+CREATE INDEX IF NOT EXISTS idx_flights_type         ON flights(aircraft_type);
 -- idx_flights_dist is created in _migrate() after the column is guaranteed to exist
 
 CREATE TABLE IF NOT EXISTS positions (
@@ -316,6 +320,13 @@ def _migrate(conn: sqlite3.Connection) -> None:
     # run_background_migrations() — it's a full-table UPDATE that would block
     # web startup on the SQLite write lock. See audit-12 #139.
 
+    # Audit-13 A13-063: existing DBs (pre-rename) carry an orphan
+    # `idx_flights_reg` on `flights(registration)` alongside the
+    # newer `idx_flights_registration`. Two indexes on the same column
+    # waste write cost and disk; drop the older name. `IF EXISTS` keeps
+    # this a no-op on fresh installs (which now create the canonical
+    # name from DDL).
+    conn.execute("DROP INDEX IF EXISTS idx_flights_reg")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_flights_registration ON flights(registration)"
     )

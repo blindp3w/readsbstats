@@ -156,8 +156,8 @@ def scan_flights(
     return bad
 
 
-# Commit every N flights — see purge_ghosts._BATCH_SIZE for rationale.
-_BATCH_SIZE = 100
+# Audit-13 A13-084: single source of truth in `_purge_helpers.BATCH_SIZE`.
+from _purge_helpers import BATCH_SIZE as _BATCH_SIZE
 
 
 def apply_purge(conn: sqlite3.Connection, bad: dict[int, list[int]]) -> None:

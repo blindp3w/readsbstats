@@ -14,11 +14,7 @@ from purge_mlat_gs_spikes import (
 )
 
 
-def make_db() -> sqlite3.Connection:
-    conn = database.connect(":memory:")
-    conn.executescript(database.DDL)
-    database._migrate(conn)
-    return conn
+from tests._helpers import make_db  # noqa: E402 — kept under section header
 
 
 def insert_flight(conn, icao="aabbcc", max_gs=500.0) -> int:
@@ -213,16 +209,7 @@ class TestApplyPurgeBatching:
 
     def test_apply_purge_batches_commits(self):
         from purge_mlat_gs_spikes import _BATCH_SIZE
-
-        class _CountingConn:
-            def __init__(self, c):
-                self._c = c
-                self.commits = 0
-            def __getattr__(self, name):
-                return getattr(self._c, name)
-            def commit(self):
-                self.commits += 1
-                self._c.commit()
+        from tests._helpers import CountingConn as _CountingConn
 
         bad: dict[int, list[int]] = {}
         n_flights = _BATCH_SIZE * 2 + 5

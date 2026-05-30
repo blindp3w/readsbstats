@@ -13,11 +13,7 @@ RLON = 21.02872
 MAX_SPEED = 2000
 
 
-def make_db() -> sqlite3.Connection:
-    conn = database.connect(":memory:")
-    conn.executescript(database.DDL)
-    database._migrate(conn)
-    return conn
+from tests._helpers import make_db  # noqa: E402 — kept under section header
 
 
 def insert_flight(conn, icao="aabbcc") -> int:
@@ -249,19 +245,7 @@ class TestApplyPurge:
         flight loop. On a DB with thousands of flagged flights the
         single-transaction pattern starved the collector for minutes."""
         from purge_ghosts import _BATCH_SIZE
-
-        # sqlite3.Connection.commit is a C-level read-only slot, so we wrap
-        # the connection in a thin Proxy that intercepts commit() before
-        # forwarding to the real conn.
-        class _CountingConn:
-            def __init__(self, c):
-                self._c = c
-                self.commits = 0
-            def __getattr__(self, name):
-                return getattr(self._c, name)
-            def commit(self):
-                self.commits += 1
-                self._c.commit()
+        from tests._helpers import CountingConn as _CountingConn
 
         # Build 2 × _BATCH_SIZE + 5 flights, each with one ghost
         ghosts: dict[int, list[int]] = {}

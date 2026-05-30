@@ -2,6 +2,7 @@ import { useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { apiJson } from '@/lib/api';
+import { fmtDur } from '@/lib/format';
 import { RangePicker, type RangeValue } from '@/components/RangePicker';
 import { useRange } from '@/components/useRange';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
@@ -443,7 +444,7 @@ function Records({
               callsign={q.data.longest?.callsign}
               typeDesc={q.data.longest?.type_desc}
               aircraftType={q.data.longest?.aircraft_type}
-              value={formatLongest(q.data.longest?.duration_sec ?? null)}
+              value={fmtDur(q.data.longest?.duration_sec ?? null)}
               ts={q.data.longest?.first_seen}
               fmtTs={fmtTs}
             />
@@ -574,11 +575,4 @@ function NewAircraftList({
       </CardContent>
     </Card>
   );
-}
-
-function formatLongest(seconds: number | null): string {
-  if (seconds == null) return '—';
-  const h = Math.floor(seconds / 3600);
-  const m = Math.round((seconds % 3600) / 60);
-  return h ? `${h}h ${m}m` : `${m}m`;
 }

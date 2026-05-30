@@ -19,11 +19,7 @@ from readsbstats.photo_sources import PhotoResult
 # Shared DB fixture
 # ---------------------------------------------------------------------------
 
-def make_db():
-    conn = database.connect(":memory:")
-    conn.executescript(database.DDL)
-    database._migrate(conn)
-    return conn
+from tests._helpers import make_db  # noqa: E402 — kept under section header
 
 
 @pytest.fixture()
@@ -712,11 +708,14 @@ class TestApiHealth:
 # ---------------------------------------------------------------------------
 
 class TestApiMetricsHealth:
-    def test_empty_db_returns_warn(self, client):
+    def test_empty_db_returns_info(self, client):
+        # Audit-13 A13-025: empty receiver_stats is operator choice, not
+        # a warning state. Heartbeat now reports `info`, so overall is
+        # `info` (the previous `warn` over-claimed).
         r = client.get("/api/metrics/health")
         assert r.status_code == 200
         body = r.json()
-        assert body["overall"] == "warn"
+        assert body["overall"] == "info"
         names = [c["name"] for c in body["checks"]]
         assert "heartbeat" in names
         assert "aircraft_visibility" in names

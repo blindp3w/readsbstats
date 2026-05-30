@@ -16,11 +16,7 @@ import import_rrd
 # Helpers
 # ---------------------------------------------------------------------------
 
-def make_db() -> sqlite3.Connection:
-    conn = database.connect(":memory:")
-    conn.executescript(database.DDL)
-    database._migrate(conn)
-    return conn
+from tests._helpers import make_db  # noqa: E402 — kept under section header
 
 
 # ---------------------------------------------------------------------------

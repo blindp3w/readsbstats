@@ -14,6 +14,7 @@ Then run the collector pointed at the same file:
 
 import json
 import math
+import os
 import random
 import sys
 import time
@@ -108,7 +109,6 @@ def main():
         tmp = OUTPUT_PATH + ".tmp"
         with open(tmp, "w") as fh:
             json.dump(data, fh)
-        import os
         os.replace(tmp, OUTPUT_PATH)
         print(f"\r{time.strftime('%H:%M:%S')}  {len(data['aircraft'])} aircraft", end="", flush=True)
         time.sleep(INTERVAL)
