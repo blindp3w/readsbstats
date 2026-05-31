@@ -127,6 +127,7 @@ Thresholds for the nine receiver-health checks. All effective values are also re
 | Variable | Default | Description |
 |---|---|---|
 | `RSBS_MAP_HISTORY_HOURS` | `24` | How many hours back the rewind slider can reach (min `1`) |
+| `RSBS_MAP_TRAIL_WINDOW_SECONDS` | `3600` | How far back the per-aircraft trail on the live/replay map reaches. Bounds the SQL window used to rank position rows so a long flight with thousands of positions doesn't force SQLite to scan the whole partition for a 50-point trail. (min `60`) |
 
 ### Web server
 

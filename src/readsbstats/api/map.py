@@ -308,6 +308,14 @@ def api_map_snapshot(
     if trail_count > 0 and aircraft:
         flight_ids = [r["flight_id"] for r in aircraft]
         placeholders = ",".join("?" * len(flight_ids))
+        # PY-11 (Audit 2026-05-31): time-bound the CTE so a long flight
+        # with thousands of historical positions doesn't force SQLite
+        # to rank the whole partition just to return `trail_count`
+        # points. RSBS_MAP_TRAIL_WINDOW_SECONDS controls the reach;
+        # default 3600s comfortably exceeds the 600s live-view activity
+        # window so today's trails for actively-tracked aircraft are
+        # unchanged.
+        trail_lo = at - config.MAP_TRAIL_WINDOW_SECONDS
         trail_rows = conn.execute(
             f"""
             WITH ranked AS (
@@ -316,12 +324,13 @@ def api_map_snapshot(
                 FROM positions
                 WHERE flight_id IN ({placeholders})
                   AND ts <= ?
+                  AND ts >= ?
                   AND lat IS NOT NULL AND lon IS NOT NULL
             )
             SELECT flight_id, ts, lat, lon FROM ranked WHERE rn <= ?
             ORDER BY flight_id, ts
             """,
-            [*flight_ids, at, trail_count],
+            [*flight_ids, at, trail_lo, trail_count],
         ).fetchall()
 
         trail_by_flight: dict[int, list] = {}

@@ -255,6 +255,18 @@ HEALTH_RANGE_RATIO      = _float(*_register("health_range_ratio",       "RSBS_HE
 # Map / historical replay
 # ---------------------------------------------------------------------------
 MAP_HISTORY_HOURS  = _int(*_register("map_history_hours", "RSBS_MAP_HISTORY_HOURS", "24", "MAP_HISTORY_HOURS"))    # slider reach (hours)
+# PY-11 (Audit 2026-05-31): time-window bound on the map trail CTE.
+# Without it, ROW_NUMBER() ranks every historical position for each
+# selected flight_id up to `at`. On a long flight with 10k+ positions,
+# SQLite materialises the whole partition just to return the first
+# `trail_count` (50) — gratuitous full-table scan.
+# Default 3600s = 1h trail, vs the live-view _MAP_WINDOW_SEC=600s
+# activity bound (6× headroom). For replay of a historical `at`, the
+# trail just shows the last hour of motion up to that point.
+MAP_TRAIL_WINDOW_SECONDS = _int(
+    *_register("map_trail_window_seconds", "RSBS_MAP_TRAIL_WINDOW_SECONDS",
+               "3600", "MAP_TRAIL_WINDOW_SECONDS")
+)
 
 # ---------------------------------------------------------------------------
 # Web server
@@ -410,6 +422,9 @@ ROUTE_BATCH_SIZE     = _min_or_default_int("RSBS_ROUTE_BATCH",   ROUTE_BATCH_SIZ
 
 # Map history — zero would make the slider useless
 MAP_HISTORY_HOURS    = _min_or_default_int("RSBS_MAP_HISTORY_HOURS", MAP_HISTORY_HOURS, 1, 24)
+# PY-11: trail window — zero would degenerate to no trail at all; floor 60s.
+MAP_TRAIL_WINDOW_SECONDS = _min_or_default_int(
+    "RSBS_MAP_TRAIL_WINDOW_SECONDS", MAP_TRAIL_WINDOW_SECONDS, 60, 3600)
 
 # Pagination — zero causes FastAPI validation conflicts (ge=1, le=0)
 MAX_PAGE_SIZE        = _min_or_default_int("RSBS_MAX_PAGE_SIZE",  MAX_PAGE_SIZE,        1, 500)
