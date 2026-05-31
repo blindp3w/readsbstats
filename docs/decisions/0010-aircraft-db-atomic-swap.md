@@ -1,7 +1,7 @@
 # Atomic aircraft_db swap via staging table
 
 - Status: ACCEPTED
-- Date: 2026-05-26 (revised 2026-05-31, BE-2; revised 2026-05-31, SQLite 3.45.x fix)
+- Date: 2026-05-26 (revised 2026-05-31, BE-2; revised 2026-05-31, SQLite 3.45.x fix; revised 2026-05-31, v2.12.2 timer-path orchestration)
 
 ## Context
 
@@ -119,3 +119,43 @@ Five-step rename-rename-drop swap inside `update_aircraft_db()`:
   the `aircraft_db swap refused` message — the swap fail-safe will
   block updates until the upstream recovers or the operator tunes the
   ratio.
+
+## Revision — 2026-05-31, v2.12.2 (timer-path orchestration)
+
+The SQLite 3.45.x revision (above) noted that holding the write lock for
+the full ~620 k-row reload is acceptable because
+`scripts/update.sh` stops the collector before running the updater. That
+was true for **deploy-time** invocations of `db_updater`, but the
+**weekly timer** (`readsbstats-updater.timer` → `readsbstats-updater.service`)
+runs the updater directly, bypassing `update.sh` and leaving the collector
+running. On 2026-05-31 the weekly run on the Pi collided with the live
+collector, exhausted the collector's `busy_timeout=30000`, produced cascading
+`database is locked` errors, and was eventually killed by systemd's
+`TimeoutStartSec=300` mid-`BEGIN IMMEDIATE` — the swap rolled back and the
+weekly refresh did not happen.
+
+**v2.12.2 closes the orchestration gap at the systemd unit level:**
+
+- `readsbstats-updater.service` gains
+  `ExecStartPre=+/bin/systemctl stop readsbstats-collector.service`
+  and `ExecStopPost=+/bin/systemctl start readsbstats-collector.service`.
+  `ExecStopPost` always runs, so even a crashed or timed-out updater
+  restores the collector. The `+` prefix runs both commands as root
+  (the unit's `User=readsbstats` cannot manage system units without
+  polkit). Hardening flags (`CapabilityBoundingSet=`, `ProtectSystem=strict`,
+  etc.) are unchanged for the main `ExecStart=` body; the `+` escape applies
+  only to the two systemctl calls.
+- `TimeoutStartSec=300 → 900`. Empirical Pi-4 SD/USB time for the
+  single-transaction swap is 3–5 min; 900 s gives ~3× headroom for DB
+  growth.
+- `scripts/update.sh --full` retains its own `systemctl stop` /
+  `systemctl start` bracketing the direct `runuser` invocation (it
+  bypasses the unit, so the unit's `ExecStartPre`/`Post` don't fire).
+  Two orchestration paths exist — timer-via-unit and deploy-via-script —
+  both arrive at the same invariant (no concurrent writer during the
+  IMMEDIATE window).
+
+`improvements.md` tracks **A26-FU-2** as a deferred follow-up: a
+concurrent-writer regression test for `update_aircraft_db()` that would
+have caught this in CI. Deferred because reproducing the timing reliably
+needs Pi-class slow storage.

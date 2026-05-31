@@ -1,5 +1,80 @@
 # Changelog
 
+## 2.12.2 — 2026-05-31
+
+### Fix — `db_updater` weekly timer collided with the running collector
+
+The weekly `readsbstats-updater.timer` on the Pi fired at 2026-05-31 23:20
+CEST and produced cascading `database is locked` errors that ended with
+systemd killing the updater mid-`BEGIN IMMEDIATE` at the 5-minute
+`TimeoutStartSec`. The `aircraft_db` swap rolled back wholesale (so the
+canonical table was never corrupt — BE-2 worked as designed), but the
+weekly refresh did not happen, the collector hit a hard error during
+`_insert_position`, and the operator saw stack traces in the journal.
+
+**Two compounding causes:**
+
+1. **The systemd timer path did not stop the collector before invoking
+   `db_updater`.** `scripts/update.sh --full` correctly stops the
+   collector at lines 225–232 before invoking the updater, but the
+   weekly timer ran the updater directly while the collector was still
+   polling — and the v2.11.7 single-transaction swap holds
+   `BEGIN IMMEDIATE` for the full ~620 k-row reload, so any concurrent
+   writer hits the 30 s `busy_timeout` and fails. ADR-0010's last
+   revision noted the deploy path's orchestration but missed the timer
+   path.
+2. **`TimeoutStartSec=300` was too tight.** On Pi-4 SD/USB the
+   single-transaction swap takes 3–5 minutes; under concurrent-writer
+   contention it can exceed 5 minutes. systemd killed the updater
+   before it could COMMIT.
+
+### `systemd/readsbstats-updater.service` changes
+
+- `ExecStartPre=+/bin/systemctl stop readsbstats-collector.service`
+- `ExecStopPost=+/bin/systemctl start readsbstats-collector.service`
+- `TimeoutStartSec=300 → 900`
+
+`ExecStopPost` always runs, so even a crashed / timed-out updater
+restores the collector. The `+` prefix runs both systemctl calls as
+root (the unit's `User=readsbstats` cannot manage system units without
+polkit); the main `ExecStart=` body keeps every hardening flag
+unchanged. `scripts/update.sh --full` keeps its own
+`systemctl stop`/`start` bracketing the direct `runuser` invocation —
+two orchestration paths now converge on the same invariant (no
+concurrent writer during the IMMEDIATE window).
+
+### ADR-0010 + improvements.md
+
+- `docs/decisions/0010-aircraft-db-atomic-swap.md` gains a new
+  "Revision — 2026-05-31, v2.12.2" section documenting the gap and
+  the unit-level fix.
+- **A26-FU-2** added to `internal_docs/features/improvements.md`:
+  a concurrent-writer regression test for `update_aircraft_db()`.
+  Deferred because reproducing the timing reliably needs Pi-class
+  slow storage; CI SSD won't trigger it.
+
+### Operational unblock for the incident
+
+The 2026-05-31 incident left the Pi running with stale `aircraft_db`
+data (the killed updater's transaction rolled back) and a 123 MB WAL
+file (built up during the failed swap). The fix:
+
+```bash
+sudo systemctl stop readsbstats-collector
+sudo -u readsbstats /opt/readsbstats/venv/bin/python -m readsbstats.db_updater
+sudo systemctl start readsbstats-collector
+sudo -u readsbstats sqlite3 /mnt/ext/readsbstats/history.db \
+    "PRAGMA wal_checkpoint(TRUNCATE);"
+```
+
+After deploying v2.12.2, this manual sequence can be replaced by:
+
+```bash
+sudo systemctl start --wait readsbstats-updater.service
+```
+
+…which now orchestrates the collector stop/start automatically.
+
 ## 2.12.1 — 2026-05-31
 
 ### Post-Phase 6 doc cleanup
