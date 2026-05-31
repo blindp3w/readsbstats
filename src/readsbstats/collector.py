@@ -251,7 +251,7 @@ def _enrich(conn: sqlite3.Connection, icao: str, registration, aircraft_type):
         found_in_db   = True
 
     # Computed anonymous bit: address falls outside any state-allocated block.
-    # Mirrors the SQL CASE in web._FLAGS_EXPR_F so retention and notification
+    # Mirrors the SQL CASE in api._deps._FLAGS_EXPR_F so retention and notification
     # logic in this module see the same bitmask the UI / API surface.
     if icao_ranges.is_anonymous_icao(icao):
         flags |= config.FLAG_ANONYMOUS
