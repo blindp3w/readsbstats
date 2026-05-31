@@ -170,6 +170,20 @@ def _apply_to_flights(conn: sqlite3.Connection, callsign: str, route: dict | Non
 _TransientError = http_safe.TransientError
 
 
+class _PermanentError(Exception):
+    """PY-8 (Audit 2026-05-31): non-retryable policy violation from
+    http_safe.safe_httpx_get (redirect, size cap, non-HTTPS, private IP).
+
+    The loop translates this into a DB-backed negative cache row in
+    callsign_routes; the existing ROUTE_CACHE_DAYS TTL exclusion then
+    suppresses retries for the same callsign. Distinct from
+    _TransientError, which uses a process-lifetime in-memory cooldown
+    (lost on restart) — permanent failures must be MORE persistent.
+
+    Mirrors adsbx_enricher._PermanentError.
+    """
+
+
 def _fetch_route(callsign: str, client: httpx.Client | None = None) -> dict | None:
     """
     Call adsbdb.com; return a parsed route dict or None.
@@ -204,6 +218,13 @@ def _fetch_route(callsign: str, client: httpx.Client | None = None) -> dict | No
             headers={"User-Agent": "readsbstats/1.0"},
         ) as own_client:
             return _call(own_client)
+    except http_safe.UnsafeURLError as exc:
+        # PY-8: policy errors (redirect, size cap, non-HTTPS, private IP)
+        # are deterministic — retries hit the same rejection every time.
+        # Map to _PermanentError so the loop writes a TTL-bounded negative
+        # cache row instead of looping forever.
+        log.warning("Route fetch policy error for %s: %s", callsign, exc)
+        raise _PermanentError(str(exc)) from exc
     except httpx.HTTPStatusError as exc:
         log.debug("Route fetch HTTP error for %s: %s", callsign, exc)
         raise _TransientError(str(exc)) from exc
@@ -288,6 +309,20 @@ def _enrich_batch(conn: sqlite3.Connection, client: httpx.Client | None = None) 
                       cs, _TRANSIENT_COOLDOWN_S, exc)
             _transient_failure_at[cs] = time.time()
             transient_failures += 1
+        except _PermanentError as exc:
+            # PY-8 (Audit 2026-05-31): persist as a negative cache row so
+            # the cutoff query at the top of this function skips the
+            # callsign for ROUTE_CACHE_DAYS. The in-memory transient
+            # cooldown is the wrong store: it's process-lifetime and
+            # too short — a redirect or size-cap rejection won't heal
+            # without operator intervention.
+            log.warning("Permanent route fetch failure for %s — caching as miss: %s",
+                        cs, exc)
+            try:
+                with conn:
+                    _store_route(conn, cs, None)
+            except sqlite3.Error:
+                log.exception("Failed to persist negative cache for %s", cs)
         except Exception:
             log.exception("Route enricher error for callsign %s", cs)
         processed += 1
