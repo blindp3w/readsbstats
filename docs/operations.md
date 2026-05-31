@@ -75,7 +75,7 @@ The collector polls every 60 s and stores 43 metrics in `receiver_stats`. The `/
 
 ## Polar range plot tuning
 
-The plot auto-scales ring spacing to your actual max detection range. To adjust angular bucket size, edit `BUCKET_DEG` in `web.py` → `api_stats_polar`:
+The plot auto-scales ring spacing to your actual max detection range. To adjust angular bucket size, edit `BUCKET_DEG` in `src/readsbstats/api/stats.py` → `api_stats_polar`:
 
 | `BUCKET_DEG` | Buckets | Use when |
 |---|---|---|
