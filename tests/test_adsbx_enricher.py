@@ -126,6 +126,21 @@ class TestParseAreaResponse:
         assert r["type_code"] == "B738"
         assert r["type_desc"] == "Boeing"
 
+    def test_registration_type_desc_length_capped(self):
+        """PY-10 (Audit 2026-05-31): overlong upstream strings must be
+        bounded before persistence so a single malformed field can't bloat
+        adsbx_overrides or downstream Telegram/UI surfaces."""
+        data = {"ac": [{
+            "hex": "aaa111", "dbFlags": 1,
+            "r":    "X" * 10_000,
+            "t":    "Y" * 10_000,
+            "desc": "Z" * 10_000,
+        }]}
+        r = self.parse(data)[0]
+        assert len(r["registration"]) == 32   # matches collector._cap("r", 32)
+        assert len(r["type_code"])    == 16   # matches collector._cap("t", 16)
+        assert len(r["type_desc"])    == 128  # type_desc has no collector cap; new bound
+
     def test_combined_flags(self):
         data = {"ac": [{"hex": "aaa111", "dbFlags": 5, "r": "X", "t": None, "desc": None}]}
         results = self.parse(data)

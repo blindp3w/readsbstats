@@ -18,6 +18,7 @@ import time
 import httpx
 
 from . import config, database, enrichment, http_safe
+from .cleaners import clean_short_text
 
 log = logging.getLogger("adsbx_enricher")
 
@@ -101,21 +102,23 @@ def _parse_area_response(data: dict) -> list[dict]:
 
         flags = _coerce_flags(ac.get("dbFlags"))
 
-        reg       = ac.get("r") if isinstance(ac.get("r"), str) else None
-        type_code = ac.get("t") if isinstance(ac.get("t"), str) else None
-        type_desc = ac.get("desc") if isinstance(ac.get("desc"), str) else None
-        reg       = reg or None
-        type_code = type_code or None
-        type_desc = type_desc or None
+        # PY-10 (Audit 2026-05-31): clean_short_text bounds the field
+        # length so a single oversized upstream string can't bloat
+        # adsbx_overrides or downstream UI/Telegram caption surfaces.
+        # Bounds chosen to match collector._cap for r/t; type_desc has
+        # no collector equivalent so 128 is a generous-but-bounded cap.
+        reg       = clean_short_text(ac.get("r"),    32)
+        type_code = clean_short_text(ac.get("t"),    16)
+        type_desc = clean_short_text(ac.get("desc"), 128)
 
         # Store when flags are present (incl. an explicit 0) or any metadata.
         if flags is not None or reg or type_code or type_desc:
             results.append({
                 "icao_hex":     icao,
                 "flags":        flags,
-                "registration": reg.strip() if reg else None,
-                "type_code":    type_code.strip() if type_code else None,
-                "type_desc":    type_desc.strip() if type_desc else None,
+                "registration": reg,
+                "type_code":    type_code,
+                "type_desc":    type_desc,
             })
     return results
 
