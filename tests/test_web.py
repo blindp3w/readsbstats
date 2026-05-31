@@ -2458,6 +2458,108 @@ class TestApiTypeFlights:
 
 
 # ---------------------------------------------------------------------------
+# PY-2 (Audit 2026-05-31): ADSBx-override enrichment parity across all
+# surfaces. The shared flight SELECT (_FLIGHT_COLS) already enriches via
+# flights → aircraft_db → adsbx_overrides, but sort columns, filter
+# builders, the type drilldown, and top-types stats were still going
+# through bare COALESCE(f.*, adb.*) — so a flight whose registration/
+# type was visible only via adsbx_overrides displayed correctly but was
+# invisible to filters, sorts, /api/types/.../flights, and stats.
+# ---------------------------------------------------------------------------
+
+class TestEnrichmentParity:
+    def _seed_axo_only_flight(self, db_conn, *, icao="abc123",
+                              reg="SP-ABC", type_code="B738",
+                              type_desc="Boeing 737"):
+        """Insert a flight + adsbx_overrides row but no aircraft_db row,
+        and with flights.registration / flights.aircraft_type both NULL.
+        The displayed reg/type/desc must come entirely from adsbx_overrides."""
+        db_conn.execute(
+            "INSERT INTO flights "
+            "(icao_hex, callsign, registration, aircraft_type, first_seen, "
+            " last_seen, total_positions, lat_min, lat_max, lon_min, lon_max) "
+            "VALUES (?,?,NULL,NULL,?,?,10,0,0,0,0)",
+            (icao, "AXO001", 1_000_000, 1_003_600),
+        )
+        db_conn.execute(
+            "INSERT INTO adsbx_overrides "
+            "(icao_hex, flags, registration, type_code, type_desc, "
+            " first_seen, last_seen) VALUES (?,?,?,?,?,?,?)",
+            (icao, 0, reg, type_code, type_desc, 1_000_000, 1_003_600),
+        )
+        db_conn.commit()
+
+    def test_list_displays_adsbx_only_metadata(self, client, db_conn):
+        self._seed_axo_only_flight(db_conn)
+        r = client.get("/api/flights")
+        flights = r.json()["flights"]
+        assert any(
+            f["icao_hex"] == "abc123"
+            and f["registration"] == "SP-ABC"
+            and f["aircraft_type"] == "B738"
+            and f["type_desc"] == "Boeing 737"
+            for f in flights
+        )
+
+    def test_filter_by_registration_finds_adsbx_only(self, client, db_conn):
+        self._seed_axo_only_flight(db_conn)
+        r = client.get("/api/flights?registration=SP-ABC")
+        assert r.json()["total"] == 1
+
+    def test_filter_by_aircraft_type_finds_adsbx_only(self, client, db_conn):
+        self._seed_axo_only_flight(db_conn)
+        r = client.get("/api/flights?aircraft_type=B738")
+        assert r.json()["total"] == 1
+
+    def test_sort_by_registration_uses_adsbx_value(self, client, db_conn):
+        # Two flights: one with adsbx-only registration "SP-AAA" and one with
+        # flight-row registration "SP-ZZZ". Sort ASC must return SP-AAA first.
+        self._seed_axo_only_flight(db_conn, icao="abc111", reg="SP-AAA",
+                                   type_code="A320")
+        db_conn.execute(
+            "INSERT INTO flights "
+            "(icao_hex, callsign, registration, aircraft_type, first_seen, "
+            " last_seen, total_positions, lat_min, lat_max, lon_min, lon_max) "
+            "VALUES ('abc222','ZZZ001','SP-ZZZ','A320',1000000,1003600,10,0,0,0,0)"
+        )
+        db_conn.commit()
+        r = client.get("/api/flights?sort_by=registration&sort_dir=asc")
+        regs = [f["registration"] for f in r.json()["flights"]]
+        assert regs[0] == "SP-AAA"
+        assert "SP-ZZZ" in regs
+
+    def test_sort_by_aircraft_type_uses_adsbx_value(self, client, db_conn):
+        # adsbx-only A320 vs flight-row B738 — ASC must put A320 first.
+        self._seed_axo_only_flight(db_conn, icao="abc111", reg="SP-AAA",
+                                   type_code="A320")
+        db_conn.execute(
+            "INSERT INTO flights "
+            "(icao_hex, callsign, registration, aircraft_type, first_seen, "
+            " last_seen, total_positions, lat_min, lat_max, lon_min, lon_max) "
+            "VALUES ('abc222','BBB001','SP-BBB','B738',1000000,1003600,10,0,0,0,0)"
+        )
+        db_conn.commit()
+        r = client.get("/api/flights?sort_by=aircraft_type&sort_dir=asc")
+        types = [f["aircraft_type"] for f in r.json()["flights"]]
+        assert types[0] == "A320"
+        assert "B738" in types
+
+    def test_type_drilldown_finds_adsbx_only(self, client, db_conn):
+        self._seed_axo_only_flight(db_conn)
+        r = client.get("/api/types/B738/flights")
+        assert r.json()["total"] >= 1
+        assert any(f["icao_hex"] == "abc123" for f in r.json()["flights"])
+
+    def test_top_types_stats_includes_adsbx_only(self, client, db_conn):
+        self._seed_axo_only_flight(db_conn)
+        r = client.get("/api/stats")
+        top_types = r.json()["top_aircraft_types"]
+        match = [t for t in top_types if t["type"] == "B738"]
+        assert match, f"B738 missing from top_types: {top_types}"
+        assert match[0]["type_desc"] == "Boeing 737"
+
+
+# ---------------------------------------------------------------------------
 # API: /api/stats/polar — cache hit + position data path
 # ---------------------------------------------------------------------------
 
