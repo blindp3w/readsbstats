@@ -238,17 +238,21 @@ def api_type_flights(
 ) -> dict:
     conn = _deps.db()
     t = aircraft_type.upper()
+    # PY-2 (Audit 2026-05-31): COUNT needs to match the list query — both
+    # must include adsbx_overrides so a flight whose type is only known
+    # via adsbx still shows up here.
     total = conn.execute(
         "SELECT COUNT(*) AS n FROM flights f "
-        "LEFT JOIN aircraft_db adb ON adb.icao_hex = f.icao_hex "
-        "WHERE COALESCE(f.aircraft_type, adb.type_code) = ?",
+        "LEFT JOIN aircraft_db     adb ON adb.icao_hex = f.icao_hex "
+        "LEFT JOIN adsbx_overrides axo ON axo.icao_hex = f.icao_hex "
+        f"WHERE {_deps._ENRICH_TYPE} = ?",
         (t,),
     ).fetchone()["n"]
     rows = conn.execute(
         f"""
         SELECT {_deps._FLIGHT_COLS}
         FROM flights f {_deps._FLIGHT_JOIN}
-        WHERE COALESCE(f.aircraft_type, adb.type_code) = ?
+        WHERE {_deps._ENRICH_TYPE} = ?
         ORDER BY f.first_seen DESC
         LIMIT ? OFFSET ?
         """,

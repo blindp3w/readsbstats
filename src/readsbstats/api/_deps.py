@@ -163,12 +163,16 @@ def _assert_top1_column(order_col: str) -> None:
 # ---------------------------------------------------------------------------
 # Sort allowlists — never interpolate raw URL params into ORDER BY
 # ---------------------------------------------------------------------------
+# PY-2 (Audit 2026-05-31): registration / aircraft_type now use the shared
+# _ENRICH_REG / _ENRICH_TYPE expressions so sorting matches what the list
+# displays (which falls back through flights → aircraft_db → adsbx_overrides).
+# All callers using these sort cols also use _FLIGHT_JOIN, so `axo` is in scope.
 _SORT_COLS: dict[str, str] = {
     "first_seen":     "f.first_seen",
     "icao_hex":       "f.icao_hex",
     "callsign":       "f.callsign",
-    "registration":   "COALESCE(f.registration, adb.registration)",
-    "aircraft_type":  "COALESCE(f.aircraft_type, adb.type_code)",
+    "registration":   _ENRICH_REG,
+    "aircraft_type":  _ENRICH_TYPE,
     "primary_source": "f.primary_source",
     "duration_sec":   "(f.last_seen - f.first_seen)",
     "max_alt_baro":   "f.max_alt_baro",
@@ -401,11 +405,16 @@ def _build_flight_filter(
         params.append(callsign.upper().strip() + "%")
 
     if registration:
-        conditions.append("COALESCE(f.registration, adb.registration) LIKE ?")
+        # PY-2 (Audit 2026-05-31): include adsbx_overrides in the match so
+        # a flight whose registration is known only via adsbx still appears
+        # in `?registration=` filters. All callers join _FLIGHT_JOIN so `axo`
+        # is in scope.
+        conditions.append(f"{_ENRICH_REG} LIKE ?")
         params.append(registration.upper().strip() + "%")
 
     if aircraft_type:
-        conditions.append("COALESCE(f.aircraft_type, adb.type_code) = ?")
+        # PY-2: same as above for aircraft_type.
+        conditions.append(f"{_ENRICH_TYPE} = ?")
         params.append(aircraft_type.upper().strip())
 
     if source:

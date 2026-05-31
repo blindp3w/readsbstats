@@ -258,16 +258,21 @@ def api_stats(
     ).fetchall()
 
     # Top aircraft types
+    # PY-2 (Audit 2026-05-31): include adsbx_overrides so types known only
+    # via adsbx still appear in the stats panel and match what /api/flights
+    # displays. The flight-row → aircraft_db → adsbx_overrides priority
+    # mirrors _ENRICH_TYPE used everywhere else.
     top_types = conn.execute(
         f"""
         SELECT
-            COALESCE(f.aircraft_type, adb.type_code)  AS type,
-            COALESCE(adb.type_desc, '')                AS type_desc,
-            COUNT(*)                                   AS flights,
-            COUNT(DISTINCT f.icao_hex)                 AS unique_aircraft
+            {_deps._ENRICH_TYPE}  AS type,
+            {_deps._ENRICH_DESC}   AS type_desc,
+            COUNT(*)              AS flights,
+            COUNT(DISTINCT f.icao_hex) AS unique_aircraft
         FROM flights f
-        LEFT JOIN aircraft_db adb ON adb.icao_hex = f.icao_hex
-        WHERE COALESCE(f.aircraft_type, adb.type_code) IS NOT NULL {_fjwa}
+        LEFT JOIN aircraft_db     adb ON adb.icao_hex = f.icao_hex
+        LEFT JOIN adsbx_overrides axo ON axo.icao_hex = f.icao_hex
+        WHERE {_deps._ENRICH_TYPE} IS NOT NULL {_fjwa}
         GROUP BY type
         ORDER BY flights DESC
         LIMIT 20
