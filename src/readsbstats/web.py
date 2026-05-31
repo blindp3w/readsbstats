@@ -25,7 +25,7 @@ from fastapi.responses import RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from . import analytics, cache, config, database, route_enricher
-from .api import _deps  # noqa: F401  — re-exposed below for back-compat
+from .api import _deps  # used by _startup_migrate() to read the test-injected _db
 from .api import (
     aircraft as _api_aircraft,
     airspace as _api_airspace,
