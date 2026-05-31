@@ -502,6 +502,79 @@ class TestUpdateAirlinesDb:
         monkeypatch.setattr(db_updater, "_fetch", lambda url: b'"1","Short","Row"')
         assert db_updater.update_airlines_db(conn) == 0
 
+    # PY-7 (Audit 2026-05-31): airlines updater now uses a staging table +
+    # min-ratio guard, mirroring update_aircraft_db. A truncated upstream
+    # response that parses to far fewer rows than the existing table must
+    # NOT wipe out useful airline data.
+
+    def test_truncated_upstream_refused_zero_rows(self, monkeypatch):
+        """If an upstream parses to zero rows AND we already have airlines
+        cached, the swap must be refused and old rows must survive."""
+        from readsbstats import config
+        conn = self.conn
+        # Seed 10 existing airlines.
+        for i in range(10):
+            conn.execute(
+                "INSERT INTO airlines (icao_code, name, iata_code, country, active) "
+                f"VALUES ('A{i:02d}', 'Airline {i}', 'AI', 'Country', 1)"
+            )
+        conn.commit()
+        monkeypatch.setattr(config, "AIRLINES_DB_MIN_RATIO", 0.8)
+
+        # Upstream returns nothing parseable.
+        monkeypatch.setattr(db_updater, "_fetch", lambda url: b"")
+        with pytest.raises(Exception):
+            db_updater.update_airlines_db(conn)
+
+        # All 10 originals intact.
+        n = conn.execute("SELECT COUNT(*) FROM airlines").fetchone()[0]
+        assert n == 10
+
+    def test_truncated_upstream_refused_below_ratio(self, monkeypatch):
+        """A parse that yields fewer than AIRLINES_DB_MIN_RATIO × prev rows
+        is refused (and originals preserved)."""
+        from readsbstats import config
+        conn = self.conn
+        for i in range(10):
+            conn.execute(
+                "INSERT INTO airlines (icao_code, name, iata_code, country, active) "
+                f"VALUES ('A{i:02d}', 'Airline {i}', 'AI', 'Country', 1)"
+            )
+        conn.commit()
+        monkeypatch.setattr(config, "AIRLINES_DB_MIN_RATIO", 0.8)
+
+        # Upstream parses to 3 rows (30%), below the 80% floor.
+        monkeypatch.setattr(db_updater, "_fetch", lambda url: _airlines_csv(
+            ["1", "Air One",   r"\N", "A1", "ON1", "ON1", "Poland",  "Y"],
+            ["2", "Air Two",   r"\N", "A2", "ON2", "ON2", "France",  "Y"],
+            ["3", "Air Three", r"\N", "A3", "ON3", "ON3", "Germany", "Y"],
+        ))
+        with pytest.raises(Exception):
+            db_updater.update_airlines_db(conn)
+
+        # Originals preserved, the 3 candidate rows were never committed.
+        n = conn.execute("SELECT COUNT(*) FROM airlines").fetchone()[0]
+        assert n == 10
+        assert conn.execute(
+            "SELECT COUNT(*) FROM airlines WHERE icao_code IN ('ON1','ON2','ON3')"
+        ).fetchone()[0] == 0
+
+    def test_first_ever_airlines_import_skips_ratio_check(self, monkeypatch):
+        """When the airlines table is empty (prev_count == 0), import
+        succeeds regardless of row count — nothing to compare against."""
+        from readsbstats import config
+        conn = self.conn
+        # Make sure airlines is empty.
+        conn.execute("DELETE FROM airlines")
+        conn.commit()
+        monkeypatch.setattr(config, "AIRLINES_DB_MIN_RATIO", 0.8)
+
+        monkeypatch.setattr(db_updater, "_fetch", lambda url: _airlines_csv(
+            ["1", "LOT Polish Airlines", r"\N", "LO", "LOT", "LOT", "Poland", "Y"],
+        ))
+        assert db_updater.update_airlines_db(conn) == 1
+        assert conn.execute("SELECT COUNT(*) FROM airlines").fetchone()[0] == 1
+
 
 
 # ---------------------------------------------------------------------------
