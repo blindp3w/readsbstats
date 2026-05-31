@@ -38,7 +38,7 @@ readsb and tar1090 give you a great live view — readsbstats adds the other hal
 - Receiver metrics dashboard with 10 time-series charts (Apache ECharts canvas, cross-panel hover sync, wheel/pinch zoom, LTTB downsampling) and 9 health checks
 - Optional [DuckDB](https://duckdb.org/) analytical accelerator for heatmap/coverage (`RSBS_USE_DUCKDB=1`)
 - Unit switching: Aeronautical / Metric / Imperial — persisted in browser
-- SQLite crash-safety (`synchronous=FULL` + WAL) with dirty-shutdown detection and weekly/monthly integrity checks via systemd timers
+- SQLite crash-safety (`synchronous=FULL` + WAL) with dirty-shutdown detection (fail-closed on corruption — see [Operations](docs/operations.md#database-integrity--startup-recovery)) and weekly/monthly integrity checks via systemd timers
 
 ## Requirements
 
@@ -92,6 +92,16 @@ server {
 ```
 
 The conf file proxies `/stats/` to uvicorn at `127.0.0.1:8080` and serves the SPA's hashed asset bundles directly with long-cache headers.
+
+## Security model
+
+readsbstats has **no built-in authentication or authorization**. It is designed to run bound to `127.0.0.1:8080` behind nginx on a **trusted LAN**. Anyone who can reach the web port can read all flight data and call every mutating endpoint (watchlist edits, settings).
+
+- **The `X-Requested-With` CSRF header is not authentication.** It only blocks cross-site form posts from a browser; it does not identify or authorize a caller. Do not treat it as an access control.
+- **If you expose the UI beyond a trusted LAN, put an authenticating reverse proxy in front** (HTTP basic auth, an OAuth2 proxy, or a VPN/Tailscale). Do not publish `127.0.0.1:8080` directly to the internet.
+- Outbound HTTP (photo/route enrichment) is SSRF-guarded (`http_safe.py`) and provider photo URLs are host-allowlisted before caching (`RSBS_PHOTO_HOST_ENFORCE`).
+
+See [Operations → Deployment security](docs/operations.md#deployment-security) for the full trust model.
 
 ## Resource usage
 

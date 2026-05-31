@@ -1,5 +1,317 @@
 # Changelog
 
+## 2.11.8 — 2026-05-31
+
+### Fix — aircraft DB refresh crashed on SQLite 3.45.x
+
+The atomic `aircraft_db` staging swap (v2.11.0, BE-2/BE-9) built the staging
+table in one transaction and inserted the streamed CSV rows in *separate*
+transactions. On SQLite 3.45.x (the version on the Pi's Ubuntu 24.04) the
+freshly-`CREATE`d `aircraft_db_new` was not visible to the next transaction's
+`INSERT`, so a full DB refresh of the ~620k-row table aborted with
+`sqlite3.OperationalError: no such table: aircraft_db_new`. (It did not
+reproduce on newer SQLite, so local tests passed.) The build, the chunked
+inserts, and the rename-rename-drop swap now share **one** transaction, which
+guarantees the staging table is self-visible and keeps the interrupted-run
+rollback semantics (aircraft_db is never observably absent; no staging table
+lingers). Added a regression test that exercises the multi-batch insert path on
+a real on-disk DB. No schema changes.
+
+## 2.11.7 — 2026-05-31
+
+### Audit 2026-05-31 — post-audit code-review fixes
+
+Small correctness + robustness fixes surfaced while reviewing the Phase 0–7
+working tree. No schema changes.
+
+### Production code
+
+- **Position-log footer counts the rows it actually has.** The flight
+  position table fetches `/positions?limit=2000`, then downsamples that page to
+  ≤500 rows for the DOM. The footer previously divided the rendered count by the
+  server-side *total*, conflating two separate facts. It now shows a sampling
+  note (`Showing N of <fetched> positions (sampled)`) and, when the fetch itself
+  was capped, a separate truncation note (`Position log capped at the first
+  <fetched> of <total> fixes`).
+- **Purge no longer recomputes aggregates for *active* flights.** A flight that
+  crosses the retention cutoff has its position-derived aggregates recomputed
+  from surviving rows — but an open flight's running aggregates are owned by the
+  collector and rewritten on close, so a purge-time recompute could momentarily
+  clobber them. The crossing-flight query now excludes `active_flights`, matching
+  the stub-deletion steps that already did.
+- **`RSBS_FEEDERS` cap applied before validation.** A malformed feeder entry past
+  the `_MAX_FEEDERS` (64) cap used to trigger a full fallback to the default
+  feeder set, discarding the valid leading entries. The list is now truncated to
+  the cap *before* the per-entry validation loop, so entries in the discarded
+  tail can't sink the whole config.
+
+### Tests & internal
+
+- Hardened three flaky/leaky tests: the flight-header sublabel assertions now
+  retry inside `waitFor` (the sublabels arrive from a separate query), the
+  type-photo connection test closes its ad-hoc event loop, and the atomic-swap
+  rollback test asserts the staging table is gone explicitly. Added coverage for
+  all three production fixes above.
+- Corrected a stale comment in the stats previous-window query (both windows are
+  half-open `[lo, hi)` after the Phase 3 date-range unification).
+
+## 2.11.6 — 2026-05-31
+
+### Audit 2026-05-31 — Phase 7: dependency + bundle hygiene (INF-1, INF-2, FE-3)
+
+Internal-only; no runtime behaviour change. Trims unused dependencies and adds a
+build-time bundle-size guard.
+
+### Dependencies
+
+- **INF-1 — dropped `aiofiles` and `jinja2`.** Neither is imported anywhere: the
+  Jinja UI was removed at the v2.0.0 cutover, the SPA is served via Starlette
+  `StaticFiles`/`FileResponse` (no `Jinja2Templates`), and `aiofiles` was never a
+  FastAPI/Starlette runtime dependency. Removed from `pyproject.toml` and
+  `requirements.txt`; full backend suite green without them.
+- **INF-2 — dropped the direct `@radix-ui/react-slot` dependency.** No source
+  file imports it directly; it stays available transitively (pulled by six other
+  Radix packages already in use). Removed from `frontend/package.json` and its
+  `manualChunks` entry in `vite.config.ts`.
+
+### Frontend build
+
+- **FE-3 — explicit bundle-size budget for the two heavy lazy chunks.** A small
+  Rollup plugin in `vite.config.ts` fails the build if the gzipped `maps`
+  (budget 340 KB) or `charts` (budget 230 KB) chunk exceeds its ceiling, or if
+  either chunk disappears entirely — the signal of an accidental eager import
+  pulling maplibre/echarts into the first-paint shell.
+- **Fixed a silently-broken `charts` chunk split (surfaced by the FE-3 budget).**
+  echarts v6 ships `core.js`/`charts.js`/`components.js`/`renderers.js` as
+  top-level *files*, so the old `echarts/core`-style matcher never matched and
+  echarts was bundling into the importing component chunk instead of a dedicated
+  lazy `charts` chunk. The matcher now targets the whole `echarts` package (plus
+  its `zrender` dep), so echarts (~192 KB gz) splits back out of the page chunks.
+
+### Dev tooling
+
+- Marked `src/readsbstats/sim.py` explicitly dev/test-only in its module
+  docstring — it is never imported by the collector or web runtime; it ships in
+  the package only so `python -m readsbstats.sim` and `tests/test_sim.py` work.
+
+## 2.11.5 — 2026-05-31
+
+### Audit 2026-05-31 — Phase 5: typed API response contracts (FE-2)
+
+Behaviour-preserving. Adds Pydantic `response_model=` contracts to the hot
+endpoints so `/openapi.json` publishes a typed schema. **+10 web tests**
+(key-parity guards).
+
+### Production code
+
+- **FE-2 — Pydantic response models for the hot endpoints.** New
+  `src/readsbstats/schemas.py` defines response contracts for flight detail,
+  `/positions`, `/positions/chart`, the photo endpoints, the watchlist list,
+  `/api/stats`, and the map snapshot; each handler now declares
+  `response_model=` so the shapes appear in the OpenAPI schema.
+- **No JSON shape change — by construction.** Every model inherits a base with
+  `extra="allow"` and every endpoint sets `response_model_exclude_unset=True`.
+  Together these emit *exactly* the handler dict's key set: a column the model
+  doesn't name is preserved (never silently dropped), and a field the model
+  declares but the dict omits is not injected as `null`. Key-parity tests pin
+  this for every endpoint. Highly dynamic SQL-row collections (`top_airlines`,
+  `heatmap`, `furthest_aircraft`, …) are typed as `list[dict]`/`dict`
+  passthroughs on purpose.
+- **Note (verify on the Pi):** `response_model` adds a per-response Pydantic
+  validation pass. The large `/api/stats` and map-snapshot payloads should be
+  spot-checked for latency on the Pi-4 after deploy; the passthrough typing
+  keeps that pass shallow for the big nested collections.
+
+### Frontend
+
+- Corrected the stale `frontend/src/lib/types.ts` header comment that referenced
+  a deleted `api.types.ts`; it now points at the backend OpenAPI contract and
+  notes no codegen step is wired yet (types remain hand-maintained).
+
+## 2.11.4 — 2026-05-31
+
+### Audit 2026-05-31 — Phase 4: slim the flight-detail payload
+
+Two findings fixed, test-first. **+5 tests** (4 web, 1 frontend).
+
+### Production code
+
+- **BE-10 — `/api/flights/{id}` no longer embeds the raw position
+  timeline by default.** The detail response now returns `positions: []`
+  unless `?include_positions=true` is passed. The SPA pulls positions from
+  the dedicated `/positions` (paginated) and `/positions/chart`
+  (LTTB-downsampled) endpoints, so opening a long flight no longer transfers
+  the full per-position timeline on the initial detail load. **Contract
+  change:** any non-frontend consumer that relied on the embedded list must
+  now pass `include_positions=true`. The `/positions/chart` response also
+  gains `baro_rate` (needed by the header's at-max vert-rate sublabel).
+- **FE-1 — Flight page rewired onto the split endpoints.** The chart, map,
+  position-log table, and header at-max sublabels (vert rate / track /
+  bearing) all derive from the downsampled and paginated endpoints rather
+  than an embedded list; the `positions` field was removed from the page's
+  `FlightDetail` type. The position-log count now reflects the server-side
+  `total`.
+
+## 2.11.3 — 2026-05-31
+
+### Audit 2026-05-31 — Phase 3: web/API correctness, concurrency & hardening
+
+Eight findings fixed, test-first. **+26 tests** (18 web, 7 photo_sources,
+1 config).
+
+### Production code
+
+- **BE-11 — trust model documented + path-param hardening (no new app auth).**
+  `{icao_hex}` path params on `/api/aircraft/{icao}/flights` and
+  `/api/aircraft/{icao}/photo` are now validated against
+  `^~?[0-9a-fA-F]{6}$` (`_parse_icao_path`, raises `404` on mismatch) **before**
+  any DB or outbound photo work, bounding side effects from malformed input.
+  `flight_id` is already int-typed and feeder `status_path` is realpath-checked.
+  New "Deployment security" / "Security model" sections in `docs/operations.md`
+  and `README.md` make the loopback-bind-behind-nginx trust model explicit and
+  state plainly that the `X-Requested-With` CSRF header is **not** authentication.
+- **BE-12 — global response cache is now lock-guarded.** `_get_cache` /
+  `_set_cache` take a module-level `threading.RLock` (`_CACHE_LOCK`); the
+  airspace endpoint no longer touches `_cache` directly. Compute stays outside
+  the lock.
+- **BE-13 — type-photo resolve uses a per-thread connection.** `_fetch_type_photo`
+  no longer shares the request connection across the thread-pool executor; the
+  worker opens (and closes) its own `database.connect()`.
+- **BE-14 — map snapshot picks the latest position by `ts`.** `api_map_snapshot`
+  replaces `MAX(id)` with `ROW_NUMBER() OVER (PARTITION BY flight_id ORDER BY ts
+  DESC, id DESC)`, so out-of-order ingestion can't surface a stale position.
+  Introduces the shared `_ENRICH_*` / `_ENRICH_JOIN` SQL fragment for
+  registration/type/desc enrichment.
+- **BE-15 — deterministic grouped aircraft metadata.** Gallery/aircraft grouping
+  uses a `latest` CTE (window function over `icao_hex`, `last_seen` + `id`
+  tiebreak) joined to a counts aggregate, eliminating non-deterministic
+  reg/type when two flights share one ICAO. Query plans verified against
+  supporting indexes.
+- **BE-16 — date ranges unified on half-open `[from, to)`.** A shared
+  `_build_date_filter()` helper backs history, export, **and** stats, replacing
+  the stats `<= to` bound with `< to`. **User-visible:** a flight whose timestamp
+  lands exactly on the `to` boundary is now excluded from stats (as it already
+  was from history/export); adjacent day windows no longer double-count, which
+  slightly shifts stats bucket counts at day boundaries.
+- **BE-17 — provider photo URLs host-allowlisted before cache/render.**
+  Planespotters / airport-data / hexdb responses are checked against
+  per-source CDN host allowlists (`_check_hosts`) before they are persisted or
+  surfaced. Default is **log-only** (`RSBS_PHOTO_HOST_ENFORCE=0`) for one release
+  so legitimate CDN drift isn't silently dropped; set `RSBS_PHOTO_HOST_ENFORCE=1`
+  to hard-drop off-allowlist hosts. `frontend/src/lib/safeUrl.ts` is an HTTPS-only
+  *protocol* guard — its header comment now says so explicitly (host-allowlisting
+  is server-side).
+- **BE-18 — `/api/feeders` cached and bounded.** Results carry a 10 s TTL and
+  concurrent requests coalesce behind an `asyncio.Lock` (double-checked under
+  lock), so a burst of dashboard polls runs at most one feeder-check batch.
+  `_parse_feeders` caps the parsed `RSBS_FEEDERS` list at 64 entries.
+
+## 2.11.2 — 2026-05-31
+
+### Audit 2026-05-31 — Phase 2: collector & enrichment robustness
+
+Five findings fixed, test-first. **+16 tests** (6 collector, 8 ADSBx, 1 route,
+plus 1 collector restart-dedupe), 2 ADSBx tests updated for the new contract.
+
+### Production code
+
+- **BE-4 — ADSBx-only flags now seed the restart dedupe set.** `_load_notified`
+  previously read flags only from `aircraft_db`, so an aircraft whose
+  military/interesting status comes solely from `adsbx_overrides` (no
+  tar1090-db row) would re-alert after every collector restart. The query now
+  `LEFT JOIN adsbx_overrides` and OR-merges both flag sources, matching how
+  enrichment and the API surface compute flags.
+- **BE-5 — non-destructive ADSBx flag UPSERT + defensive parse.** An
+  airplanes.live poll that omits `dbFlags` (or returns an unparseable/negative
+  value) no longer clobbers previously-confirmed flags: the parser yields
+  `flags=None` for *absent/unusable* and the UPSERT preserves the stored value
+  via `COALESCE`. A present value (including an explicit `0`, which legitimately
+  clears) is masked to the four known dbFlags bits, so an out-of-range upstream
+  value can't pollute the column. Non-dict `ac` items and a non-list `ac` are
+  skipped rather than raising.
+- **BE-6 — top-level feed-shape validation in `_poll`.** A corrupt
+  `aircraft.json` whose top level is not an object, or whose `aircraft` is not a
+  list, is now logged and skipped gracefully instead of raising out of `_poll`
+  and aborting the whole cycle. A non-numeric `now` falls back to wall-clock
+  time; non-dict entries inside `aircraft` are skipped per-entry.
+- **BE-7 — purge keeps flight aggregates consistent.** When a flight *crosses*
+  the retention cutoff (started before, still seen after), its early positions
+  are deleted but the flight is retained. All position-derived aggregates —
+  `total_positions`, `adsb_positions`, `mlat_positions`, `max_gs`,
+  `max_alt_baro`, `min_rssi`/`max_rssi`, lat/lon bounds, `primary_source`, and
+  `max_distance_nm`/`max_distance_bearing` — are now recomputed from the
+  surviving rows (distance/bearing in Python via `geo`, since `positions` stores
+  no per-row distance). The crossing set is tiny in steady state, so the
+  recompute is cheap.
+- **BE-8 — feed-string caps + callsign-shape route filter.** Every
+  feed-supplied string is capped at ingestion (callsign ≤16, registration ≤32,
+  aircraft_type ≤16, squawk ≤8, category ≤16) so a corrupt feed can't persist
+  unbounded values. The route enricher now only fetches callsigns of length
+  2–8 with an alphanumeric leading char, skipping truncation artifacts and
+  garbage that would waste upstream adsbdb.com calls.
+
+## 2.11.1 — 2026-05-31
+
+### Audit 2026-05-31 — Phase 1: explicit DB startup & recovery
+
+One robustness finding fixed, test-first. **+10 tests** (8 database, 2 web).
+
+### Production code
+
+- **BE-3 — explicit base-schema bootstrap + shared swap recovery.** The
+  aircraft_db interrupted-swap recovery moved from
+  `db_updater._recover_aborted_swap` into a shared
+  `database.recover_aircraft_db_swap()`, and now runs on **every** startup path
+  (collector, updater, and web) rather than only on the weekly updater run — so
+  enrichment recovers immediately after an interrupted swap. `init_db()` now
+  runs recovery **before** the DDL, closing a latent ordering hole where
+  `executescript(DDL)` would re-create an empty `aircraft_db` and the recovery's
+  "leftover `aircraft_db_old`" branch would then discard the only surviving
+  copy. The web server's startup now calls the new
+  `database.ensure_base_schema()` instead of a bare `_migrate()`: it creates the
+  base tables on a fresh `RSBS_DB_PATH` (so endpoints no longer raise
+  `no such table` against an empty DB) and recovers an interrupted swap, while
+  still never running slow `positions` index builds or backfills synchronously
+  (those stay collector-owned in `run_background_migrations()`).
+  `db_updater._recover_aborted_swap` is kept as a thin delegate for
+  back-compat.
+
+## 2.11.0 — 2026-05-31
+
+### Audit 2026-05-31 — Phase 0: critical correctness
+
+Two critical durability findings fixed, test-first. **+5 tests**
+(3 collector integrity, 2 file-based atomic-swap).
+
+### Production code
+
+- **BE-1 — fail closed on startup DB corruption.** The collector's
+  unclean-shutdown integrity check (`PRAGMA quick_check`) previously
+  only *logged* corruption and continued into the poll loop, writing
+  to a possibly-corrupt database. It now raises `StartupIntegrityError`
+  on corruption — or if `quick_check` cannot run — and `main()` sends a
+  Telegram alert, notifies systemd, and exits with code `2` **before**
+  loading active flights or starting any background thread. The
+  `.dirty_shutdown` sentinel is retained so the check repeats until an
+  operator recovers (see new "Database integrity & startup recovery"
+  section in `docs/operations.md`). Systemd `StartLimitBurst`/`RestartSec`
+  bound the restart loop. Availability tradeoff is deliberate: integrity
+  over uptime on an unattended Pi.
+- **BE-2 — atomic `aircraft_db` staging swap.** The rename-rename-drop
+  swap in `db_updater.update_aircraft_db()` ran as three auto-committing
+  DDL statements, based on an incorrect comment claiming Python's
+  `sqlite3` "commits DDL immediately, so it cannot be wrapped in a
+  transaction." That is false for Python ≥ 3.6; SQLite DDL is fully
+  transactional. A failed second rename left `aircraft_db` absent under
+  its canonical name. The three statements now run inside one explicit
+  `BEGIN IMMEDIATE` transaction — an interrupted swap rolls back
+  wholesale and concurrent readers (WAL) never see `no such table`. ADR
+  0010 revised accordingly.
+- **BE-9 — streamed chunked CSV import.** `update_aircraft_db()` no
+  longer materialises the full ~620k-row tuple list; it stream-parses
+  and inserts in 5000-row chunks, bounding peak RSS by one chunk on the
+  Pi's tight `MemoryMax`.
+
 ## 2.10.3 — 2026-05-30
 
 ### Audit-13 round 2 — correctness + Phase 6 round 2 + cleanup

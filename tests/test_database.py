@@ -700,3 +700,234 @@ class TestSnapshotDb:
         assert "origin_icao" in routes_cols
         assert "dest_icao" in routes_cols
         conn.close()
+
+
+class TestRecoverAircraftDbSwap:
+    """BE-3 (Audit 2026-05-31): shared aircraft_db swap recovery.
+
+    The recovery logic previously lived only in db_updater._recover_aborted_swap
+    and ran on the weekly updater path. It now lives in database.py so the web
+    server and collector recover an interrupted swap on startup, without waiting
+    for the next update_aircraft_db() run.
+    """
+
+    def test_restores_aircraft_db_old_when_canonical_absent(self, tmp_path):
+        db_path = str(tmp_path / "test.db")
+        conn = database.connect(db_path)
+        # Post-step-3-pre-step-4 state: canonical gone, only _old survives.
+        conn.execute(
+            "CREATE TABLE aircraft_db_old ("
+            "icao_hex TEXT PRIMARY KEY, registration TEXT, type_code TEXT, "
+            "type_desc TEXT, flags INTEGER DEFAULT 0)"
+        )
+        conn.execute(
+            "INSERT INTO aircraft_db_old VALUES ('aaaaaa', 'RESTORED', 'A320', '', 0)"
+        )
+        conn.commit()
+
+        database.recover_aircraft_db_swap(conn)
+
+        names = {
+            r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                "AND name LIKE 'aircraft_db%'"
+            ).fetchall()
+        }
+        assert names == {"aircraft_db"}
+        row = conn.execute(
+            "SELECT registration FROM aircraft_db WHERE icao_hex='aaaaaa'"
+        ).fetchone()
+        assert row[0] == "RESTORED"
+        conn.close()
+
+    def test_drops_leftover_aircraft_db_old_when_canonical_present(self, tmp_path):
+        db_path = str(tmp_path / "test.db")
+        conn = database.connect(db_path)
+        # Post-step-4-pre-step-5 state: both present, final DROP didn't run.
+        conn.execute(
+            "CREATE TABLE aircraft_db ("
+            "icao_hex TEXT PRIMARY KEY, registration TEXT, type_code TEXT, "
+            "type_desc TEXT, flags INTEGER DEFAULT 0)"
+        )
+        conn.execute("INSERT INTO aircraft_db VALUES ('bbbbbb', 'CANON', '', '', 0)")
+        conn.execute(
+            "CREATE TABLE aircraft_db_old ("
+            "icao_hex TEXT PRIMARY KEY, registration TEXT, type_code TEXT, "
+            "type_desc TEXT, flags INTEGER DEFAULT 0)"
+        )
+        conn.commit()
+
+        database.recover_aircraft_db_swap(conn)
+
+        names = {
+            r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                "AND name LIKE 'aircraft_db%'"
+            ).fetchall()
+        }
+        assert names == {"aircraft_db"}
+        # Canonical data untouched.
+        assert conn.execute(
+            "SELECT registration FROM aircraft_db WHERE icao_hex='bbbbbb'"
+        ).fetchone()[0] == "CANON"
+        conn.close()
+
+    def test_drops_orphan_aircraft_db_new(self, tmp_path):
+        db_path = str(tmp_path / "test.db")
+        conn = database.connect(db_path)
+        conn.execute(
+            "CREATE TABLE aircraft_db ("
+            "icao_hex TEXT PRIMARY KEY, registration TEXT, type_code TEXT, "
+            "type_desc TEXT, flags INTEGER DEFAULT 0)"
+        )
+        conn.execute(
+            "CREATE TABLE aircraft_db_new ("
+            "icao_hex TEXT PRIMARY KEY, registration TEXT, type_code TEXT, "
+            "type_desc TEXT, flags INTEGER DEFAULT 0)"
+        )
+        conn.execute("INSERT INTO aircraft_db_new VALUES ('deaddd', 'STALE', '', '', 0)")
+        conn.commit()
+
+        database.recover_aircraft_db_swap(conn)
+
+        names = {
+            r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                "AND name LIKE 'aircraft_db%'"
+            ).fetchall()
+        }
+        assert "aircraft_db_new" not in names
+        assert "aircraft_db" in names
+        conn.close()
+
+    def test_noop_when_only_canonical_present(self, tmp_path):
+        db_path = str(tmp_path / "test.db")
+        conn = database.connect(db_path)
+        conn.execute(
+            "CREATE TABLE aircraft_db ("
+            "icao_hex TEXT PRIMARY KEY, registration TEXT, type_code TEXT, "
+            "type_desc TEXT, flags INTEGER DEFAULT 0)"
+        )
+        conn.commit()
+
+        database.recover_aircraft_db_swap(conn)  # must not raise
+
+        names = {
+            r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                "AND name LIKE 'aircraft_db%'"
+            ).fetchall()
+        }
+        assert names == {"aircraft_db"}
+        conn.close()
+
+
+class TestEnsureBaseSchema:
+    """BE-3 (Audit 2026-05-31): explicit base-schema bootstrap for the web
+    server. Creates base tables only when missing (never building slow
+    positions indexes synchronously), recovers an interrupted aircraft_db swap,
+    then runs _migrate()."""
+
+    def test_creates_base_tables_on_empty_db(self, tmp_path):
+        db_path = str(tmp_path / "test.db")
+        database.ensure_base_schema(db_path)
+        conn = database.connect(db_path)
+        tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        assert "flights" in tables
+        assert "positions" in tables
+        # Representative query must not raise no-such-table.
+        assert conn.execute("SELECT COUNT(*) FROM flights").fetchone()[0] == 0
+        # schema_version recorded.
+        assert conn.execute(
+            "SELECT version FROM schema_version"
+        ).fetchone()[0] == database.SCHEMA_VERSION
+        conn.close()
+
+    def test_recovers_aircraft_db_swap_on_existing_db(self, tmp_path):
+        """Existing DB (flights/positions already present) that crashed
+        mid-swap: ensure_base_schema must restore aircraft_db from
+        aircraft_db_old without re-running the full DDL."""
+        db_path = str(tmp_path / "test.db")
+        database.init_db(db_path)
+        conn = database.connect(db_path)
+        conn.execute(
+            "INSERT INTO aircraft_db VALUES ('aaaaaa', 'REAL', 'A320', '', 0)"
+        )
+        conn.commit()
+        # Simulate interrupted swap: canonical renamed away, never renamed back.
+        conn.execute("ALTER TABLE aircraft_db RENAME TO aircraft_db_old")
+        conn.commit()
+        conn.close()
+
+        database.ensure_base_schema(db_path)
+
+        conn = database.connect(db_path)
+        names = {
+            r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                "AND name LIKE 'aircraft_db%'"
+            ).fetchall()
+        }
+        assert names == {"aircraft_db"}
+        assert conn.execute(
+            "SELECT registration FROM aircraft_db WHERE icao_hex='aaaaaa'"
+        ).fetchone()[0] == "REAL"
+        conn.close()
+
+    def test_idempotent_on_initialised_db(self, tmp_path):
+        db_path = str(tmp_path / "test.db")
+        database.init_db(db_path)
+        conn = database.connect(db_path)
+        conn.execute("INSERT INTO flights (icao_hex, first_seen, last_seen) "
+                     "VALUES ('abc123', 1, 2)")
+        conn.commit()
+        conn.close()
+
+        database.ensure_base_schema(db_path)  # must not wipe data or raise
+
+        conn = database.connect(db_path)
+        assert conn.execute("SELECT COUNT(*) FROM flights").fetchone()[0] == 1
+        conn.close()
+
+
+class TestInitDbRecoversBeforeDdl:
+    """BE-3 (Audit 2026-05-31): init_db must recover an interrupted aircraft_db
+    swap BEFORE running the DDL. Otherwise executescript(DDL) re-creates an
+    empty aircraft_db, and recovery's 'canonical present + _old leftover' branch
+    would DROP aircraft_db_old — discarding the only real copy of the data."""
+
+    def test_recovers_aircraft_db_old_before_ddl_recreates_empty(self, tmp_path):
+        db_path = str(tmp_path / "test.db")
+        database.init_db(db_path)
+        conn = database.connect(db_path)
+        conn.execute(
+            "INSERT INTO aircraft_db VALUES ('aaaaaa', 'REAL', 'A320', '', 0)"
+        )
+        conn.execute(
+            "INSERT INTO aircraft_db VALUES ('bbbbbb', 'REAL2', 'B738', '', 0)"
+        )
+        conn.commit()
+        # Interrupted swap: canonical gone, only _old has the real rows.
+        conn.execute("ALTER TABLE aircraft_db RENAME TO aircraft_db_old")
+        conn.commit()
+        conn.close()
+
+        database.init_db(db_path)
+
+        conn = database.connect(db_path)
+        names = {
+            r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                "AND name LIKE 'aircraft_db%'"
+            ).fetchall()
+        }
+        assert names == {"aircraft_db"}
+        # The two real rows survived — they were NOT discarded by a DDL-first
+        # ordering that would have re-created an empty aircraft_db.
+        assert conn.execute("SELECT COUNT(*) FROM aircraft_db").fetchone()[0] == 2
+        conn.close()

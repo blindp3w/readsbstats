@@ -68,6 +68,72 @@ def _url_host_matches(url: str | None, hosts: tuple[str, ...]) -> bool:
     return parsed.scheme == "https" and parsed.hostname in hosts
 
 
+# ---------------------------------------------------------------------------
+# BE-17 — per-source CDN host allowlists.  Specific-aircraft providers
+# occasionally return image/link URLs on unexpected hosts (upstream bug,
+# cache poisoning, a compromised mirror).  Validate returned URLs against the
+# source's own host set before they are persisted to ``photos``/``type_photos``
+# or rendered.  Hosts are matched by *suffix* so subdomain drift
+# (``t.plnspttrs.net``, ``image.airport-data.com``) keeps working without
+# enumerating every CDN edge.
+# ---------------------------------------------------------------------------
+_PLANESPOTTERS_HOSTS = ("plnspttrs.net", "planespotters.net")
+_AIRPORTDATA_HOSTS = ("airport-data.com",)
+# hexdb.io returns a bare image URL pointing at whichever upstream CDN it
+# resolved (commonly airport-data / planespotters), so its allowlist is the
+# union of the known photo CDNs plus its own host.
+_HEXDB_HOSTS = _PLANESPOTTERS_HOSTS + _AIRPORTDATA_HOSTS + ("hexdb.io",)
+
+# Default OFF: log off-allowlist hosts for one release before switching to hard
+# rejection, so a legitimate-but-unenumerated CDN host isn't silently dropped
+# (audit 2026-05-31, BE-17).  Mirrored to a module global so tests can
+# monkeypatch it cheaply (``monkeypatch.setattr(photo_sources, "_HOST_ENFORCE",
+# True)``) without touching the parsed config singleton.
+_HOST_ENFORCE = config.PHOTO_HOST_ENFORCE
+
+
+def _host_suffix_matches(url: str | None, suffixes: tuple[str, ...]) -> bool:
+    """True if *url* is empty (nothing to render) or its https host ends with
+    one of *suffixes*.  A non-https or unparseable URL never matches."""
+    if not url:
+        return True
+    try:
+        parsed = urllib.parse.urlparse(url)
+    except ValueError:
+        return False
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme != "https" or not host:
+        return False
+    return any(host == s or host.endswith("." + s) for s in suffixes)
+
+
+def _check_hosts(result: PhotoResult | None, source: str,
+                 suffixes: tuple[str, ...]) -> PhotoResult | None:
+    """Validate a source's returned URLs against its CDN host allowlist.
+
+    Log-only by default (``_HOST_ENFORCE`` False): off-allowlist hosts are
+    logged at WARNING and the URL is kept, so we observe real-world hosts for
+    one release before enforcing.  Under enforcement a bad *thumbnail* host
+    drops the whole result (it is unusable), while a bad *large/link* host
+    nulls just that field so the thumbnail still renders.
+    """
+    if result is None:
+        return None
+    for field in ("thumbnail_url", "large_url", "link_url"):
+        url = getattr(result, field)
+        if _host_suffix_matches(url, suffixes):
+            continue
+        host = (urllib.parse.urlparse(url).hostname or "?")
+        log.warning("photo host off-allowlist: source=%s field=%s host=%s%s",
+                    source, field, host, "" if _HOST_ENFORCE else " (log-only)")
+        if not _HOST_ENFORCE:
+            continue
+        if field == "thumbnail_url":
+            return None
+        setattr(result, field, None)
+    return result
+
+
 @dataclass
 class PhotoResult:
     thumbnail_url: str
@@ -112,12 +178,12 @@ def _fetch_planespotters(icao_hex: str) -> PhotoResult | None:
     thumb = (p.get("thumbnail") or {}).get("src")
     if not thumb:
         return None
-    return PhotoResult(
+    return _check_hosts(PhotoResult(
         thumbnail_url=thumb,
         large_url=(p.get("thumbnail_large") or {}).get("src"),
         link_url=p.get("link"),
         photographer=p.get("photographer"),
-    )
+    ), "planespotters", _PLANESPOTTERS_HOSTS)
 
 
 def _fetch_airport_data(icao_hex: str) -> PhotoResult | None:
@@ -144,12 +210,12 @@ def _fetch_airport_data(icao_hex: str) -> PhotoResult | None:
         basename = img.rsplit("/", 1)[-1]
         if basename:
             large = f"https://image.airport-data.com/aircraft/{basename}"
-    return PhotoResult(
+    return _check_hosts(PhotoResult(
         thumbnail_url=img,
         large_url=large,
         link_url=item.get("link"),
         photographer=item.get("photographer"),
-    )
+    ), "airport-data", _AIRPORTDATA_HOSTS)
 
 
 def _fetch_hexdb(icao_hex: str) -> PhotoResult | None:
@@ -165,7 +231,8 @@ def _fetch_hexdb(icao_hex: str) -> PhotoResult | None:
     text = body.decode(errors="replace").strip()
     if not text or text == "n/a":
         return None
-    return PhotoResult(thumbnail_url=text, large_url=text)
+    return _check_hosts(PhotoResult(thumbnail_url=text, large_url=text),
+                        "hexdb", _HEXDB_HOSTS)
 
 
 # ---------------------------------------------------------------------------

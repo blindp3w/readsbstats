@@ -95,7 +95,10 @@ class TestParseAreaResponse:
         assert self.parse(data) == []
 
     def test_skips_entry_with_no_useful_data(self):
-        data = {"ac": [{"hex": "aaa111", "dbFlags": 0, "r": None, "t": None, "desc": None}]}
+        """BE-5: a genuinely empty entry has dbFlags *absent* (None → flags None)
+        and no metadata. An explicit dbFlags: 0 is present-and-meaningful — see
+        test_explicit_zero_dbflags_is_present — so it is NOT skipped."""
+        data = {"ac": [{"hex": "aaa111", "dbFlags": None, "r": None, "t": None, "desc": None}]}
         assert self.parse(data) == []
 
     def test_dbflags_string_parsed(self):
@@ -103,15 +106,18 @@ class TestParseAreaResponse:
         results = self.parse(data)
         assert results[0]["flags"] == 1
 
-    def test_dbflags_invalid_defaults_to_zero(self):
+    def test_dbflags_invalid_treated_as_absent(self):
+        """BE-5: an unparseable dbFlags is non-destructive — flags is None so
+        the UPSERT's COALESCE preserves any stored flag bits."""
         data = {"ac": [{"hex": "aaa111", "dbFlags": "bad", "r": "X", "t": None, "desc": None}]}
         results = self.parse(data)
-        assert results[0]["flags"] == 0
+        assert results[0]["flags"] is None
 
-    def test_dbflags_none_defaults_to_zero(self):
+    def test_dbflags_none_treated_as_absent(self):
+        """BE-5: missing dbFlags must not clear stored flags — flags is None."""
         data = {"ac": [{"hex": "aaa111", "dbFlags": None, "r": "SP-LRA", "t": None, "desc": None}]}
         results = self.parse(data)
-        assert results[0]["flags"] == 0
+        assert results[0]["flags"] is None
 
     def test_registration_and_type_stripped(self):
         data = {"ac": [{"hex": "aaa111", "dbFlags": 1, "r": " SP-LRA ", "t": " B738 ", "desc": " Boeing "}]}
@@ -158,6 +164,47 @@ class TestParseAreaResponse:
         data = {"ac": [{"hex": "~abcdef", "dbFlags": 1, "r": "X", "t": None, "desc": None}]}
         results = self.parse(data)
         assert results == []
+
+    # BE-5 (Audit 2026-05-31): defensive parsing + flag masking.
+
+    def test_negative_dbflags_treated_as_absent(self):
+        """A negative dbFlags is malformed — masking it (-1 & 15 == 15 in
+        Python two's complement) would spuriously set every flag. Treat as
+        absent (None) so it neither sets nor clears stored flags."""
+        data = {"ac": [{"hex": "aaa111", "dbFlags": -1, "r": "X", "t": None, "desc": None}]}
+        results = self.parse(data)
+        assert results[0]["flags"] is None
+
+    def test_huge_dbflags_masked_to_known_bits(self):
+        """Only the four known flag bits (military|interesting|PIA|LADD = 15)
+        are kept; out-of-range bits are dropped."""
+        data = {"ac": [{"hex": "aaa111", "dbFlags": 255, "r": "X", "t": None, "desc": None}]}
+        results = self.parse(data)
+        assert results[0]["flags"] == 15
+
+    def test_explicit_zero_dbflags_is_present(self):
+        """dbFlags: 0 is present-and-zero (upstream says 'no special flags') —
+        distinct from absent. flags == 0 so the UPSERT clears stored bits."""
+        data = {"ac": [{"hex": "aaa111", "dbFlags": 0, "r": "X", "t": None, "desc": None}]}
+        results = self.parse(data)
+        assert results[0]["flags"] == 0
+
+    def test_non_dict_entries_skipped(self):
+        """Malformed `ac` items (string / None / int) must be skipped, not
+        raise AttributeError and abort the whole parse."""
+        data = {"ac": [
+            "not-a-dict",
+            None,
+            42,
+            {"hex": "abcdef", "dbFlags": 1, "r": "X", "t": None, "desc": None},
+        ]}
+        results = self.parse(data)
+        assert [r["icao_hex"] for r in results] == ["abcdef"]
+
+    def test_ac_not_a_list_returns_empty(self):
+        """A non-list `ac` value (corrupt upstream) yields no entries."""
+        assert self.parse({"ac": "garbage"}) == []
+        assert self.parse({"ac": {"hex": "abcdef"}}) == []
 
 
 # ---------------------------------------------------------------------------
@@ -222,6 +269,52 @@ class TestUpsertOverrides:
 
     def test_empty_entries_returns_zero(self):
         assert self.enricher._upsert_overrides(self.conn, []) == 0
+
+    def test_absent_flags_preserve_stored_value(self):
+        """BE-5: a later poll missing dbFlags (flags=None) must NOT clear the
+        flag bits stored from an earlier poll — COALESCE keeps the old value."""
+        self.enricher._upsert_overrides(self.conn, [
+            {"icao_hex": "aaa111", "flags": 2,
+             "registration": "SP-LRA", "type_code": "B738", "type_desc": None},
+        ])
+        # Second poll: reg refreshed, but dbFlags absent → flags None.
+        self.enricher._upsert_overrides(self.conn, [
+            {"icao_hex": "aaa111", "flags": None,
+             "registration": "SP-NEW", "type_code": None, "type_desc": None},
+        ])
+        row = self.conn.execute(
+            "SELECT flags, registration FROM adsbx_overrides WHERE icao_hex='aaa111'"
+        ).fetchone()
+        assert row["flags"] == 2          # preserved, not cleared
+        assert row["registration"] == "SP-NEW"  # reg still refreshes
+
+    def test_present_zero_flags_clears_stored_value(self):
+        """BE-5: an explicit dbFlags: 0 (flags=0, present) DOES clear stored
+        bits — upstream said the aircraft is no longer flagged."""
+        self.enricher._upsert_overrides(self.conn, [
+            {"icao_hex": "aaa111", "flags": 2,
+             "registration": "SP-LRA", "type_code": None, "type_desc": None},
+        ])
+        self.enricher._upsert_overrides(self.conn, [
+            {"icao_hex": "aaa111", "flags": 0,
+             "registration": None, "type_code": None, "type_desc": None},
+        ])
+        flags = self.conn.execute(
+            "SELECT flags FROM adsbx_overrides WHERE icao_hex='aaa111'"
+        ).fetchone()["flags"]
+        assert flags == 0
+
+    def test_insert_with_absent_flags_is_null_safe(self):
+        """A brand-new row whose dbFlags was absent stores NULL flags; reads
+        must treat that as 0 (all consumers COALESCE)."""
+        self.enricher._upsert_overrides(self.conn, [
+            {"icao_hex": "aaa111", "flags": None,
+             "registration": "SP-LRA", "type_code": None, "type_desc": None},
+        ])
+        row = self.conn.execute(
+            "SELECT COALESCE(flags, 0) AS f FROM adsbx_overrides WHERE icao_hex='aaa111'"
+        ).fetchone()
+        assert row["f"] == 0
 
 
 # ---------------------------------------------------------------------------

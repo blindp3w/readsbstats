@@ -162,6 +162,7 @@ RECEIVER_MAX_RANGE = _int(*_register("max_range",   "RSBS_MAX_RANGE", "450",    
 # ---------------------------------------------------------------------------
 PHOTO_CACHE_DAYS      = _int(*_register("photo_cache_days", "RSBS_PHOTO_CACHE_DAYS",    "30",  "PHOTO_CACHE_DAYS"))
 WIKIPEDIA_PHOTO       = _bool("RSBS_WIKIPEDIA_PHOTO", default=True)   # type-photo fallback via Wikipedia REST API
+PHOTO_HOST_ENFORCE    = _bool("RSBS_PHOTO_HOST_ENFORCE", default=False)  # BE-17: drop provider photo URLs off the CDN allowlist (default log-only)
 AIRSPACE_GEOJSON      = os.getenv(*_register("airspace_geojson", "RSBS_AIRSPACE_GEOJSON", "", "AIRSPACE_GEOJSON"))      # empty = use bundled poland.geojson
 ROUTE_CACHE_DAYS      = _int(*_register("route_cache_days", "RSBS_ROUTE_CACHE_DAYS",    "30",  "ROUTE_CACHE_DAYS"))
 ROUTE_ENRICH_INTERVAL = _int(*_register("route_interval",   "RSBS_ROUTE_INTERVAL",      "60",  "ROUTE_ENRICH_INTERVAL"))    # seconds between batch runs
@@ -293,6 +294,11 @@ _DEFAULT_FEEDERS = [
     {"name": "readsbstats web",       "unit": "readsbstats-web.service",         "port": 8080},
 ]
 
+# BE-18: each /api/feeders call fans out one subprocess batch per feeder, so an
+# oversized (or hostile) RSBS_FEEDERS array would multiply the per-request work.
+# Cap the parsed list — the default set is 9 entries, so 64 leaves ample room.
+_MAX_FEEDERS = 64
+
 
 def _parse_feeders(raw: str) -> list[dict]:
     if not raw.strip():
@@ -301,6 +307,16 @@ def _parse_feeders(raw: str) -> list[dict]:
         parsed = json.loads(raw)
         if not isinstance(parsed, list):
             raise ValueError("RSBS_FEEDERS must be a JSON array")
+        # Cap BEFORE validating: a malformed entry past _MAX_FEEDERS lives in
+        # the discarded tail, so it must not trigger a full fallback that loses
+        # the valid leading feeders. Only the kept slice is validated below.
+        if len(parsed) > _MAX_FEEDERS:
+            print(
+                f"WARNING: RSBS_FEEDERS has {len(parsed)} entries, "
+                f"truncating to {_MAX_FEEDERS}",
+                file=sys.stderr,
+            )
+            parsed = parsed[:_MAX_FEEDERS]
         # Audit 2026-05-25: validate item *and* field types so a malformed
         # deployment value cannot crash config import (`"name" in item` raises
         # TypeError when item is null/int) or crash /api/feeders later

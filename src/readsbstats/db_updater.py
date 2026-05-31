@@ -48,6 +48,10 @@ HEADERS = {"User-Agent": "readsbstats/1.0 db_updater"}
 # the airlines CSV is ~80 KB.  Anything dramatically larger is suspicious.
 _MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024
 
+# Rows per executemany batch when streaming the aircraft CSV into the staging
+# table. Module-level so tests can shrink it to exercise the multi-batch path.
+_INSERT_CHUNK = 5000
+
 
 # ---------------------------------------------------------------------------
 # Download helpers
@@ -116,37 +120,14 @@ def _parse_aircraft_csv_row(parts: list[str]) -> tuple | None:
 
 
 def _recover_aborted_swap(conn: sqlite3.Connection) -> None:
-    """Detect and recover from a swap interrupted between RENAMEs.
+    """Thin delegate to ``database.recover_aircraft_db_swap``.
 
-    Three table-name presences are possible after an interrupted run:
-      * `aircraft_db_new` only → build phase crashed; drop the stale
-        staging table.
-      * `aircraft_db_old` only (no `aircraft_db`) → first RENAME
-        succeeded but the second didn't. Rename old back to canonical.
-      * `aircraft_db` + `aircraft_db_old` → second RENAME succeeded but
-        the final DROP didn't. Drop the leftover old copy.
-
-    Runs at the top of `update_aircraft_db` before anything else
-    touches these tables.
+    BE-3 (Audit 2026-05-31): the recovery logic moved to ``database`` so the
+    web server and collector recover an interrupted swap on startup. Kept here
+    as a delegate so ``update_aircraft_db`` and existing tests that reference
+    ``db_updater._recover_aborted_swap`` keep working.
     """
-    names = {
-        row[0] for row in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' "
-            "AND name IN ('aircraft_db', 'aircraft_db_new', 'aircraft_db_old')"
-        ).fetchall()
-    }
-    if "aircraft_db" not in names and "aircraft_db_old" in names:
-        log.warning(
-            "aircraft_db recovery: restoring aircraft_db_old after "
-            "interrupted swap"
-        )
-        conn.execute("ALTER TABLE aircraft_db_old RENAME TO aircraft_db")
-    elif "aircraft_db_old" in names:
-        log.info("aircraft_db recovery: dropping leftover aircraft_db_old")
-        conn.execute("DROP TABLE aircraft_db_old")
-    if "aircraft_db_new" in names:
-        log.info("aircraft_db recovery: dropping leftover aircraft_db_new")
-        conn.execute("DROP TABLE aircraft_db_new")
+    database.recover_aircraft_db_swap(conn)
 
 
 def update_aircraft_db(conn: sqlite3.Connection) -> int:
@@ -156,60 +137,75 @@ def update_aircraft_db(conn: sqlite3.Connection) -> int:
     raw = _fetch(AIRCRAFT_CSV_URL)
     log.info("Downloaded %.1f MB in %.1fs", len(raw) / 1_048_576, time.time() - t0)
 
-    # Audit 2026-05-26: stream decode + parse instead of materialising
-    # the full decompressed text in memory. The compressed payload is
-    # already buffered by safe_urlopen (~10 MB), but the decoded text is
-    # ~50 MB — keeping it as bytes on the heap during parsing was the
-    # bulk of the Pi's update-time RSS.
-    gz = gzip.GzipFile(fileobj=io.BytesIO(raw))
-    text_stream = io.TextIOWrapper(gz, encoding="utf-8", errors="replace")
-    rows: list[tuple] = []
-    for parts in csv.reader(text_stream, delimiter=";"):
-        row = _parse_aircraft_csv_row(parts)
-        if row is not None:
-            rows.append(row)
-
-    log.info("Parsed %d aircraft records", len(rows))
-
-    # Audit 2026-05-26: staging-table swap. The previous DELETE + chunked
-    # INSERT pattern left aircraft_db empty between the DELETE commit and
-    # the final INSERT — any crash in that window degraded enrichment
-    # until the next successful run.
+    # Audit 2026-05-26 / 2026-05-31 (BE-9): stream-decode, parse, and insert
+    # in chunks instead of materialising the full decompressed text *and* the
+    # ~620k-row tuple list in memory. The compressed payload is already
+    # buffered by safe_urlopen (~10 MB); the decoded text is ~50 MB. Streaming
+    # + chunked executemany keeps peak RSS bounded by one chunk, which matters
+    # on the Pi's tight MemoryMax.
     #
-    # CRITICAL: Python's sqlite3 module commits DDL (CREATE/DROP/ALTER)
-    # immediately regardless of any surrounding `with conn:` block, so we
-    # cannot wrap the swap statements in a transaction. Instead we use a
-    # rename-rename-drop sequence that never leaves `aircraft_db` absent:
-    #   1. Build `aircraft_db_new` in chunks (collector lock cooperation
-    #      preserved; old aircraft_db stays queryable).
-    #   2. Validate new count vs. previous (config.AIRCRAFT_DB_MIN_RATIO).
-    #   3. RENAME aircraft_db → aircraft_db_old   (atomic per statement)
-    #   4. RENAME aircraft_db_new → aircraft_db   (atomic per statement)
-    #   5. DROP aircraft_db_old
+    # BE-2 (Audit 2026-05-31) + 3.45.x fix: build the staging table AND swap it
+    # in inside ONE explicit transaction:
+    #   1. CREATE aircraft_db_new
+    #   2. chunked INSERT (old aircraft_db stays queryable to WAL readers)
+    #   3. validate new count vs. previous (config.AIRCRAFT_DB_MIN_RATIO)
+    #   4. RENAME aircraft_db → aircraft_db_old
+    #   5. RENAME aircraft_db_new → aircraft_db
+    #   6. DROP aircraft_db_old
+    # SQLite DDL (CREATE / ALTER … RENAME / DROP) is fully transactional and,
+    # on Python ≥3.6 in legacy mode, is NOT implicitly committed — so the
+    # CREATE, the chunked INSERTs, and the rename-rename-drop all live in the
+    # same unit of work and are guaranteed visible to one another on this
+    # connection. An interrupted run rolls back wholesale: `aircraft_db_new`
+    # never lingers and `aircraft_db` is never observably absent (WAL readers
+    # keep seeing the old table until COMMIT).
     #
-    # If the process dies between steps 3 and 4, `aircraft_db_old` holds
-    # the only surviving copy. `_recover_aborted_swap` runs at the start
-    # of each call to detect that case and rename it back.
+    # Why one transaction and not two: an earlier revision built the staging
+    # table in its own committed `with conn:` block, then opened a separate
+    # transaction for the INSERTs. On SQLite 3.45.x (Ubuntu 24.04) the
+    # freshly-created `aircraft_db_new` was not visible to the next
+    # transaction's INSERT — "no such table: aircraft_db_new". Keeping
+    # everything in a single transaction closes that cross-transaction
+    # DDL-visibility gap. The collector is stopped during a DB refresh (see
+    # scripts/update.sh), so holding the write lock for the multi-second build
+    # is safe.
     _recover_aborted_swap(conn)
 
     prev_count = conn.execute("SELECT COUNT(*) FROM aircraft_db").fetchone()[0]
-    _CHUNK = 5000
+    parsed_count = 0
+    _insert_sql = (
+        "INSERT OR IGNORE INTO aircraft_db_new "
+        "(icao_hex, registration, type_code, type_desc, flags) VALUES (?,?,?,?,?)"
+    )
+    # Flush any pending implicit transaction so BEGIN IMMEDIATE can't fail with
+    # "cannot start a transaction within a transaction".
+    conn.commit()
     try:
-        with conn:
-            conn.execute(
-                "CREATE TABLE aircraft_db_new ("
-                "icao_hex TEXT PRIMARY KEY, registration TEXT, type_code TEXT, "
-                "type_desc TEXT, flags INTEGER DEFAULT 0)"
-            )
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute("DROP TABLE IF EXISTS aircraft_db_new")
+        conn.execute(
+            "CREATE TABLE aircraft_db_new ("
+            "icao_hex TEXT PRIMARY KEY, registration TEXT, type_code TEXT, "
+            "type_desc TEXT, flags INTEGER DEFAULT 0)"
+        )
 
-        for i in range(0, len(rows), _CHUNK):
-            with conn:
-                conn.executemany(
-                    "INSERT OR IGNORE INTO aircraft_db_new "
-                    "(icao_hex, registration, type_code, type_desc, flags) "
-                    "VALUES (?,?,?,?,?)",
-                    rows[i:i + _CHUNK],
-                )
+        gz = gzip.GzipFile(fileobj=io.BytesIO(raw))
+        text_stream = io.TextIOWrapper(gz, encoding="utf-8", errors="replace")
+        chunk: list[tuple] = []
+        for parts in csv.reader(text_stream, delimiter=";"):
+            row = _parse_aircraft_csv_row(parts)
+            if row is None:
+                continue
+            chunk.append(row)
+            parsed_count += 1
+            if len(chunk) >= _INSERT_CHUNK:
+                conn.executemany(_insert_sql, chunk)
+                chunk.clear()
+        if chunk:
+            conn.executemany(_insert_sql, chunk)
+            chunk.clear()
+
+        log.info("Parsed %d aircraft records", parsed_count)
 
         new_count = conn.execute(
             "SELECT COUNT(*) FROM aircraft_db_new"
@@ -221,17 +217,19 @@ def update_aircraft_db(conn: sqlite3.Connection) -> int:
                 f"{config.AIRCRAFT_DB_MIN_RATIO}); upstream may be truncated"
             )
 
-        # Steps 3-5: rename-rename-drop. Each DDL auto-commits; the
-        # invariant is that `aircraft_db` is queryable as either the old
-        # or new copy at every observable moment.
+        # Swap within the same transaction — we already hold the write lock.
         conn.execute("ALTER TABLE aircraft_db RENAME TO aircraft_db_old")
         conn.execute("ALTER TABLE aircraft_db_new RENAME TO aircraft_db")
         conn.execute("DROP TABLE aircraft_db_old")
+        conn.commit()
     except Exception:
-        # Cleanup the staging table only. Do NOT touch aircraft_db_old
-        # — if the failure happened between the two RENAMEs, it holds
-        # the only surviving copy and `_recover_aborted_swap` on the
-        # next call will restore it.
+        # Roll the whole staging build + swap back: aircraft_db is never absent
+        # and aircraft_db_new is discarded with the transaction. Drop it
+        # defensively in case the failure left the connection in autocommit.
+        try:
+            conn.rollback()
+        except sqlite3.Error:
+            pass
         try:
             conn.execute("DROP TABLE IF EXISTS aircraft_db_new")
         except sqlite3.Error:
@@ -243,8 +241,8 @@ def update_aircraft_db(conn: sqlite3.Connection) -> int:
     # the run-end clear in main().
     enrichment.clear_cache()
 
-    log.info("aircraft_db updated (%d rows)", len(rows))
-    return len(rows)
+    log.info("aircraft_db updated (%d rows)", parsed_count)
+    return parsed_count
 
 
 # ---------------------------------------------------------------------------

@@ -94,3 +94,78 @@ from readsbstats.database import snapshot_db
 snapshot_db('/mnt/ext/readsbstats/history.db')
 "
 ```
+
+## Deployment security
+
+readsbstats ships **no authentication and no authorization**. The trust model is
+"bind to loopback, sit behind nginx on a trusted LAN."
+
+**What this means in practice:**
+
+- The uvicorn app listens on `127.0.0.1:8080`. nginx proxies `/stats/` to it.
+  Anyone who can reach that port (directly, or through nginx) can read every
+  flight, aircraft, and metrics endpoint **and** call every mutating endpoint
+  (watchlist add/remove, settings writes).
+- **The `X-Requested-With: XMLHttpRequest` CSRF check is not authentication.**
+  It only stops a third-party web page from silently POSTing to the API in a
+  logged-in browser. It does not identify, authenticate, or authorize the
+  caller — a direct `curl` with that header passes it. Never treat it as access
+  control.
+- **`flight_id` path params are integer-typed; `{icao_hex}` path params are
+  validated** against `^~?[0-9a-fA-F]{6}$` before any DB or outbound work, and
+  feeder `status_path` values are `realpath`-checked under `RSBS_FEEDER_STATUS_ROOT`.
+  These are defence-in-depth (bounding side effects), **not** a substitute for
+  network-level access control.
+
+**If you expose the UI beyond a trusted LAN**, put an authenticating layer in
+front of nginx — HTTP basic auth, an OAuth2 reverse proxy (e.g. oauth2-proxy),
+or a VPN / Tailscale tailnet. Do not publish `127.0.0.1:8080` or the nginx
+`/stats/` location to the public internet without one.
+
+**Outbound HTTP** (photo + route enrichment) is centralised in `http_safe.py`
+with an SSRF guard (HTTPS-only, public-IP-only, redirect-blocked). Provider
+photo URLs are additionally checked against per-source CDN host allowlists
+before they are cached or rendered; set `RSBS_PHOTO_HOST_ENFORCE=1` to hard-drop
+off-allowlist hosts (default logs them only — see `docs/configuration.md`).
+
+## Database integrity & startup recovery
+
+The collector writes a `.dirty_shutdown` sentinel next to the database on
+startup and removes it only on a clean shutdown. If the sentinel is present at
+the next boot (i.e. the previous run crashed or was power-cut), the collector
+runs `PRAGMA quick_check(10)` **before** it begins polling.
+
+**Fail-closed behaviour:** if the check finds corruption — or if `quick_check`
+cannot even run — the collector sends a Telegram alert, notifies systemd, and
+exits with code `2` **without** starting the poll loop, so it never writes to a
+possibly-corrupt database. The sentinel is left in place, so the check repeats
+on every restart until an operator intervenes. `Restart=on-failure` with
+`StartLimitBurst=5` / `StartLimitIntervalSec=120` bounds this to ~5 restarts
+before systemd parks the unit in `failed` state (which fires
+`OnFailure=notify-telegram@…`).
+
+**Recovery steps** (run as root, collector stopped):
+
+```bash
+systemctl stop readsbstats-collector
+DB=/mnt/ext/readsbstats/history.db
+
+# 1. Snapshot the corrupt file first (forensics / second attempt).
+cp "$DB" "$DB.corrupt-$(date +%s)"
+
+# 2a. Preferred: restore the most recent good backup.
+ls -t "$DB".backup-*.db
+cp "$DB".backup-<ts>.db "$DB"
+
+# 2b. Or salvage in place with the SQLite recovery tool.
+sqlite3 "$DB" ".recover" | sqlite3 "$DB.recovered"
+mv "$DB.recovered" "$DB"
+
+# 3. Clear the sentinel so the integrity check passes on next start.
+rm -f /mnt/ext/readsbstats/.dirty_shutdown
+
+systemctl start readsbstats-collector
+```
+
+Verify with `journalctl -u readsbstats-collector -n 30` — a clean start logs
+`DB integrity check passed; checkpointing WAL`.

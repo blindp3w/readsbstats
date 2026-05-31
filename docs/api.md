@@ -8,7 +8,9 @@ The web server exposes a JSON API at `http://YOUR_PI_IP/stats/api/`.
 |---|---|---|
 | GET | `/api/flights` | Flight list. Filters: `from`/`to` (Unix epoch, preferred — browser-local midnight), `date`, `date_from`/`date_to` (YYYY-MM-DD receiver local time, backward compat), `icao`, `callsign`, `reg`, `type`, `source`, `flags`, `squawk`. Sortable, paginated. |
 | GET | `/api/flights/export.csv` | CSV export of flight list (same filters as above, no pagination) |
-| GET | `/api/flights/{id}` | Full flight detail + all positions |
+| GET | `/api/flights/{id}` | Flight detail (metadata + other flights by the same aircraft). The raw position timeline is **not** embedded by default — `positions` is an empty list. Pass `?include_positions=true` to embed the full list (the SPA instead uses the two endpoints below). |
+| GET | `/api/flights/{id}/positions` | Paginated raw positions for the inspection table. `limit` (default 1000, max 2000), `offset`. Returns `{total, limit, offset, positions}`. |
+| GET | `/api/flights/{id}/positions/chart` | LTTB-downsampled positions for chart/map rendering. `target` (default 500, max 2000). Returns `{total, target, positions}`. |
 | GET | `/api/flights/{id}/photo` | Aircraft photo via 6-step ladder: specific-ICAO cache → type cache → DB join → Planespotters/airport-data/hexdb fetch → type probe → Wikipedia. `is_type_photo: bool` in response. |
 
 ## Aircraft

@@ -34,6 +34,14 @@ _RESPONSE_MAX_BYTES = 4 * 1024 * 1024
 
 _HEX_CHARS = frozenset("0123456789abcdef")
 
+# BE-5 (Audit 2026-05-31): only the four documented dbFlags bits are stored;
+# everything else is dropped so an out-of-range upstream value can't pollute
+# the flags column or be misread as a known flag.
+_FLAG_MASK = (
+    config.FLAG_MILITARY | config.FLAG_INTERESTING
+    | config.FLAG_PIA | config.FLAG_LADD
+)
+
 
 def _is_valid_icao_hex(s: str) -> bool:
     """A real Mode-S address is exactly 6 lowercase hex chars.
@@ -46,37 +54,62 @@ def _is_valid_icao_hex(s: str) -> bool:
     return len(s) == 6 and all(c in _HEX_CHARS for c in s)
 
 
+def _coerce_flags(raw) -> int | None:
+    """Coerce a raw ``dbFlags`` value to masked flag bits, or ``None``.
+
+    BE-5: ``None`` means *absent or unusable* — the UPSERT then preserves any
+    stored flags via ``COALESCE`` rather than clobbering them. A present,
+    parseable, non-negative value is masked to the known flag bits (so a huge
+    value keeps only its low bits and a present ``0`` legitimately clears).
+    A negative value is rejected to ``None``: Python two's-complement masking
+    (``-1 & 15 == 15``) would otherwise spuriously set every flag.
+    """
+    if raw is None:
+        return None
+    try:
+        v = int(raw)
+    except (ValueError, TypeError):
+        return None
+    if v < 0:
+        return None
+    return v & _FLAG_MASK
+
+
 def _parse_area_response(data: dict) -> list[dict]:
     """
     Extract aircraft entries from an airplanes.live v2 area response.
 
     Returns a list of dicts with keys:
         icao_hex, flags, registration, type_code, type_desc
-    Only includes entries where at least one useful field is present.
+    ``flags`` is ``None`` when ``dbFlags`` was absent/unusable (so the UPSERT
+    preserves stored flags). Only includes entries where at least one useful
+    field is present. Defensive against a non-list ``ac`` and non-dict items.
     """
     results = []
-    for ac in data.get("ac") or []:
+    ac_list = data.get("ac")
+    if not isinstance(ac_list, list):
+        return results
+    for ac in ac_list:
+        if not isinstance(ac, dict):
+            continue
         icao = ac.get("hex")
-        if not icao:
+        if not icao or not isinstance(icao, str):
             continue
         icao = icao.strip().lower()
         if not _is_valid_icao_hex(icao):
             continue
 
-        flags = 0
-        raw_flags = ac.get("dbFlags")
-        if raw_flags is not None:
-            try:
-                flags = int(raw_flags)
-            except (ValueError, TypeError):
-                pass
+        flags = _coerce_flags(ac.get("dbFlags"))
 
-        reg       = ac.get("r") or None
-        type_code = ac.get("t") or None
-        type_desc = ac.get("desc") or None
+        reg       = ac.get("r") if isinstance(ac.get("r"), str) else None
+        type_code = ac.get("t") if isinstance(ac.get("t"), str) else None
+        type_desc = ac.get("desc") if isinstance(ac.get("desc"), str) else None
+        reg       = reg or None
+        type_code = type_code or None
+        type_desc = type_desc or None
 
-        # Only store if there's something useful
-        if flags or reg or type_code or type_desc:
+        # Store when flags are present (incl. an explicit 0) or any metadata.
+        if flags is not None or reg or type_code or type_desc:
             results.append({
                 "icao_hex":     icao,
                 "flags":        flags,
@@ -117,7 +150,7 @@ def _upsert_overrides(conn: sqlite3.Connection, entries: list[dict]) -> int:
                 (icao_hex, flags, registration, type_code, type_desc, first_seen, last_seen)
             VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(icao_hex) DO UPDATE SET
-                flags        = excluded.flags,
+                flags        = COALESCE(excluded.flags, adsbx_overrides.flags),
                 registration = COALESCE(excluded.registration, adsbx_overrides.registration),
                 type_code    = COALESCE(excluded.type_code,    adsbx_overrides.type_code),
                 type_desc    = COALESCE(excluded.type_desc,    adsbx_overrides.type_desc),
@@ -206,7 +239,7 @@ def _poll_area(conn: sqlite3.Connection, client: httpx.Client | None = None) -> 
         return 0
 
     upserted = _upsert_overrides(conn, entries)
-    mil_count = sum(1 for e in entries if e["flags"] & config.FLAG_MILITARY)
+    mil_count = sum(1 for e in entries if (e["flags"] or 0) & config.FLAG_MILITARY)
     log.info(
         "ADSBx poll: %d aircraft in range, %d overrides upserted, %d military",
         len(data.get("ac") or []), upserted, mil_count,

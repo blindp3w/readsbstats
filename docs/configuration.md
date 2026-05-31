@@ -64,6 +64,7 @@ Boolean vars accept `1`/`0`, `true`/`false`, `yes`/`no`, `on`/`off`
 |---|---|---|
 | `RSBS_PHOTO_CACHE_DAYS` | `30` | How long to cache aircraft photo URLs |
 | `RSBS_WIKIPEDIA_PHOTO` | `1` | Wikipedia fallback for type photos (`0` to disable) |
+| `RSBS_PHOTO_HOST_ENFORCE` | `0` | Hard-drop provider photo URLs whose host is off the per-source CDN allowlist (Planespotters / airport-data / hexdb). Default (`0`) logs off-allowlist hosts at WARNING but keeps the URL, so legitimate-but-unenumerated CDN hosts aren't silently lost; set `1` to enforce. |
 | `RSBS_AIRSPACE_GEOJSON` | _(empty)_ | Path to a custom airspace GeoJSON file; empty = use bundled `static/airspace/poland.geojson`. Files larger than 10 MB are refused (audit-13 A13-041). |
 | `RSBS_ROUTE_CACHE_DAYS` | `30` | How long to cache adsbdb.com route lookups |
 | `RSBS_ROUTE_INTERVAL` | `60` | Seconds between route enricher batch runs (min `1`) |

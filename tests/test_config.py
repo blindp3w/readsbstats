@@ -179,6 +179,34 @@ class TestParseFeeders:
         result = _parse_feeders(raw)
         assert result[0]["port"] == 8080
 
+    def test_feeders_list_capped(self, capsys):
+        # BE-18: a huge RSBS_FEEDERS array would spawn one subprocess batch
+        # per feeder per /api/feeders call. Cap the parsed list so an oversized
+        # (or hostile) env value can't blow up the feeder-check fan-out.
+        import json as _json
+        from readsbstats.config import _parse_feeders, _MAX_FEEDERS
+        raw = _json.dumps(
+            [{"name": f"f{i}", "unit": f"f{i}.service"}
+             for i in range(_MAX_FEEDERS + 25)]
+        )
+        result = _parse_feeders(raw)
+        assert len(result) == _MAX_FEEDERS
+        assert "truncat" in capsys.readouterr().err.lower()
+
+    def test_invalid_entry_past_cap_does_not_lose_valid_feeders(self, capsys):
+        # The cap must apply BEFORE validation: a malformed entry beyond
+        # _MAX_FEEDERS sits in the discarded tail, so it must not trigger a
+        # full fallback to defaults that loses the valid leading feeders.
+        import json as _json
+        from readsbstats.config import _parse_feeders, _MAX_FEEDERS
+        good = [{"name": f"f{i}", "unit": f"f{i}.service"}
+                for i in range(_MAX_FEEDERS)]
+        raw = _json.dumps(good + [{"unit": "no-name.service"}])  # invalid #65
+        result = _parse_feeders(raw)
+        assert len(result) == _MAX_FEEDERS
+        assert result[0]["name"] == "f0"
+        assert "truncat" in capsys.readouterr().err.lower()
+
 
 class TestMinOrDefaultInt:
     def test_value_above_minimum_unchanged(self):

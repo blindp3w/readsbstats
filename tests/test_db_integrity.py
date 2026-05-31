@@ -81,7 +81,7 @@ class TestStartupIntegrityCheck:
         assert any("quick_check" in s for s in calls)
         assert any("wal_checkpoint(TRUNCATE)" in s for s in calls)
 
-    def test_corrupt_db_keeps_sentinel(self, tmp_path, caplog):
+    def test_corrupt_db_raises_and_keeps_sentinel(self, tmp_path, caplog):
         sentinel = tmp_path / ".dirty"
         sentinel.touch()
 
@@ -95,11 +95,12 @@ class TestStartupIntegrityCheck:
 
         import logging
         with caplog.at_level(logging.CRITICAL):
-            collector._startup_integrity_check(FakeConn(), sentinel)
+            with pytest.raises(collector.StartupIntegrityError):
+                collector._startup_integrity_check(FakeConn(), sentinel)
         assert sentinel.exists()  # NOT removed — operator should see it again next boot
         assert any("CORRUPTION DETECTED" in rec.message for rec in caplog.records)
 
-    def test_pragma_exception_is_logged_not_raised(self, tmp_path, caplog):
+    def test_pragma_exception_raises_and_keeps_sentinel(self, tmp_path, caplog):
         sentinel = tmp_path / ".dirty"
         sentinel.touch()
 
@@ -109,8 +110,8 @@ class TestStartupIntegrityCheck:
 
         import logging
         with caplog.at_level(logging.ERROR):
-            # Should not raise
-            collector._startup_integrity_check(FakeConn(), sentinel)
+            with pytest.raises(collector.StartupIntegrityError):
+                collector._startup_integrity_check(FakeConn(), sentinel)
         assert sentinel.exists()  # not removed on error
         assert any("quick_check failed to run" in rec.message for rec in caplog.records)
 
@@ -140,6 +141,63 @@ class TestStartupIntegrityCheck:
             collector._startup_integrity_check(FakeConn(), sentinel)
         assert not sentinel.exists()  # clean → removed even on partial checkpoint
         assert any("WAL checkpoint partial" in rec.message for rec in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# main() fail-closed behaviour on startup integrity failure (BE-1)
+# ---------------------------------------------------------------------------
+
+class TestMainFailClosed:
+    """On StartupIntegrityError, main() must alert + exit(2) BEFORE any
+    background service or the poll loop starts."""
+
+    def test_integrity_failure_exits_before_background_starts(self, tmp_path, monkeypatch):
+        from readsbstats import notifier
+
+        sentinel = tmp_path / ".dirty_shutdown"
+        sentinel.touch()
+        monkeypatch.setattr(collector, "_SENTINEL", sentinel)
+
+        called: list[str] = []
+        sent_alerts: list[str] = []
+        sd_msgs: list[str] = []
+
+        monkeypatch.setattr(database, "init_db", lambda: called.append("init_db"))
+        monkeypatch.setattr(database, "connect", lambda *a, **k: object())
+        monkeypatch.setattr(
+            collector, "_startup_integrity_check",
+            lambda conn, s: (_ for _ in ()).throw(
+                collector.StartupIntegrityError("corruption: malformed page 42")
+            ),
+        )
+        # Anything below the integrity check must NOT run.
+        monkeypatch.setattr(collector, "_load_active", lambda *a: called.append("load_active"))
+        monkeypatch.setattr(collector, "_load_notified", lambda *a: called.append("load_notified"))
+        monkeypatch.setattr(
+            collector.adsbx_enricher, "start_background_enricher",
+            lambda *a, **k: called.append("adsbx"),
+        )
+        monkeypatch.setattr(
+            collector.metrics_collector, "start_metrics_collector",
+            lambda *a, **k: called.append("metrics"),
+        )
+        monkeypatch.setattr(
+            collector, "start_notification_consumer",
+            lambda *a, **k: called.append("notify_consumer"),
+        )
+        monkeypatch.setattr(notifier, "telegram_enabled", lambda: True)
+        monkeypatch.setattr(notifier, "_send", lambda text: sent_alerts.append(text) or True)
+        monkeypatch.setattr(collector, "_sd_notify", lambda msg: sd_msgs.append(msg))
+
+        with pytest.raises(SystemExit) as ei:
+            collector.main()
+
+        assert ei.value.code == 2
+        assert called == ["init_db"]  # nothing past the integrity check ran
+        assert sentinel.exists()  # sentinel retained for operator
+        assert sent_alerts and "integrity" in sent_alerts[0].lower()
+        assert any("STATUS=" in m and "integrity" in m.lower() for m in sd_msgs)
+        assert "READY=1" not in sd_msgs
 
 
 # ---------------------------------------------------------------------------
