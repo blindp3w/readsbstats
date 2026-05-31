@@ -1,5 +1,43 @@
 # Changelog
 
+## 2.12.1 — 2026-05-31
+
+### Post-Phase 6 doc cleanup
+
+Patch follow-up to v2.12.0. No production code or behaviour changes.
+
+- **Stale `web._*` references in sibling modules updated to point at the new
+  homes** (the Phase 6 split moved these helpers out of `web.py`):
+  - `src/readsbstats/analytics.py:249` — `web._compute_heatmap_sync` →
+    `api.map._compute_heatmap_sync`.
+  - `src/readsbstats/collector.py:254` — `web._FLAGS_EXPR_F` →
+    `api._deps._FLAGS_EXPR_F`.
+  - `src/readsbstats/photo_sources.py:454` — `web._fetch_type_photo` →
+    `api._photos._fetch_type_photo`.
+- **`docs/operations.md:78`** — the polar-plot `BUCKET_DEG` pointer
+  rewritten from `web.py` → `api_stats_polar` to `src/readsbstats/api/stats.py`
+  → `api_stats_polar`.
+- **`src/readsbstats/web.py:28`** — the `noqa F401 — re-exposed below for
+  back-compat` comment on the `_deps` import was wrong on two counts
+  (`_deps` is actually used in `_startup_migrate()`; there is no
+  re-export shim). Rewrote to its real purpose.
+- **v2.12.0 changelog overclaim corrected** — the v2.12.0 entry said the
+  OpenAPI document is "byte-identical." The *set* of registered paths
+  is identical (sorted `paths.keys()` diff is empty), but the operation
+  *order* inside `/openapi.json` shifts slightly because endpoints are
+  now grouped by domain module (`/api/airlines/*` and
+  `/api/types/.../flights` register with `aircraft.py` instead of after
+  `/api/dates`; `/api/stats/polar` registers with the other stats
+  routes instead of after `/api/airspace`). Runtime dispatch is
+  unaffected (no path overlap); only OpenAPI consumers that key off
+  operation order will see a change.
+- **Internal docs** — Audit 2026-05-31 entry appended to
+  `internal_docs/security/audit-history.md` covering the full v2.11.0
+  → v2.12.1 cycle (Phases 0–7 + the SQLite 3.45.x fix + Phase 6 split
+  + this cleanup). Phase 6 marked complete in
+  `internal_docs/features/improvements.md`, with the audit's
+  watchlist-normalizer follow-up tracked as A26-FU-1.
+
 ## 2.12.0 — 2026-05-31
 
 ### Audit 2026-05-31 Phase 6 — `web.py` APIRouter split
