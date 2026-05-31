@@ -3,11 +3,17 @@
 //
 // This is an HTTPS-only *protocol* guard for URLs we render from third-party
 // API data (photo URLs from Planespotters / airport-data.com / hexdb.io /
-// Wikipedia) — NOT a host allowlist. Host-allowlisting happens server-side,
-// before the URL is ever cached: `photo_sources.py::_check_hosts` (per-source
-// CDN allowlist) and the SSRF IP-gating in `http_safe.py`. By the time a URL
-// reaches the SPA it has already passed those checks; this is the last-line
-// render-time defence.
+// Wikipedia) — NOT a host allowlist. Host-allowlisting is enforced server-side
+// at two layers:
+//   1. fetch time: `photo_sources.py::_check_hosts` (per-source CDN allowlist,
+//      gated by RSBS_PHOTO_HOST_ENFORCE).
+//   2. API-response boundary: `photo_sources.py::is_photo_url_allowed`
+//      (PY-6, audit 2026-05-31) — applied unconditionally before any
+//      photo URL leaves Python, so cached off-allowlist URLs are also
+//      suppressed even when fetch-time enforcement is in log-only mode.
+// Plus the SSRF IP-gating in `http_safe.py`.
+// By the time a URL reaches the SPA it has already passed those checks; this
+// is the last-line render-time defence.
 //
 // React's JSX escapes text, but `<img src>` / `<a href>` are still vectors:
 // `javascript:`, `data:`, `vbscript:`, `file:`, and protocol-relative URIs

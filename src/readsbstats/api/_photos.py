@@ -206,11 +206,41 @@ async def _fetch_type_photo(type_code: str | None) -> dict | None:
         return await asyncio.get_running_loop().run_in_executor(None, _resolve)
 
 
+def _suppress_off_allowlist(result: dict | None) -> dict | None:
+    """PY-6 (Audit 2026-05-31): drop off-allowlist URLs before returning
+    to the client, even when ``photo_sources._HOST_ENFORCE`` is False
+    (log-only mode).
+
+    The server-side allowlist is the authoritative pre-render check.
+    A stale cached row written before BE-17 enforcement was tightened
+    could otherwise still flow through the API verbatim. If the
+    ``thumbnail_url`` is off-allowlist the whole result is dropped
+    (no thumbnail = unusable photo card); ``large_url`` and
+    ``link_url`` are nulled individually if off-allowlist.
+
+    Applied unconditionally — when enforcement is True, every URL was
+    already gated at fetch time so this is a defensive no-op.
+    """
+    if result is None:
+        return None
+    if not photo_sources.is_photo_url_allowed(result.get("thumbnail_url")):
+        return None
+    out = dict(result)
+    for field in ("large_url", "link_url"):
+        if not photo_sources.is_photo_url_allowed(out.get(field)):
+            out[field] = None
+    return out
+
+
 def _annotate_photo(result: dict | None, *,
                     is_type: bool = False,
                     type_code: str | None = None,
                     type_desc: str | None = None) -> dict | None:
-    """Attach is_type_photo / type_code / type_desc fields to a photo result dict."""
+    """Attach is_type_photo / type_code / type_desc fields to a photo
+    result dict. Applies the PY-6 host-allowlist suppression first so
+    every photo emitted to the API goes through the same boundary check.
+    """
+    result = _suppress_off_allowlist(result)
     if result is None:
         return None
     return {

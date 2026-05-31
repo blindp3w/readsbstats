@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Query
 from fastapi.responses import Response  # noqa: F401  — kept for parity with web.py imports
 
-from .. import config, icao_ranges, schemas
+from .. import config, icao_ranges, photo_sources, schemas
 from . import _deps, _photos
 
 
@@ -162,6 +162,20 @@ def api_aircraft_flagged(
         d = dict(r)
         d["is_type_photo"] = bool(d["is_type_photo"])
         d["country"] = icao_ranges.icao_to_country(d["icao_hex"])
+        # PY-6 (Audit 2026-05-31): the photo columns come straight from
+        # `photos` / `type_photos` (no per-source allowlist gate at SELECT
+        # time). Apply the API-boundary suppression so off-allowlist
+        # cached URLs don't reach the SPA, regardless of _HOST_ENFORCE.
+        if not photo_sources.is_photo_url_allowed(d.get("thumbnail_url")):
+            d["thumbnail_url"] = None
+            d["large_url"]     = None
+            d["link_url"]      = None
+            d["photographer"]  = None
+            d["is_type_photo"] = False
+        else:
+            for field in ("large_url", "link_url"):
+                if not photo_sources.is_photo_url_allowed(d.get(field)):
+                    d[field] = None
         aircraft.append(d)
 
     return {"total": total, "aircraft": aircraft}

@@ -2535,34 +2535,37 @@ class TestApiFlightPhoto:
         )
 
     def test_photo_returned_and_stored(self, client, db_conn, monkeypatch):
+        # PY-6: use an allowlisted host so the API-boundary suppression
+        # doesn't filter the placeholder URL.
         fid = insert_flight(db_conn, icao="aabbcc")
         monkeypatch.setattr(photo_sources, "fetch_photo", lambda icao: PhotoResult(
-            thumbnail_url="https://example.com/thumb.jpg",
-            large_url="https://example.com/large.jpg",
-            link_url="https://example.com/photo",
+            thumbnail_url="https://plnspttrs.net/thumb.jpg",
+            large_url="https://plnspttrs.net/large.jpg",
+            link_url="https://plnspttrs.net/photo",
             photographer="Alice",
         ))
         r = client.get(f"/api/flights/{fid}/photo")
         assert r.status_code == 200
         data = r.json()
-        assert data["thumbnail_url"] == "https://example.com/thumb.jpg"
+        assert data["thumbnail_url"] == "https://plnspttrs.net/thumb.jpg"
         assert data["photographer"] == "Alice"
         assert data["icao_hex"] == "aabbcc"
         row = db_conn.execute(
             "SELECT thumbnail_url FROM photos WHERE icao_hex = 'aabbcc'"
         ).fetchone()
-        assert row["thumbnail_url"] == "https://example.com/thumb.jpg"
+        assert row["thumbnail_url"] == "https://plnspttrs.net/thumb.jpg"
 
     def test_cached_photo_served_from_db(self, client, db_conn):
+        # PY-6: use an allowlisted host.
         fid = insert_flight(db_conn, icao="aabbcc")
         db_conn.execute(
             "INSERT INTO photos VALUES (?,?,?,?,?,?)",
-            ("aabbcc", "https://cached.com/t.jpg", None, None, "Bob", int(time.time())),
+            ("aabbcc", "https://plnspttrs.net/t.jpg", None, None, "Bob", int(time.time())),
         )
         db_conn.commit()
         r = client.get(f"/api/flights/{fid}/photo")
         assert r.status_code == 200
-        assert r.json()["thumbnail_url"] == "https://cached.com/t.jpg"
+        assert r.json()["thumbnail_url"] == "https://plnspttrs.net/t.jpg"
         assert r.json()["photographer"] == "Bob"
 
     def test_cached_null_photo_served_from_db(self, client, db_conn):
@@ -2608,16 +2611,16 @@ class TestPhotoFallback:
     def test_photo_result_stored_in_db(self, client, db_conn, monkeypatch):
         fid = insert_flight(db_conn, icao="aabbcc")
         monkeypatch.setattr(photo_sources, "fetch_photo", lambda icao: PhotoResult(
-            thumbnail_url="https://ad.com/t.jpg",
-            large_url="https://ad.com/t.jpg",
-            link_url="https://ad.com/p",
+            thumbnail_url="https://airport-data.com/t.jpg",
+            large_url="https://airport-data.com/t.jpg",
+            link_url="https://airport-data.com/p",
             photographer="Charlie",
         ))
         r = client.get(f"/api/flights/{fid}/photo")
-        assert r.json()["thumbnail_url"] == "https://ad.com/t.jpg"
+        assert r.json()["thumbnail_url"] == "https://airport-data.com/t.jpg"
         assert r.json()["photographer"] == "Charlie"
         row = db_conn.execute("SELECT thumbnail_url FROM photos WHERE icao_hex = 'aabbcc'").fetchone()
-        assert row["thumbnail_url"] == "https://ad.com/t.jpg"
+        assert row["thumbnail_url"] == "https://airport-data.com/t.jpg"
 
     def test_null_cached_when_all_sources_return_none(self, client, db_conn, monkeypatch):
         fid = insert_flight(db_conn, icao="aabbcc")
@@ -2630,14 +2633,14 @@ class TestPhotoFallback:
 
     def test_fallback_also_works_on_icao_photo_endpoint(self, client, monkeypatch):
         monkeypatch.setattr(photo_sources, "fetch_photo", lambda icao: PhotoResult(
-            thumbnail_url="https://ad.com/t.jpg",
-            large_url="https://ad.com/t.jpg",
-            link_url="https://ad.com/p",
+            thumbnail_url="https://airport-data.com/t.jpg",
+            large_url="https://airport-data.com/t.jpg",
+            link_url="https://airport-data.com/p",
             photographer="Y",
         ))
         r = client.get("/api/aircraft/aabbcc/photo")
         assert r.status_code == 200
-        assert r.json()["thumbnail_url"] == "https://ad.com/t.jpg"
+        assert r.json()["thumbnail_url"] == "https://airport-data.com/t.jpg"
 
     def test_hexdb_result_stored_in_db(self, client, db_conn, monkeypatch):
         fid = insert_flight(db_conn, icao="aabbcc")
@@ -2647,6 +2650,61 @@ class TestPhotoFallback:
         client.get(f"/api/flights/{fid}/photo")
         row = db_conn.execute("SELECT thumbnail_url FROM photos WHERE icao_hex = 'aabbcc'").fetchone()
         assert row["thumbnail_url"] == "https://hexdb.io/img/AABBCC.jpg"
+
+    # PY-6 (Audit 2026-05-31): server-side suppression of off-allowlist
+    # photo URLs at the API boundary. The cache row is preserved (useful
+    # diagnostic for the operator's log review and for the eventual
+    # default-flip release); only the API response is filtered.
+
+    def test_off_allowlist_thumbnail_suppressed_in_api_response(
+        self, client, db_conn
+    ):
+        fid = insert_flight(db_conn, icao="aabbcc")
+        # Seed a cached row with a thumbnail on a non-allowlisted host.
+        db_conn.execute(
+            "INSERT INTO photos VALUES (?,?,?,?,?,?)",
+            ("aabbcc",
+             "https://attacker.example/thumb.jpg",
+             "https://attacker.example/large.jpg",
+             "https://attacker.example/photo",
+             "X", int(time.time())),
+        )
+        db_conn.commit()
+        r = client.get(f"/api/flights/{fid}/photo")
+        assert r.status_code == 200
+        assert r.json() is None, (
+            "off-allowlist thumbnail must be suppressed from the API "
+            "response even when host enforcement is log-only"
+        )
+        # The cache row stays — it's the operator's diagnostic surface.
+        row = db_conn.execute(
+            "SELECT thumbnail_url FROM photos WHERE icao_hex = 'aabbcc'"
+        ).fetchone()
+        assert row is not None
+        assert row["thumbnail_url"] == "https://attacker.example/thumb.jpg"
+
+    def test_off_allowlist_large_only_nulled_thumbnail_kept(
+        self, client, db_conn
+    ):
+        fid = insert_flight(db_conn, icao="aabbcc")
+        db_conn.execute(
+            "INSERT INTO photos VALUES (?,?,?,?,?,?)",
+            ("aabbcc",
+             "https://plnspttrs.net/thumb.jpg",       # allowlisted
+             "https://attacker.example/large.jpg",     # off-allowlist
+             "https://plnspttrs.net/photo",            # allowlisted
+             "X", int(time.time())),
+        )
+        db_conn.commit()
+        r = client.get(f"/api/flights/{fid}/photo")
+        assert r.status_code == 200
+        data = r.json()
+        assert data is not None
+        assert data["thumbnail_url"] == "https://plnspttrs.net/thumb.jpg"
+        assert data["large_url"] is None, (
+            "off-allowlist large_url must be nulled in API response"
+        )
+        assert data["link_url"] == "https://plnspttrs.net/photo"
 
 
 # ---------------------------------------------------------------------------
@@ -3231,12 +3289,12 @@ class TestApiFlaggedAircraft:
         insert_flight(db_conn, icao="aabbcc")
         db_conn.execute(
             "INSERT INTO photos VALUES (?,?,?,?,?,?)",
-            ("aabbcc", "https://t.jpg", "https://l.jpg", "https://link", "Bob", int(time.time())),
+            ("aabbcc", "https://plnspttrs.net/t.jpg", "https://plnspttrs.net/l.jpg", "https://plnspttrs.net/link", "Bob", int(time.time())),
         )
         db_conn.commit()
         r = client.get("/api/aircraft/flagged")
         ac = r.json()["aircraft"][0]
-        assert ac["thumbnail_url"] == "https://t.jpg"
+        assert ac["thumbnail_url"] == "https://plnspttrs.net/t.jpg"
         assert ac["photographer"] == "Bob"
 
     def test_grouped_metadata_is_deterministic_latest_flight(self, client, db_conn):
@@ -3836,13 +3894,13 @@ class TestApiAircraftPhoto:
     def test_cached_photo_returned(self, client, db_conn):
         db_conn.execute(
             "INSERT INTO photos VALUES (?,?,?,?,?,?)",
-            ("aabbcc", "https://t.jpg", "https://l.jpg", "https://link", "Alice", int(time.time())),
+            ("aabbcc", "https://plnspttrs.net/t.jpg", "https://plnspttrs.net/l.jpg", "https://plnspttrs.net/link", "Alice", int(time.time())),
         )
         db_conn.commit()
         r = client.get("/api/aircraft/aabbcc/photo")
         assert r.status_code == 200
         data = r.json()
-        assert data["thumbnail_url"] == "https://t.jpg"
+        assert data["thumbnail_url"] == "https://plnspttrs.net/t.jpg"
 
     def test_no_photo_returns_null(self, client, monkeypatch):
         monkeypatch.setattr(photo_sources, "fetch_photo", lambda icao: None)
@@ -3868,7 +3926,7 @@ class TestApiAircraftPhoto:
     def test_specific_photo_annotated_with_is_type_photo_false(self, client, db_conn):
         db_conn.execute(
             "INSERT INTO photos VALUES (?,?,?,?,?,?)",
-            ("aabbcc", "https://t.jpg", "https://l.jpg", "https://link", "Alice", int(time.time())),
+            ("aabbcc", "https://plnspttrs.net/t.jpg", "https://plnspttrs.net/l.jpg", "https://plnspttrs.net/link", "Alice", int(time.time())),
         )
         db_conn.commit()
         r = client.get("/api/aircraft/aabbcc/photo")
@@ -3921,11 +3979,11 @@ class TestFetchTypePhoto:
         assert result is None
 
     def test_type_photos_cache_hit(self, client, db_conn):
-        self._seed_type_photo(db_conn, "B738", "https://example.com/b738.jpg")
+        self._seed_type_photo(db_conn, "B738", "https://plnspttrs.net/b738.jpg")
         import asyncio
         result = asyncio.get_event_loop().run_until_complete(_photos._fetch_type_photo("B738"))
         assert result is not None
-        assert result["thumbnail_url"] == "https://example.com/b738.jpg"
+        assert result["thumbnail_url"] == "https://plnspttrs.net/b738.jpg"
 
     def test_type_photos_negative_cache_returns_none(self, client, db_conn):
         db_conn.execute(
@@ -3939,30 +3997,30 @@ class TestFetchTypePhoto:
 
     def test_db_join_reuses_cached_photo(self, client, db_conn, monkeypatch):
         self._seed_aircraft_db(db_conn, "aabbcc", "B738")
-        self._seed_specific_photo(db_conn, "aabbcc", "https://example.com/cached.jpg")
+        self._seed_specific_photo(db_conn, "aabbcc", "https://plnspttrs.net/cached.jpg")
         fetch_calls = []
         monkeypatch.setattr(photo_sources, "fetch_photo",
                             lambda icao: fetch_calls.append(icao) or None)
         import asyncio
         result = asyncio.get_event_loop().run_until_complete(_photos._fetch_type_photo("B738"))
         assert result is not None
-        assert result["thumbnail_url"] == "https://example.com/cached.jpg"
+        assert result["thumbnail_url"] == "https://plnspttrs.net/cached.jpg"
         assert fetch_calls == []
 
     def test_probe_planespotters_success(self, client, db_conn, monkeypatch):
         self._seed_aircraft_db(db_conn, "probe01", "EF2K", "Eurofighter Typhoon")
         monkeypatch.setattr(photo_sources, "fetch_photo", lambda icao: PhotoResult(
-            thumbnail_url="https://example.com/ef2k.jpg",
-            large_url="https://example.com/ef2k_l.jpg",
+            thumbnail_url="https://plnspttrs.net/ef2k.jpg",
+            large_url="https://plnspttrs.net/ef2k_l.jpg",
             link_url=None,
             photographer="Alice",
         ))
         import asyncio
         result = asyncio.get_event_loop().run_until_complete(_photos._fetch_type_photo("EF2K"))
         assert result is not None
-        assert result["thumbnail_url"] == "https://example.com/ef2k.jpg"
+        assert result["thumbnail_url"] == "https://plnspttrs.net/ef2k.jpg"
         row = db_conn.execute("SELECT thumbnail_url FROM type_photos WHERE type_code='EF2K'").fetchone()
-        assert row and row[0] == "https://example.com/ef2k.jpg"
+        assert row and row[0] == "https://plnspttrs.net/ef2k.jpg"
 
     def test_all_fail_stores_negative(self, client, db_conn, monkeypatch):
         self._seed_aircraft_db(db_conn, "probe01", "EF2K")
@@ -3977,23 +4035,23 @@ class TestFetchTypePhoto:
     def test_flight_photo_endpoint_falls_back_to_type(self, client, db_conn, monkeypatch):
         fid = insert_flight(db_conn, icao="aabbcc", aircraft_type="B738")
         self._seed_aircraft_db(db_conn, "aabbcc", "B738")
-        self._seed_type_photo(db_conn, "B738", "https://example.com/b738.jpg")
+        self._seed_type_photo(db_conn, "B738", "https://plnspttrs.net/b738.jpg")
         monkeypatch.setattr(photo_sources, "fetch_photo", lambda icao: None)
         r = client.get(f"/api/flights/{fid}/photo")
         assert r.status_code == 200
         data = r.json()
-        assert data["thumbnail_url"] == "https://example.com/b738.jpg"
+        assert data["thumbnail_url"] == "https://plnspttrs.net/b738.jpg"
         assert data["is_type_photo"] is True
         assert data["type_code"] == "B738"
 
     def test_aircraft_photo_endpoint_falls_back_to_type(self, client, db_conn, monkeypatch):
         self._seed_aircraft_db(db_conn, "aabbcc", "B738", "Boeing 737-800")
-        self._seed_type_photo(db_conn, "B738", "https://example.com/b738.jpg")
+        self._seed_type_photo(db_conn, "B738", "https://plnspttrs.net/b738.jpg")
         monkeypatch.setattr(photo_sources, "fetch_photo", lambda icao: None)
         r = client.get("/api/aircraft/aabbcc/photo")
         assert r.status_code == 200
         data = r.json()
-        assert data["thumbnail_url"] == "https://example.com/b738.jpg"
+        assert data["thumbnail_url"] == "https://plnspttrs.net/b738.jpg"
         assert data["is_type_photo"] is True
         assert data["type_code"] == "B738"
         assert data["type_desc"] == "Boeing 737-800"
@@ -4052,14 +4110,14 @@ class TestFetchTypePhoto:
             "INSERT INTO aircraft_db (icao_hex, registration, type_code, type_desc, flags) "
             "VALUES ('aabbcc', 'SP-ABC', 'B738', 'Boeing 737-800', 1)"
         )
-        self._seed_type_photo(db_conn, "B738", "https://example.com/b738.jpg")
+        self._seed_type_photo(db_conn, "B738", "https://plnspttrs.net/b738.jpg")
         db_conn.commit()
         insert_flight(db_conn, icao="aabbcc", aircraft_type="B738")
         r = client.get("/api/aircraft/flagged")
         assert r.status_code == 200
         ac = r.json()["aircraft"]
         assert len(ac) == 1
-        assert ac[0]["thumbnail_url"] == "https://example.com/b738.jpg"
+        assert ac[0]["thumbnail_url"] == "https://plnspttrs.net/b738.jpg"
         assert ac[0]["is_type_photo"] is True
 
     def test_flagged_endpoint_specific_photo_not_type(self, client, db_conn):
@@ -4069,15 +4127,15 @@ class TestFetchTypePhoto:
         )
         db_conn.execute(
             "INSERT INTO photos VALUES (?,?,NULL,NULL,NULL,?)",
-            ("aabbcc", "https://example.com/specific.jpg", int(time.time()))
+            ("aabbcc", "https://plnspttrs.net/specific.jpg", int(time.time()))
         )
-        self._seed_type_photo(db_conn, "B738", "https://example.com/b738.jpg")
+        self._seed_type_photo(db_conn, "B738", "https://plnspttrs.net/b738.jpg")
         db_conn.commit()
         insert_flight(db_conn, icao="aabbcc", aircraft_type="B738")
         r = client.get("/api/aircraft/flagged")
         assert r.status_code == 200
         ac = r.json()["aircraft"]
-        assert ac[0]["thumbnail_url"] == "https://example.com/specific.jpg"
+        assert ac[0]["thumbnail_url"] == "https://plnspttrs.net/specific.jpg"
         assert ac[0]["is_type_photo"] is False
 
     def test_resolve_uses_separate_connection_closed_after(
@@ -4105,7 +4163,7 @@ class TestFetchTypePhoto:
             "VALUES ('aabbcc','G-TEST','B738','Boeing 737-800',0)"
         )
         seed.execute(
-            "INSERT INTO photos VALUES ('aabbcc','https://example.com/b738.jpg',NULL,NULL,NULL,?)",
+            "INSERT INTO photos VALUES ('aabbcc','https://plnspttrs.net/b738.jpg',NULL,NULL,NULL,?)",
             (int(time.time()),),
         )
         seed.commit()
@@ -4136,7 +4194,7 @@ class TestFetchTypePhoto:
         finally:
             loop.close()
         assert result is not None
-        assert result["thumbnail_url"] == "https://example.com/b738.jpg"
+        assert result["thumbnail_url"] == "https://plnspttrs.net/b738.jpg"
 
         # The request thread's connection is the one db() caches for this thread.
         request_conn = _deps.db()
