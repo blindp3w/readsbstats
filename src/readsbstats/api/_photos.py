@@ -65,10 +65,16 @@ def _type_lock(type_code: str) -> asyncio.Lock:
 async def _fetch_photo(icao_hex: str) -> dict | None:
     """Return the cached or freshly-fetched specific-ICAO photo dict (or None).
 
-    Delegates to :func:`photo_sources.fetch_photo` (full source chain), and
-    persists the result — including a negative cache row when all sources
-    fail — into the ``photos`` table.  Does NOT cascade to a type-level photo;
-    callers do that via :func:`_fetch_type_photo`.
+    PY-5 (Audit 2026-05-31): in production we resolve via the status-aware
+    helper so a *transient* outage (every source raised) doesn't get
+    cached as a 30-day confirmed miss. When tests have monkey-patched
+    ``photo_sources.fetch_photo`` we honour their legacy
+    ``None == confirmed-miss`` contract (mirrors the escape hatch in
+    ``resolve_photo``); they inject deterministic results and don't
+    want the resolver to second-guess them.
+
+    Does NOT cascade to a type-level photo; callers do that via
+    :func:`_fetch_type_photo`.
     """
     conn = _deps.db()
     cache_seconds = config.PHOTO_CACHE_DAYS * 86400
@@ -80,9 +86,18 @@ async def _fetch_photo(icao_hex: str) -> dict | None:
     if cached:
         return dict(cached) if cached["thumbnail_url"] else None
 
-    pr = await asyncio.get_running_loop().run_in_executor(
-        None, photo_sources.fetch_photo, icao_hex,
-    )
+    # PY-5: pick the status-aware path only when fetch_photo hasn't been
+    # monkey-patched away. Identity check mirrors photo_sources.resolve_photo.
+    use_status_helper = photo_sources.fetch_photo is photo_sources._DEFAULT_FETCH_PHOTO
+    loop = asyncio.get_running_loop()
+    if use_status_helper:
+        pr, status = await loop.run_in_executor(
+            None, photo_sources.fetch_photo_with_status, icao_hex,
+        )
+    else:
+        pr = await loop.run_in_executor(None, photo_sources.fetch_photo, icao_hex)
+        status = "hit" if pr else "miss"
+
     now = int(time.time())
     if pr:
         result = {
@@ -97,14 +112,27 @@ async def _fetch_photo(icao_hex: str) -> dict | None:
             "INSERT OR REPLACE INTO photos VALUES (?,?,?,?,?,?)",
             (icao_hex, pr.thumbnail_url, pr.large_url, pr.link_url, pr.photographer, now),
         )
-    else:
+    elif status == "error":
+        # PY-5: every source raised. DO NOT poison the cache with a
+        # negative row — the next fetch may well succeed. Serve a stale
+        # positive if one exists (no TTL check; outage shouldn't drop
+        # coverage), else return None without writing.
         result = None
-        # Audit-13 A13-014: don't blow away a previously-resolved positive
-        # row on a transient fetch failure. If a stale-but-positive row is
-        # within the grace window (cache TTL + 7 days), leave it untouched
-        # so the cached URL keeps serving requests; the next successful
-        # fetch will refresh it normally. Outside the window, the negative
-        # row signals "confirmed unknown" to subsequent lookups.
+        existing = conn.execute(
+            "SELECT thumbnail_url, large_url, link_url, photographer, fetched_at "
+            "FROM photos WHERE icao_hex = ?",
+            (icao_hex,),
+        ).fetchone()
+        if existing and existing["thumbnail_url"]:
+            result = dict(existing)
+            result["icao_hex"] = icao_hex
+    else:
+        # status == "miss": every source completed cleanly and returned
+        # None. Persist a negative-cache row so we don't refetch for
+        # PHOTO_CACHE_DAYS, but keep the Audit-13 A13-014 grace: don't
+        # overwrite a previously-resolved positive row that's still
+        # within cache TTL + 7-day grace.
+        result = None
         grace_seconds = 7 * 86400
         existing = conn.execute(
             "SELECT thumbnail_url, fetched_at FROM photos WHERE icao_hex = ?",

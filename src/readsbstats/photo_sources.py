@@ -363,12 +363,24 @@ def fetch_photo(icao_hex: str) -> PhotoResult | None:
     return result
 
 
-# Captured at module load so :func:`resolve_photo` can tell whether tests
-# have monkey-patched ``fetch_photo`` away from this wrapper. When patched,
-# the patched function is authoritative and the status-aware grace is
-# bypassed (tests inject deterministic results and don't want the resolver
-# to second-guess them). In production this identity check is True so the
-# resolver uses :func:`_fetch_photo_with_status` directly.
+def fetch_photo_with_status(icao_hex: str) -> tuple[PhotoResult | None, str]:
+    """Public alias of :func:`_fetch_photo_with_status` — returns
+    ``(result, status)`` where ``status`` is ``"hit"``, ``"miss"``, or
+    ``"error"``.
+
+    PY-5 (Audit 2026-05-31): API-side photo handlers should call this
+    instead of :func:`fetch_photo` so that a transient outage (every
+    source raised) doesn't get cached as a 30-day confirmed miss.
+    """
+    return _fetch_photo_with_status(icao_hex)
+
+
+# Captured at module load so :func:`resolve_photo` and api/_photos can
+# tell whether tests have monkey-patched ``fetch_photo`` away from this
+# wrapper. When patched, the patched function is authoritative and the
+# status-aware grace is bypassed (tests inject deterministic results
+# and don't want callers to second-guess them). In production this
+# identity check is True so callers use the status-aware helper.
 _DEFAULT_FETCH_PHOTO = fetch_photo
 
 
