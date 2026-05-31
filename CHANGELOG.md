@@ -1,5 +1,84 @@
 # Changelog
 
+## 2.12.0 — 2026-05-31
+
+### Audit 2026-05-31 Phase 6 — `web.py` APIRouter split
+
+The `web.py` monolith (3,324 lines, ~30 endpoints + the SPA shell) is split
+into a thin app factory + one `APIRouter` per domain under
+`src/readsbstats/api/`. Pure code-move: no behaviour, response shape, or
+SQL changes; the OpenAPI document is byte-identical to v2.11.8 and the
+route count (`len(app.routes)`) is unchanged (37 entries).
+
+### New modules
+
+- **`cache.py`** — response cache + per-window async locks + map-cache
+  prewarmer thread. Replaces what used to be module-level state in `web.py`
+  (`_cache`, `_get_cache`/`_set_cache`/`_ttl_for`, `_DEFAULT_TTL`,
+  `_AIRSPACE_TTL`, `_CACHE_MAX_ENTRIES`, `_heatmap_locks`/`_coverage_locks`,
+  `_feeders_lock`, `_prewarmer_*`, `_PREWARM_*`).
+- **`api/_deps.py`** — DB connection seam (`_db`/`_thread_local`/`db()` —
+  tests now monkeypatch THIS module, not `web`), shared SQL fragments
+  (`_FLAGS_EXPR_*`, `_ENRICH_*`, `_FLIGHT_COLS`, `_FLIGHT_JOIN`), allowlists
+  (`_SORT_COLS`, `_FLAGGED_SORT_COLS`, `_METRICS_COLS`, `_TOP1_ALLOWLIST`,
+  `_CSV_COLS`), filter helpers (`_build_date_filter`, `_build_flight_filter`,
+  `_metrics_agg`), validators (`_parse_icao_path`, `_assert_top1_column`),
+  the CSRF dependency (`_csrf_check`), and small utilities (`_fmt_ts`,
+  pagination/window constants).
+- **`api/_photos.py`** — photo-fetch ladder + per-type async locks
+  (`_fetch_photo`, `_fetch_type_photo`, `_annotate_photo`, `_type_lock`,
+  `_type_fetch_locks`). Used by both `api/flights.py` and `api/aircraft.py`.
+- **`api/flights.py`** — `/api/flights`, `/api/flights/export.csv`,
+  `/api/flights/{id}`, `/api/flights/{id}/positions`,
+  `/api/flights/{id}/positions/chart`, `/api/flights/{id}/photo`.
+- **`api/aircraft.py`** — `/api/aircraft/{icao}/flights`,
+  `/api/aircraft/flagged`, `/api/aircraft/{icao}/photo`,
+  `/api/airlines/{prefix}/flights`, `/api/types/{type}/flights`.
+- **`api/stats.py`** — `/api/stats`, `/api/stats/records`, `/api/stats/polar`.
+- **`api/map.py`** — `/api/map/heatmap`, `/api/map/coverage`, `/api/live`,
+  `/api/map/snapshot`. Also owns `_compute_heatmap_sync`/`_compute_coverage_sync`,
+  which `cache._prewarm_one` imports lazily inside the function body to break
+  what would otherwise be a `cache → api.map → cache` import cycle.
+- **`api/feeders.py`** — `/api/feeders` plus the systemd/port/JSON checkers
+  and the FR24/PiAware/MLAT detail fetchers. `import httpx` continues to be
+  used here for the loopback-only FR24 monitor.json fetch (gated by
+  `_is_safe_status_url` to `127.0.0.1`/`localhost`/`::1`); the project's
+  raw-HTTP guard hook exempts this file alongside `http_safe.py`.
+- **`api/settings.py`** — `/api/settings` plus all eight `_settings_*` domain
+  helpers and `_settings_metadata`/`_settings_default_as_parsed`.
+- **`api/watchlist.py`** — `/api/watchlist` GET/POST/DELETE, the
+  `_WatchlistEntry` Pydantic model, and `_VALID_MATCH_TYPES`.
+- **`api/airspace.py`** — `/api/airspace`.
+- **`api/health.py`** — `/api/health`, `/api/metrics`, `/api/metrics/health`.
+- **`api/dates.py`** — `/api/dates`.
+
+### `web.py` (≈250 lines, down from 3,324)
+
+Now just the app factory, lifespan, middleware, `/static` + `/assets`
+StaticFiles mounts, `_startup_migrate`, the SPA-availability gate, the
+SPA-shell routes (`/favicon.svg`, `/v2[/{rest}]`, `/live`, `/`, `/{spa_path:path}`),
+`_sanitize_v2_rest`, `_SPA_ASSET_EXTS`, and the `app.include_router(...)`
+calls. The SPA catch-all stays registered LAST so it doesn't shadow literal
+`/api/*` paths.
+
+### Test seam migration
+
+The two `monkeypatch.setattr(web, "_db", conn)` fixtures now target
+`_deps`. About 150 other test references migrated from `web._<name>` to
+their new module homes — mechanical, byte-for-byte sed across
+`tests/test_web.py` (most of the churn), `tests/test_analytics.py`,
+`tests/test_map.py`, `tests/test_metrics_collector.py`, and one comment in
+`tests/test_photo_sources.py`. Test count unchanged: 1560 passed, 2 skipped.
+Frontend tests, lint, and build clean (323 passed; bundle budgets intact).
+
+### Out of scope (deferred)
+
+The audit's Phase 6 spec also called for a shared watchlist match-type /
+value normalizer used by API + Telegram bot + collector matching — that
+consolidation touches `collector.py` and `notifier.py` simultaneously and is
+genuinely behaviour-touching, so it stays in `internal_docs/features/improvements.md`
+for a later pass.
+
 ## 2.11.8 — 2026-05-31
 
 ### Fix — aircraft DB refresh crashed on SQLite 3.45.x

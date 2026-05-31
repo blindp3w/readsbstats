@@ -118,7 +118,21 @@ Database growth: ~50–150 MB/month at 5-second polling with 90-day position ret
 readsbstats/
 ├── src/readsbstats/            # Python package
 │   ├── collector.py            # Polling daemon, flight detection, writes
-│   ├── web.py                  # FastAPI app, JSON API, SPA catch-all
+│   ├── web.py                  # FastAPI app factory + lifespan + SPA-shell routes
+│   ├── cache.py                # Response cache + map-cache prewarmer thread
+│   ├── api/                    # Per-domain APIRouter modules
+│   │   ├── _deps.py            # DB connection seam, shared SQL/allowlists, _csrf_check
+│   │   ├── _photos.py          # Photo-fetch ladder + per-type async locks
+│   │   ├── flights.py          # /api/flights*, /api/flights/{id}/*
+│   │   ├── aircraft.py         # /api/aircraft/*, /api/airlines/*, /api/types/*
+│   │   ├── stats.py            # /api/stats, /api/stats/records, /api/stats/polar
+│   │   ├── map.py              # /api/map/*, /api/live
+│   │   ├── feeders.py          # /api/feeders + systemd/port checkers
+│   │   ├── settings.py         # /api/settings + _settings_* helpers
+│   │   ├── watchlist.py        # /api/watchlist GET/POST/DELETE
+│   │   ├── airspace.py         # /api/airspace
+│   │   ├── health.py           # /api/health, /api/metrics, /api/metrics/health
+│   │   └── dates.py            # /api/dates
 │   ├── database.py             # SQLite schema, WAL, migrations
 │   ├── config.py               # RSBS_* env vars
 │   ├── http_safe.py            # SSRF-safe HTTP helpers (HTTPS-only)

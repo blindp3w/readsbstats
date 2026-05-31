@@ -1,6 +1,6 @@
 """
 Tests for web.py — pure helpers and API endpoints via FastAPI TestClient.
-Uses an in-memory SQLite database injected by patching web._db.
+Uses an in-memory SQLite database injected by patching _deps._db.
 """
 
 import json
@@ -11,7 +11,13 @@ from unittest.mock import patch
 import pytest
 from fastapi.testclient import TestClient
 
-from readsbstats import config, database, enrichment, photo_sources, web
+from readsbstats import config, database, enrichment, geo, photo_sources, web
+from readsbstats import cache
+from readsbstats.api import _deps
+from readsbstats.api import _photos
+from readsbstats.api import feeders
+from readsbstats.api import settings as settings_mod
+from readsbstats.api import airspace as airspace_mod
 from readsbstats.photo_sources import PhotoResult
 
 
@@ -33,14 +39,14 @@ def db_conn():
 
 @pytest.fixture()
 def client(db_conn, monkeypatch):
-    """TestClient with web._db patched to the in-memory connection.
+    """TestClient with _deps._db patched to the in-memory connection.
     Default X-Requested-With header makes existing mutating tests pass the
     CSRF check; tests for missing-header rejection construct their own client.
     """
     from readsbstats import route_enricher
-    monkeypatch.setattr(web, "_db", db_conn)
+    monkeypatch.setattr(_deps, "_db", db_conn)
     monkeypatch.setattr(route_enricher, "start_background_enricher", lambda: None)
-    web._cache.clear()
+    cache._cache.clear()
     with TestClient(web.app, raise_server_exceptions=True,
                     headers={"X-Requested-With": "XMLHttpRequest"}) as c:
         yield c
@@ -50,9 +56,9 @@ def client(db_conn, monkeypatch):
 def raw_client(db_conn, monkeypatch):
     """TestClient WITHOUT default X-Requested-With — for CSRF rejection tests."""
     from readsbstats import route_enricher
-    monkeypatch.setattr(web, "_db", db_conn)
+    monkeypatch.setattr(_deps, "_db", db_conn)
     monkeypatch.setattr(route_enricher, "start_background_enricher", lambda: None)
-    web._cache.clear()
+    cache._cache.clear()
     with TestClient(web.app, raise_server_exceptions=True) as c:
         yield c
 
@@ -92,34 +98,34 @@ def insert_flight(conn, *, icao="aabbcc", callsign="LOT123", first_seen=1_000_00
 
 class TestBearing:
     def test_north(self):
-        b = web._bearing(0.0, 0.0, 1.0, 0.0)
+        b = geo.bearing(0.0, 0.0, 1.0, 0.0)
         assert b == pytest.approx(0.0, abs=0.01)
 
     def test_east(self):
-        b = web._bearing(0.0, 0.0, 0.0, 1.0)
+        b = geo.bearing(0.0, 0.0, 0.0, 1.0)
         assert b == pytest.approx(90.0, abs=0.01)
 
     def test_south(self):
-        b = web._bearing(0.0, 0.0, -1.0, 0.0)
+        b = geo.bearing(0.0, 0.0, -1.0, 0.0)
         assert b == pytest.approx(180.0, abs=0.01)
 
     def test_west(self):
-        b = web._bearing(0.0, 0.0, 0.0, -1.0)
+        b = geo.bearing(0.0, 0.0, 0.0, -1.0)
         assert b == pytest.approx(270.0, abs=0.01)
 
     def test_result_in_0_360_range(self):
         """Bearing is always in [0, 360)."""
         for dlat, dlon in [(-1, -1), (-1, 1), (1, -1), (1, 1)]:
-            b = web._bearing(0.0, 0.0, dlat, dlon)
+            b = geo.bearing(0.0, 0.0, dlat, dlon)
             assert 0 <= b < 360
 
 
 class TestHaversineWeb:
     def test_same_point(self):
-        assert web._haversine_nm(52.0, 21.0, 52.0, 21.0) == pytest.approx(0.0, abs=1e-9)
+        assert geo.haversine_nm(52.0, 21.0, 52.0, 21.0) == pytest.approx(0.0, abs=1e-9)
 
     def test_one_degree_latitude(self):
-        d = web._haversine_nm(52.0, 21.0, 53.0, 21.0)
+        d = geo.haversine_nm(52.0, 21.0, 53.0, 21.0)
         assert 59.8 < d < 60.2
 
 
@@ -129,12 +135,12 @@ class TestHaversineWeb:
 
 class TestBuildFlightFilter:
     def test_no_params_empty_where(self):
-        where, params = web._build_flight_filter(None, None, None, None, None, None, None)
+        where, params = _deps._build_flight_filter(None, None, None, None, None, None, None)
         assert where == ""
         assert params == []
 
     def test_date_adds_range(self):
-        where, params = web._build_flight_filter("2024-01-15", None, None, None, None, None, None)
+        where, params = _deps._build_flight_filter("2024-01-15", None, None, None, None, None, None)
         assert "first_seen >= ?" in where
         assert "first_seen < ?" in where
         assert len(params) == 2
@@ -144,7 +150,7 @@ class TestBuildFlightFilter:
     def test_bad_date_raises_400(self):
         from fastapi import HTTPException
         with pytest.raises(HTTPException) as exc_info:
-            web._build_flight_filter("not-a-date", None, None, None, None, None, None)
+            _deps._build_flight_filter("not-a-date", None, None, None, None, None, None)
         assert exc_info.value.status_code == 400
 
     def test_date_uses_host_local_timezone(self):
@@ -158,7 +164,7 @@ class TestBuildFlightFilter:
         os.environ["TZ"] = "Europe/Warsaw"  # UTC+1 in January (no DST)
         time.tzset()
         try:
-            _, params = web._build_flight_filter(
+            _, params = _deps._build_flight_filter(
                 "2024-01-15", None, None, None, None, None, None,
             )
             # Local Warsaw midnight 2024-01-15 → mktime resolves DST automatically
@@ -173,31 +179,31 @@ class TestBuildFlightFilter:
             time.tzset()
 
     def test_icao_lowercased_and_tilde_stripped(self):
-        where, params = web._build_flight_filter(None, "~AABBCC", None, None, None, None, None)
+        where, params = _deps._build_flight_filter(None, "~AABBCC", None, None, None, None, None)
         assert "icao_hex = ?" in where
         assert params == ["aabbcc"]
 
     def test_callsign_uppercased_with_wildcard(self):
-        where, params = web._build_flight_filter(None, None, "lot", None, None, None, None)
+        where, params = _deps._build_flight_filter(None, None, "lot", None, None, None, None)
         assert "callsign LIKE ?" in where
         assert params == ["LOT%"]
 
     def test_registration_uppercased_with_wildcard(self):
-        where, params = web._build_flight_filter(None, None, None, "sp-abc", None, None, None)
+        where, params = _deps._build_flight_filter(None, None, None, "sp-abc", None, None, None)
         assert "LIKE ?" in where
         assert params == ["SP-ABC%"]
 
     def test_aircraft_type_uppercased(self):
-        where, params = web._build_flight_filter(None, None, None, None, "b738", None, None)
+        where, params = _deps._build_flight_filter(None, None, None, None, "b738", None, None)
         assert params == ["B738"]
 
     def test_source_filter(self):
-        where, params = web._build_flight_filter(None, None, None, None, None, "adsb", None)
+        where, params = _deps._build_flight_filter(None, None, None, None, None, "adsb", None)
         assert "primary_source = ?" in where
         assert params == ["adsb"]
 
     def test_flags_military(self):
-        where, _ = web._build_flight_filter(None, None, None, None, None, None, "military")
+        where, _ = _deps._build_flight_filter(None, None, None, None, None, None, "military")
         # The flag expression now OR-merges aircraft_db.flags, adsbx_overrides.flags,
         # and the runtime FLAG_ANONYMOUS bit — match on the bitmask test, not the exact SQL.
         assert "COALESCE(adb.flags, 0)" in where
@@ -205,24 +211,24 @@ class TestBuildFlightFilter:
         assert "& 1) = 1" in where
 
     def test_flags_interesting(self):
-        where, _ = web._build_flight_filter(None, None, None, None, None, None, "interesting")
+        where, _ = _deps._build_flight_filter(None, None, None, None, None, None, "interesting")
         assert "& 2) = 2" in where
         # must exclude aircraft that are also military (flags & 1)
         assert "& 1) = 0" in where
 
     def test_flags_anonymous(self):
-        where, _ = web._build_flight_filter(None, None, None, None, None, None, "anonymous")
+        where, _ = _deps._build_flight_filter(None, None, None, None, None, None, "anonymous")
         # FLAG_ANONYMOUS=16 set, military/interesting bits cleared
         assert "& 16) = 16" in where
         assert "& 3) = 0" in where
 
     def test_squawk_filter(self):
-        where, params = web._build_flight_filter(None, None, None, None, None, None, None, squawk="7700")
+        where, params = _deps._build_flight_filter(None, None, None, None, None, None, None, squawk="7700")
         assert "squawk = ?" in where
         assert "7700" in params
 
     def test_multiple_filters_uses_and(self):
-        where, params = web._build_flight_filter(None, "aabbcc", "LOT", None, None, None, None)
+        where, params = _deps._build_flight_filter(None, "aabbcc", "LOT", None, None, None, None)
         assert " AND " in where
         assert len(params) == 2
 
@@ -418,7 +424,7 @@ class TestApiFlights:
         """Every column in _SORT_COLS must return 200 with valid flight data."""
         insert_flight(db_conn, icao="aa0001", first_seen=1_000_001, max_alt_baro=35000)
         insert_flight(db_conn, icao="aa0002", first_seen=1_000_002, max_alt_baro=10000)
-        for col in web._SORT_COLS:
+        for col in _deps._SORT_COLS:
             r = client.get(f"/api/flights?sort_by={col}")
             assert r.status_code == 200, f"Failed for sort_by={col}"
             flights = r.json()["flights"]
@@ -497,7 +503,7 @@ class TestApiFlightsExport:
         assert r.status_code == 200
         assert "text/csv" in r.headers["content-type"]
         lines = r.text.splitlines()
-        assert lines[0] == ",".join(web._CSV_COLS)
+        assert lines[0] == ",".join(_deps._CSV_COLS)
 
     def test_csv_one_data_row(self, client, db_conn):
         insert_flight(db_conn)
@@ -721,7 +727,7 @@ class TestApiHealth:
     def test_degraded_when_db_raises(self, client, monkeypatch):
         def bad_db():
             raise RuntimeError("disk error")
-        monkeypatch.setattr(web, "db", bad_db)
+        monkeypatch.setattr(_deps, "db", bad_db)
         r = client.get("/api/health")
         assert r.status_code == 200
         assert r.json()["status"] == "degraded"
@@ -808,10 +814,10 @@ class TestApiMetricsQueryValidation:
 
 class TestFmtTs:
     def test_none_returns_empty_string(self):
-        assert web._fmt_ts(None) == ""
+        assert _deps._fmt_ts(None) == ""
 
     def test_epoch_formats_utc(self):
-        result = web._fmt_ts(0)
+        result = _deps._fmt_ts(0)
         assert result == "1970-01-01 00:00"
 
 
@@ -821,62 +827,62 @@ class TestFmtTs:
 
 @pytest.fixture(autouse=False)
 def clear_web_cache():
-    web._cache.clear()
+    cache._cache.clear()
     yield
-    web._cache.clear()
+    cache._cache.clear()
 
 
 class TestCache:
     def test_miss_returns_none(self, clear_web_cache):
-        assert web._get_cache("no_such_key") is None
+        assert cache._get_cache("no_such_key") is None
 
     def test_hit_returns_value(self, clear_web_cache):
-        web._set_cache("foo", {"x": 1})
-        assert web._get_cache("foo") == {"x": 1}
+        cache._set_cache("foo", {"x": 1})
+        assert cache._get_cache("foo") == {"x": 1}
 
     def test_expired_entry_returns_none(self, clear_web_cache):
         # Plant an entry with a timestamp far in the past
-        web._cache["bar"] = (time.time() - web._DEFAULT_TTL - 1, {"x": 2})
-        assert web._get_cache("bar") is None
+        cache._cache["bar"] = (time.time() - cache._DEFAULT_TTL - 1, {"x": 2})
+        assert cache._get_cache("bar") is None
 
     def test_set_cache_evicts_oldest_over_cap(self, clear_web_cache):
         """Audit 2026-05-25: filtered /api/stats requests with caller-controlled
         from/to range produce unbounded distinct keys. The cache must cap the
         total entry count and evict the oldest first."""
-        cap = web._CACHE_MAX_ENTRIES
+        cap = cache._CACHE_MAX_ENTRIES
         for i in range(cap + 50):
-            web._set_cache(f"stats:0:{i}", i)
-        assert len(web._cache) <= cap
+            cache._set_cache(f"stats:0:{i}", i)
+        assert len(cache._cache) <= cap
         # The earliest keys should have been evicted; the most recent kept.
-        assert web._get_cache(f"stats:0:{cap + 49}") == cap + 49
-        assert web._get_cache("stats:0:0") is None
+        assert cache._get_cache(f"stats:0:{cap + 49}") == cap + 49
+        assert cache._get_cache("stats:0:0") is None
 
     def test_get_cache_drops_expired_entries(self, clear_web_cache, monkeypatch):
         """Expired entries should be removed lazily on lookup so the cap is
         not consumed by zombie keys."""
-        web._set_cache("zombie", "ignored")
+        cache._set_cache("zombie", "ignored")
         # Fast-forward past the default TTL.
-        future = time.time() + web._DEFAULT_TTL + 5
-        monkeypatch.setattr(web.time, "time", lambda: future)
-        assert web._get_cache("zombie") is None
-        assert "zombie" not in web._cache
+        future = time.time() + cache._DEFAULT_TTL + 5
+        monkeypatch.setattr(time, "time", lambda: future)
+        assert cache._get_cache("zombie") is None
+        assert "zombie" not in cache._cache
 
     # BE-12 (Audit 2026-05-31): the airspace endpoint must go through the shared
     # cache helpers (not touch _cache directly), and "airspace" must have its
     # 1h TTL registered so _get_cache honors it instead of the 30s default.
 
     def test_airspace_ttl_registered(self, clear_web_cache):
-        assert web._ttl_for("airspace") == web._AIRSPACE_TTL
+        assert cache._ttl_for("airspace") == cache._AIRSPACE_TTL
 
     def test_airspace_endpoint_uses_cache_helper(self, clear_web_cache, monkeypatch):
-        data = web.api_airspace()
+        data = airspace_mod.api_airspace()
         # Stored via the shared helper and retrievable through it.
-        assert web._get_cache("airspace") == data
+        assert cache._get_cache("airspace") == data
         # Survives well past the 30s default — would expire if the TTL were
         # unregistered and the entry stored under the default.
-        future = time.time() + web._DEFAULT_TTL + 100
-        monkeypatch.setattr(web.time, "time", lambda: future)
-        assert web._get_cache("airspace") is not None
+        future = time.time() + cache._DEFAULT_TTL + 100
+        monkeypatch.setattr(time, "time", lambda: future)
+        assert cache._get_cache("airspace") is not None
 
     def test_concurrent_cache_access_is_threadsafe(self, clear_web_cache):
         """Hammering the cache from many threads must not corrupt the store or
@@ -887,8 +893,8 @@ class TestCache:
         def worker(n: int) -> None:
             try:
                 for i in range(300):
-                    web._set_cache(f"stats:{n}:{i}", i)
-                    web._get_cache(f"stats:{n}:{i}")
+                    cache._set_cache(f"stats:{n}:{i}", i)
+                    cache._get_cache(f"stats:{n}:{i}")
             except Exception as exc:  # pragma: no cover - failure path
                 errors.append(exc)
 
@@ -898,20 +904,20 @@ class TestCache:
         for t in threads:
             t.join()
         assert errors == []
-        assert len(web._cache) <= web._CACHE_MAX_ENTRIES
+        assert len(cache._cache) <= cache._CACHE_MAX_ENTRIES
 
 
 class TestDbConnection:
     """`db()` must be per-thread in production so requests don't serialize on
-    Python's per-connection sqlite mutex.  Tests that set `web._db` directly
+    Python's per-connection sqlite mutex.  Tests that set `_deps._db` directly
     must still see that connection from every thread (for in-memory DBs)."""
 
     def test_test_override_shared_across_threads(self, db_conn, monkeypatch):
         import threading as _t
-        monkeypatch.setattr(web, "_db", db_conn)
+        monkeypatch.setattr(_deps, "_db", db_conn)
         seen: list[object] = []
         def fetch():
-            seen.append(web.db())
+            seen.append(_deps.db())
         threads = [_t.Thread(target=fetch) for _ in range(4)]
         for t in threads:
             t.start()
@@ -921,8 +927,8 @@ class TestDbConnection:
 
     def test_per_thread_connection_when_no_override(self, tmp_path, monkeypatch):
         import threading as _t
-        monkeypatch.setattr(web, "_db", None)
-        monkeypatch.setattr(web, "_thread_local", _t.local())
+        monkeypatch.setattr(_deps, "_db", None)
+        monkeypatch.setattr(_deps, "_thread_local", _t.local())
         db_path = str(tmp_path / "perthread.db")
         database.init_db(db_path)
         original_connect = database.connect
@@ -931,7 +937,7 @@ class TestDbConnection:
         seen: list[object] = []
         lock = _t.Lock()
         def fetch():
-            conn = web.db()
+            conn = _deps.db()
             with lock:
                 seen.append(conn)
         threads = [_t.Thread(target=fetch) for _ in range(4)]
@@ -943,15 +949,15 @@ class TestDbConnection:
 
     def test_same_thread_returns_same_connection(self, tmp_path, monkeypatch):
         import threading as _t
-        monkeypatch.setattr(web, "_db", None)
-        monkeypatch.setattr(web, "_thread_local", _t.local())
+        monkeypatch.setattr(_deps, "_db", None)
+        monkeypatch.setattr(_deps, "_thread_local", _t.local())
         db_path = str(tmp_path / "samethread.db")
         database.init_db(db_path)
         original_connect = database.connect
         monkeypatch.setattr(web.database, "connect",
                             lambda path=db_path: original_connect(db_path))
-        first = web.db()
-        second = web.db()
+        first = _deps.db()
+        second = _deps.db()
         assert first is second
         first.close()
 
@@ -962,7 +968,7 @@ class TestStartupMigrate:
     swap and creates base tables when missing), not a bare _migrate()."""
 
     def test_calls_ensure_base_schema_when_no_override(self, monkeypatch):
-        monkeypatch.setattr(web, "_db", None)
+        monkeypatch.setattr(_deps, "_db", None)
         calls: list[str] = []
         monkeypatch.setattr(web.database, "ensure_base_schema",
                             lambda *a, **k: calls.append("ensure"))
@@ -974,7 +980,7 @@ class TestStartupMigrate:
         )
 
     def test_uses_injected_db_directly(self, db_conn, monkeypatch):
-        monkeypatch.setattr(web, "_db", db_conn)
+        monkeypatch.setattr(_deps, "_db", db_conn)
         calls: list[str] = []
         monkeypatch.setattr(web.database, "ensure_base_schema",
                             lambda *a, **k: calls.append("ensure"))
@@ -1154,7 +1160,7 @@ class TestApiSettings:
                         setattr(stub, attr, default)
             else:
                 setattr(stub, attr, default)
-        meta = web_mod._settings_metadata(stub, list(config._META_REGISTRY.keys()))
+        meta = settings_mod._settings_metadata(stub, list(config._META_REGISTRY.keys()))
         not_default = [k for k, v in meta.items() if v["customized"]]
         assert not_default == [], (
             f"customized=True when value equals default for: {not_default}"
@@ -1182,7 +1188,7 @@ class TestApiSettings:
                 setattr(stub, attr, default)
         # Override one well-known integer setting.
         stub.POLL_INTERVAL_SEC = 999
-        meta = web_mod._settings_metadata(stub, list(config._META_REGISTRY.keys()))
+        meta = settings_mod._settings_metadata(stub, list(config._META_REGISTRY.keys()))
         assert meta["poll_interval"]["customized"] is True
         # No others should flip.
         others_customized = [k for k, v in meta.items()
@@ -1201,7 +1207,7 @@ class TestApiSettings:
         # Repeat with a real-looking value.
         monkeypatch.setattr(config, "TELEGRAM_TOKEN", "1234:secret")
         from readsbstats import web as web_mod
-        web_mod._cache.clear()
+        cache._cache.clear()
         r2 = client.get("/api/settings")
         assert r2.json()["_metadata"]["telegram_token"]["customized"] is True
 
@@ -1211,7 +1217,7 @@ class TestApiFeeders:
         async def mock_feeders():
             return [{"name": "readsb", "unit": "readsb.service",
                      "systemd": "active", "overall": "ok"}]
-        monkeypatch.setattr(web, "_check_all_feeders", mock_feeders)
+        monkeypatch.setattr(feeders, "_check_all_feeders", mock_feeders)
         r = client.get("/api/feeders")
         assert r.status_code == 200
         body = r.json()
@@ -1237,7 +1243,7 @@ class TestApiFeeders:
 
         monkeypatch.setattr(config, "FEEDERS",
                             [{"name": "readsb", "unit": "readsb.service"}])
-        monkeypatch.setattr(web, "_check_all_feeders", mock_feeders)
+        monkeypatch.setattr(feeders, "_check_all_feeders", mock_feeders)
         r1 = client.get("/api/feeders")
         r2 = client.get("/api/feeders")
         assert r1.status_code == 200 and r2.status_code == 200
@@ -1249,8 +1255,8 @@ class TestApiFeeders:
         # single batch via the asyncio.Lock (the loser re-reads the cache).
         import asyncio as _asyncio
 
-        web._cache.clear()
-        monkeypatch.setattr(web, "_feeders_lock", None)
+        cache._cache.clear()
+        monkeypatch.setattr(cache, "_feeders_lock", None)
         monkeypatch.setattr(config, "FEEDERS",
                             [{"name": "a", "unit": "a.service"}])
         calls = {"n": 0}
@@ -1260,10 +1266,10 @@ class TestApiFeeders:
             await _asyncio.sleep(0.05)
             return [{"name": "a", "unit": "a.service", "overall": "ok"}]
 
-        monkeypatch.setattr(web, "_check_all_feeders", slow_batch)
+        monkeypatch.setattr(feeders, "_check_all_feeders", slow_batch)
 
         async def drive():
-            return await _asyncio.gather(web.api_feeders(), web.api_feeders())
+            return await _asyncio.gather(feeders.api_feeders(), feeders.api_feeders())
 
         # Use the shared loop (not asyncio.run, which closes it and breaks
         # every later get_event_loop().run_until_complete() test in the suite).
@@ -1492,7 +1498,7 @@ class TestFeederChecks:
             return Proc()
 
         monkeypatch.setattr(asyncio, "create_subprocess_exec", mock_exec)
-        result = asyncio.get_event_loop().run_until_complete(web._check_systemd_unit("test.service"))
+        result = asyncio.get_event_loop().run_until_complete(feeders._check_systemd_unit("test.service"))
         assert result["systemd"] == "active"
 
     def test_check_systemd_unit_not_found(self, monkeypatch):
@@ -1502,7 +1508,7 @@ class TestFeederChecks:
             raise FileNotFoundError("systemctl not found")
 
         monkeypatch.setattr(asyncio, "create_subprocess_exec", mock_exec)
-        result = asyncio.get_event_loop().run_until_complete(web._check_systemd_unit("test.service"))
+        result = asyncio.get_event_loop().run_until_complete(feeders._check_systemd_unit("test.service"))
         assert result["systemd"] == "unavailable"
 
     def test_check_systemd_unit_timeout_kills_subprocess(self, monkeypatch):
@@ -1534,7 +1540,7 @@ class TestFeederChecks:
         monkeypatch.setattr(web.asyncio, "wait_for", insta_timeout)
 
         result = asyncio.new_event_loop().run_until_complete(
-            web._check_systemd_unit("test.service")
+            feeders._check_systemd_unit("test.service")
         )
         assert result["systemd"] == "timeout"
         assert kill_calls == [True], "kill() was not called on timeout"
@@ -1566,7 +1572,7 @@ class TestFeederChecks:
         monkeypatch.setattr(web.asyncio, "wait_for", insta_timeout)
 
         result = asyncio.new_event_loop().run_until_complete(
-            web._feeder_details_mlat("test.service")
+            feeders._feeder_details_mlat("test.service")
         )
         # On timeout, returns whatever details accumulated (empty list)
         assert isinstance(result, list)
@@ -1583,7 +1589,7 @@ class TestFeederChecks:
             return None, Writer()
 
         monkeypatch.setattr(asyncio, "open_connection", mock_connect)
-        result = asyncio.get_event_loop().run_until_complete(web._check_port(30005))
+        result = asyncio.get_event_loop().run_until_complete(feeders._check_port(30005))
         assert result["port_status"] == "open"
         assert result["port"] == 30005
 
@@ -1594,7 +1600,7 @@ class TestFeederChecks:
             raise ConnectionRefusedError()
 
         monkeypatch.setattr(asyncio, "open_connection", mock_connect)
-        result = asyncio.get_event_loop().run_until_complete(web._check_port(30005))
+        result = asyncio.get_event_loop().run_until_complete(feeders._check_port(30005))
         assert result["port_status"] == "closed"
 
     def test_check_single_feeder_ok(self, monkeypatch):
@@ -1606,10 +1612,10 @@ class TestFeederChecks:
         async def mock_port(port, host="127.0.0.1"):
             return {"port": port, "port_status": "open"}
 
-        monkeypatch.setattr(web, "_check_systemd_unit", mock_systemd)
-        monkeypatch.setattr(web, "_check_port", mock_port)
+        monkeypatch.setattr(feeders, "_check_systemd_unit", mock_systemd)
+        monkeypatch.setattr(feeders, "_check_port", mock_port)
         feeder = {"name": "readsb", "unit": "readsb.service", "port": 30005}
-        result = asyncio.get_event_loop().run_until_complete(web._check_single_feeder(feeder))
+        result = asyncio.get_event_loop().run_until_complete(feeders._check_single_feeder(feeder))
         assert result["overall"] == "ok"
         assert result["systemd"] == "active"
         assert result["port_status"] == "open"
@@ -1620,9 +1626,9 @@ class TestFeederChecks:
         async def mock_systemd(unit):
             return {"systemd": "inactive"}
 
-        monkeypatch.setattr(web, "_check_systemd_unit", mock_systemd)
+        monkeypatch.setattr(feeders, "_check_systemd_unit", mock_systemd)
         feeder = {"name": "test", "unit": "test.service"}
-        result = asyncio.get_event_loop().run_until_complete(web._check_single_feeder(feeder))
+        result = asyncio.get_event_loop().run_until_complete(feeders._check_single_feeder(feeder))
         assert result["overall"] == "error"
 
     def test_check_single_feeder_unavailable(self, monkeypatch):
@@ -1631,9 +1637,9 @@ class TestFeederChecks:
         async def mock_systemd(unit):
             return {"systemd": "unavailable"}
 
-        monkeypatch.setattr(web, "_check_systemd_unit", mock_systemd)
+        monkeypatch.setattr(feeders, "_check_systemd_unit", mock_systemd)
         feeder = {"name": "test", "unit": "test.service"}
-        result = asyncio.get_event_loop().run_until_complete(web._check_single_feeder(feeder))
+        result = asyncio.get_event_loop().run_until_complete(feeders._check_single_feeder(feeder))
         assert result["overall"] == "unknown"
 
 
@@ -1650,7 +1656,7 @@ class TestFeederDetailParsers:
                 "max_distance": 150.5,
             }
         }))
-        details = web._feeder_details_readsb(status_path)
+        details = feeders._feeder_details_readsb(status_path)
         labels = {k for k, _ in details}
         assert "Aircraft tracked" in labels
         assert "Messages/s" in labels
@@ -1668,12 +1674,12 @@ class TestFeederDetailParsers:
                 "max_distance": 185200,  # exactly 100 nm
             }
         }))
-        details = web._feeder_details_readsb(str(tmp_path))
+        details = feeders._feeder_details_readsb(str(tmp_path))
         max_range = next((v for k, v in details if k == "Max range"), None)
         assert max_range == "100.0", f"expected '100.0', got {max_range!r}"
 
     def test_readsb_details_missing_files(self, tmp_path):
-        details = web._feeder_details_readsb(str(tmp_path))
+        details = feeders._feeder_details_readsb(str(tmp_path))
         assert details == []
 
     def test_piaware_details_from_json(self, tmp_path):
@@ -1684,7 +1690,7 @@ class TestFeederDetailParsers:
             "radio": {"message": "Mode S enabled"},
             "cpu_temp_celcius": 52.3,
         }))
-        details = web._feeder_details_piaware(str(path))
+        details = feeders._feeder_details_piaware(str(path))
         labels = {k for k, _ in details}
         assert "Version" in labels
         assert "Piaware" in labels
@@ -1692,21 +1698,21 @@ class TestFeederDetailParsers:
         assert "CPU temp" in labels
 
     def test_piaware_details_missing_file(self, tmp_path):
-        details = web._feeder_details_piaware(str(tmp_path / "missing.json"))
+        details = feeders._feeder_details_piaware(str(tmp_path / "missing.json"))
         assert details == []
 
     def test_read_json_file_valid(self, tmp_path):
         p = tmp_path / "test.json"
         p.write_text('{"key": "value"}')
-        assert web._read_json_file(str(p)) == {"key": "value"}
+        assert feeders._read_json_file(str(p)) == {"key": "value"}
 
     def test_read_json_file_invalid(self, tmp_path):
         p = tmp_path / "bad.json"
         p.write_text("{broken")
-        assert web._read_json_file(str(p)) is None
+        assert feeders._read_json_file(str(p)) is None
 
     def test_read_json_file_missing(self):
-        assert web._read_json_file("/nonexistent/path.json") is None
+        assert feeders._read_json_file("/nonexistent/path.json") is None
 
     def test_check_port_timeout(self, monkeypatch):
         import asyncio
@@ -1715,7 +1721,7 @@ class TestFeederDetailParsers:
             raise asyncio.TimeoutError()
 
         monkeypatch.setattr(asyncio, "open_connection", mock_connect)
-        result = asyncio.get_event_loop().run_until_complete(web._check_port(30005))
+        result = asyncio.get_event_loop().run_until_complete(feeders._check_port(30005))
         # asyncio.TimeoutError is a subclass of OSError in Python 3.11+,
         # so it's caught as "closed" rather than "timeout"
         assert result["port_status"] in ("timeout", "closed")
@@ -1727,7 +1733,7 @@ class TestFeederDetailParsers:
             raise asyncio.TimeoutError()
 
         monkeypatch.setattr(asyncio, "create_subprocess_exec", mock_exec)
-        result = asyncio.get_event_loop().run_until_complete(web._check_systemd_unit("test.service"))
+        result = asyncio.get_event_loop().run_until_complete(feeders._check_systemd_unit("test.service"))
         assert result["systemd"] == "timeout"
 
     def test_check_systemd_generic_error(self, monkeypatch):
@@ -1737,7 +1743,7 @@ class TestFeederDetailParsers:
             raise RuntimeError("boom")
 
         monkeypatch.setattr(asyncio, "create_subprocess_exec", mock_exec)
-        result = asyncio.get_event_loop().run_until_complete(web._check_systemd_unit("test.service"))
+        result = asyncio.get_event_loop().run_until_complete(feeders._check_systemd_unit("test.service"))
         assert result["systemd"].startswith("error:")
 
     def test_fetch_feeder_details_readsb_dispatch(self, monkeypatch, tmp_path):
@@ -1745,15 +1751,15 @@ class TestFeederDetailParsers:
         status_path = str(tmp_path)
         (tmp_path / "aircraft.json").write_text('{"aircraft": []}')
         # Bypass the /run/ allowlist so the dispatcher reaches the real fetcher.
-        monkeypatch.setattr(web, "_is_safe_status_path", lambda _p: True)
+        monkeypatch.setattr(feeders, "_is_safe_status_path", lambda _p: True)
         feeder = {"name": "readsb", "unit": "readsb.service", "status_type": "readsb", "status_path": status_path}
-        result = asyncio.get_event_loop().run_until_complete(web._fetch_feeder_details(feeder))
+        result = asyncio.get_event_loop().run_until_complete(feeders._fetch_feeder_details(feeder))
         assert isinstance(result, list)
 
     def test_fetch_feeder_details_unknown_type(self):
         import asyncio
         feeder = {"name": "x", "unit": "x.service", "status_type": "unknown"}
-        result = asyncio.get_event_loop().run_until_complete(web._fetch_feeder_details(feeder))
+        result = asyncio.get_event_loop().run_until_complete(feeders._fetch_feeder_details(feeder))
         assert result == []
 
     def test_fr24_details_success(self, monkeypatch):
@@ -1779,7 +1785,7 @@ class TestFeederDetailParsers:
 
         monkeypatch.setattr(_httpx, "AsyncClient", lambda **kw: FakeClient())
         result = asyncio.get_event_loop().run_until_complete(
-            web._feeder_details_fr24("http://localhost/monitor.json")
+            feeders._feeder_details_fr24("http://localhost/monitor.json")
         )
         labels = {k for k, _ in result}
         assert "Version" in labels
@@ -1803,7 +1809,7 @@ class TestFeederDetailParsers:
 
         monkeypatch.setattr(_httpx, "AsyncClient", lambda **kw: FakeClient())
         result = asyncio.get_event_loop().run_until_complete(
-            web._feeder_details_fr24("http://localhost/monitor.json")
+            feeders._feeder_details_fr24("http://localhost/monitor.json")
         )
         assert result == []
 
@@ -1826,7 +1832,7 @@ class TestFeederDetailParsers:
 
         monkeypatch.setattr(asyncio, "create_subprocess_exec", mock_exec)
         result = asyncio.get_event_loop().run_until_complete(
-            web._feeder_details_mlat("test-mlat.service")
+            feeders._feeder_details_mlat("test-mlat.service")
         )
         labels = {k for k, _ in result}
         assert "Positions/min" in labels
@@ -1842,7 +1848,7 @@ class TestFeederDetailParsers:
 
         monkeypatch.setattr(asyncio, "create_subprocess_exec", mock_exec)
         result = asyncio.get_event_loop().run_until_complete(
-            web._feeder_details_mlat("test-mlat.service")
+            feeders._feeder_details_mlat("test-mlat.service")
         )
         assert result == []
 
@@ -1852,11 +1858,11 @@ class TestFeederDetailParsers:
         async def fake_fr24(url):
             return [("Version", "1.0")]
 
-        monkeypatch.setattr(web, "_feeder_details_fr24", fake_fr24)
+        monkeypatch.setattr(feeders, "_feeder_details_fr24", fake_fr24)
         # Loopback URL passes the SSRF allowlist.
         feeder = {"name": "fr24", "unit": "fr24.service", "status_type": "fr24",
                   "status_url": "http://127.0.0.1:8754/monitor.json"}
-        result = asyncio.get_event_loop().run_until_complete(web._fetch_feeder_details(feeder))
+        result = asyncio.get_event_loop().run_until_complete(feeders._fetch_feeder_details(feeder))
         assert result == [("Version", "1.0")]
 
     def test_fetch_feeder_details_piaware_dispatch(self, monkeypatch, tmp_path):
@@ -1864,9 +1870,9 @@ class TestFeederDetailParsers:
         path = str(tmp_path / "status.json")
         (tmp_path / "status.json").write_text('{"piaware_version": "9"}')
         # Bypass the /run/ allowlist so the dispatcher reaches the real fetcher.
-        monkeypatch.setattr(web, "_is_safe_status_path", lambda _p: True)
+        monkeypatch.setattr(feeders, "_is_safe_status_path", lambda _p: True)
         feeder = {"name": "piaware", "unit": "piaware.service", "status_type": "piaware", "status_path": path}
-        result = asyncio.get_event_loop().run_until_complete(web._fetch_feeder_details(feeder))
+        result = asyncio.get_event_loop().run_until_complete(feeders._fetch_feeder_details(feeder))
         assert any(k == "Version" for k, _ in result)
 
     def test_fetch_feeder_details_mlat_dispatch(self, monkeypatch):
@@ -1875,9 +1881,9 @@ class TestFeederDetailParsers:
         async def fake_mlat(unit):
             return [("Peers", "10")]
 
-        monkeypatch.setattr(web, "_feeder_details_mlat", fake_mlat)
+        monkeypatch.setattr(feeders, "_feeder_details_mlat", fake_mlat)
         feeder = {"name": "mlat", "unit": "mlat.service", "status_type": "mlat"}
-        result = asyncio.get_event_loop().run_until_complete(web._fetch_feeder_details(feeder))
+        result = asyncio.get_event_loop().run_until_complete(feeders._fetch_feeder_details(feeder))
         assert result == [("Peers", "10")]
 
     def test_check_all_feeders(self, monkeypatch):
@@ -1886,28 +1892,28 @@ class TestFeederDetailParsers:
         async def mock_single(feeder):
             return {"name": feeder["name"], "overall": "ok"}
 
-        monkeypatch.setattr(web, "_check_single_feeder", mock_single)
+        monkeypatch.setattr(feeders, "_check_single_feeder", mock_single)
         monkeypatch.setattr(config, "FEEDERS", [{"name": "a", "unit": "a.service"}, {"name": "b", "unit": "b.service"}])
-        result = asyncio.get_event_loop().run_until_complete(web._check_all_feeders())
+        result = asyncio.get_event_loop().run_until_complete(feeders._check_all_feeders())
         assert len(result) == 2
         assert result[0]["name"] == "a"
 
     # ---------- status_path / status_url allowlist (defence-in-depth) ----------
 
     def test_is_safe_status_path_accepts_run_subdir(self):
-        assert web._is_safe_status_path("/run/readsb")
-        assert web._is_safe_status_path("/run/piaware/status.json")
-        assert web._is_safe_status_path("/run")
+        assert feeders._is_safe_status_path("/run/readsb")
+        assert feeders._is_safe_status_path("/run/piaware/status.json")
+        assert feeders._is_safe_status_path("/run")
 
     def test_is_safe_status_path_rejects_traversal(self):
-        assert not web._is_safe_status_path("/run/../etc/hostname")
-        assert not web._is_safe_status_path("/etc/passwd")
-        assert not web._is_safe_status_path("/")
-        assert not web._is_safe_status_path("/runaway/x")  # prefix-only match must require /
+        assert not feeders._is_safe_status_path("/run/../etc/hostname")
+        assert not feeders._is_safe_status_path("/etc/passwd")
+        assert not feeders._is_safe_status_path("/")
+        assert not feeders._is_safe_status_path("/runaway/x")  # prefix-only match must require /
 
     def test_is_safe_status_path_rejects_empty_and_bad_types(self):
-        assert not web._is_safe_status_path("")
-        assert not web._is_safe_status_path(None)  # type: ignore[arg-type]
+        assert not feeders._is_safe_status_path("")
+        assert not feeders._is_safe_status_path(None)  # type: ignore[arg-type]
 
     def test_is_safe_status_path_honours_env_override(self, tmp_path, monkeypatch):
         # improvements.md #136: tests should be able to set the root via
@@ -1916,32 +1922,32 @@ class TestFeederDetailParsers:
         sub = tmp_path / "readsb"
         sub.mkdir()
         monkeypatch.setattr(config, "FEEDER_STATUS_ROOT", str(tmp_path))
-        assert web._is_safe_status_path(str(sub / "stats.json"))
-        assert web._is_safe_status_path(str(tmp_path))
+        assert feeders._is_safe_status_path(str(sub / "stats.json"))
+        assert feeders._is_safe_status_path(str(tmp_path))
         # /run is no longer the root, so a real /run path is now rejected
-        assert not web._is_safe_status_path("/run/readsb/stats.json")
+        assert not feeders._is_safe_status_path("/run/readsb/stats.json")
 
     def test_is_safe_status_url_accepts_loopback_http(self):
-        assert web._is_safe_status_url("http://127.0.0.1:8754/monitor.json")
-        assert web._is_safe_status_url("http://localhost:8754/")
-        assert web._is_safe_status_url("http://[::1]:8754/")
+        assert feeders._is_safe_status_url("http://127.0.0.1:8754/monitor.json")
+        assert feeders._is_safe_status_url("http://localhost:8754/")
+        assert feeders._is_safe_status_url("http://[::1]:8754/")
 
     def test_is_safe_status_url_rejects_external_hosts(self):
-        assert not web._is_safe_status_url("http://169.254.169.254/latest/meta-data/")
-        assert not web._is_safe_status_url("http://example.com/")
-        assert not web._is_safe_status_url("http://10.0.0.1/")
+        assert not feeders._is_safe_status_url("http://169.254.169.254/latest/meta-data/")
+        assert not feeders._is_safe_status_url("http://example.com/")
+        assert not feeders._is_safe_status_url("http://10.0.0.1/")
 
     def test_is_safe_status_url_rejects_non_http_schemes(self):
         # https on loopback is fine in principle but we keep the allowlist
         # tight: feeders all expose plain http on loopback by design.
-        assert not web._is_safe_status_url("https://127.0.0.1/")
-        assert not web._is_safe_status_url("file:///etc/passwd")
-        assert not web._is_safe_status_url("ftp://127.0.0.1/")
+        assert not feeders._is_safe_status_url("https://127.0.0.1/")
+        assert not feeders._is_safe_status_url("file:///etc/passwd")
+        assert not feeders._is_safe_status_url("ftp://127.0.0.1/")
 
     def test_is_safe_status_url_rejects_empty_and_bad(self):
-        assert not web._is_safe_status_url("")
-        assert not web._is_safe_status_url(None)  # type: ignore[arg-type]
-        assert not web._is_safe_status_url("not a url")
+        assert not feeders._is_safe_status_url("")
+        assert not feeders._is_safe_status_url(None)  # type: ignore[arg-type]
+        assert not feeders._is_safe_status_url("not a url")
 
     def test_fetch_feeder_details_rejects_unsafe_status_path(self, monkeypatch):
         import asyncio
@@ -1955,8 +1961,8 @@ class TestFeederDetailParsers:
             called["hit"] = True
             return [("should not be called", "x")]
 
-        monkeypatch.setattr(web, "_feeder_details_readsb", boom)
-        result = asyncio.get_event_loop().run_until_complete(web._fetch_feeder_details(feeder))
+        monkeypatch.setattr(feeders, "_feeder_details_readsb", boom)
+        result = asyncio.get_event_loop().run_until_complete(feeders._fetch_feeder_details(feeder))
         assert result == []
         assert called["hit"] is False
 
@@ -1971,8 +1977,8 @@ class TestFeederDetailParsers:
             called["hit"] = True
             return [("should not be called", "x")]
 
-        monkeypatch.setattr(web, "_feeder_details_fr24", boom)
-        result = asyncio.get_event_loop().run_until_complete(web._fetch_feeder_details(feeder))
+        monkeypatch.setattr(feeders, "_feeder_details_fr24", boom)
+        result = asyncio.get_event_loop().run_until_complete(feeders._fetch_feeder_details(feeder))
         assert result == []
         assert called["hit"] is False
 
@@ -2297,13 +2303,13 @@ class TestApiStats:
 
 class TestApiStatsPolar:
     def test_empty_db_returns_36_buckets(self, client):
-        web._cache.pop("polar", None)
+        cache._cache.pop("polar", None)
         r = client.get("/api/stats/polar")
         assert r.status_code == 200
         assert len(r.json()["buckets"]) == 36
 
     def test_buckets_have_bearing_and_dist(self, client):
-        web._cache.pop("polar", None)
+        cache._cache.pop("polar", None)
         r = client.get("/api/stats/polar")
         b = r.json()["buckets"][0]
         assert "bearing" in b
@@ -2368,7 +2374,7 @@ class TestApiDates:
         second = client.get("/api/dates").json()
         assert second == first
         # Bypass cache by clearing it; should now reflect the new flight.
-        web._cache.clear()
+        cache._cache.clear()
         third = client.get("/api/dates").json()
         assert len(third["dates"]) == 2
 
@@ -2388,7 +2394,7 @@ class TestApiDates:
             ts_local_noon = int(time.mktime((2024, 1, 15, 12, 0, 0, 0, 0, -1)))
             insert_flight(db_conn, icao="aa0001", first_seen=ts_local_midnight_edge)
             insert_flight(db_conn, icao="aa0002", first_seen=ts_local_noon)
-            web._cache.clear()
+            cache._cache.clear()
             r = client.get("/api/dates")
             assert r.status_code == 200
             dates = r.json()["dates"]
@@ -2396,7 +2402,7 @@ class TestApiDates:
             # Both flights should group under 2024-01-15 in Warsaw-local time.
             assert counts == {"2024-01-15": 2}
         finally:
-            web._cache.clear()
+            cache._cache.clear()
             if original_tz is None:
                 os.environ.pop("TZ", None)
             else:
@@ -2457,13 +2463,13 @@ class TestApiTypeFlights:
 
 class TestApiStatsPolarCacheAndData:
     def test_second_call_hits_cache(self, client, db_conn):
-        web._cache.pop("polar", None)
+        cache._cache.pop("polar", None)
         r1 = client.get("/api/stats/polar")
         r2 = client.get("/api/stats/polar")
         assert r1.json() == r2.json()
 
     def test_with_flights_fills_buckets(self, client, db_conn):
-        web._cache.pop("polar", None)
+        cache._cache.pop("polar", None)
         # Flight ~300 nm north of receiver (bearing ~0°, bucket 0)
         insert_flight(db_conn, max_distance_nm=300.0, max_distance_bearing=2.5)
         r = client.get("/api/stats/polar")
@@ -2840,7 +2846,7 @@ class TestAirspaceEndpoint:
         f = tmp_path / "test.geojson"
         f.write_text(_json.dumps(gj))
         monkeypatch.setattr(config, "AIRSPACE_GEOJSON", str(f))
-        web._cache.clear()
+        cache._cache.clear()
 
         r = client.get("/api/airspace")
         assert r.status_code == 200
@@ -2851,7 +2857,7 @@ class TestAirspaceEndpoint:
 
     def test_missing_file_returns_empty_collection(self, client, monkeypatch):
         monkeypatch.setattr(config, "AIRSPACE_GEOJSON", "/nonexistent/path.geojson")
-        web._cache.clear()
+        cache._cache.clear()
 
         r = client.get("/api/airspace")
         assert r.status_code == 200
@@ -2861,7 +2867,7 @@ class TestAirspaceEndpoint:
 
     def test_uses_bundled_file_when_config_empty(self, client, monkeypatch):
         monkeypatch.setattr(config, "AIRSPACE_GEOJSON", "")
-        web._cache.clear()
+        cache._cache.clear()
 
         r = client.get("/api/airspace")
         assert r.status_code == 200
@@ -2876,7 +2882,7 @@ class TestAirspaceEndpoint:
         f = tmp_path / "test.geojson"
         f.write_text(_json.dumps(gj))
         monkeypatch.setattr(config, "AIRSPACE_GEOJSON", str(f))
-        web._cache.clear()
+        cache._cache.clear()
 
         r1 = client.get("/api/airspace")
         r2 = client.get("/api/airspace")
@@ -2887,7 +2893,7 @@ class TestAirspaceEndpoint:
         # (device, FIFO, directory) must be rejected with an empty result.
         # /dev/null is portable and definitely not a regular file.
         monkeypatch.setattr(config, "AIRSPACE_GEOJSON", "/dev/null")
-        web._cache.clear()
+        cache._cache.clear()
         r = client.get("/api/airspace")
         assert r.status_code == 200
         assert r.json() == {"type": "FeatureCollection", "features": []}
@@ -2895,7 +2901,7 @@ class TestAirspaceEndpoint:
     def test_directory_path_returns_empty_collection(self, client, monkeypatch, tmp_path):
         # A path that exists but is a directory, not a file.
         monkeypatch.setattr(config, "AIRSPACE_GEOJSON", str(tmp_path))
-        web._cache.clear()
+        cache._cache.clear()
         r = client.get("/api/airspace")
         assert r.status_code == 200
         assert r.json() == {"type": "FeatureCollection", "features": []}
@@ -3377,7 +3383,7 @@ class TestMapHeatmap:
         fid = insert_flight(db_conn)
         self._insert_position(db_conn, lat=52.10, lon=21.00, flight_id=fid)
         for win in ("24h", "7d", "30d", "all"):
-            web._cache.clear()
+            cache._cache.clear()
             r = client.get(f"/api/map/heatmap?window={win}")
             assert r.json()["window"] == win
 
@@ -3419,26 +3425,26 @@ class TestApiMapCoverage:
         return flight_id
 
     def test_empty_db_returns_36_point_polygon(self, client):
-        web._cache.clear()
+        cache._cache.clear()
         r = client.get("/api/map/coverage")
         assert r.status_code == 200
         assert len(r.json()["polygon"]) == 36
 
     def test_empty_db_all_points_at_receiver(self, client):
-        web._cache.clear()
+        cache._cache.clear()
         r = client.get("/api/map/coverage")
         for pt in r.json()["polygon"]:
             assert pt[0] == pytest.approx(config.RECEIVER_LAT, abs=1e-6)
             assert pt[1] == pytest.approx(config.RECEIVER_LON, abs=1e-6)
 
     def test_empty_db_max_range_is_zero(self, client):
-        web._cache.clear()
+        cache._cache.clear()
         r = client.get("/api/map/coverage")
         assert r.json()["max_range_nm"] == pytest.approx(0.0)
 
     def test_position_in_bucket_0_projects_correctly(self, client, db_conn):
         """Position at bearing 5° → bucket 0 → polygon vertex at bearing 0°, same distance."""
-        web._cache.clear()
+        cache._cache.clear()
         self._insert_position_at(db_conn, bearing_deg=5.0, dist_nm=100.0)
         r = client.get("/api/map/coverage?window=all")
         from readsbstats import geo as _geo
@@ -3450,21 +3456,21 @@ class TestApiMapCoverage:
 
     def test_missing_bucket_maps_to_receiver(self, client, db_conn):
         """Bucket with no positions collapses to receiver location."""
-        web._cache.clear()
+        cache._cache.clear()
         self._insert_position_at(db_conn, bearing_deg=15.0, dist_nm=100.0)  # bucket 1
         data = client.get("/api/map/coverage?window=all").json()
         assert data["polygon"][0][0] == pytest.approx(config.RECEIVER_LAT, abs=1e-6)
         assert data["polygon"][0][1] == pytest.approx(config.RECEIVER_LON, abs=1e-6)
 
     def test_max_range_nm_is_maximum_across_buckets(self, client, db_conn):
-        web._cache.clear()
+        cache._cache.clear()
         self._insert_position_at(db_conn, bearing_deg=5.0, dist_nm=100.0)
         self._insert_position_at(db_conn, bearing_deg=95.0, dist_nm=200.0)
         assert client.get("/api/map/coverage?window=all").json()["max_range_nm"] == pytest.approx(200.0)
 
     def test_bucket_uses_max_distance(self, client, db_conn):
         """Two positions both in bucket 0 — polygon uses the farther one."""
-        web._cache.clear()
+        cache._cache.clear()
         fid = insert_flight(db_conn)
         self._insert_position_at(db_conn, bearing_deg=2.0, dist_nm=100.0, flight_id=fid)
         self._insert_position_at(db_conn, bearing_deg=8.0, dist_nm=150.0, flight_id=fid)
@@ -3473,7 +3479,7 @@ class TestApiMapCoverage:
         assert client.get("/api/map/coverage?window=all").json()["polygon"][0][0] == pytest.approx(exp_lat, abs=0.01)
 
     def test_window_24h_excludes_old_position(self, client, db_conn):
-        web._cache.clear()
+        cache._cache.clear()
         now = int(time.time())
         self._insert_position_at(db_conn, bearing_deg=5.0, dist_nm=100.0, ts=now - 2 * 86400)
         data = client.get("/api/map/coverage?window=24h").json()
@@ -3481,14 +3487,14 @@ class TestApiMapCoverage:
             assert pt[0] == pytest.approx(config.RECEIVER_LAT, abs=1e-6)
 
     def test_window_all_includes_old_position(self, client, db_conn):
-        web._cache.clear()
+        cache._cache.clear()
         now = int(time.time())
         self._insert_position_at(db_conn, bearing_deg=5.0, dist_nm=100.0, ts=now - 90 * 86400)
         assert client.get("/api/map/coverage?window=all").json()["max_range_nm"] == pytest.approx(100.0, rel=0.01)
 
     def test_window_filter_uses_position_ts_not_flight_dates(self, client, db_conn):
         """A position with recent ts is included in 24h even if its flight started long ago."""
-        web._cache.clear()
+        cache._cache.clear()
         now = int(time.time())
         fid = insert_flight(db_conn, first_seen=now - 30 * 3600, last_seen=now - 29 * 3600)
         # Position recorded 10 min ago — within 24h window
@@ -3497,7 +3503,7 @@ class TestApiMapCoverage:
 
     def test_position_near_360_goes_to_bucket_35(self, client, db_conn):
         """A position at bearing ~355° should land in bucket 35, not overflow."""
-        web._cache.clear()
+        cache._cache.clear()
         self._insert_position_at(db_conn, bearing_deg=355.0, dist_nm=100.0)
         data = client.get("/api/map/coverage?window=all").json()
         assert data["max_range_nm"] == pytest.approx(100.0, rel=0.01)
@@ -3511,11 +3517,11 @@ class TestApiMapCoverage:
     def test_response_includes_window_field(self, client, db_conn):
         self._insert_position_at(db_conn, bearing_deg=5.0, dist_nm=50.0)
         for win in ("24h", "7d", "30d", "all"):
-            web._cache.clear()
+            cache._cache.clear()
             assert client.get(f"/api/map/coverage?window={win}").json()["window"] == win
 
     def test_result_is_cached(self, client, db_conn):
-        web._cache.clear()
+        cache._cache.clear()
         self._insert_position_at(db_conn, bearing_deg=5.0, dist_nm=100.0)
         max1 = client.get("/api/map/coverage?window=all").json()["max_range_nm"]
         self._insert_position_at(db_conn, bearing_deg=95.0, dist_nm=300.0)
@@ -3526,7 +3532,7 @@ class TestApiMapCoverage:
         fid = insert_flight(db_conn)
         self._insert_position_at(db_conn, bearing_deg=5.0, dist_nm=100.0, ts=now - 100, flight_id=fid)
         self._insert_position_at(db_conn, bearing_deg=5.0, dist_nm=200.0, ts=now - 10 * 86400, flight_id=fid)
-        web._cache.clear()
+        cache._cache.clear()
         r_24h = client.get("/api/map/coverage?window=24h")
         r_all  = client.get("/api/map/coverage?window=all")
         assert r_24h.json()["max_range_nm"] == pytest.approx(100.0, rel=0.01)
@@ -3644,16 +3650,16 @@ class TestMapPrewarmer:
         )
         db_conn.commit()
 
-        web._cache.clear()
-        assert web._get_cache("heatmap:24h") is None
-        web._prewarm_one("heatmap", "24h")
-        cached = web._get_cache("heatmap:24h")
+        cache._cache.clear()
+        assert cache._get_cache("heatmap:24h") is None
+        cache._prewarm_one("heatmap", "24h")
+        cached = cache._get_cache("heatmap:24h")
         assert cached is not None
         assert cached["count"] == 1
 
-        assert web._get_cache("coverage:24h") is None
-        web._prewarm_one("coverage", "24h")
-        cached = web._get_cache("coverage:24h")
+        assert cache._get_cache("coverage:24h") is None
+        cache._prewarm_one("coverage", "24h")
+        cached = cache._get_cache("coverage:24h")
         assert cached is not None
         assert len(cached["polygon"]) == 36
 
@@ -3661,24 +3667,24 @@ class TestMapPrewarmer:
         """Audit-12 #150 — _type_fetch_locks used to grow unboundedly.
         Now LRU-capped at _TYPE_LOCKS_MAX entries."""
         # Reset to a clean state for the test
-        web._type_fetch_locks.clear()
-        cap = web._TYPE_LOCKS_MAX
+        _photos._type_fetch_locks.clear()
+        cap = _photos._TYPE_LOCKS_MAX
         # Fill past the cap
         for i in range(cap + 5):
-            web._type_lock(f"T{i:04d}")
+            _photos._type_lock(f"T{i:04d}")
         # Total entries respects the cap
-        assert len(web._type_fetch_locks) <= cap
+        assert len(_photos._type_fetch_locks) <= cap
         # Oldest entries were evicted — first inserted key no longer present
-        assert "T0000" not in web._type_fetch_locks
+        assert "T0000" not in _photos._type_fetch_locks
         # Most-recently-touched key still present
-        assert f"T{cap + 4:04d}" in web._type_fetch_locks
+        assert f"T{cap + 4:04d}" in _photos._type_fetch_locks
 
     def test_type_lock_returns_same_lock_for_same_key(self):
         """Sanity — eviction must not break the 'one lock per type' contract
         for keys still under the cap."""
-        web._type_fetch_locks.clear()
-        a1 = web._type_lock("A320")
-        a2 = web._type_lock("A320")
+        _photos._type_fetch_locks.clear()
+        a1 = _photos._type_lock("A320")
+        a2 = _photos._type_lock("A320")
         assert a1 is a2
 
     def test_prewarm_loop_survives_one_prewarm_raising(self, monkeypatch):
@@ -3689,8 +3695,8 @@ class TestMapPrewarmer:
         transient compute failure."""
         # Drive a controlled finite loop: clear the stop event up-front,
         # set it inside the second `_prewarm_one` call to break out cleanly.
-        web._prewarmer_stop.clear()
-        web._cache.clear()
+        cache._prewarmer_stop.clear()
+        cache._cache.clear()
 
         call_log: list[tuple[str, str]] = []
 
@@ -3700,36 +3706,35 @@ class TestMapPrewarmer:
                 raise RuntimeError("simulated prewarm compute failure")
             if len(call_log) == 2:
                 # Stop the loop on the second call so the test terminates.
-                web._prewarmer_stop.set()
+                cache._prewarmer_stop.set()
 
-        monkeypatch.setattr(web, "_prewarm_one", fake_prewarm)
+        monkeypatch.setattr(cache, "_prewarm_one", fake_prewarm)
         # Skip the initial 5s wait so the loop starts immediately.
         # Skip the inter-iteration 10s cool-off too. Both wait()s must
         # return False (timed out) so the loop body runs; the explicit
         # stop.set() inside fake_prewarm is what exits the loop.
         wait_calls = {"n": 0}
-        original_wait = web._prewarmer_stop.wait
+        original_wait = cache._prewarmer_stop.wait
 
         def fast_wait(timeout=None):
             wait_calls["n"] += 1
             # Honour the actual event state — when fake_prewarm sets the
             # event, wait() returns True and the loop exits.
-            return web._prewarmer_stop.is_set()
+            return cache._prewarmer_stop.is_set()
 
-        monkeypatch.setattr(web._prewarmer_stop, "wait", fast_wait)
+        monkeypatch.setattr(cache._prewarmer_stop, "wait", fast_wait)
         # Also stub time.time so all targets are "due" immediately on the
         # very first iteration (the staggered schedule otherwise inserts
         # 15s waits between iterations and our wait stub bails out before
         # any prewarm runs).
         import time as _time
-        monkeypatch.setattr(
-            web, "_initial_prewarm_schedule",
+        monkeypatch.setattr(cache, "_initial_prewarm_schedule",
             lambda targets, now: {t: now for t in targets},
         )
         monkeypatch.setattr(_time, "time", lambda: 1_000_000.0)
 
         # Should not raise — exception is caught inside the loop.
-        web._prewarm_loop()
+        cache._prewarm_loop()
 
         # Loop executed at least 2 iterations (one raising, one stopping).
         assert len(call_log) >= 2, (
@@ -3737,7 +3742,7 @@ class TestMapPrewarmer:
             "exception was likely not caught"
         )
         # Clean up so other tests don't see a set stop event.
-        web._prewarmer_stop.clear()
+        cache._prewarmer_stop.clear()
         # Restore the wait method ref (monkeypatch handles undo, but be explicit)
         _ = original_wait
 
@@ -3748,10 +3753,10 @@ class TestMapPrewarmer:
         spreads the first refreshes apart and prioritises the shortest-TTL
         windows (most-used) first."""
         now = 1_000_000.0
-        schedule = web._initial_prewarm_schedule(web._PREWARM_TARGETS, now=now)
+        schedule = cache._initial_prewarm_schedule(cache._PREWARM_TARGETS, now=now)
 
         # Every target has an entry
-        for target in web._PREWARM_TARGETS:
+        for target in cache._PREWARM_TARGETS:
             assert target in schedule
 
         # First target is "ready now" (no synthetic wait penalty on the
@@ -3768,7 +3773,7 @@ class TestMapPrewarmer:
 
         # 24h heatmap (shortest TTL, most likely to be hit by user) must be
         # in the first half of the schedule
-        ranked = sorted(web._PREWARM_TARGETS, key=lambda t: schedule[t])
+        ranked = sorted(cache._PREWARM_TARGETS, key=lambda t: schedule[t])
         early = ranked[: len(ranked) // 2]
         assert ("heatmap", "24h") in early
         assert ("coverage", "24h") in early
@@ -3778,25 +3783,25 @@ class TestParseIcaoPath:
     """BE-11 — strict ICAO path-param validation."""
 
     def test_accepts_six_hex_lowercased(self):
-        assert web._parse_icao_path("AABBCC") == "aabbcc"
-        assert web._parse_icao_path("a1b2c3") == "a1b2c3"
+        assert _deps._parse_icao_path("AABBCC") == "aabbcc"
+        assert _deps._parse_icao_path("a1b2c3") == "a1b2c3"
 
     def test_accepts_tilde_prefix_and_strips_it(self):
-        assert web._parse_icao_path("~aabbcc") == "aabbcc"
+        assert _deps._parse_icao_path("~aabbcc") == "aabbcc"
 
     def test_rejects_non_hex(self):
         with pytest.raises(web.HTTPException) as ei:
-            web._parse_icao_path("zzzzzz")
+            _deps._parse_icao_path("zzzzzz")
         assert ei.value.status_code == 404
 
     def test_rejects_wrong_length(self):
         for bad in ("abc", "aabbccdd", "", "~"):
             with pytest.raises(web.HTTPException):
-                web._parse_icao_path(bad)
+                _deps._parse_icao_path(bad)
 
     def test_rejects_double_tilde(self):
         with pytest.raises(web.HTTPException):
-            web._parse_icao_path("~~aabbc")
+            _deps._parse_icao_path("~~aabbc")
 
 
 class TestApiAircraftPhoto:
@@ -3822,7 +3827,7 @@ class TestApiAircraftPhoto:
         # photo fetch (defence-in-depth — bound external side effects).
         def _boom(*a, **k):
             raise AssertionError("photo fetch must not run for invalid ICAO")
-        monkeypatch.setattr(web, "_fetch_photo", _boom)
+        monkeypatch.setattr(_photos, "_fetch_photo", _boom)
         assert client.get("/api/aircraft/zzzzzz/photo").status_code == 404
         assert client.get("/api/aircraft/abc/photo").status_code == 404
 
@@ -3879,18 +3884,18 @@ class TestFetchTypePhoto:
 
     def test_null_type_code_returns_none(self, client, db_conn):
         import asyncio
-        result = asyncio.get_event_loop().run_until_complete(web._fetch_type_photo(None))
+        result = asyncio.get_event_loop().run_until_complete(_photos._fetch_type_photo(None))
         assert result is None
 
     def test_empty_type_code_returns_none(self, client, db_conn):
         import asyncio
-        result = asyncio.get_event_loop().run_until_complete(web._fetch_type_photo(""))
+        result = asyncio.get_event_loop().run_until_complete(_photos._fetch_type_photo(""))
         assert result is None
 
     def test_type_photos_cache_hit(self, client, db_conn):
         self._seed_type_photo(db_conn, "B738", "https://example.com/b738.jpg")
         import asyncio
-        result = asyncio.get_event_loop().run_until_complete(web._fetch_type_photo("B738"))
+        result = asyncio.get_event_loop().run_until_complete(_photos._fetch_type_photo("B738"))
         assert result is not None
         assert result["thumbnail_url"] == "https://example.com/b738.jpg"
 
@@ -3901,7 +3906,7 @@ class TestFetchTypePhoto:
         )
         db_conn.commit()
         import asyncio
-        result = asyncio.get_event_loop().run_until_complete(web._fetch_type_photo("B738"))
+        result = asyncio.get_event_loop().run_until_complete(_photos._fetch_type_photo("B738"))
         assert result is None
 
     def test_db_join_reuses_cached_photo(self, client, db_conn, monkeypatch):
@@ -3911,7 +3916,7 @@ class TestFetchTypePhoto:
         monkeypatch.setattr(photo_sources, "fetch_photo",
                             lambda icao: fetch_calls.append(icao) or None)
         import asyncio
-        result = asyncio.get_event_loop().run_until_complete(web._fetch_type_photo("B738"))
+        result = asyncio.get_event_loop().run_until_complete(_photos._fetch_type_photo("B738"))
         assert result is not None
         assert result["thumbnail_url"] == "https://example.com/cached.jpg"
         assert fetch_calls == []
@@ -3925,7 +3930,7 @@ class TestFetchTypePhoto:
             photographer="Alice",
         ))
         import asyncio
-        result = asyncio.get_event_loop().run_until_complete(web._fetch_type_photo("EF2K"))
+        result = asyncio.get_event_loop().run_until_complete(_photos._fetch_type_photo("EF2K"))
         assert result is not None
         assert result["thumbnail_url"] == "https://example.com/ef2k.jpg"
         row = db_conn.execute("SELECT thumbnail_url FROM type_photos WHERE type_code='EF2K'").fetchone()
@@ -3935,7 +3940,7 @@ class TestFetchTypePhoto:
         self._seed_aircraft_db(db_conn, "probe01", "EF2K")
         monkeypatch.setattr(photo_sources, "fetch_photo", lambda icao: None)
         import asyncio
-        result = asyncio.get_event_loop().run_until_complete(web._fetch_type_photo("EF2K"))
+        result = asyncio.get_event_loop().run_until_complete(_photos._fetch_type_photo("EF2K"))
         assert result is None
         row = db_conn.execute("SELECT thumbnail_url FROM type_photos WHERE type_code='EF2K'").fetchone()
         assert row is not None
@@ -4058,8 +4063,8 @@ class TestFetchTypePhoto:
         import sqlite3
         import threading as _t
 
-        monkeypatch.setattr(web, "_db", None)
-        monkeypatch.setattr(web, "_thread_local", _t.local())
+        monkeypatch.setattr(_deps, "_db", None)
+        monkeypatch.setattr(_deps, "_thread_local", _t.local())
         db_path = str(tmp_path / "be13.db")
         database.init_db(db_path)
 
@@ -4099,14 +4104,14 @@ class TestFetchTypePhoto:
 
         loop = asyncio.new_event_loop()
         try:
-            result = loop.run_until_complete(web._fetch_type_photo("B738"))
+            result = loop.run_until_complete(_photos._fetch_type_photo("B738"))
         finally:
             loop.close()
         assert result is not None
         assert result["thumbnail_url"] == "https://example.com/b738.jpg"
 
         # The request thread's connection is the one db() caches for this thread.
-        request_conn = web.db()
+        request_conn = _deps.db()
         worker_conn = captured["conn"]
         assert worker_conn is not request_conn, (
             "executor closure reused the request connection across threads"
@@ -4131,30 +4136,30 @@ class TestTop1Allowlist:
 
     def test_allowlist_contains_exactly_the_three_known_columns(self):
         # Lock in the set so a future addition is intentional.
-        assert web._TOP1_ALLOWLIST == frozenset(
+        assert _deps._TOP1_ALLOWLIST == frozenset(
             {"max_distance_nm", "max_gs", "max_alt_baro"}
         )
 
     def test_allowlist_is_frozen(self):
         # frozenset → no `.add()`. A regular `set()` would silently allow
         # mutation, which would defeat the guarantee.
-        assert isinstance(web._TOP1_ALLOWLIST, frozenset)
+        assert isinstance(_deps._TOP1_ALLOWLIST, frozenset)
 
     def test_assert_accepts_each_allowed_column(self):
         for col in ("max_distance_nm", "max_gs", "max_alt_baro"):
-            web._assert_top1_column(col)  # must not raise
+            _deps._assert_top1_column(col)  # must not raise
 
     def test_assert_rejects_unknown_column(self):
         with pytest.raises(ValueError, match="unsupported order column"):
-            web._assert_top1_column("first_seen")
+            _deps._assert_top1_column("first_seen")
 
     def test_assert_rejects_sql_injection_payload(self):
         with pytest.raises(ValueError, match="unsupported order column"):
-            web._assert_top1_column("max_gs; DROP TABLE flights --")
+            _deps._assert_top1_column("max_gs; DROP TABLE flights --")
 
     def test_assert_rejects_empty_string(self):
         with pytest.raises(ValueError, match="unsupported order column"):
-            web._assert_top1_column("")
+            _deps._assert_top1_column("")
 
 
 class TestRedirectLive:

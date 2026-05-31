@@ -1068,8 +1068,8 @@ class TestResolvePhoto:
 
     def test_type_only_mode_skips_specific_paths(self, monkeypatch):
         """resolve_photo(conn, "", type_code) is the type-only mode used by
-        web._fetch_type_photo — must not touch the photos table or invoke the
-        specific-aircraft fetcher."""
+        api._photos._fetch_type_photo — must not touch the photos table or
+        invoke the specific-aircraft fetcher."""
         monkeypatch.setattr(photo_sources, "_WIKIPEDIA_ENABLED", True)
         self.conn.execute(
             "INSERT INTO aircraft_db (icao_hex, registration, type_code, type_desc, flags) "

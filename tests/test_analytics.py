@@ -14,6 +14,9 @@ from pathlib import Path
 import pytest
 
 from readsbstats import analytics, config, database, web
+from readsbstats import cache
+from readsbstats.api import _deps
+from readsbstats.api import map as api_map
 
 
 # ---------------------------------------------------------------------------
@@ -51,17 +54,17 @@ def _insert_position(conn, flight_id: int, *, lat: float, lon: float, ts: int) -
 
 @pytest.fixture()
 def file_db(tmp_path, monkeypatch):
-    """File-backed history.db (DuckDB can attach to it) + matching `web._db`
+    """File-backed history.db (DuckDB can attach to it) + matching `_deps._db`
     + matching `config.DB_PATH`. The `analytics` module is reset before
     AND after each test so cross-test state never leaks."""
     db_file = tmp_path / "history.db"
     conn = _make_file_db(db_file)
 
     monkeypatch.setattr(config, "DB_PATH", str(db_file))
-    monkeypatch.setattr(web, "_db", conn)
+    monkeypatch.setattr(_deps, "_db", conn)
     monkeypatch.setattr(config, "DUCKDB_TEMP_DIR", str(tmp_path / "duckdb-tmp"))
     monkeypatch.setattr(config, "DUCKDB_HOME_DIR", str(tmp_path / "duckdb-home"))
-    web._cache.clear()
+    cache._cache.clear()
     analytics._reset_for_tests()
 
     yield conn
@@ -73,16 +76,16 @@ def file_db(tmp_path, monkeypatch):
 def _run_heatmap_with_engine(window: str, *, monkeypatch, use_duckdb: bool):
     """Force a specific engine via the config flag, clear the cache, run."""
     monkeypatch.setattr(config, "USE_DUCKDB", use_duckdb)
-    web._cache.clear()
+    cache._cache.clear()
     analytics._reset_for_tests()
-    return web._compute_heatmap_sync(window)
+    return api_map._compute_heatmap_sync(window)
 
 
 def _run_coverage_with_engine(window: str, *, monkeypatch, use_duckdb: bool):
     monkeypatch.setattr(config, "USE_DUCKDB", use_duckdb)
-    web._cache.clear()
+    cache._cache.clear()
     analytics._reset_for_tests()
-    return web._compute_coverage_sync(window)
+    return api_map._compute_coverage_sync(window)
 
 
 # ---------------------------------------------------------------------------
@@ -252,8 +255,8 @@ def test_fallback_when_duckdb_unavailable(file_db, monkeypatch):
     _insert_position(file_db, fid, lat=52.10, lon=21.00, ts=now)
 
     monkeypatch.setattr(analytics, "is_available", lambda: False)
-    web._cache.clear()
-    result = web._compute_heatmap_sync("24h")
+    cache._cache.clear()
+    result = api_map._compute_heatmap_sync("24h")
     assert result["count"] == 1
 
     monkeypatch.setattr(config, "USE_DUCKDB", True)
@@ -263,8 +266,8 @@ def test_fallback_when_duckdb_unavailable(file_db, monkeypatch):
         raise RuntimeError("simulated DuckDB query failure")
 
     monkeypatch.setattr(analytics, "heatmap", _boom)
-    web._cache.clear()
-    result = web._compute_heatmap_sync("24h")
+    cache._cache.clear()
+    result = api_map._compute_heatmap_sync("24h")
     assert result["count"] == 1
 
 
