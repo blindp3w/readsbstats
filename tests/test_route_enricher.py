@@ -565,6 +565,93 @@ class TestEnrichBatch:
         ).fetchone()
         assert row is None, "network failure must not store a confirmed-unknown sentinel"
 
+    # PY-8 (Audit 2026-05-31): http_safe.UnsafeURLError (policy violations —
+    # redirect, size-cap, non-HTTPS, private-IP) is non-retryable. Map to a
+    # new _PermanentError that the loop translates into a TTL-bounded
+    # negative cache row, so the same broken URL isn't fetched every batch.
+
+    def test_unsafe_url_error_raises_permanent(self, monkeypatch):
+        """_fetch_route must surface http_safe.UnsafeURLError as
+        _PermanentError, not _TransientError."""
+        from readsbstats import http_safe
+
+        class _PolicyFailClient:
+            def __enter__(self): return self
+            def __exit__(self, *_): pass
+            def stream(self, *a, **kw):  # safe_httpx_get prefers .stream
+                raise http_safe.UnsafeURLError("redirect blocked")
+            def get(self, *a, **kw):
+                raise http_safe.UnsafeURLError("redirect blocked")
+        monkeypatch.setattr(self.re.httpx, "Client", lambda **kw: _PolicyFailClient())
+
+        with pytest.raises(self.re._PermanentError):
+            self.re._fetch_route("LOT123")
+
+    def test_permanent_failure_writes_negative_cache_row(self, monkeypatch):
+        """When _fetch_route raises _PermanentError, _enrich_batch must
+        persist a negative callsign_routes row so the existing TTL
+        exclusion suppresses the same callsign for ROUTE_CACHE_DAYS."""
+        monkeypatch.setattr(config, "ROUTE_CACHE_DAYS", 30)
+        monkeypatch.setattr(config, "ROUTE_BATCH_SIZE", 10)
+        monkeypatch.setattr(config, "ROUTE_RATE_LIMIT_SEC", 0.0)
+        insert_flight(self.conn, callsign="PERM123")
+
+        from readsbstats import http_safe
+
+        class _PolicyFailClient:
+            def __enter__(self): return self
+            def __exit__(self, *_): pass
+            def stream(self, *a, **kw):
+                raise http_safe.UnsafeURLError("redirect blocked")
+            def get(self, *a, **kw):
+                raise http_safe.UnsafeURLError("redirect blocked")
+        monkeypatch.setattr(self.re.httpx, "Client", lambda **kw: _PolicyFailClient())
+
+        # First batch: hits the policy failure → writes negative cache row.
+        self.re._enrich_batch(self.conn)
+        row = self.conn.execute(
+            "SELECT origin_icao, dest_icao FROM callsign_routes WHERE callsign='PERM123'"
+        ).fetchone()
+        assert row is not None
+        assert row["origin_icao"] is None
+        assert row["dest_icao"] is None
+        # And the transient cooldown map must NOT have been populated —
+        # permanent failures get a DB-backed TTL, not an in-memory cooldown.
+        assert "PERM123" not in self.re._transient_failure_at
+
+    def test_permanent_failure_skipped_on_next_batch(self, monkeypatch):
+        """After a permanent failure writes the negative row, the cutoff
+        query at the top of _enrich_batch must skip the callsign so the
+        broken upstream URL isn't re-fetched every batch."""
+        monkeypatch.setattr(config, "ROUTE_CACHE_DAYS", 30)
+        monkeypatch.setattr(config, "ROUTE_BATCH_SIZE", 10)
+        monkeypatch.setattr(config, "ROUTE_RATE_LIMIT_SEC", 0.0)
+        insert_flight(self.conn, callsign="PERM456")
+
+        from readsbstats import http_safe
+
+        attempts = []
+
+        class _PolicyFailClient:
+            def __enter__(self): return self
+            def __exit__(self, *_): pass
+            def stream(self, *a, **kw):
+                attempts.append(1)
+                raise http_safe.UnsafeURLError("redirect blocked")
+            def get(self, *a, **kw):
+                attempts.append(1)
+                raise http_safe.UnsafeURLError("redirect blocked")
+        monkeypatch.setattr(self.re.httpx, "Client", lambda **kw: _PolicyFailClient())
+
+        self.re._enrich_batch(self.conn)
+        assert len(attempts) == 1
+        # Second batch — no new fetch attempt because the TTL skip kicks in.
+        self.re._enrich_batch(self.conn)
+        assert len(attempts) == 1, (
+            "permanent-failure callsign was re-fetched on the next batch; "
+            "negative-cache row's TTL must suppress it for ROUTE_CACHE_DAYS"
+        )
+
     def test_network_failure_callsign_retried_after_cooldown(self, monkeypatch):
         """After the per-callsign cooldown elapses, a transient-failed
         callsign is retried (audit-12 #155). For the test we set cooldown=0
@@ -810,9 +897,11 @@ class TestFetchRoute:
         with pytest.raises(self.mod._TransientError):
             self.mod._fetch_route("LOT123")
 
-    def test_redirect_treated_as_transient(self, monkeypatch):
-        """A 3xx from adsbdb is not legitimate — surface as transient so the
-        callsign is retried later rather than silently dropped."""
+    def test_redirect_treated_as_permanent(self, monkeypatch):
+        """PY-8 (Audit 2026-05-31): a 3xx from adsbdb is a policy
+        violation (safe_httpx_get raises UnsafeURLError) — surface as
+        _PermanentError so the loop writes a TTL-bounded negative cache
+        row instead of retrying every batch with the same broken URL."""
         import httpx
         self._bypass_validate(monkeypatch)
 
@@ -827,10 +916,12 @@ class TestFetchRoute:
             def get(self, url, **kw): return FakeResp()
 
         monkeypatch.setattr(httpx, "Client", lambda **kw: FakeClient())
-        with pytest.raises(self.mod._TransientError):
+        with pytest.raises(self.mod._PermanentError):
             self.mod._fetch_route("LOT123")
 
-    def test_oversized_response_treated_as_transient(self, monkeypatch):
+    def test_oversized_response_treated_as_permanent(self, monkeypatch):
+        """PY-8: response over the size cap is a deterministic policy
+        rejection from safe_httpx_get — permanent, not transient."""
         import httpx
         self._bypass_validate(monkeypatch)
 
@@ -844,7 +935,7 @@ class TestFetchRoute:
             def get(self, url, **kw): return FakeResp()
 
         monkeypatch.setattr(httpx, "Client", lambda **kw: FakeClient())
-        with pytest.raises(self.mod._TransientError):
+        with pytest.raises(self.mod._PermanentError):
             self.mod._fetch_route("LOT123")
 
     def test_callsign_percent_encoded_in_url(self, monkeypatch):
