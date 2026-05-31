@@ -375,6 +375,110 @@ class TestFetchHexdb:
 
 
 # ---------------------------------------------------------------------------
+# BE-17 — per-source CDN host allowlist (log-only by default, enforce opt-in)
+# ---------------------------------------------------------------------------
+
+class TestHostAllowlist:
+    PS_GOOD = {"photos": [{
+        "thumbnail":       {"src": "https://t.plnspttrs.net/abc/t.jpg"},
+        "thumbnail_large": {"src": "https://t.plnspttrs.net/abc/l.jpg"},
+        "link":            "https://www.planespotters.net/photo/123",
+        "photographer":    "Alice",
+    }]}
+    PS_BAD_HOST = {"photos": [{
+        "thumbnail":       {"src": "https://evil.example.com/t.jpg"},
+        "thumbnail_large": {"src": "https://evil.example.com/l.jpg"},
+        "link":            "https://evil.example.com/p",
+        "photographer":    "Mallory",
+    }]}
+
+    def test_good_host_passes_clean_no_warning(self, monkeypatch, caplog):
+        monkeypatch.setattr(photo_sources, "_HOST_ENFORCE", True)
+        _patch_safe_open(monkeypatch, json.dumps(self.PS_GOOD))
+        with caplog.at_level("WARNING", logger="photo_sources"):
+            result = photo_sources._fetch_planespotters("aabbcc")
+        assert result is not None
+        assert result.thumbnail_url == "https://t.plnspttrs.net/abc/t.jpg"
+        assert not [r for r in caplog.records if "off-allowlist" in r.getMessage()]
+
+    def test_bad_host_logged_but_kept_in_log_only_mode(self, monkeypatch, caplog):
+        # Default release behaviour: observe, don't drop. The URL survives so a
+        # legitimate-but-unenumerated CDN host isn't silently lost.
+        monkeypatch.setattr(photo_sources, "_HOST_ENFORCE", False)
+        _patch_safe_open(monkeypatch, json.dumps(self.PS_BAD_HOST))
+        with caplog.at_level("WARNING", logger="photo_sources"):
+            result = photo_sources._fetch_planespotters("aabbcc")
+        assert result is not None
+        assert result.thumbnail_url == "https://evil.example.com/t.jpg"
+        assert [r for r in caplog.records if "off-allowlist" in r.getMessage()]
+
+    def test_bad_thumbnail_host_rejected_when_enforced(self, monkeypatch):
+        # A bad *thumbnail* host makes the whole result unusable → None, so the
+        # chain falls through to the next source and nothing is cached.
+        monkeypatch.setattr(photo_sources, "_HOST_ENFORCE", True)
+        _patch_safe_open(monkeypatch, json.dumps(self.PS_BAD_HOST))
+        assert photo_sources._fetch_planespotters("aabbcc") is None
+
+    def test_bad_large_and_link_nulled_when_enforced_thumbnail_ok(
+        self, monkeypatch
+    ):
+        payload = {"photos": [{
+            "thumbnail":       {"src": "https://t.plnspttrs.net/abc/t.jpg"},
+            "thumbnail_large": {"src": "https://evil.example.com/l.jpg"},
+            "link":            "https://evil.example.com/p",
+            "photographer":    "Alice",
+        }]}
+        monkeypatch.setattr(photo_sources, "_HOST_ENFORCE", True)
+        _patch_safe_open(monkeypatch, json.dumps(payload))
+        result = photo_sources._fetch_planespotters("aabbcc")
+        assert result is not None
+        assert result.thumbnail_url == "https://t.plnspttrs.net/abc/t.jpg"
+        assert result.large_url is None
+        assert result.link_url is None
+
+    def test_airport_data_cdn_host_allowed(self, monkeypatch, caplog):
+        payload = {"status": 200, "data": [{
+            "image": ("https://www.airport-data.com/images/aircraft/"
+                      "thumbnails/000/281/281683.jpg"),
+            "link": "https://www.airport-data.com/aircraft/SP.html",
+            "photographer": "Bob",
+        }]}
+        monkeypatch.setattr(photo_sources, "_HOST_ENFORCE", True)
+        _patch_safe_open(monkeypatch, json.dumps(payload))
+        with caplog.at_level("WARNING", logger="photo_sources"):
+            result = photo_sources._fetch_airport_data("aabbcc")
+        # Derived large URL lives on image.airport-data.com — also allowed.
+        assert result is not None
+        assert result.large_url == "https://image.airport-data.com/aircraft/281683.jpg"
+        assert not [r for r in caplog.records if "off-allowlist" in r.getMessage()]
+
+    def test_hexdb_own_host_allowed_under_enforcement(self, monkeypatch):
+        monkeypatch.setattr(photo_sources, "_HOST_ENFORCE", True)
+        _patch_safe_open(monkeypatch, "https://hexdb.io/img.jpg")
+        result = photo_sources._fetch_hexdb("aabbcc")
+        assert result is not None
+        assert result.thumbnail_url == "https://hexdb.io/img.jpg"
+
+    def test_enforced_bad_host_not_persisted_to_photos(self, monkeypatch):
+        # End-to-end: a bad-host provider response must not write a positive
+        # row into the photos cache (pre-cache rejection).
+        monkeypatch.setattr(photo_sources, "_HOST_ENFORCE", True)
+        # Every source returns a bad-host thumbnail → all rejected → miss.
+        _patch_safe_open(monkeypatch, json.dumps(self.PS_BAD_HOST))
+        monkeypatch.setattr(photo_sources, "SOURCES", [photo_sources._fetch_planespotters])
+        conn = database.connect(":memory:")
+        conn.executescript(database.DDL)
+        result, is_type = photo_sources.resolve_photo(conn, "aabbcc", None)
+        assert result is None
+        row = conn.execute(
+            "SELECT thumbnail_url FROM photos WHERE icao_hex = ?", ("aabbcc",)
+        ).fetchone()
+        # Negative cache row written (confirmed miss), thumbnail NULL.
+        assert row is not None and row["thumbnail_url"] is None
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
 # _fetch_wikipedia_type — Wikipedia opensearch → REST summary
 # ---------------------------------------------------------------------------
 

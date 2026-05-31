@@ -76,10 +76,24 @@ interface FlightDetail {
     dest_name: string | null;
     airline_name: string | null;
   };
-  positions: Position[];
   other_flights: OtherFlight[];
   receiver_lat: number | null;
   receiver_lon: number | null;
+}
+
+// BE-10/FE-1: the raw position timeline is no longer embedded in the
+// detail payload. Chart + map consume the LTTB-downsampled series; the
+// position-log table consumes the paginated raw endpoint.
+interface PositionChartResp {
+  total: number;
+  target: number;
+  positions: Position[];
+}
+interface PositionPageResp {
+  total: number;
+  limit: number;
+  offset: number;
+  positions: Position[];
 }
 
 interface PhotoResp {
@@ -100,25 +114,27 @@ export default function FlightPage() {
     enabled: Number.isFinite(flightId),
   });
 
-  // Audit 2026-05-26: chart + map consume the LTTB-downsampled
-  // endpoint so long flights (>5k positions) stay responsive. The
-  // inspection PositionTable keeps using detailQ.data.positions —
-  // it already client-side-samples to 500 rows.
-  const chartQ = useQuery<{ total: number; target: number; positions: Position[] }>({
+  // Chart + map consume the LTTB-downsampled endpoint so long flights
+  // (>5k positions) stay responsive; the detail payload no longer embeds
+  // the timeline (BE-10). The header's at-max sublabels derive from the
+  // finer map series (target=2000), which carries baro_rate/track/lat/lon.
+  const chartQ = useQuery<PositionChartResp>({
     queryKey: ['flight-chart', flightId],
-    queryFn: () =>
-      apiJson<{ total: number; target: number; positions: Position[] }>(
-        `flights/${flightId}/positions/chart?target=500`,
-      ),
+    queryFn: () => apiJson<PositionChartResp>(`flights/${flightId}/positions/chart?target=500`),
     enabled: Number.isFinite(flightId),
     staleTime: 300_000,
   });
-  const mapPositionsQ = useQuery<{ total: number; target: number; positions: Position[] }>({
+  const mapPositionsQ = useQuery<PositionChartResp>({
     queryKey: ['flight-chart', flightId, 'map'],
-    queryFn: () =>
-      apiJson<{ total: number; target: number; positions: Position[] }>(
-        `flights/${flightId}/positions/chart?target=2000`,
-      ),
+    queryFn: () => apiJson<PositionChartResp>(`flights/${flightId}/positions/chart?target=2000`),
+    enabled: Number.isFinite(flightId),
+    staleTime: 300_000,
+  });
+  // Paginated raw positions for the inspection table (capped server-side
+  // at 2000/page). `total` drives the position-log count.
+  const positionPageQ = useQuery<PositionPageResp>({
+    queryKey: ['flight-positions', flightId],
+    queryFn: () => apiJson<PositionPageResp>(`flights/${flightId}/positions?limit=2000&offset=0`),
     enabled: Number.isFinite(flightId),
     staleTime: 300_000,
   });
@@ -160,7 +176,7 @@ export default function FlightPage() {
           <FlightHeader
             detail={detailQ.data}
             photoQ={photoQ}
-            positions={detailQ.data.positions}
+            positions={mapPositionsQ.data?.positions ?? []}
             receiverLat={detailQ.data.receiver_lat}
             receiverLon={detailQ.data.receiver_lon}
           />
@@ -172,7 +188,7 @@ export default function FlightPage() {
               <div className="h-[420px] w-full lg:h-[520px]" data-testid="flight-map">
                 <Suspense fallback={<Skeleton className="h-full w-full" />}>
                   <RouteMap
-                    positions={mapPositionsQ.data?.positions ?? detailQ.data.positions}
+                    positions={mapPositionsQ.data?.positions ?? []}
                     receiverLat={detailQ.data.receiver_lat}
                     receiverLon={detailQ.data.receiver_lon}
                   />
@@ -185,15 +201,19 @@ export default function FlightPage() {
               <CardTitle>Altitude + speed</CardTitle>
             </CardHeader>
             <CardContent>
-              <FlightProfileChart positions={chartQ.data?.positions ?? detailQ.data.positions} />
+              <FlightProfileChart positions={chartQ.data?.positions ?? []} />
             </CardContent>
           </Card>
           <Card data-testid="flight-positions-card">
             <CardHeader>
-              <CardTitle>Position log ({detailQ.data.positions.length})</CardTitle>
+              <CardTitle>Position log ({positionPageQ.data?.total ?? 0})</CardTitle>
             </CardHeader>
             <CardContent>
-              <PositionTable positions={detailQ.data.positions} />
+              <PositionTable
+                positions={positionPageQ.data?.positions ?? []}
+                total={positionPageQ.data?.total ?? 0}
+                loading={positionPageQ.isLoading}
+              />
             </CardContent>
           </Card>
           {detailQ.data.other_flights && detailQ.data.other_flights.length > 0 && (
@@ -563,7 +583,15 @@ function computeRssiStats(positions: Position[]): RssiStats {
   return { min: vals[0], max: vals[vals.length - 1], median, hasAny: true };
 }
 
-function PositionTable({ positions }: { positions: Position[] }) {
+function PositionTable({
+  positions,
+  total,
+  loading,
+}: {
+  positions: Position[];
+  total: number;
+  loading: boolean;
+}) {
   const { fmtAlt, fmtSpd, fmtTs } = useFormat();
   // Per-row inline disclosure state — iPhone only. Keyed by ts (positions
   // sorted by ts and ts is unique-ish per flight).
@@ -574,6 +602,9 @@ function PositionTable({ positions }: { positions: Position[] }) {
   // changes visually) and accumulate Set entries indefinitely.
   const isMobile = useIsMobile();
 
+  if (loading) {
+    return <Skeleton className="h-40 w-full" />;
+  }
   if (positions.length === 0) {
     return <p className="text-sm text-[var(--color-text-dim)]">No positions recorded.</p>;
   }
@@ -700,6 +731,11 @@ function PositionTable({ positions }: { positions: Position[] }) {
       {sampled.length < positions.length && (
         <p className="mt-2 text-xs text-[var(--color-text-dim)]">
           Showing {sampled.length} of {positions.length} positions (sampled).
+        </p>
+      )}
+      {positions.length < total && (
+        <p className="mt-2 text-xs text-[var(--color-text-dim)]">
+          Position log capped at the first {positions.length} of {total} fixes.
         </p>
       )}
     </div>

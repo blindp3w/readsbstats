@@ -57,6 +57,16 @@ def _coerce_int(v) -> int | None:
         return int(v) if math.isfinite(v) else None
     return None
 
+
+def _cap(value, maxlen: int):
+    """BE-8 (Audit 2026-05-31): bound a feed-supplied string to ``maxlen``
+    characters. A corrupt or abusive feed could otherwise persist an
+    arbitrarily long callsign/registration/etc. into the ``flights`` row.
+    Non-strings and empties collapse to None."""
+    if not isinstance(value, str):
+        return None
+    return value[:maxlen] or None
+
 # Sentinel written at startup, removed only on clean shutdown.
 # Presence on next startup → previous run ended uncleanly → run quick_check.
 _SENTINEL: pathlib.Path = pathlib.Path(config.DB_PATH).parent / ".dirty_shutdown"
@@ -620,8 +630,23 @@ def _poll(conn: sqlite3.Connection) -> None:
     if data is None:
         return
 
-    ref_time = data.get("now", time.time())
+    # BE-6 (Audit 2026-05-31): validate the top-level shape before touching it.
+    # _read_aircraft_json returns whatever json.load produced — a corrupt feed
+    # could be a list, number, or string. A bad shape used to raise out of here
+    # and abort the whole cycle via main()'s except; now we skip gracefully.
+    if not isinstance(data, dict):
+        log.warning("aircraft.json top-level is %s, not an object — skipping poll",
+                    type(data).__name__)
+        return
+
+    ref_time = _coerce_float(data.get("now"))
+    if ref_time is None:
+        ref_time = time.time()
     aircraft_list = data.get("aircraft", [])
+    if not isinstance(aircraft_list, list):
+        log.warning("aircraft.json 'aircraft' is %s, not a list — skipping poll",
+                    type(aircraft_list).__name__)
+        return
     now_epoch = int(time.time())
     # Notifications are queued here and sent after the transaction commits,
     # so network I/O never blocks or extends a DB write lock.
@@ -635,6 +660,10 @@ def _poll(conn: sqlite3.Connection) -> None:
 
     with conn:
         for ac in aircraft_list:
+            # BE-6: a non-dict entry (string/None/int from a corrupt feed)
+            # would raise on the first `ac.get(...)` — skip it per-entry.
+            if not isinstance(ac, dict):
+                continue
             # ── Strict-skip fields: any non-numeric / out-of-range value
             # for lat/lon/seen_pos/hex skips just this aircraft. All
             # coercion happens here, BEFORE the first DB write, so a
@@ -681,14 +710,13 @@ def _poll(conn: sqlite3.Connection) -> None:
                 if isinstance(ac.get("flight"), str) else None
             if callsign and "@" in callsign:
                 callsign = None
-            registration  = ac.get("r") if isinstance(ac.get("r"), str) else None
-            registration  = registration or None
-            aircraft_type = ac.get("t") if isinstance(ac.get("t"), str) else None
-            aircraft_type = aircraft_type or None
-            squawk        = ac.get("squawk") if isinstance(ac.get("squawk"), str) else None
-            squawk        = squawk or None
-            category      = ac.get("category") if isinstance(ac.get("category"), str) else None
-            category      = category or None
+            # BE-8: cap every feed-supplied string at ingestion so a corrupt
+            # feed can't store unbounded values into the flights row.
+            callsign      = _cap(callsign, 16)
+            registration  = _cap(ac.get("r"), 32)
+            aircraft_type = _cap(ac.get("t"), 16)
+            squawk        = _cap(ac.get("squawk"), 8)
+            category      = _cap(ac.get("category"), 16)
 
             raw_alt = ac.get("alt_baro")
             if raw_alt == "ground":
@@ -923,7 +951,83 @@ def _purge(conn: sqlite3.Connection) -> None:
     with conn:
         conn.execute("DELETE FROM positions WHERE ts < ?", (cutoff,))
 
-    # 2) Audit-13 A13-013: previously the correlated COUNT(*) UPDATE
+    # 2) BE-7 (Audit 2026-05-31): a flight that *crosses* the cutoff (first_seen
+    #    before, last_seen at/after) keeps some positions and loses others, so
+    #    every position-derived aggregate goes stale — not just total_positions.
+    #    Recompute the full aggregate set from the surviving rows. The crossing
+    #    set is tiny in steady state (prior purges already dropped flights whose
+    #    last_seen < cutoff, so first_seen < cutoff only matches boundary-spanning
+    #    flights), so the per-flight full-position fetch is cheap. positions has
+    #    no per-row distance column, so max_distance_nm/bearing are recomputed in
+    #    Python via geo.haversine_nm/bearing against the receiver location.
+    crossing_ids = [
+        row[0]
+        for row in conn.execute(
+            "SELECT id FROM flights WHERE first_seen < ? AND last_seen >= ? "
+            "AND id NOT IN (SELECT flight_id FROM active_flights)",
+            (cutoff, cutoff),
+        ).fetchall()
+    ]
+    for fid in crossing_ids:
+        prows = conn.execute(
+            "SELECT lat, lon, alt_baro, gs, rssi, source_type "
+            "FROM positions WHERE flight_id = ?",
+            (fid,),
+        ).fetchall()
+        total = len(prows)
+        if total == 0:
+            # All positions purged — zero the count so step 4 can drop it.
+            with conn:
+                conn.execute(
+                    "UPDATE flights SET total_positions = 0 WHERE id = ?", (fid,)
+                )
+            continue
+        adsb = mlat = 0
+        max_gs = max_alt = min_rssi = max_rssi = None
+        lat_min = lat_max = lon_min = lon_max = None
+        max_dist = max_bearing = None
+        for p in prows:
+            st = p["source_type"]
+            if _is_adsb(st):
+                adsb += 1
+            elif _is_mlat(st):
+                mlat += 1
+            if p["gs"] is not None:
+                max_gs = p["gs"] if max_gs is None else max(max_gs, p["gs"])
+            if p["alt_baro"] is not None:
+                max_alt = p["alt_baro"] if max_alt is None else max(max_alt, p["alt_baro"])
+            if p["rssi"] is not None:
+                min_rssi = p["rssi"] if min_rssi is None else min(min_rssi, p["rssi"])
+                max_rssi = p["rssi"] if max_rssi is None else max(max_rssi, p["rssi"])
+            lat_p, lon_p = p["lat"], p["lon"]
+            if lat_p is not None and lon_p is not None:
+                lat_min = lat_p if lat_min is None else min(lat_min, lat_p)
+                lat_max = lat_p if lat_max is None else max(lat_max, lat_p)
+                lon_min = lon_p if lon_min is None else min(lon_min, lon_p)
+                lon_max = lon_p if lon_max is None else max(lon_max, lon_p)
+                d = haversine_nm(config.RECEIVER_LAT, config.RECEIVER_LON, lat_p, lon_p)
+                if max_dist is None or d > max_dist:
+                    max_dist = d
+                    max_bearing = geo.bearing(
+                        config.RECEIVER_LAT, config.RECEIVER_LON, lat_p, lon_p
+                    )
+        primary = _primary_source(adsb, mlat, total)
+        with conn:
+            conn.execute(
+                """
+                UPDATE flights SET
+                    total_positions = ?, adsb_positions = ?, mlat_positions = ?,
+                    max_gs = ?, max_alt_baro = ?, min_rssi = ?, max_rssi = ?,
+                    lat_min = ?, lat_max = ?, lon_min = ?, lon_max = ?,
+                    max_distance_nm = ?, max_distance_bearing = ?, primary_source = ?
+                WHERE id = ?
+                """,
+                (total, adsb, mlat, max_gs, max_alt, min_rssi, max_rssi,
+                 lat_min, lat_max, lon_min, lon_max, max_dist, max_bearing,
+                 primary, fid),
+            )
+
+    # 3) Audit-13 A13-013: previously the correlated COUNT(*) UPDATE
     #    inside `_purge` held the writer lock for minutes on a 200k+
     #    flights table. Batch the UPDATE so the lock is released
     #    between chunks and the watchdog/collector poll loop can
@@ -961,7 +1065,7 @@ def _purge(conn: sqlite3.Connection) -> None:
             )
         last_id = ids[-1]
 
-    # 3) Drop flights that now have too few positions to be worth keeping.
+    # 4) Drop flights that now have too few positions to be worth keeping.
     with conn:
         conn.execute(
             """
@@ -989,6 +1093,10 @@ def _load_notified(conn: sqlite3.Connection) -> None:
     # Audit-13 A13-034: bulk `set.update(generator)` rather than per-row
     # `set.add` — one C-level call instead of N Python-level loops. On a
     # 200 k-flight DB this trims ~50 ms off collector startup.
+    # BE-4 (Audit 2026-05-31): OR-merge adsbx_overrides.flags too. A flight
+    # flagged military/interesting ONLY via airplanes.live (no aircraft_db row)
+    # would otherwise be missing from the dedupe set, so a restart re-alerts
+    # for it. Mirrors the OR-merge already used by web.py's flag expressions.
     _notified_icao.update(
         row["icao_hex"]
         for row in conn.execute(
@@ -996,7 +1104,8 @@ def _load_notified(conn: sqlite3.Connection) -> None:
             SELECT DISTINCT f.icao_hex
             FROM flights f
             LEFT JOIN aircraft_db adb ON adb.icao_hex = f.icao_hex
-            WHERE (COALESCE(adb.flags, 0) & 3) != 0
+            LEFT JOIN adsbx_overrides axo ON axo.icao_hex = f.icao_hex
+            WHERE ((COALESCE(adb.flags, 0) | COALESCE(axo.flags, 0)) & 3) != 0
                OR ({anon_sql}) != 0
             """
         )
@@ -1058,26 +1167,43 @@ def _check_daily_summary(conn: sqlite3.Connection) -> None:
 # Main entry point
 # ---------------------------------------------------------------------------
 
+class StartupIntegrityError(RuntimeError):
+    """Raised when the startup quick_check finds corruption or fails to run.
+
+    Fatal for the collector: it alerts and exits without starting the poll
+    loop, so a corrupt DB is never written to. The dirty sentinel is retained
+    so the check repeats on the next boot until an operator recovers (see
+    docs/operations.md).
+    """
+
+
 def _startup_integrity_check(conn: sqlite3.Connection, sentinel: pathlib.Path) -> None:
-    """Run quick_check when previous shutdown was unclean. Log + checkpoint on pass."""
+    """Run quick_check when previous shutdown was unclean.
+
+    On a clean result: checkpoint the WAL and remove the sentinel. On
+    corruption — or if quick_check itself fails to run — leave the sentinel in
+    place and raise StartupIntegrityError so the caller fails closed instead of
+    writing to a possibly-corrupt database.
+    """
     log.warning("Unclean shutdown detected; running PRAGMA quick_check…")
     try:
         rows = conn.execute("PRAGMA quick_check(10)").fetchall()
-    except Exception:
+    except Exception as exc:
         log.exception("quick_check failed to run")
-        return
+        raise StartupIntegrityError("quick_check failed to run") from exc
     if len(rows) == 1 and rows[0][0] == "ok":
         log.info("DB integrity check passed; checkpointing WAL")
         row = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
         if row and row[0] > 0:
             log.debug("WAL checkpoint partial — %d page(s) pending (busy readers)", row[0])
         sentinel.unlink(missing_ok=True)
-    else:
-        issues = [r[0] for r in rows]
-        log.critical(
-            "DB CORRUPTION DETECTED after unclean shutdown (%d issue(s)): %s",
-            len(issues), issues,
-        )
+        return
+    issues = [r[0] for r in rows]
+    log.critical(
+        "DB CORRUPTION DETECTED after unclean shutdown (%d issue(s)): %s",
+        len(issues), issues,
+    )
+    raise StartupIntegrityError(f"quick_check found {len(issues)} issue(s): {issues}")
 
 
 def main() -> None:
@@ -1097,7 +1223,28 @@ def main() -> None:
     conn = database.connect()
 
     if _sentinel_existed:
-        _startup_integrity_check(conn, _SENTINEL)
+        try:
+            _startup_integrity_check(conn, _SENTINEL)
+        except StartupIntegrityError as exc:
+            # Fail closed: do NOT load active flights, start background
+            # threads, or enter the poll loop — writing to a corrupt DB would
+            # compound the damage. Alert the operator and exit non-zero; the
+            # sentinel is retained so the check repeats until recovery.
+            alert = (
+                "🛑 <b>readsbstats collector halted</b>\n"
+                "DB integrity check failed after an unclean shutdown — refusing "
+                "to start to avoid writing to a corrupt database.\n"
+                f"<code>{notifier._h(str(exc))}</code>\n"
+                "Recovery: restore from backup or run <code>sqlite3 .recover</code>, "
+                "then delete the .dirty_shutdown sentinel (see docs/operations.md)."
+            )
+            try:
+                notifier._send(alert)
+            except Exception:
+                log.exception("Failed to send DB integrity alert")
+            _sd_notify("STATUS=DB integrity check failed — refusing to start")
+            log.critical("Exiting (code 2): DB integrity check failed; sentinel retained")
+            raise SystemExit(2)
 
     _load_active(conn)
     if notifier.telegram_enabled():

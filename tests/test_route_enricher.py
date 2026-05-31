@@ -416,6 +416,26 @@ class TestEnrichBatch:
 
         assert len(calls) == 0
 
+    def test_skips_malformed_callsigns(self, monkeypatch):
+        """BE-8 (Audit 2026-05-31): only well-formed callsigns are sent to the
+        upstream route API. A 1-char, >8-char, or non-alphanumeric-leading
+        callsign is junk (truncation artifacts, abuse) and must be skipped so
+        it doesn't waste adsbdb.com calls."""
+        monkeypatch.setattr(config, "ROUTE_CACHE_DAYS", 30)
+        monkeypatch.setattr(config, "ROUTE_BATCH_SIZE", 50)
+        monkeypatch.setattr(config, "ROUTE_RATE_LIMIT_SEC", 0.0)
+        insert_flight(self.conn, icao="aaaa01", callsign="A")          # too short
+        insert_flight(self.conn, icao="aaaa02", callsign="TOOLONG12")  # 9 chars, too long
+        insert_flight(self.conn, icao="aaaa03", callsign="@BADCS")     # bad leading char
+        insert_flight(self.conn, icao="aaaa04", callsign="LOT123")     # valid
+        calls = []
+        monkeypatch.setattr(self.re, "_fetch_route",
+                            lambda cs: calls.append(cs) or self._mock_route())
+
+        self.re._enrich_batch(self.conn)
+
+        assert calls == ["LOT123"]
+
     def test_skips_already_resolved(self, monkeypatch):
         monkeypatch.setattr(config, "ROUTE_CACHE_DAYS", 30)
         monkeypatch.setattr(config, "ROUTE_BATCH_SIZE", 10)

@@ -232,6 +232,11 @@ def _enrich_batch(conn: sqlite3.Connection, client: httpx.Client | None = None) 
         SELECT DISTINCT f.callsign
         FROM flights f
         WHERE f.callsign IS NOT NULL
+          -- BE-8 (Audit 2026-05-31): only fetch well-formed callsigns. A
+          -- 1-char, >8-char, or non-alphanumeric-leading value is a
+          -- truncation artifact / garbage and would waste an upstream call.
+          AND length(f.callsign) BETWEEN 2 AND 8
+          AND f.callsign GLOB '[A-Z0-9]*'
           AND f.id NOT IN (SELECT flight_id FROM active_flights)
           AND NOT EXISTS (
               SELECT 1 FROM callsign_routes cr

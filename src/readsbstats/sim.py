@@ -1,12 +1,17 @@
 """
-Local development aircraft simulator.
+Local development aircraft simulator — DEV/TEST ONLY.
+
+NOT part of the production service. The runtime (collector/web) never imports
+this module; it ships in the package only so `python -m readsbstats.sim` works
+on a dev box and `tests/test_sim.py` can import its helpers. Do not wire it into
+any production code path.
 
 Writes a readsb-compatible aircraft.json to a file at POLL_INTERVAL_SEC
 intervals. Use this to test the collector without a live readsb feed.
 
 Usage:
-    python sim.py                        # writes to /tmp/rsbs_sim.json
-    python sim.py /tmp/my_aircraft.json  # custom path
+    python -m readsbstats.sim                  # writes to /tmp/rsbs_sim.json
+    python -m readsbstats.sim /tmp/custom.json # custom path
 
 Then run the collector pointed at the same file:
     RSBS_AIRCRAFT_JSON=/tmp/rsbs_sim.json RSBS_DB_PATH=./db/history.db python collector.py

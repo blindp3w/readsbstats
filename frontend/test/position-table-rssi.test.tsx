@@ -57,19 +57,24 @@ const PAYLOAD = {
     dest_name: null,
     airline_name: null,
   },
-  positions,
   other_flights: [],
   receiver_lat: 52.0,
   receiver_lon: 21.0,
 };
 
+// BE-10/FE-1: the position-log table reads the paginated /positions
+// endpoint, not the (now-empty) embedded detail list.
 beforeEach(() => {
   globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
     const url = typeof input === 'string' ? input : input.toString();
     const path = url.split('?')[0];
     let body: unknown = { ok: true };
-    if (path.endsWith('/api/flights/555')) body = PAYLOAD;
+    if (path.endsWith('/api/flights/555/positions/chart'))
+      body = { total: positions.length, target: 2000, positions };
+    else if (path.endsWith('/api/flights/555/positions'))
+      body = { total: positions.length, limit: 2000, offset: 0, positions };
     else if (path.endsWith('/api/flights/555/photo')) body = null;
+    else if (path.endsWith('/api/flights/555')) body = PAYLOAD;
     return new Response(JSON.stringify(body), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },

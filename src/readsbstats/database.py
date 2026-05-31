@@ -645,10 +645,98 @@ def snapshot_db(src_path: str, dest_path: str | None = None) -> str:
     return dest_path
 
 
+def recover_aircraft_db_swap(conn: sqlite3.Connection) -> None:
+    """Detect and recover from an aircraft_db staging swap interrupted between
+    the rename steps (see ADR 0010 and db_updater.update_aircraft_db).
+
+    Three table-name presences are possible after an interrupted run:
+      * ``aircraft_db_new`` only → build phase crashed; drop the stale staging
+        table.
+      * ``aircraft_db_old`` only (no ``aircraft_db``) → first RENAME succeeded
+        but the second didn't. Rename old back to canonical.
+      * ``aircraft_db`` + ``aircraft_db_old`` → second RENAME succeeded but the
+        final DROP didn't. Drop the leftover old copy.
+
+    BE-3 (Audit 2026-05-31): this used to live only in
+    ``db_updater._recover_aborted_swap`` and ran on the weekly updater path.
+    Moved here so the web server and collector recover an interrupted swap on
+    startup, without waiting for the next ``update_aircraft_db()`` run. The
+    updater keeps a thin delegate for back-compat.
+
+    Must run BEFORE any DDL that would re-create an empty ``aircraft_db`` —
+    otherwise the 'canonical present + _old leftover' branch would drop the
+    only surviving copy of the data.
+    """
+    _log = logging.getLogger(__name__)
+    names = {
+        row[0] for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' "
+            "AND name IN ('aircraft_db', 'aircraft_db_new', 'aircraft_db_old')"
+        ).fetchall()
+    }
+    if "aircraft_db" not in names and "aircraft_db_old" in names:
+        _log.warning(
+            "aircraft_db recovery: restoring aircraft_db_old after "
+            "interrupted swap"
+        )
+        conn.execute("ALTER TABLE aircraft_db_old RENAME TO aircraft_db")
+    elif "aircraft_db_old" in names:
+        _log.info("aircraft_db recovery: dropping leftover aircraft_db_old")
+        conn.execute("DROP TABLE aircraft_db_old")
+    if "aircraft_db_new" in names:
+        _log.info("aircraft_db recovery: dropping leftover aircraft_db_new")
+        conn.execute("DROP TABLE aircraft_db_new")
+    conn.commit()
+
+
+def ensure_base_schema(path: str = config.DB_PATH) -> None:
+    """Web-server startup bootstrap (BE-3, Audit 2026-05-31).
+
+    Brings a database to a queryable baseline without ever running slow
+    operations synchronously (no full ``positions`` scans, no large composite
+    index builds — those stay collector-owned in ``run_background_migrations``).
+    Steps:
+      1. Recover an interrupted aircraft_db swap (before any DDL, so a real
+         ``aircraft_db_old`` is never discarded).
+      2. Run the full DDL only when base tables (``flights`` / ``positions``)
+         are missing — i.e. a genuinely fresh DB. Existing DBs skip the DDL.
+      3. Record the schema version on a fresh DB.
+      4. Run ``_migrate()`` for incremental ALTER/CREATE-IF-NOT-EXISTS upgrades.
+
+    Replaces the bare ``_migrate()`` the lifespan used to call, which raised
+    ``no such table`` against an empty ``RSBS_DB_PATH``.
+    """
+    conn = connect(path)
+    try:
+        recover_aircraft_db_swap(conn)
+        base = {
+            row[0] for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                "AND name IN ('flights', 'positions')"
+            ).fetchall()
+        }
+        if not {"flights", "positions"} <= base:
+            conn.executescript(DDL)
+            conn.execute(
+                "INSERT OR IGNORE INTO schema_version "
+                "VALUES (?, strftime('%s','now'))",
+                (SCHEMA_VERSION,),
+            )
+        _migrate(conn)
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def init_db(path: str = config.DB_PATH) -> None:
     """Create tables/indexes if absent, run migrations, record schema version."""
     conn = connect(path)
     try:
+        # BE-3: recover an interrupted aircraft_db swap BEFORE the DDL runs.
+        # executescript(DDL) re-creates an empty aircraft_db; if a real
+        # aircraft_db_old were the only surviving copy, the recovery's
+        # 'canonical present + _old leftover' branch would then drop it.
+        recover_aircraft_db_swap(conn)
         conn.executescript(DDL)
         _migrate(conn)
         conn.execute(

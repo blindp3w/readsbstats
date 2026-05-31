@@ -667,6 +667,164 @@ class TestMain:
 # binary parsing) can be exercised in isolation.
 # ---------------------------------------------------------------------------
 
+class TestAtomicSwap:
+    """BE-2 — the rename-rename-drop swap is wrapped in a single transaction.
+
+    These need a *real on-disk* DB (not in-memory make_db) because WAL and
+    crash-rollback semantics don't reproduce on `:memory:`.
+    """
+
+    def _file_db(self, path: str, n_rows: int) -> sqlite3.Connection:
+        conn = database.connect(path)
+        conn.executescript(database.DDL)
+        database._migrate(conn)
+        for i in range(n_rows):
+            conn.execute(
+                "INSERT INTO aircraft_db "
+                "(icao_hex, registration, type_code, type_desc, flags) "
+                f"VALUES ('00{i:04x}', 'OLD{i}', 'A320', '', 0)"
+            )
+        conn.commit()
+        return conn
+
+    def test_crash_between_renames_leaves_aircraft_db_intact(self, monkeypatch, tmp_path):
+        """A failure during the swap rolls the whole transaction back, so
+        `aircraft_db` is never left absent (old non-transactional code left
+        it renamed away to aircraft_db_old)."""
+        db_path = str(tmp_path / "swap.db")
+        conn = self._file_db(db_path, 50)
+
+        class _FailOnSecondRename:
+            """Raise on `aircraft_db_new RENAME TO aircraft_db` (the 2nd rename)."""
+            def __init__(self, c):
+                self._c = c
+            def execute(self, sql, *a):
+                if "aircraft_db_new RENAME TO aircraft_db" in sql:
+                    raise sqlite3.OperationalError("simulated crash mid-swap")
+                return self._c.execute(sql, *a)
+            def executemany(self, sql, seq):
+                return self._c.executemany(sql, seq)
+            def __enter__(self):
+                return self._c.__enter__()
+            def __exit__(self, *a):
+                return self._c.__exit__(*a)
+            def __getattr__(self, name):
+                return getattr(self._c, name)
+
+        proxy = _FailOnSecondRename(conn)
+        monkeypatch.setattr(db_updater, "_fetch", lambda url: _aircraft_gz(
+            *[[f"48{i:04x}", f"NEW{i}", "B738", "0", ""] for i in range(50)]
+        ))
+
+        with pytest.raises(sqlite3.OperationalError, match="simulated crash"):
+            db_updater.update_aircraft_db(proxy)
+
+        # aircraft_db still present with the ORIGINAL data — the renames
+        # rolled back wholesale.
+        names = {
+            r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                "AND name LIKE 'aircraft_db%'"
+            ).fetchall()
+        }
+        assert "aircraft_db_new" not in names, (
+            f"staging table leaked after rollback; got {names}"
+        )
+        assert names == {"aircraft_db"}, f"expected only aircraft_db; got {names}"
+        assert conn.execute("SELECT COUNT(*) FROM aircraft_db").fetchone()[0] == 50
+        assert conn.execute(
+            "SELECT registration FROM aircraft_db WHERE icao_hex='000000'"
+        ).fetchone()[0] == "OLD0"
+        conn.close()
+
+    def test_concurrent_reader_never_sees_missing_table(self, monkeypatch, tmp_path):
+        """A second connection reading mid-swap always sees `aircraft_db`
+        (the old snapshot while the writer's transaction is open, the new
+        one after commit)."""
+        db_path = str(tmp_path / "swap.db")
+        writer = self._file_db(db_path, 40)
+        reader = database.connect(db_path)
+
+        observed: list[int] = []
+
+        class _ObserveAfterFirstRename:
+            def __init__(self, c):
+                self._c = c
+                self._fired = False
+            def execute(self, sql, *a):
+                cur = self._c.execute(sql, *a)
+                if not self._fired and "aircraft_db RENAME TO aircraft_db_old" in sql:
+                    self._fired = True
+                    # Writer's BEGIN IMMEDIATE txn is open and uncommitted.
+                    observed.append(
+                        reader.execute("SELECT COUNT(*) FROM aircraft_db").fetchone()[0]
+                    )
+                return cur
+            def executemany(self, sql, seq):
+                return self._c.executemany(sql, seq)
+            def __enter__(self):
+                return self._c.__enter__()
+            def __exit__(self, *a):
+                return self._c.__exit__(*a)
+            def __getattr__(self, name):
+                return getattr(self._c, name)
+
+        proxy = _ObserveAfterFirstRename(writer)
+        monkeypatch.setattr(db_updater, "_fetch", lambda url: _aircraft_gz(
+            *[[f"48{i:04x}", f"NEW{i}", "B738", "0", ""] for i in range(40)]
+        ))
+
+        db_updater.update_aircraft_db(proxy)
+
+        assert observed == [40], (
+            "reader during the open swap txn must see the old 40-row table, "
+            f"got {observed}"
+        )
+        # After commit the reader sees the new dataset (same count here, but
+        # fresh data) without ever hitting `no such table`.
+        assert reader.execute("SELECT COUNT(*) FROM aircraft_db").fetchone()[0] == 40
+        assert reader.execute(
+            "SELECT registration FROM aircraft_db WHERE icao_hex='480000'"
+        ).fetchone()[0] == "NEW0"
+        writer.close()
+        reader.close()
+
+    def test_multi_chunk_build_swaps_all_rows(self, monkeypatch, tmp_path):
+        """Exercise the in-loop chunked INSERT branch on a real file DB.
+
+        Regression for the SQLite 3.45.x "no such table: aircraft_db_new"
+        crash: when the CSV spanned more than one insert batch, the staging
+        table created in a prior transaction was invisible to the next
+        transaction's INSERT. The build now shares one transaction with the
+        swap. Shrink the batch size so a handful of rows crosses it several
+        times (3 full batches + a leftover)."""
+        db_path = str(tmp_path / "swap.db")
+        conn = self._file_db(db_path, 5)  # 5 OLD rows → prev_count 5
+        monkeypatch.setattr(db_updater, "_INSERT_CHUNK", 3)
+        monkeypatch.setattr(db_updater, "_fetch", lambda url: _aircraft_gz(
+            *[[f"48{i:04x}", f"NEW{i}", "B738", "0", ""] for i in range(10)]
+        ))
+
+        assert db_updater.update_aircraft_db(conn) == 10
+
+        names = {
+            r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                "AND name LIKE 'aircraft_db%'"
+            ).fetchall()
+        }
+        assert names == {"aircraft_db"}, f"leftover staging table: {names}"
+        assert conn.execute("SELECT COUNT(*) FROM aircraft_db").fetchone()[0] == 10
+        assert conn.execute(
+            "SELECT registration FROM aircraft_db WHERE icao_hex='480009'"
+        ).fetchone()[0] == "NEW9"
+        # Old data fully replaced (the OLD rows used the '00xxxx' hex prefix).
+        assert conn.execute(
+            "SELECT COUNT(*) FROM aircraft_db WHERE registration LIKE 'OLD%'"
+        ).fetchone()[0] == 0
+        conn.close()
+
+
 class TestParseAircraftCsvRow:
     def test_full_row(self):
         row = db_updater._parse_aircraft_csv_row(

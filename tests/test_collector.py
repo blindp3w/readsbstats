@@ -756,6 +756,73 @@ class TestPoll:
         ).fetchone()[0]
         assert bad_positions == 0
 
+    # BE-6 (Audit 2026-05-31): validate the top-level feed shape so a corrupt
+    # aircraft.json degrades gracefully (skip bad entries / cycle) instead of
+    # raising out of _poll and aborting the whole cycle via main()'s except.
+
+    def test_poll_non_dict_top_level_does_not_raise(self):
+        """A top-level JSON array (not the expected object) must not raise —
+        _poll returns having written nothing."""
+        from readsbstats.collector import _poll
+        self.json_path.write_text(json.dumps([{"hex": "aabbcc"}]))
+        _poll(self.conn)  # must not raise
+        assert self.conn.execute("SELECT COUNT(*) FROM flights").fetchone()[0] == 0
+
+    def test_poll_aircraft_not_a_list(self):
+        """A non-list `aircraft` value (corrupt feed) is logged + skipped."""
+        from readsbstats.collector import _poll
+        self.json_path.write_text(json.dumps({"now": time.time(), "aircraft": "garbage"}))
+        _poll(self.conn)  # must not raise
+        assert self.conn.execute("SELECT COUNT(*) FROM flights").fetchone()[0] == 0
+
+    def test_poll_skips_non_dict_aircraft_entries(self):
+        """Non-dict items inside `aircraft` (string / None / int) are skipped
+        per-entry, not aborting the whole poll."""
+        from readsbstats.collector import _poll
+        self.json_path.write_text(json.dumps({"now": time.time(), "aircraft": [
+            "not-a-dict",
+            None,
+            42,
+            {"hex": "aabbcc", "lat": 52.0, "lon": 21.0, "seen_pos": 0},
+        ]}))
+        _poll(self.conn)
+        icaos = [r["icao_hex"] for r in self.conn.execute(
+            "SELECT icao_hex FROM flights").fetchall()]
+        assert icaos == ["aabbcc"]
+
+    def test_poll_non_numeric_now_falls_back(self):
+        """A non-numeric `now` must not abort the poll — it falls back to
+        wall-clock time so positions still record."""
+        from readsbstats.collector import _poll
+        self.json_path.write_text(json.dumps({"now": "not-a-number", "aircraft": [
+            {"hex": "aabbcc", "lat": 52.0, "lon": 21.0, "seen_pos": 0},
+        ]}))
+        _poll(self.conn)
+        assert self.conn.execute("SELECT COUNT(*) FROM flights").fetchone()[0] == 1
+
+    def test_poll_normalizes_overlong_feed_strings(self):
+        """BE-8: a corrupt/abusive feed must not store unbounded strings.
+        callsign≤16, registration≤32, aircraft_type≤16, squawk≤8, category≤16."""
+        from readsbstats.collector import _poll
+        self._write_json([{
+            "hex": "aabbcc", "lat": 52.0, "lon": 21.0, "seen_pos": 0,
+            "flight": "A" * 30,
+            "r": "R" * 50,
+            "t": "T" * 30,
+            "squawk": "1" * 20,
+            "category": "C" * 30,
+        }])
+        _poll(self.conn)
+        row = self.conn.execute(
+            "SELECT callsign, registration, aircraft_type, squawk, category "
+            "FROM flights WHERE icao_hex = 'aabbcc'"
+        ).fetchone()
+        assert len(row["callsign"]) == 16
+        assert len(row["registration"]) == 32
+        assert len(row["aircraft_type"]) == 16
+        assert len(row["squawk"]) == 8
+        assert len(row["category"]) == 16
+
     def test_poll_unchanged_file_is_noop(self):
         """If mtime hasn't changed, _poll should not process the file again."""
         from readsbstats.collector import _poll
@@ -1625,6 +1692,131 @@ class TestPurge:
         ).fetchone()
         assert row["total_positions"] == 2
 
+    # BE-7 (Audit 2026-05-31): a flight that crosses the cutoff (started before,
+    # still seen after) keeps some positions and loses others. ALL its
+    # position-derived aggregates must be recomputed from the surviving rows —
+    # not just total_positions.
+
+    def _insert_rich_position(self, flight_id, ts, lat, lon, gs, alt, source_type):
+        self.conn.execute(
+            "INSERT INTO positions (flight_id, ts, lat, lon, gs, alt_baro, source_type) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (flight_id, ts, lat, lon, gs, alt, source_type),
+        )
+        self.conn.commit()
+
+    def test_crossing_flight_aggregates_recomputed(self, monkeypatch):
+        from readsbstats import geo
+        from readsbstats.collector import _purge
+        monkeypatch.setattr("readsbstats.config.RETENTION_DAYS", 1)
+        monkeypatch.setattr("readsbstats.config.MIN_POSITIONS_KEEP", 2)
+        cutoff = int(time.time()) - 86400
+
+        # Stale aggregates reflect the full pre-purge set (incl. the far/fast/high
+        # old positions). After purge they must reflect only the remaining rows.
+        cur = self.conn.execute(
+            """INSERT INTO flights
+               (icao_hex, first_seen, last_seen, total_positions,
+                adsb_positions, mlat_positions, max_gs, max_alt_baro,
+                lat_min, lat_max, lon_min, lon_max,
+                max_distance_nm, max_distance_bearing, primary_source)
+               VALUES ('aabbcc',?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (cutoff - 500, cutoff + 500, 5, 2, 2, 900.0, 50000,
+             10.0, 53.0, 10.0, 22.0, 9999.0, 12.0, "adsb"),
+        )
+        fid = cur.lastrowid
+        self.conn.commit()
+
+        # Old positions (ts < cutoff): far away, fast, high — all deleted.
+        self._insert_rich_position(fid, cutoff - 400, 10.0, 10.0, 900.0, 50000, "adsb_icao")
+        self._insert_rich_position(fid, cutoff - 300, 11.0, 11.0, 800.0, 49000, "mlat")
+        # Surviving positions (ts >= cutoff): near the receiver, slower, lower.
+        survivors = [
+            (cutoff + 100, 52.0, 21.0, 400.0, 30000, "adsb_icao"),
+            (cutoff + 200, 52.5, 21.5, 450.0, 31000, "adsb_icao"),
+            (cutoff + 300, 53.0, 22.0, 420.0, 30500, "mlat"),
+        ]
+        for ts, lat, lon, gs, alt, st in survivors:
+            self._insert_rich_position(fid, ts, lat, lon, gs, alt, st)
+
+        _purge(self.conn)
+
+        row = self.conn.execute(
+            """SELECT total_positions, adsb_positions, mlat_positions,
+                      max_gs, max_alt_baro, lat_min, lat_max, lon_min, lon_max,
+                      max_distance_nm, max_distance_bearing, primary_source
+               FROM flights WHERE id = ?""", (fid,),
+        ).fetchone()
+        assert row is not None, "crossing flight must survive the purge"
+        assert row["total_positions"] == 3
+        assert row["adsb_positions"] == 2
+        assert row["mlat_positions"] == 1
+        assert row["max_gs"] == 450.0          # not the deleted 900
+        assert row["max_alt_baro"] == 31000    # not the deleted 50000
+        assert row["lat_min"] == 52.0 and row["lat_max"] == 53.0  # not 10/53
+        assert row["lon_min"] == 21.0 and row["lon_max"] == 22.0
+        # adsb 2/3 < 0.8, mlat 1/3 < 0.8, (adsb+mlat)/3 == 1.0 >= 0.5 → "mixed"
+        assert row["primary_source"] == "mixed"
+
+        # max_distance/bearing recomputed over surviving rows only (receiver-relative).
+        expected = max(
+            geo.haversine_nm(config.RECEIVER_LAT, config.RECEIVER_LON, lat, lon)
+            for _, lat, lon, *_ in survivors
+        )
+        assert row["max_distance_nm"] == pytest.approx(expected, abs=0.01)
+        assert row["max_distance_nm"] < 9999.0  # the stale far value is gone
+
+    def test_active_crossing_flight_aggregates_preserved(self, monkeypatch):
+        """An open (active) flight that crosses the cutoff must NOT have its
+        aggregates recomputed by purge. The collector owns an active flight's
+        running aggregates in memory and rewrites them on close; a purge-time
+        recompute would momentarily clobber them from a partial position set.
+        Steps 3/4 already exclude active flights; step 2 must match."""
+        from readsbstats.collector import _purge
+        monkeypatch.setattr("readsbstats.config.RETENTION_DAYS", 1)
+        monkeypatch.setattr("readsbstats.config.MIN_POSITIONS_KEEP", 2)
+        cutoff = int(time.time()) - 86400
+
+        cur = self.conn.execute(
+            """INSERT INTO flights
+               (icao_hex, first_seen, last_seen, total_positions,
+                adsb_positions, mlat_positions, max_gs, max_alt_baro,
+                lat_min, lat_max, lon_min, lon_max,
+                max_distance_nm, max_distance_bearing, primary_source)
+               VALUES ('aabbcc',?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (cutoff - 500, cutoff + 500, 5, 2, 2, 900.0, 50000,
+             10.0, 53.0, 10.0, 22.0, 9999.0, 12.0, "adsb"),
+        )
+        fid = cur.lastrowid
+        self.conn.execute(
+            "INSERT INTO active_flights VALUES ('aabbcc', ?, ?)", (fid, cutoff + 500)
+        )
+        self.conn.commit()
+
+        # Old positions deleted; survivors near the receiver — a recompute
+        # would shrink max_gs/max_alt/distance away from the stale values.
+        self._insert_rich_position(fid, cutoff - 400, 10.0, 10.0, 900.0, 50000, "adsb_icao")
+        for ts, lat, lon, gs, alt, st in [
+            (cutoff + 100, 52.0, 21.0, 400.0, 30000, "adsb_icao"),
+            (cutoff + 200, 52.5, 21.5, 450.0, 31000, "mlat"),
+        ]:
+            self._insert_rich_position(fid, ts, lat, lon, gs, alt, st)
+
+        _purge(self.conn)
+
+        row = self.conn.execute(
+            """SELECT max_gs, max_alt_baro, lat_min, lat_max,
+                      max_distance_nm, max_distance_bearing
+               FROM flights WHERE id = ?""", (fid,),
+        ).fetchone()
+        assert row is not None, "active crossing flight must survive the purge"
+        # Aggregates untouched — still the collector-owned stale values.
+        assert row["max_gs"] == 900.0
+        assert row["max_alt_baro"] == 50000
+        assert row["lat_min"] == 10.0 and row["lat_max"] == 53.0
+        assert row["max_distance_nm"] == 9999.0
+        assert row["max_distance_bearing"] == 12.0
+
 
 # ---------------------------------------------------------------------------
 # _poll edge cases — ground altitude and emergency squawks
@@ -2435,6 +2627,25 @@ class TestLoadNotified:
         self.conn.commit()
         collector._load_notified(self.conn)
         assert "488001" not in collector._notified_icao
+
+    def test_loads_adsbx_only_flagged_icao(self):
+        """BE-4 (Audit 2026-05-31): a flight flagged interesting/military ONLY
+        via adsbx_overrides (airplanes.live) with no aircraft_db row must be
+        pre-loaded into the dedupe set, or a collector restart re-alerts for it.
+        """
+        from readsbstats import collector
+        # State-allocated Polish hex so the anonymous CASE can't mask the test;
+        # the ONLY flag source is adsbx_overrides.
+        self.conn.execute(
+            "INSERT INTO flights (icao_hex, first_seen, last_seen) VALUES ('488042', 1000, 1000)"
+        )
+        self.conn.execute(
+            "INSERT INTO adsbx_overrides "
+            "(icao_hex, flags, first_seen, last_seen) VALUES ('488042', 2, 1, 1)"
+        )
+        self.conn.commit()
+        collector._load_notified(self.conn)
+        assert "488042" in collector._notified_icao
 
 
 # ---------------------------------------------------------------------------

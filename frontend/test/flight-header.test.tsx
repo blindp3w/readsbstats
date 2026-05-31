@@ -40,56 +40,70 @@ const FLIGHT_PAYLOAD = {
     dest_name: 'New York JFK',
     airline_name: 'LOT Polish Airlines',
   },
-  positions: [
-    {
-      ts: 1_700_000_000,
-      lat: 52.1,
-      lon: 21.0,
-      alt_baro: 1000,
-      alt_geom: null,
-      gs: 200,
-      track: 90,
-      baro_rate: 2000,
-      rssi: -10,
-      source_type: 'adsb_icao',
-    },
-    {
-      ts: 1_700_001_800,
-      lat: 52.5,
-      lon: 22.0,
-      alt_baro: 41000, // max
-      alt_geom: null,
-      gs: 521, // max
-      track: 285,
-      baro_rate: -2400,
-      rssi: -8,
-      source_type: 'adsb_icao',
-    },
-    {
-      ts: 1_700_003_600,
-      lat: 53.0,
-      lon: 25.0, // farthest from receiver (52, 21)
-      alt_baro: 39000,
-      alt_geom: null,
-      gs: 480,
-      track: 270,
-      baro_rate: -1500,
-      rssi: -6,
-      source_type: 'adsb_icao',
-    },
-  ],
   other_flights: [],
   receiver_lat: 52.0,
   receiver_lon: 21.0,
 };
+
+// BE-10/FE-1: the at-max sublabels now derive from the downsampled
+// /positions/chart series (target=2000), NOT the detail payload — the
+// detail endpoint no longer embeds positions. These rows feed the chart
+// endpoint mock; the detail payload deliberately carries no positions key.
+const CHART_POSITIONS = [
+  {
+    ts: 1_700_000_000,
+    lat: 52.1,
+    lon: 21.0,
+    alt_baro: 1000,
+    alt_geom: null,
+    gs: 200,
+    track: 90,
+    baro_rate: 2000,
+    rssi: -10,
+    source_type: 'adsb_icao',
+  },
+  {
+    ts: 1_700_001_800,
+    lat: 52.5,
+    lon: 22.0,
+    alt_baro: 41000, // max
+    alt_geom: null,
+    gs: 521, // max
+    track: 285,
+    baro_rate: -2400,
+    rssi: -8,
+    source_type: 'adsb_icao',
+  },
+  {
+    ts: 1_700_003_600,
+    lat: 53.0,
+    lon: 25.0, // farthest from receiver (52, 21)
+    alt_baro: 39000,
+    alt_geom: null,
+    gs: 480,
+    track: 270,
+    baro_rate: -1500,
+    rssi: -6,
+    source_type: 'adsb_icao',
+  },
+];
 
 beforeEach(() => {
   globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
     const url = typeof input === 'string' ? input : input.toString();
     const path = url.split('?')[0];
     let body: unknown = { ok: true };
-    if (path.endsWith('/api/flights/12345')) body = FLIGHT_PAYLOAD;
+    if (path.endsWith('/api/flights/12345/positions/chart'))
+      body = { total: CHART_POSITIONS.length, target: 2000, positions: CHART_POSITIONS };
+    else if (path.endsWith('/api/flights/12345/positions'))
+      body = {
+        total: CHART_POSITIONS.length,
+        limit: 2000,
+        offset: 0,
+        positions: CHART_POSITIONS,
+      };
     else if (path.endsWith('/api/flights/12345/photo')) body = null;
+    else if (path.endsWith('/api/flights/12345')) body = FLIGHT_PAYLOAD;
     return new Response(JSON.stringify(body), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
@@ -114,6 +128,27 @@ function renderPage() {
     </QueryClientProvider>,
   );
 }
+
+describe('Flight detail split endpoints (BE-10 / FE-1)', () => {
+  it('pulls positions from the split endpoints, never the embedded list', async () => {
+    // FLIGHT_PAYLOAD carries NO `positions` key. The page must still
+    // render the position-log count and the at-max sublabels by fetching
+    // /positions and /positions/chart respectively.
+    const { container } = renderPage();
+    await waitFor(() => {
+      if (!container.querySelector('[data-testid="flight-positions-card"]'))
+        throw new Error('positions card not ready');
+    });
+    const calls = (globalThis.fetch as unknown as { mock: { calls: unknown[][] } }).mock.calls;
+    const urls = calls.map((c) => String(c[0]));
+    expect(urls.some((u) => u.includes('/positions/chart?target=2000'))).toBe(true);
+    expect(urls.some((u) => u.includes('/positions/chart?target=500'))).toBe(true);
+    expect(urls.some((u) => /\/positions\?limit=\d+/.test(u))).toBe(true);
+    // Count derives from the /positions `total`, not an embedded array.
+    const card = container.querySelector('[data-testid="flight-positions-card"]')!;
+    expect(card.textContent).toContain('Position log (3)');
+  });
+});
 
 describe('Flight detail compact header (M3.1)', () => {
   it('renders identity row with reg, callsign, hex, squawk, source badge', async () => {
@@ -160,37 +195,34 @@ describe('Flight detail compact header (M3.1)', () => {
 
   it('Max alt cell shows the value AND derived vert-rate sublabel', async () => {
     const { container } = renderPage();
-    await waitFor(() => {
-      if (!container.querySelector('[data-testid="flight-metric-alt"]'))
-        throw new Error('grid not ready');
-    });
-    const cell = container.querySelector('[data-testid="flight-metric-alt"]')!;
-    const text = cell.textContent ?? '';
     // The numeric MAX value renders unit-aware (41,000 ft OR 12,497 m
-    // depending on the units store default in this test runner). Just
-    // assert the label + the unit-agnostic vert-rate sublabel.
-    expect(text).toContain('Max alt');
-    expect(text).toContain('vert -2400 ft/min');
+    // depending on the units store default in this test runner). Assert the
+    // label + the unit-agnostic vert-rate sublabel. The sublabel is derived
+    // from the chart query, which resolves after the cell mounts — fold the
+    // text into the predicate so waitFor retries until it lands.
+    await waitFor(() => {
+      const text = container.querySelector('[data-testid="flight-metric-alt"]')?.textContent ?? '';
+      if (!text.includes('Max alt') || !text.includes('vert -2400 ft/min'))
+        throw new Error('alt cell + vert-rate sublabel not ready');
+    });
   });
 
   it('Max speed cell shows track-at-max sublabel', async () => {
     const { container } = renderPage();
     await waitFor(() => {
-      if (!container.querySelector('[data-testid="flight-metric-speed"]'))
-        throw new Error('grid not ready');
+      const text = container.querySelector('[data-testid="flight-metric-speed"]')?.textContent ?? '';
+      if (!text.includes('track 285°'))
+        throw new Error('speed cell + track sublabel not ready');
     });
-    const cell = container.querySelector('[data-testid="flight-metric-speed"]')!;
-    expect(cell.textContent).toContain('track 285°');
   });
 
   it('Max distance cell shows bearing-at-max sublabel (computed client-side)', async () => {
     const { container } = renderPage();
-    await waitFor(() => {
-      if (!container.querySelector('[data-testid="flight-metric-dist"]'))
-        throw new Error('grid not ready');
-    });
-    const cell = container.querySelector('[data-testid="flight-metric-dist"]')!;
     // Receiver (52, 21) → farthest position (53, 25) is roughly NE.
-    expect(cell.textContent).toMatch(/bearing \d+°/);
+    await waitFor(() => {
+      const text = container.querySelector('[data-testid="flight-metric-dist"]')?.textContent ?? '';
+      if (!/bearing \d+°/.test(text))
+        throw new Error('dist cell + bearing sublabel not ready');
+    });
   });
 });

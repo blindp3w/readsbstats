@@ -567,15 +567,31 @@ class TestApiFlightDetail:
         data = r.json()
         assert data["flight"]["icao_hex"] == "aabbcc"
 
-    def test_found_includes_positions_list(self, client, db_conn):
+    def test_detail_omits_positions_by_default(self, client, db_conn):
+        # BE-10: the detail endpoint no longer embeds the raw position
+        # timeline by default — the frontend pulls it from the dedicated
+        # paginated / downsampled endpoints. Default response keeps the
+        # `positions` key but returns it empty.
         fid = insert_flight(db_conn)
-        # Insert a position row
         db_conn.execute(
             "INSERT INTO positions (flight_id, ts, lat, lon, source_type) VALUES (?,?,?,?,?)",
             (fid, 1_000_001, 52.0, 21.0, "adsb_icao"),
         )
         db_conn.commit()
         r = client.get(f"/api/flights/{fid}")
+        assert r.status_code == 200
+        assert r.json()["positions"] == []
+
+    def test_detail_includes_positions_when_requested(self, client, db_conn):
+        # BE-10: explicit opt-in still returns the full embedded list for
+        # any non-frontend consumer that depends on it.
+        fid = insert_flight(db_conn)
+        db_conn.execute(
+            "INSERT INTO positions (flight_id, ts, lat, lon, source_type) VALUES (?,?,?,?,?)",
+            (fid, 1_000_001, 52.0, 21.0, "adsb_icao"),
+        )
+        db_conn.commit()
+        r = client.get(f"/api/flights/{fid}?include_positions=true")
         assert r.status_code == 200
         assert len(r.json()["positions"]) == 1
 
@@ -662,14 +678,34 @@ class TestApiFlightPositionsSplit:
         r = client.get(f"/api/flights/{fid}/positions?limit=5000")
         assert r.status_code == 422
 
-    def test_legacy_detail_still_embeds_all_positions(self, client, db_conn):
-        """Backward compat: /api/flights/{id} keeps its embedded
-        `positions` list at full size. The new endpoints are additive,
-        not replacing."""
+    def test_detail_embeds_positions_only_on_opt_in(self, client, db_conn):
+        """BE-10: /api/flights/{id} omits the embedded `positions` list by
+        default (frontend uses the split endpoints); the full list is
+        returned only with ?include_positions=true."""
         fid = self._seed(db_conn, 200)
-        r = client.get(f"/api/flights/{fid}")
+        r_default = client.get(f"/api/flights/{fid}")
+        assert r_default.status_code == 200
+        assert r_default.json()["positions"] == []
+        r_optin = client.get(f"/api/flights/{fid}?include_positions=true")
+        assert r_optin.status_code == 200
+        assert len(r_optin.json()["positions"]) == 200
+
+    def test_chart_endpoint_includes_baro_rate(self, client, db_conn):
+        """BE-10/FE-1: the header's at-max vert-rate sublabel now derives
+        from the downsampled chart series, so `baro_rate` must be present."""
+        fid = insert_flight(db_conn)
+        db_conn.execute(
+            "INSERT INTO positions "
+            "(flight_id, ts, lat, lon, alt_baro, gs, track, baro_rate, source_type) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            (fid, 1_000_001, 52.0, 21.0, 10000, 250.0, 90.0, -640, "adsb_icao"),
+        )
+        db_conn.commit()
+        r = client.get(f"/api/flights/{fid}/positions/chart?target=500")
         assert r.status_code == 200
-        assert len(r.json()["positions"]) == 200
+        positions = r.json()["positions"]
+        assert positions and "baro_rate" in positions[0]
+        assert positions[0]["baro_rate"] == -640
 
 
 # ---------------------------------------------------------------------------
@@ -825,6 +861,45 @@ class TestCache:
         assert web._get_cache("zombie") is None
         assert "zombie" not in web._cache
 
+    # BE-12 (Audit 2026-05-31): the airspace endpoint must go through the shared
+    # cache helpers (not touch _cache directly), and "airspace" must have its
+    # 1h TTL registered so _get_cache honors it instead of the 30s default.
+
+    def test_airspace_ttl_registered(self, clear_web_cache):
+        assert web._ttl_for("airspace") == web._AIRSPACE_TTL
+
+    def test_airspace_endpoint_uses_cache_helper(self, clear_web_cache, monkeypatch):
+        data = web.api_airspace()
+        # Stored via the shared helper and retrievable through it.
+        assert web._get_cache("airspace") == data
+        # Survives well past the 30s default — would expire if the TTL were
+        # unregistered and the entry stored under the default.
+        future = time.time() + web._DEFAULT_TTL + 100
+        monkeypatch.setattr(web.time, "time", lambda: future)
+        assert web._get_cache("airspace") is not None
+
+    def test_concurrent_cache_access_is_threadsafe(self, clear_web_cache):
+        """Hammering the cache from many threads must not corrupt the store or
+        raise (RuntimeError: OrderedDict mutated during iteration, etc.)."""
+        import threading
+        errors: list[Exception] = []
+
+        def worker(n: int) -> None:
+            try:
+                for i in range(300):
+                    web._set_cache(f"stats:{n}:{i}", i)
+                    web._get_cache(f"stats:{n}:{i}")
+            except Exception as exc:  # pragma: no cover - failure path
+                errors.append(exc)
+
+        threads = [threading.Thread(target=worker, args=(n,)) for n in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert errors == []
+        assert len(web._cache) <= web._CACHE_MAX_ENTRIES
+
 
 class TestDbConnection:
     """`db()` must be per-thread in production so requests don't serialize on
@@ -879,6 +954,36 @@ class TestDbConnection:
         second = web.db()
         assert first is second
         first.close()
+
+
+class TestStartupMigrate:
+    """BE-3 (Audit 2026-05-31): the web lifespan must bootstrap base schema via
+    database.ensure_base_schema() (which recovers an interrupted aircraft_db
+    swap and creates base tables when missing), not a bare _migrate()."""
+
+    def test_calls_ensure_base_schema_when_no_override(self, monkeypatch):
+        monkeypatch.setattr(web, "_db", None)
+        calls: list[str] = []
+        monkeypatch.setattr(web.database, "ensure_base_schema",
+                            lambda *a, **k: calls.append("ensure"))
+        monkeypatch.setattr(web.database, "_migrate",
+                            lambda *a, **k: calls.append("migrate"))
+        web._startup_migrate()
+        assert calls == ["ensure"], (
+            "production startup must call ensure_base_schema, not bare _migrate"
+        )
+
+    def test_uses_injected_db_directly(self, db_conn, monkeypatch):
+        monkeypatch.setattr(web, "_db", db_conn)
+        calls: list[str] = []
+        monkeypatch.setattr(web.database, "ensure_base_schema",
+                            lambda *a, **k: calls.append("ensure"))
+        monkeypatch.setattr(web.database, "_migrate",
+                            lambda *a, **k: calls.append("migrate"))
+        web._startup_migrate()
+        # In-memory injected DBs can't be reopened, so the test connection is
+        # migrated in place — never via ensure_base_schema (which opens a path).
+        assert calls == ["migrate"]
 
 
 # ---------------------------------------------------------------------------
@@ -1120,6 +1225,52 @@ class TestApiFeeders:
         body = r.json()
         assert body["has_feeders"] is False
         assert body["feeders"] == []
+
+    def test_api_feeders_caches_within_ttl(self, client, monkeypatch):
+        # BE-18: a second request inside the TTL window must be served from
+        # cache and NOT spawn another feeder-check batch.
+        calls = {"n": 0}
+
+        async def mock_feeders():
+            calls["n"] += 1
+            return [{"name": "readsb", "unit": "readsb.service", "overall": "ok"}]
+
+        monkeypatch.setattr(config, "FEEDERS",
+                            [{"name": "readsb", "unit": "readsb.service"}])
+        monkeypatch.setattr(web, "_check_all_feeders", mock_feeders)
+        r1 = client.get("/api/feeders")
+        r2 = client.get("/api/feeders")
+        assert r1.status_code == 200 and r2.status_code == 200
+        assert r1.json()["feeders"] == r2.json()["feeders"]
+        assert calls["n"] == 1
+
+    def test_api_feeders_concurrent_requests_share_one_batch(self, monkeypatch):
+        # BE-18: two concurrent requests with a cold cache must coalesce into a
+        # single batch via the asyncio.Lock (the loser re-reads the cache).
+        import asyncio as _asyncio
+
+        web._cache.clear()
+        monkeypatch.setattr(web, "_feeders_lock", None)
+        monkeypatch.setattr(config, "FEEDERS",
+                            [{"name": "a", "unit": "a.service"}])
+        calls = {"n": 0}
+
+        async def slow_batch():
+            calls["n"] += 1
+            await _asyncio.sleep(0.05)
+            return [{"name": "a", "unit": "a.service", "overall": "ok"}]
+
+        monkeypatch.setattr(web, "_check_all_feeders", slow_batch)
+
+        async def drive():
+            return await _asyncio.gather(web.api_feeders(), web.api_feeders())
+
+        # Use the shared loop (not asyncio.run, which closes it and breaks
+        # every later get_event_loop().run_until_complete() test in the suite).
+        results = _asyncio.get_event_loop().run_until_complete(drive())
+        assert calls["n"] == 1
+        assert all(r["has_feeders"] for r in results)
+        assert all(r["feeders"][0]["name"] == "a" for r in results)
 
 
 class TestSpaMount:
@@ -1863,6 +2014,13 @@ class TestApiAircraftFlights:
         flights = r.json()["flights"]
         assert flights[0]["first_seen"] == 1_000_001
 
+    def test_invalid_icao_rejected_404(self, client):
+        # BE-11: a non-hex / wrong-length path param is rejected before any
+        # DB or external work.
+        assert client.get("/api/aircraft/zzzzzz/flights").status_code == 404
+        assert client.get("/api/aircraft/abcd/flights").status_code == 404
+        assert client.get("/api/aircraft/aabbccdd/flights").status_code == 404
+
 
 # ---------------------------------------------------------------------------
 # API: /api/stats
@@ -1887,6 +2045,37 @@ class TestApiStats:
         r = client.get("/api/stats?from=900000&to=1500000")
         assert r.status_code == 200
         assert r.json()["total_flights"] == 1
+
+    def test_stats_range_is_half_open_excludes_to_bound(
+        self, client, db_conn, clear_web_cache,
+    ):
+        # BE-16 (Audit 2026-05-31): the stats date range must be half-open
+        # [from, to) — matching history/export — so a flight whose first_seen
+        # equals `to` is excluded and day-boundary buckets never double-count.
+        insert_flight(db_conn, icao="aa0001", first_seen=1_000_000)  # inside
+        insert_flight(db_conn, icao="aa0002", first_seen=1_500_000)  # == to → excluded
+        r = client.get("/api/stats?from=900000&to=1500000")
+        assert r.status_code == 200
+        assert r.json()["total_flights"] == 1
+
+    def test_new_aircraft_no_duplicate_on_same_first_seen(
+        self, client, db_conn, clear_web_cache,
+    ):
+        # BE-15 (Audit 2026-05-31): the new_aircraft self-join matches
+        # `f2.first_seen = sub.first_seen_ever`. Two flights for one ICAO with
+        # the SAME first_seen (same second) match both rows → duplicate items
+        # and non-deterministic reg/type. The join must disambiguate by id so
+        # exactly one representative row comes back.
+        now = int(time.time())
+        fs = now - 3600  # within the 24h "new aircraft" window
+        insert_flight(db_conn, icao="aabbcc", registration="REG-A",
+                      aircraft_type="A320", first_seen=fs, last_seen=fs + 600)
+        insert_flight(db_conn, icao="aabbcc", registration="REG-B",
+                      aircraft_type="B738", first_seen=fs, last_seen=fs + 600)
+        r = client.get("/api/stats")
+        items = r.json()["new_aircraft"]["items"]
+        matching = [it for it in items if it["icao_hex"] == "aabbcc"]
+        assert len(matching) == 1, f"expected one new-aircraft row, got {matching}"
 
     def test_result_cached_on_second_call(self, client, db_conn, clear_web_cache):
         insert_flight(db_conn, first_seen=int(time.time()) - 3600)
@@ -3016,6 +3205,25 @@ class TestApiFlaggedAircraft:
         assert ac["thumbnail_url"] == "https://t.jpg"
         assert ac["photographer"] == "Bob"
 
+    def test_grouped_metadata_is_deterministic_latest_flight(self, client, db_conn):
+        # BE-15 (Audit 2026-05-31): two flights for one ICAO with conflicting
+        # reg/type and the SAME last_seen (a tie on the grouping max). GROUP BY
+        # f.icao_hex with bare reg/type columns resolves the tie arbitrarily.
+        # The representative must be deterministic — ORDER BY last_seen DESC,
+        # id DESC means the higher-id flight wins — and exactly one row returns.
+        _insert_aircraft_db(db_conn, "aabbcc", flags=1)  # flag source is the DB row
+        ls = 2_003_600
+        insert_flight(db_conn, icao="aabbcc", registration="LOW-ID",
+                      aircraft_type="OLD", first_seen=1_000_000, last_seen=ls)
+        insert_flight(db_conn, icao="aabbcc", registration="HIGH-ID",
+                      aircraft_type="NEW", first_seen=2_000_000, last_seen=ls)
+        r = client.get("/api/aircraft/flagged")
+        aircraft = r.json()["aircraft"]
+        assert len(aircraft) == 1, f"expected one row per ICAO, got {aircraft}"
+        assert aircraft[0]["registration"] == "HIGH-ID"
+        assert aircraft[0]["aircraft_type"] == "NEW"
+        assert aircraft[0]["flight_count"] == 2
+
 
 # ---------------------------------------------------------------------------
 # API: /api/aircraft/{icao_hex}/photo  — photo by ICAO hex
@@ -3380,6 +3588,44 @@ class TestMapSnapshot:
         flight_ids = sorted(a["flight_id"] for a in aircraft)
         assert flight_ids == sorted([fid1, fid2])
 
+    def test_snapshot_uses_max_ts_not_max_id(self, client, db_conn):
+        # BE-14 (Audit 2026-05-31): the representative position must be the
+        # latest by `ts`, not the highest `id`.  Insert the LATER-ts position
+        # first (lower autoincrement id), then an EARLIER-ts position (higher
+        # id) — MAX(id) would wrongly pick the stale earlier row.
+        now = int(time.time())
+        at = now - 60
+        fid = insert_flight(db_conn, icao="aabbcc", first_seen=at - 300)
+        self._insert_position(db_conn, flight_id=fid, ts=at - 30, lat=51.0, lon=11.0)
+        self._insert_position(db_conn, flight_id=fid, ts=at - 200, lat=50.0, lon=10.0)
+        r = client.get(f"/api/map/snapshot?at={at}&trail=0")
+        assert r.status_code == 200
+        aircraft = r.json()["aircraft"]
+        assert len(aircraft) == 1
+        assert aircraft[0]["ts"] == at - 30
+        assert aircraft[0]["lat"] == 51.0
+
+    def test_snapshot_enriches_reg_type_from_aircraft_db(self, client, db_conn):
+        # BE-14: registration/aircraft_type missing on the flight row must be
+        # backfilled from aircraft_db (then adsbx_overrides) so the live map
+        # label matches the flight list.
+        now = int(time.time())
+        at = now - 60
+        fid = insert_flight(db_conn, icao="aabbcc", first_seen=at - 300,
+                            registration=None, aircraft_type=None)
+        db_conn.execute(
+            "INSERT INTO aircraft_db (icao_hex, registration, type_code, type_desc, flags) "
+            "VALUES ('aabbcc','SP-ENR','A320','Airbus A320',0)"
+        )
+        db_conn.commit()
+        self._insert_position(db_conn, flight_id=fid, ts=at - 30, lat=51.0, lon=11.0)
+        r = client.get(f"/api/map/snapshot?at={at}&trail=0")
+        assert r.status_code == 200
+        aircraft = r.json()["aircraft"]
+        assert len(aircraft) == 1
+        assert aircraft[0]["registration"] == "SP-ENR"
+        assert aircraft[0]["aircraft_type"] == "A320"
+
 
 class TestMapPrewarmer:
     """Functional test for _prewarm_one — the actual thread lifecycle is
@@ -3528,6 +3774,31 @@ class TestMapPrewarmer:
         assert ("coverage", "24h") in early
 
 
+class TestParseIcaoPath:
+    """BE-11 — strict ICAO path-param validation."""
+
+    def test_accepts_six_hex_lowercased(self):
+        assert web._parse_icao_path("AABBCC") == "aabbcc"
+        assert web._parse_icao_path("a1b2c3") == "a1b2c3"
+
+    def test_accepts_tilde_prefix_and_strips_it(self):
+        assert web._parse_icao_path("~aabbcc") == "aabbcc"
+
+    def test_rejects_non_hex(self):
+        with pytest.raises(web.HTTPException) as ei:
+            web._parse_icao_path("zzzzzz")
+        assert ei.value.status_code == 404
+
+    def test_rejects_wrong_length(self):
+        for bad in ("abc", "aabbccdd", "", "~"):
+            with pytest.raises(web.HTTPException):
+                web._parse_icao_path(bad)
+
+    def test_rejects_double_tilde(self):
+        with pytest.raises(web.HTTPException):
+            web._parse_icao_path("~~aabbc")
+
+
 class TestApiAircraftPhoto:
     def test_cached_photo_returned(self, client, db_conn):
         db_conn.execute(
@@ -3545,6 +3816,15 @@ class TestApiAircraftPhoto:
         r = client.get("/api/aircraft/aabbcc/photo")
         assert r.status_code == 200
         assert r.json() is None
+
+    def test_invalid_icao_rejected_before_fetch(self, client, monkeypatch):
+        # BE-11: a malformed ICAO must 404 without triggering an outbound
+        # photo fetch (defence-in-depth — bound external side effects).
+        def _boom(*a, **k):
+            raise AssertionError("photo fetch must not run for invalid ICAO")
+        monkeypatch.setattr(web, "_fetch_photo", _boom)
+        assert client.get("/api/aircraft/zzzzzz/photo").status_code == 404
+        assert client.get("/api/aircraft/abc/photo").status_code == 404
 
     def test_network_error_returns_null(self, client, monkeypatch):
         monkeypatch.setattr(photo_sources, "fetch_photo", lambda icao: None)
@@ -3767,6 +4047,77 @@ class TestFetchTypePhoto:
         assert ac[0]["thumbnail_url"] == "https://example.com/specific.jpg"
         assert ac[0]["is_type_photo"] is False
 
+    def test_resolve_uses_separate_connection_closed_after(
+        self, tmp_path, monkeypatch
+    ):
+        """BE-13 (Audit 2026-05-31): the executor closure must NOT reuse the
+        request thread's sqlite connection.  It must open its own connection
+        and close it when done, so a long photo resolve never serialises on the
+        request connection's per-connection mutex."""
+        import asyncio
+        import sqlite3
+        import threading as _t
+
+        monkeypatch.setattr(web, "_db", None)
+        monkeypatch.setattr(web, "_thread_local", _t.local())
+        db_path = str(tmp_path / "be13.db")
+        database.init_db(db_path)
+
+        # Seed a DB-JOIN hit (step 3) so resolve_photo returns synchronously
+        # without any network: aircraft_db row + a cached specific photo.
+        original_connect = database.connect
+        seed = original_connect(db_path)
+        seed.execute(
+            "INSERT INTO aircraft_db (icao_hex, registration, type_code, type_desc, flags) "
+            "VALUES ('aabbcc','G-TEST','B738','Boeing 737-800',0)"
+        )
+        seed.execute(
+            "INSERT INTO photos VALUES ('aabbcc','https://example.com/b738.jpg',NULL,NULL,NULL,?)",
+            (int(time.time()),),
+        )
+        seed.commit()
+        seed.close()
+
+        opened: list[sqlite3.Connection] = []
+
+        def spy_connect(path=db_path):
+            conn = original_connect(db_path)
+            opened.append(conn)
+            return conn
+
+        monkeypatch.setattr(web.database, "connect", spy_connect)
+        monkeypatch.setattr(photo_sources, "fetch_photo", lambda icao: None)
+
+        captured: dict[str, object] = {}
+        real_resolve = photo_sources.resolve_photo
+
+        def spy_resolve(conn, icao_hex, type_code, **kw):
+            captured["conn"] = conn
+            return real_resolve(conn, icao_hex, type_code, **kw)
+
+        monkeypatch.setattr(photo_sources, "resolve_photo", spy_resolve)
+
+        loop = asyncio.new_event_loop()
+        try:
+            result = loop.run_until_complete(web._fetch_type_photo("B738"))
+        finally:
+            loop.close()
+        assert result is not None
+        assert result["thumbnail_url"] == "https://example.com/b738.jpg"
+
+        # The request thread's connection is the one db() caches for this thread.
+        request_conn = web.db()
+        worker_conn = captured["conn"]
+        assert worker_conn is not request_conn, (
+            "executor closure reused the request connection across threads"
+        )
+
+        # The worker connection must be closed by the closure's finally block.
+        with pytest.raises(sqlite3.ProgrammingError):
+            worker_conn.execute("SELECT 1")
+
+        request_conn.close()
+
 
 # ---------------------------------------------------------------------------
 # Audit-13 Phase 6: previously-untested public surfaces
@@ -3846,3 +4197,181 @@ class TestRedirectLive:
         assert not loc.startswith("http://")
         assert not loc.startswith("https://")
         assert not loc.startswith("//")
+
+
+# ---------------------------------------------------------------------------
+# Phase 5 (FE-2): Pydantic response_model contracts.
+#
+# These pin the emitted JSON key sets for the hot endpoints. The contract is
+# added with extra="allow" + response_model_exclude_unset=True, which by
+# construction emits exactly the handler dict's keys (no silent drops, no
+# null-injection). Each test seeds a fully-enriched flight so every optional
+# key is actually present, then asserts the exact key set at each level. If a
+# future model omits a field (drop) or injects an absent one, these fail.
+# ---------------------------------------------------------------------------
+
+def _seed_enriched_flight(conn, *, fid_icao="aabbcc", callsign="LOT123"):
+    """Insert a flight with aircraft_db + airports + route enrichment and a
+    couple of positions, so every optional response key is populated."""
+    fid = insert_flight(conn, icao=fid_icao, callsign=callsign, squawk="1234")
+    conn.execute(
+        "UPDATE flights SET origin_icao='WAW', dest_icao='LHR', category='A3' WHERE id=?",
+        (fid,),
+    )
+    conn.execute(
+        "INSERT INTO aircraft_db (icao_hex, registration, type_code, type_desc, flags) "
+        "VALUES (?,?,?,?,?)",
+        (fid_icao, "SP-LRA", "B789", "Boeing 787-9", 0),
+    )
+    _insert_route(conn, callsign, "WAW", "LHR")
+    conn.executemany(
+        "INSERT INTO positions "
+        "(flight_id, ts, lat, lon, alt_baro, alt_geom, gs, track, baro_rate, rssi, source_type) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        [
+            (fid, 1_000_000, 52.0, 21.0, 1000, 1100, 200.0, 90.0, 1500, -10.0, "adsb_icao"),
+            (fid, 1_000_300, 52.5, 22.0, 35000, 35100, 480.0, 95.0, -640, -8.0, "adsb_icao"),
+        ],
+    )
+    conn.commit()
+    return fid
+
+
+_FLIGHT_META_KEYS = {
+    "id", "icao_hex", "callsign", "registration", "aircraft_type", "type_desc",
+    "flags", "squawk", "category", "primary_source", "first_seen", "last_seen",
+    "duration_sec", "max_alt_baro", "max_gs", "max_distance_nm", "total_positions",
+    "adsb_positions", "mlat_positions", "lat_min", "lat_max", "lon_min", "lon_max",
+    "origin_icao", "dest_icao", "origin_name", "origin_country", "dest_name",
+    "dest_country",
+}
+
+
+class TestResponseContractParity:
+    def test_flight_detail_key_parity(self, client, db_conn):
+        fid = _seed_enriched_flight(db_conn)
+        data = client.get(f"/api/flights/{fid}").json()
+        assert set(data) == {
+            "flight", "positions", "other_flights", "receiver_lat", "receiver_lon",
+        }
+        # `flight` carries airline_name on top of the shared flight columns.
+        assert set(data["flight"]) == _FLIGHT_META_KEYS | {"airline_name"}
+        # other_flights rows must NOT gain an injected `airline_name: null`.
+        fid2 = insert_flight(db_conn, icao="aabbcc", first_seen=1_200_000)
+        other = client.get(f"/api/flights/{fid2}").json()["other_flights"]
+        assert other, "expected a sibling flight"
+        assert set(other[0]) == _FLIGHT_META_KEYS
+        assert "airline_name" not in other[0]
+        # Value-type spot checks: coercion must not mangle these.
+        f = data["flight"]
+        assert isinstance(f["squawk"], str) and f["squawk"] == "1234"
+        assert f["icao_hex"] == "aabbcc"
+
+    def test_flight_detail_positions_empty_by_default(self, client, db_conn):
+        fid = _seed_enriched_flight(db_conn)
+        assert client.get(f"/api/flights/{fid}").json()["positions"] == []
+
+    def test_flight_positions_key_parity(self, client, db_conn):
+        fid = _seed_enriched_flight(db_conn)
+        data = client.get(f"/api/flights/{fid}/positions").json()
+        assert set(data) == {"total", "limit", "offset", "positions"}
+        assert data["total"] == 2
+        assert set(data["positions"][0]) == {
+            "ts", "lat", "lon", "alt_baro", "alt_geom", "gs", "track",
+            "baro_rate", "rssi", "source_type",
+        }
+
+    def test_flight_positions_chart_key_parity(self, client, db_conn):
+        fid = _seed_enriched_flight(db_conn)
+        data = client.get(f"/api/flights/{fid}/positions/chart?target=2000").json()
+        assert set(data) == {"total", "target", "positions"}
+        # Chart rows omit rssi (must not be injected as null).
+        assert set(data["positions"][0]) == {
+            "ts", "lat", "lon", "alt_baro", "alt_geom", "gs", "track",
+            "baro_rate", "source_type",
+        }
+        assert "rssi" not in data["positions"][0]
+
+    def test_watchlist_key_parity(self, client, db_conn):
+        db_conn.execute(
+            "INSERT INTO watchlist (match_type, value, label, created_at) "
+            "VALUES ('icao','aabbcc','My jet', 1700000000)",
+        )
+        db_conn.commit()
+        data = client.get("/api/watchlist").json()
+        assert set(data) == {"entries"}
+        assert set(data["entries"][0]) == {
+            "id", "match_type", "value", "label", "created_at", "airborne",
+        }
+
+    def test_map_snapshot_key_parity(self, client, db_conn):
+        # `at` must be near now() (endpoint rejects future + pre-history-limit
+        # timestamps), so seed recent positions rather than the ancient
+        # _seed_enriched_flight defaults.
+        now = int(time.time())
+        at = now - 60
+        fid = insert_flight(db_conn, icao="aabbcc", callsign="LOT123", first_seen=at - 300)
+        db_conn.execute(
+            "INSERT INTO aircraft_db (icao_hex, registration, type_code, type_desc, flags) "
+            "VALUES ('aabbcc','SP-LRA','B789','Boeing 787-9',0)",
+        )
+        _insert_route(db_conn, "LOT123", "WAW", "LHR")
+        db_conn.executemany(
+            "INSERT INTO positions (flight_id, ts, lat, lon, alt_baro, gs, track, source_type) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            [
+                (fid, at - 200, 50.0, 10.0, 1000, 200.0, 90.0, "adsb_icao"),
+                (fid, at - 30, 51.0, 11.0, 35000, 480.0, 95.0, "adsb_icao"),
+            ],
+        )
+        db_conn.commit()
+        data = client.get(f"/api/map/snapshot?at={at}&trail=10").json()
+        assert set(data) == {"at", "is_live", "receiver_lat", "receiver_lon", "aircraft"}
+        assert data["aircraft"], "expected one aircraft in snapshot"
+        ac = data["aircraft"][0]
+        assert set(ac) == {
+            "flight_id", "ts", "lat", "lon", "alt_baro", "gs", "track",
+            "source_type", "icao_hex", "callsign", "registration", "aircraft_type",
+            "category", "primary_source", "flags", "origin_icao", "dest_icao",
+            "seconds_ago", "trail",
+        }
+        # Trail points stay [lat, lon, ts] with ts an int (no float coercion).
+        assert ac["trail"]
+        assert len(ac["trail"][0]) == 3
+        assert isinstance(ac["trail"][0][2], int)
+
+    def test_stats_key_parity(self, client, db_conn):
+        _seed_enriched_flight(db_conn)
+        data = client.get("/api/stats").json()
+        assert set(data) == {
+            "total_flights", "total_positions", "unique_aircraft", "unique_airlines",
+            "db_size_bytes", "oldest_flight", "flights_last_24h", "flights_last_7d",
+            "source_breakdown", "top_airlines", "top_aircraft_types",
+            "hourly_distribution", "daily_unique_aircraft", "altitude_distribution",
+            "military_flights", "interesting_flights", "anonymous_flights",
+            "squawk_counts", "new_aircraft", "furthest_aircraft", "receiver_lat",
+            "receiver_lon", "trends", "previous_window", "lifetime", "heatmap",
+            "top_countries", "frequent_aircraft", "top_routes", "top_airports",
+            "range",
+        }
+        assert set(data["source_breakdown"]) == {"adsb", "mlat", "other"}
+        assert set(data["trends"]) == {"flights_24h_prev", "flights_7d_prev"}
+        assert set(data["lifetime"]) == {
+            "total_flights", "total_positions", "unique_aircraft", "unique_airlines",
+            "oldest_flight", "db_size_bytes", "source_breakdown",
+        }
+        assert set(data["new_aircraft"]) == {"total", "items"}
+        # Emergency-squawk keys preserved verbatim (non-identifier keys).
+        assert set(data["squawk_counts"]) == {"7700", "7600", "7500"}
+
+    def test_stats_filtered_range_and_previous_window(self, client, db_conn):
+        _seed_enriched_flight(db_conn)
+        # A filtered window surfaces `range` and `previous_window` objects.
+        data = client.get("/api/stats?from=900000&to=1100000").json()
+        assert data["range"] is not None
+        assert set(data["range"]) == {"from", "to"}
+        if data["previous_window"] is not None:
+            assert set(data["previous_window"]) == {
+                "from_ts", "to_ts", "total_flights", "total_positions",
+                "unique_aircraft",
+            }

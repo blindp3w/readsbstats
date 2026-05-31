@@ -1,9 +1,14 @@
 // Originally ported from v1's `static/js/table-utils.js:safeHttpUrl()`
-// (since deleted in the v2.0.0 SPA cutover). This module is the active
-// allowlist; the backend twin lives in `http_safe.py`.
+// (since deleted in the v2.0.0 SPA cutover).
 //
-// Defence-in-depth allowlist for URLs we render from third-party API data
-// (photo URLs from Planespotters / airport-data.com / hexdb.io / Wikipedia).
+// This is an HTTPS-only *protocol* guard for URLs we render from third-party
+// API data (photo URLs from Planespotters / airport-data.com / hexdb.io /
+// Wikipedia) — NOT a host allowlist. Host-allowlisting happens server-side,
+// before the URL is ever cached: `photo_sources.py::_check_hosts` (per-source
+// CDN allowlist) and the SSRF IP-gating in `http_safe.py`. By the time a URL
+// reaches the SPA it has already passed those checks; this is the last-line
+// render-time defence.
+//
 // React's JSX escapes text, but `<img src>` / `<a href>` are still vectors:
 // `javascript:`, `data:`, `vbscript:`, `file:`, and protocol-relative URIs
 // can all execute or exfiltrate without further sanitisation.

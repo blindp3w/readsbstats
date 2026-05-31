@@ -1,8 +1,12 @@
 // Hand-typed shared shapes used across multiple pages/components.
-// Distinct from `api.types.ts`, which is generated from the OpenAPI spec.
-// Anything that drifts on backend response shape changes should be auto-
-// generated; types here are SPA-only inventions (e.g. union narrowings)
-// or backend shapes that pre-date the OpenAPI export.
+//
+// The backend publishes a typed OpenAPI contract for the hot endpoints
+// (FastAPI `response_model=`, see `src/readsbstats/schemas.py`) at
+// `/openapi.json`. There is no codegen step wired up yet, so these remain
+// hand-maintained — when a backend response shape changes, update the
+// matching interface here (or generate from the spec). Types here are the
+// single source of truth for SPA-only narrowings and the backend shapes the
+// SPA depends on.
 
 // Audit-12 #P6.7 — `WatchlistEntry` was declared in two places (Aircraft.tsx
 // and Watchlist.tsx) with divergent shapes. Single source of truth here.

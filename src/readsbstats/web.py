@@ -31,7 +31,7 @@ from fastapi.responses import JSONResponse, RedirectResponse, Response, Streamin
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import analytics, config, database, downsample, enrichment, geo, health, icao_ranges, photo_sources, route_enricher
+from . import analytics, config, database, downsample, enrichment, geo, health, icao_ranges, photo_sources, route_enricher, schemas
 
 logging.basicConfig(
     level=logging.INFO,
@@ -54,26 +54,32 @@ _bearing = geo.bearing
 from contextlib import asynccontextmanager
 
 
+def _startup_migrate() -> None:
+    """Bring the DB to a queryable baseline at web startup.
+
+    Audit-13 A13-067: `_migrate` may run a handful of ALTER TABLEs and
+    `CREATE INDEX` statements on cold disk — hundreds of ms on a Pi 4 — so the
+    lifespan runs this in a worker thread to keep the event loop free.
+
+    BE-3 (Audit 2026-05-31): for a real DB path, go through
+    `database.ensure_base_schema()` — it creates base tables on a fresh
+    `RSBS_DB_PATH` (so endpoints don't raise `no such table`) and recovers an
+    interrupted aircraft_db swap, in addition to `_migrate()`. It opens and
+    closes its own connection, so the worker thread leaves no thread-local
+    connection open (A14-004).
+
+    When a test has injected `_db`, migrate it in place — in-memory DBs can't
+    be reopened by path, and the test owns the connection.
+    """
+    if _db is not None:
+        database._migrate(_db)
+        return
+    database.ensure_base_schema()
+
+
 @asynccontextmanager
 async def _lifespan(app_: FastAPI) -> AsyncIterator[None]:
     log.info("Starting web server — DB: %s", config.DB_PATH)
-    # Audit-13 A13-067: `_migrate` may run a handful of ALTER TABLEs and
-    # `CREATE INDEX` statements on cold disk — hundreds of ms on a Pi 4.
-    # Wrap in a thread so the event loop stays free during startup.
-    # Open and close an explicit connection rather than using db() so the
-    # worker thread does not leave a thread-local connection open for its
-    # lifetime (fixing A14-004 startup connection leak).
-    # When a test has injected _db, use it directly (in-memory DBs can't be
-    # reopened) and skip the close — the test owns the connection.
-    def _startup_migrate() -> None:
-        if _db is not None:
-            database._migrate(_db)
-            return
-        conn = database.connect()
-        try:
-            database._migrate(conn)
-        finally:
-            conn.close()
     await asyncio.to_thread(_startup_migrate)
     # Background migrations (positions indexes, bearing backfill) are owned by
     # the collector so two processes don't fight on the SQLite write lock.
@@ -218,12 +224,19 @@ def db() -> sqlite3.Connection:
 # oldest on overflow. OrderedDict gives us insertion-order eviction without
 # a dependency.
 _cache: "_OrderedDict[str, tuple[float, object]]" = _OrderedDict()
+# BE-12 (Audit 2026-05-31): the cache is read/written from the request thread
+# pool AND the prewarmer thread. OrderedDict mutation (move_to_end / del /
+# popitem eviction) is not atomic across those, so all _cache access goes
+# through this re-entrant lock. Compute stays outside the lock — handlers
+# build the value first, then call _set_cache.
+_CACHE_LOCK = threading.RLock()
 _CACHE_MAX_ENTRIES = 256
 _CACHE_TTLS: dict[str, int] = {
     "stats":        120,   # seconds — aggregate data, no need to recompute often
     "polar":        300,   # seconds — max range rarely shifts
     "records":      300,   # seconds — all-time bests, very stable
     "health":        60,   # seconds — matches metrics_collector poll cycle
+    "airspace":    3600,   # 1 h — airspace GeoJSON rarely changes (== _AIRSPACE_TTL)
     "dates":        600,   # seconds — calendar of flight days; only ticks daily
     "heatmap:24h":   300,   # 5 min — recent data changes frequently
     "heatmap:7d":   1800,   # 30 min
@@ -233,6 +246,7 @@ _CACHE_TTLS: dict[str, int] = {
     "coverage:7d":  1800,
     "coverage:30d": 7200,
     "coverage:all": 21600,
+    "feeders":       10,   # BE-18 — feeder checks fan out subprocesses; short TTL
 }
 _DEFAULT_TTL  = 30    # seconds
 _AIRSPACE_TTL = 3600  # seconds — airspace data rarely changes
@@ -249,35 +263,37 @@ def _ttl_for(key: str) -> int:
 
 
 def _get_cache(key: str) -> object | None:
-    entry = _cache.get(key)
-    if entry is None:
+    with _CACHE_LOCK:
+        entry = _cache.get(key)
+        if entry is None:
+            return None
+        if time.time() - entry[0] < _ttl_for(key):
+            return entry[1]
+        # Lazy eviction so an expired key doesn't keep occupying the cap.
+        del _cache[key]
         return None
-    if time.time() - entry[0] < _ttl_for(key):
-        return entry[1]
-    # Lazy eviction so an expired key doesn't keep occupying the cap.
-    del _cache[key]
-    return None
 
 
 def _set_cache(key: str, value: object) -> None:
     now = time.time()
-    # Refreshing an existing key keeps insertion order useful only when
-    # we move it to the end; otherwise the same key would be evicted
-    # before never-touched-since keys.
-    if key in _cache:
-        _cache.move_to_end(key)
-    _cache[key] = (now, value)
-    if len(_cache) > _CACHE_MAX_ENTRIES:
-        # Drop any expired entries first; if still over cap, evict in
-        # insertion order (oldest first).
-        for k in list(_cache.keys()):
-            ts, _ = _cache[k]
-            if now - ts >= _ttl_for(k):
-                del _cache[k]
-            if len(_cache) <= _CACHE_MAX_ENTRIES:
-                break
-        while len(_cache) > _CACHE_MAX_ENTRIES:
-            _cache.popitem(last=False)
+    with _CACHE_LOCK:
+        # Refreshing an existing key keeps insertion order useful only when
+        # we move it to the end; otherwise the same key would be evicted
+        # before never-touched-since keys.
+        if key in _cache:
+            _cache.move_to_end(key)
+        _cache[key] = (now, value)
+        if len(_cache) > _CACHE_MAX_ENTRIES:
+            # Drop any expired entries first; if still over cap, evict in
+            # insertion order (oldest first).
+            for k in list(_cache.keys()):
+                ts, _ = _cache[k]
+                if now - ts >= _ttl_for(k):
+                    del _cache[k]
+                if len(_cache) <= _CACHE_MAX_ENTRIES:
+                    break
+            while len(_cache) > _CACHE_MAX_ENTRIES:
+                _cache.popitem(last=False)
 
 
 def _fmt_ts(epoch: int | None) -> str:
@@ -304,14 +320,29 @@ _FLAGS_EXPR_F   = f"(COALESCE(adb.flags, 0) | COALESCE(axo.flags, 0) | {_ANON_SQ
 _FLAGS_EXPR_SUB = f"(COALESCE(adb.flags, 0) | COALESCE(axo.flags, 0) | {_ANON_SQL_SUB})"
 _FLAGS_EXPR_AF  = f"(COALESCE(adb.flags, 0) | COALESCE(axo.flags, 0) | {_ANON_SQL_AF})"
 
+# BE-14 (Audit 2026-05-31): shared aircraft-metadata enrichment fragment.
+# Resolves reg/type/desc from the flight row first, then aircraft_db, then the
+# airplanes.live-confirmed adsbx_overrides — so the live map, flight list, and
+# stats all agree on the displayed registration/type.  `_ENRICH_JOIN` provides
+# the two LEFT JOINs these expressions depend on (alias `f` must be in scope).
+# First use: api_map_snapshot.  Phase 6 consolidates the remaining ad-hoc call
+# sites onto this fragment.
+_ENRICH_REG  = "COALESCE(f.registration,  adb.registration, axo.registration)"
+_ENRICH_TYPE = "COALESCE(f.aircraft_type, adb.type_code,    axo.type_code)"
+_ENRICH_DESC = "COALESCE(adb.type_desc,   axo.type_desc,    '')"
+_ENRICH_JOIN = """
+    LEFT JOIN aircraft_db     adb ON adb.icao_hex = f.icao_hex
+    LEFT JOIN adsbx_overrides axo ON axo.icao_hex = f.icao_hex
+"""
+
 # Joined SELECT fragment used in flight list and detail queries
 _FLIGHT_COLS = f"""
     f.id,
     f.icao_hex,
     f.callsign                                            AS callsign,
-    COALESCE(f.registration,  adb.registration, axo.registration)  AS registration,
-    COALESCE(f.aircraft_type, adb.type_code,    axo.type_code)     AS aircraft_type,
-    COALESCE(adb.type_desc,   axo.type_desc,    '')                AS type_desc,
+    {_ENRICH_REG}  AS registration,
+    {_ENRICH_TYPE}     AS aircraft_type,
+    {_ENRICH_DESC}                AS type_desc,
     {_FLAGS_EXPR_F}                                                AS flags,
     f.squawk,
     f.category,
@@ -680,7 +711,8 @@ class _WatchlistEntry(BaseModel):
     label: str | None = Field(default=None, max_length=database.WATCHLIST_LABEL_MAX)
 
 
-@app.get("/api/watchlist")
+@app.get("/api/watchlist", response_model=schemas.WatchlistListResponse,
+         response_model_exclude_unset=True)
 def api_watchlist_list() -> dict:
     rows = db().execute(
         """
@@ -730,6 +762,31 @@ def api_watchlist_delete(entry_id: int) -> Response:
 # API — flight list
 # ---------------------------------------------------------------------------
 
+def _build_date_filter(
+    from_ts: int | None,
+    to_ts: int | None,
+    *,
+    col: str = "first_seen",
+) -> tuple[list[str], list]:
+    """Half-open ``[from_ts, to_ts)`` range filter on ``col`` (BE-16).
+
+    Returns ``(conditions, params)`` — a list of SQL fragments already
+    qualified with ``col`` (``>= ?`` / ``< ?``) and the matching bind values;
+    either bound may be ``None``.  Half-open semantics match the flight
+    history/export filter so adjacent day windows never overlap and a flight
+    exactly at ``to`` is never double-counted across buckets.
+    """
+    conditions: list[str] = []
+    params: list = []
+    if from_ts is not None:
+        conditions.append(f"{col} >= ?")
+        params.append(from_ts)
+    if to_ts is not None:
+        conditions.append(f"{col} < ?")
+        params.append(to_ts)
+    return conditions, params
+
+
 def _build_flight_filter(
     date: str | None,
     icao: str | None,
@@ -769,12 +826,9 @@ def _build_flight_filter(
         conditions.append("f.first_seen >= ? AND f.first_seen < ?")
         params += [day_start, day_end]
     elif from_ts is not None or to_ts is not None:
-        if from_ts is not None:
-            conditions.append("f.first_seen >= ?")
-            params.append(from_ts)
-        if to_ts is not None:
-            conditions.append("f.first_seen < ?")
-            params.append(to_ts)
+        dc, dp = _build_date_filter(from_ts, to_ts, col="f.first_seen")
+        conditions += dc
+        params += dp
     elif date_from or date_to:
         if date_from:
             try:
@@ -979,8 +1033,12 @@ def api_flights_export(
 # API — single flight detail
 # ---------------------------------------------------------------------------
 
-@app.get("/api/flights/{flight_id}")
-def api_flight_detail(flight_id: int) -> dict:
+@app.get("/api/flights/{flight_id}", response_model=schemas.FlightDetailResponse,
+         response_model_exclude_unset=True)
+def api_flight_detail(
+    flight_id: int,
+    include_positions: bool = Query(False),
+) -> dict:
     conn = db()
     flight = conn.execute(
         f"SELECT {_FLIGHT_COLS} FROM flights f {_FLIGHT_JOIN} WHERE f.id = ?",
@@ -989,16 +1047,22 @@ def api_flight_detail(flight_id: int) -> dict:
     if flight is None:
         raise HTTPException(404, "Flight not found")
 
-    positions = conn.execute(
-        """
-        SELECT ts, lat, lon, alt_baro, alt_geom, gs, track,
-               baro_rate, rssi, source_type
-        FROM positions
-        WHERE flight_id = ?
-        ORDER BY ts
-        """,
-        (flight_id,),
-    ).fetchall()
+    # BE-10: the raw position timeline is no longer embedded by default —
+    # the SPA pulls it from /positions (paginated) and /positions/chart
+    # (downsampled). `include_positions=true` restores the full embed for
+    # any non-frontend consumer.
+    positions = []
+    if include_positions:
+        positions = conn.execute(
+            """
+            SELECT ts, lat, lon, alt_baro, alt_geom, gs, track,
+                   baro_rate, rssi, source_type
+            FROM positions
+            WHERE flight_id = ?
+            ORDER BY ts
+            """,
+            (flight_id,),
+        ).fetchall()
 
     # Enrich callsign → airline name
     flight_dict = dict(flight)
@@ -1035,7 +1099,9 @@ _CHART_DEFAULT_TARGET = 500
 _CHART_MAX_TARGET = 2000
 
 
-@app.get("/api/flights/{flight_id}/positions")
+@app.get("/api/flights/{flight_id}/positions",
+         response_model=schemas.FlightPositionsResponse,
+         response_model_exclude_unset=True)
 def api_flight_positions(
     flight_id: int,
     limit: int = Query(_POSITIONS_DEFAULT_LIMIT, ge=1, le=_POSITIONS_MAX_LIMIT),
@@ -1068,7 +1134,9 @@ def api_flight_positions(
     }
 
 
-@app.get("/api/flights/{flight_id}/positions/chart")
+@app.get("/api/flights/{flight_id}/positions/chart",
+         response_model=schemas.FlightPositionsChartResponse,
+         response_model_exclude_unset=True)
 def api_flight_positions_chart(
     flight_id: int,
     target: int = Query(_CHART_DEFAULT_TARGET, ge=2, le=_CHART_MAX_TARGET),
@@ -1084,7 +1152,8 @@ def api_flight_positions_chart(
     conn = db()
     rows = conn.execute(
         """
-        SELECT ts, lat, lon, alt_baro, alt_geom, gs, track, source_type
+        SELECT ts, lat, lon, alt_baro, alt_geom, gs, track,
+               baro_rate, source_type
         FROM positions
         WHERE flight_id = ?
         ORDER BY ts
@@ -1250,16 +1319,23 @@ async def _fetch_type_photo(type_code: str | None) -> dict | None:
             # icao_hex="" is the documented type-only mode: resolve_photo skips
             # the specific-aircraft cache check (step 1) and the specific fetch
             # (step 4) so we don't pollute the ``photos`` table with an
-            # empty-key row.  ``conn`` is shared across the event-loop thread
-            # and this executor worker; Python's sqlite3 per-connection mutex
-            # serialises calls but contention is microseconds (no cursor is
-            # held across HTTP).  ``database.connect`` uses
-            # ``check_same_thread=False`` so cross-thread use is permitted.
-            result, _is_type = photo_sources.resolve_photo(
-                conn, "", type_code,
-                cache_seconds=config.PHOTO_CACHE_DAYS * 86400,
-            )
-            return result
+            # empty-key row.  BE-13 (Audit 2026-05-31): open a dedicated
+            # connection for this executor worker rather than sharing the
+            # request thread's connection — resolve_photo can hold the
+            # connection across a slow HTTP probe, and serialising every
+            # gallery request on one connection's sqlite mutex defeats the
+            # threadpool.  When a test injects ``_db`` (in-memory, unreopenable)
+            # we must reuse it; only a real per-thread connection is closed.
+            worker_conn = _db if _db is not None else database.connect()
+            try:
+                result, _is_type = photo_sources.resolve_photo(
+                    worker_conn, "", type_code,
+                    cache_seconds=config.PHOTO_CACHE_DAYS * 86400,
+                )
+                return result
+            finally:
+                if worker_conn is not _db:
+                    worker_conn.close()
 
         return await asyncio.get_running_loop().run_in_executor(None, _resolve)
 
@@ -1279,7 +1355,9 @@ def _annotate_photo(result: dict | None, *,
     }
 
 
-@app.get("/api/flights/{flight_id}/photo")
+@app.get("/api/flights/{flight_id}/photo",
+         response_model=schemas.PhotoResponse | None,
+         response_model_exclude_unset=True)
 async def api_flight_photo(flight_id: int) -> dict | None:
     row = db().execute(
         """
@@ -1307,6 +1385,23 @@ async def api_flight_photo(flight_id: int) -> dict | None:
 # API — aircraft history
 # ---------------------------------------------------------------------------
 
+_ICAO_PATH_RE = re.compile(r"^~?[0-9a-fA-F]{6}$")
+
+
+def _parse_icao_path(raw: str) -> str:
+    """Validate + normalise an ICAO hex taken from a URL path (BE-11).
+
+    Accepts an optional single leading ``~`` (anonymous / TIS-B addresses)
+    followed by exactly 6 hex digits; returns the lowercase hex with ``~``
+    stripped. Anything else → 404. DB queries are parameterised so this is not
+    about SQLi — it bounds external side effects (outbound photo fetches, cache
+    writes) so an arbitrary path segment can't drive them.
+    """
+    if not _ICAO_PATH_RE.match(raw or ""):
+        raise HTTPException(404)
+    return raw.lower().lstrip("~")
+
+
 @app.get("/api/aircraft/{icao_hex}/flights")
 def api_aircraft_flights(
     icao_hex: str,
@@ -1316,7 +1411,7 @@ def api_aircraft_flights(
     sort_dir: str | None = Query(None, description="asc | desc"),
 ) -> dict:
     conn = db()
-    icao = icao_hex.lower().lstrip("~")
+    icao = _parse_icao_path(icao_hex)
 
     # Single query for count + aggregates (avoids two full scans)
     aggs_row = conn.execute(
@@ -1399,29 +1494,57 @@ def api_aircraft_flagged(
         f"SELECT COUNT(DISTINCT f.icao_hex) AS cnt {base_joins} WHERE {flag_filter}"
     ).fetchone()["cnt"]
 
+    # BE-15 (Audit 2026-05-31): `base` picks one deterministic representative
+    # flight per ICAO (latest by last_seen, id as tiebreak) via a window
+    # function; `agg` carries the COUNT/MIN/MAX aggregates.  This replaces the
+    # old GROUP BY whose bare reg/type columns came from an arbitrary grouped
+    # row.  The window runs only over the flag-filtered (small) set, so the
+    # extra sort is bounded on the Pi-4.
     rows = conn.execute(
         f"""
+        WITH base AS (
+            SELECT
+                f.icao_hex,
+                COALESCE(f.registration, adb.registration, axo.registration)  AS registration,
+                COALESCE(f.aircraft_type, adb.type_code, axo.type_code)       AS aircraft_type,
+                COALESCE(adb.type_desc, axo.type_desc, '')                    AS type_desc,
+                COALESCE(adb.type_code, axo.type_code, f.aircraft_type)       AS tp_type,
+                {flag_expr}                                                   AS flags,
+                ROW_NUMBER() OVER (
+                    PARTITION BY f.icao_hex ORDER BY f.last_seen DESC, f.id DESC
+                )                                                             AS rn
+            {base_joins}
+            WHERE {flag_filter}
+        ),
+        agg AS (
+            SELECT f.icao_hex,
+                   COUNT(*)          AS flight_count,
+                   MIN(f.first_seen) AS first_seen,
+                   MAX(f.last_seen)  AS last_seen
+            {base_joins}
+            WHERE {flag_filter}
+            GROUP BY f.icao_hex
+        )
         SELECT
-            f.icao_hex,
-            COALESCE(f.registration, adb.registration, axo.registration)    AS registration,
-            COALESCE(f.aircraft_type, adb.type_code, axo.type_code)         AS aircraft_type,
-            COALESCE(adb.type_desc, axo.type_desc, '')                      AS type_desc,
-            {flag_expr}                                                     AS flags,
-            COUNT(*)                                                        AS flight_count,
-            MIN(f.first_seen)                                               AS first_seen,
-            MAX(f.last_seen)                                                AS last_seen,
+            b.icao_hex,
+            b.registration,
+            b.aircraft_type,
+            b.type_desc,
+            b.flags,
+            a.flight_count,
+            a.first_seen,
+            a.last_seen,
             COALESCE(p.thumbnail_url, tp.thumbnail_url)                     AS thumbnail_url,
             COALESCE(p.large_url,     tp.large_url)                         AS large_url,
             COALESCE(p.link_url,      tp.link_url)                          AS link_url,
             COALESCE(p.photographer,  tp.photographer)                      AS photographer,
             CASE WHEN p.thumbnail_url IS NULL AND tp.thumbnail_url IS NOT NULL
                  THEN 1 ELSE 0 END                                          AS is_type_photo
-        {base_joins}
-        LEFT JOIN photos p     ON p.icao_hex  = f.icao_hex
-        LEFT JOIN type_photos tp
-               ON tp.type_code = COALESCE(adb.type_code, axo.type_code, f.aircraft_type)
-        WHERE {flag_filter}
-        GROUP BY f.icao_hex
+        FROM base b
+        JOIN agg a ON a.icao_hex = b.icao_hex
+        LEFT JOIN photos p      ON p.icao_hex  = b.icao_hex
+        LEFT JOIN type_photos tp ON tp.type_code = b.tp_type
+        WHERE b.rn = 1
         ORDER BY {order_col} {order_dir}
         LIMIT ? OFFSET ?
         """,
@@ -1438,9 +1561,11 @@ def api_aircraft_flagged(
     return {"total": total, "aircraft": aircraft}
 
 
-@app.get("/api/aircraft/{icao_hex}/photo")
+@app.get("/api/aircraft/{icao_hex}/photo",
+         response_model=schemas.PhotoResponse | None,
+         response_model_exclude_unset=True)
 async def api_aircraft_photo(icao_hex: str) -> dict | None:
-    icao = icao_hex.lower().lstrip("~")
+    icao = _parse_icao_path(icao_hex)
     row = db().execute(
         """
         SELECT COALESCE(adb.type_code, axo.type_code) AS type_code,
@@ -1464,7 +1589,8 @@ async def api_aircraft_photo(icao_hex: str) -> dict | None:
 # API — statistics
 # ---------------------------------------------------------------------------
 
-@app.get("/api/stats")
+@app.get("/api/stats", response_model=schemas.StatsResponse,
+         response_model_exclude_unset=True)
 def api_stats(
     from_ts: int | None = Query(None, alias="from"),
     to_ts:   int | None = Query(None, alias="to"),
@@ -1483,16 +1609,23 @@ def api_stats(
     cutoff_prev_24h = now - 2 * 86400
     cutoff_prev_7d  = now - 14 * 86400
 
-    # WHERE fragments injected into all range-aware queries
+    # WHERE fragments injected into all range-aware queries. BE-16: built from
+    # the shared half-open _build_date_filter so stats match history/export
+    # ([from, to) — a flight at exactly `to` is excluded).
     if filtered:
         ts_lo = from_ts if from_ts is not None else 0
         ts_hi = to_ts   if to_ts   is not None else now
-        _fw   = "WHERE first_seen >= ? AND first_seen <= ?"    # standalone
-        _fwa  = "AND first_seen >= ? AND first_seen <= ?"      # appended to existing WHERE
-        _fjwa = "AND f.first_seen >= ? AND f.first_seen <= ?"  # appended, aliased table
-        _fp   = (ts_lo, ts_hi)
+        _dc,  _fp_list = _build_date_filter(ts_lo, ts_hi, col="first_seen")
+        _djc, _        = _build_date_filter(ts_lo, ts_hi, col="f.first_seen")
+        _dsql  = " AND ".join(_dc)    # first_seen >= ? AND first_seen < ?
+        _djsql = " AND ".join(_djc)   # f.first_seen >= ? AND f.first_seen < ?
+        _fw   = "WHERE " + _dsql      # standalone, unaliased
+        _fwa  = "AND "   + _dsql      # appended to existing WHERE, unaliased
+        _fjw  = "WHERE " + _djsql     # standalone, aliased table
+        _fjwa = "AND "   + _djsql     # appended to existing WHERE, aliased table
+        _fp   = tuple(_fp_list)
     else:
-        _fw = _fwa = _fjwa = ""
+        _fw = _fwa = _fjw = _fjwa = ""
         _fp = ()
 
     # --- Main aggregation ---
@@ -1592,11 +1725,11 @@ def api_stats(
         if window_seconds > 0:
             prev_lo = ts_lo - window_seconds
             prev_hi = ts_lo
-            # Upper bound is exclusive (`< ts_lo`) so a flight whose
-            # first_seen falls on the boundary second is not counted in
-            # both windows. The current-window aggregation uses the
-            # inclusive `<= ts_hi` form, so this is the only place where
-            # the half-open / closed split matters.
+            # Half-open `[prev_lo, prev_hi)` (BE-16): the upper bound is
+            # exclusive so a flight whose first_seen lands on the boundary
+            # second `ts_lo` belongs to the current window only, never to
+            # both. This matches the current-window filter, which is also
+            # half-open via `_build_date_filter()`.
             prev_agg = conn.execute(
                 """
                 SELECT
@@ -1676,7 +1809,7 @@ def api_stats(
         FROM flights f
         LEFT JOIN aircraft_db     adb ON adb.icao_hex = f.icao_hex
         LEFT JOIN adsbx_overrides axo ON axo.icao_hex = f.icao_hex
-        {"WHERE f.first_seen >= ? AND f.first_seen <= ?" if filtered else ""}
+        {_fjw}
         """,
         _fp,
     ).fetchone()
@@ -1799,16 +1932,16 @@ def api_stats(
         ).fetchall()
     else:
         daily = conn.execute(
-            """
+            f"""
             SELECT date(first_seen, 'unixepoch') AS day,
                    COUNT(DISTINCT icao_hex) AS unique_aircraft,
                    COUNT(*) AS flights
             FROM flights
-            WHERE first_seen >= ? AND first_seen <= ?
+            {_fw}
             GROUP BY day
             ORDER BY day ASC
             """,
-            (ts_lo, ts_hi),
+            _fp,
         ).fetchall()
 
     # New aircraft — first seen within the window
@@ -1817,8 +1950,9 @@ def api_stats(
         new_cnt_sql  = "SELECT COUNT(*) FROM (SELECT icao_hex FROM flights GROUP BY icao_hex HAVING MIN(first_seen) > ?)"
         new_params   = (cutoff_24h,)
     else:
-        new_having   = "HAVING MIN(f.first_seen) >= ? AND MIN(f.first_seen) <= ?"
-        new_cnt_sql  = "SELECT COUNT(*) FROM (SELECT icao_hex FROM flights GROUP BY icao_hex HAVING MIN(first_seen) >= ? AND MIN(first_seen) <= ?)"
+        # BE-16: half-open [ts_lo, ts_hi) to match the rest of the stats range.
+        new_having   = "HAVING MIN(f.first_seen) >= ? AND MIN(f.first_seen) < ?"
+        new_cnt_sql  = "SELECT COUNT(*) FROM (SELECT icao_hex FROM flights GROUP BY icao_hex HAVING MIN(first_seen) >= ? AND MIN(first_seen) < ?)"
         new_params   = (ts_lo, ts_hi)
 
     new_aircraft_rows = conn.execute(
@@ -1837,7 +1971,17 @@ def api_stats(
             ORDER BY MIN(f.first_seen) DESC
             LIMIT 10
         ) sub
-        LEFT JOIN flights         f2  ON f2.icao_hex = sub.icao_hex AND f2.first_seen = sub.first_seen_ever
+        -- BE-15 (Audit 2026-05-31): two flights for one ICAO can share the
+        -- exact first_seen, so an equality self-join would match both and emit
+        -- a duplicate row with a non-deterministic reg/type.  Resolve to a
+        -- single representative (highest id among the earliest-first_seen
+        -- flights) via a correlated pick.
+        LEFT JOIN flights f2 ON f2.id = (
+            SELECT f3.id FROM flights f3
+            WHERE f3.icao_hex = sub.icao_hex
+              AND f3.first_seen = sub.first_seen_ever
+            ORDER BY f3.id DESC LIMIT 1
+        )
         LEFT JOIN aircraft_db     adb ON adb.icao_hex = sub.icao_hex
         LEFT JOIN adsbx_overrides axo ON axo.icao_hex = sub.icao_hex
         ORDER BY sub.first_seen_ever DESC
@@ -1859,7 +2003,7 @@ def api_stats(
         FROM flights f
         LEFT JOIN aircraft_db     adb ON adb.icao_hex = f.icao_hex
         LEFT JOIN adsbx_overrides axo ON axo.icao_hex = f.icao_hex
-        {"WHERE f.first_seen >= ? AND f.first_seen <= ?" if filtered else ""}
+        {_fjw}
         GROUP BY f.icao_hex
         ORDER BY flights DESC
         LIMIT 15
@@ -1903,7 +2047,7 @@ def api_stats(
         f"""
         SELECT {_FLIGHT_COLS}
         FROM flights f {_FLIGHT_JOIN}
-        WHERE f.max_distance_nm IS NOT NULL {"AND f.first_seen >= ? AND f.first_seen <= ?" if filtered else ""}
+        WHERE f.max_distance_nm IS NOT NULL {_fjwa}
         ORDER BY f.max_distance_nm DESC
         LIMIT 1
         """,
@@ -2053,9 +2197,9 @@ def api_stats_records() -> dict:
 @app.get("/api/airspace")
 def api_airspace() -> dict:
     """Serve the configured airspace GeoJSON (default: bundled poland.geojson)."""
-    cached = _cache.get("airspace")
-    if cached and time.time() - cached[0] < _AIRSPACE_TTL:
-        return cached[1]
+    cached = _get_cache("airspace")
+    if cached is not None:
+        return cached
 
     path = config.AIRSPACE_GEOJSON or str(BASE_DIR / "static" / "airspace" / "poland.geojson")
     # improvements.md #73: env-set paths must resolve to a regular file so a
@@ -2082,7 +2226,7 @@ def api_airspace() -> dict:
             except (OSError, json.JSONDecodeError) as exc:
                 log.warning("Failed to load airspace from %s: %s", resolved, exc)
 
-    _cache["airspace"] = (time.time(), data)
+    _set_cache("airspace", data)
     return data
 
 
@@ -2525,7 +2669,8 @@ def api_live() -> dict:
 _MAP_WINDOW_SEC = 600  # flight must have a position within this window of `at`
 
 
-@app.get("/api/map/snapshot")
+@app.get("/api/map/snapshot", response_model=schemas.MapSnapshotResponse,
+         response_model_exclude_unset=True)
 def api_map_snapshot(
     at: int | None = Query(None, description="Unix timestamp (default: now → live mode)"),
     trail: int = Query(10, ge=0, description="Trail positions per aircraft (capped at 50)"),
@@ -2552,24 +2697,28 @@ def api_map_snapshot(
     rows = conn.execute(
         f"""
         WITH af AS (
-            SELECT flight_id, MAX(id) AS lid
+            SELECT id, flight_id,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY flight_id ORDER BY ts DESC, id DESC
+                   ) AS rn
             FROM positions
             WHERE ts BETWEEN ? AND ?
               AND lat IS NOT NULL AND lon IS NOT NULL
-            GROUP BY flight_id
         )
         SELECT p.flight_id, p.ts, p.lat, p.lon, p.alt_baro, p.gs, p.track,
                p.source_type,
-               f.icao_hex, f.callsign, f.registration, f.aircraft_type,
+               f.icao_hex, f.callsign,
+               {_ENRICH_REG} AS registration,
+               {_ENRICH_TYPE} AS aircraft_type,
                f.category, f.primary_source,
                {_FLAGS_EXPR_F} AS flags,
                cr.origin_icao, cr.dest_icao
         FROM af
-        JOIN positions p ON p.id = af.lid
+        JOIN positions p ON p.id = af.id
         JOIN flights f ON f.id = p.flight_id
-        LEFT JOIN aircraft_db     adb ON adb.icao_hex = f.icao_hex
-        LEFT JOIN adsbx_overrides axo ON axo.icao_hex = f.icao_hex
+        {_ENRICH_JOIN}
         LEFT JOIN callsign_routes cr  ON cr.callsign  = f.callsign
+        WHERE af.rn = 1
         """,
         (at - _MAP_WINDOW_SEC, at),
     ).fetchall()
@@ -3097,13 +3246,44 @@ async def _check_all_feeders() -> list[dict]:
     return await asyncio.gather(*[_check_single_feeder(f) for f in config.FEEDERS])
 
 
+# BE-18: serialise the feeder-check batch so concurrent /api/feeders requests
+# don't each fan out a full set of subprocesses (systemctl/journalctl) + TCP
+# probes. Created lazily on first use so it binds to the running event loop
+# (mirrors _heatmap_lock / _coverage_lock); tests reset it to None to rebind.
+_feeders_lock: "asyncio.Lock | None" = None
+
+
+def _feeder_lock() -> asyncio.Lock:
+    global _feeders_lock
+    if _feeders_lock is None:
+        _feeders_lock = asyncio.Lock()
+    return _feeders_lock
+
+
 @app.get("/api/feeders")
 async def api_feeders() -> dict:
     """Same shape as the Jinja /feeders template uses — list of feeder
     status dicts plus a has_feeders flag for the empty-state notice.
+
+    Results are cached for a short TTL (``_CACHE_TTLS["feeders"]``) and the
+    batch is guarded by an asyncio.Lock so concurrent requests coalesce onto
+    one subprocess fan-out instead of N (BE-18).
     """
-    feeders = list(await _check_all_feeders()) if config.FEEDERS else []
-    return {"feeders": feeders, "has_feeders": bool(config.FEEDERS)}
+    if not config.FEEDERS:
+        return {"feeders": [], "has_feeders": False}
+    cached = _get_cache("feeders")
+    if cached is not None:
+        return cached
+    async with _feeder_lock():
+        # Re-check under the lock: a batch that finished while we were waiting
+        # has already populated the cache, so we skip re-spawning subprocesses.
+        cached = _get_cache("feeders")
+        if cached is not None:
+            return cached
+        feeders = list(await _check_all_feeders())
+        result = {"feeders": feeders, "has_feeders": True}
+        _set_cache("feeders", result)
+        return result
 
 
 # ---------------------------------------------------------------------------
