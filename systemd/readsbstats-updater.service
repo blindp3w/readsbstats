@@ -7,7 +7,15 @@ Wants=network-online.target
 Type=oneshot
 User=readsbstats
 Group=readsbstats
+# v2.12.2: stop the collector before the updater body runs and restart it
+# after, so the weekly timer path can't collide with concurrent writers on
+# the v2.11.7+ single-transaction aircraft_db swap. `+` runs as root,
+# bypassing User=/hardening for these two systemctl calls only — User=
+# readsbstats cannot manage system units without polkit. ExecStopPost
+# always runs, so a crashed/timed-out updater still restores the collector.
+ExecStartPre=+/bin/systemctl stop readsbstats-collector.service
 ExecStart=/opt/readsbstats/venv/bin/python -m readsbstats.db_updater
+ExecStopPost=+/bin/systemctl start readsbstats-collector.service
 WorkingDirectory=/opt/readsbstats
 # Security hardening
 NoNewPrivileges=yes
@@ -16,7 +24,10 @@ PrivateDevices=yes
 ProtectHome=yes
 ProtectSystem=strict
 ReadWritePaths=/mnt/ext/readsbstats
-TimeoutStartSec=300
+# v2.12.2: 300 → 900 — the v2.11.7+ single-transaction swap holds
+# BEGIN IMMEDIATE for the full CREATE + chunked INSERT + rename sequence;
+# on Pi-4 SD/USB that's 3–5 min for 620 k rows. 900 s gives ~3× headroom.
+TimeoutStartSec=900
 
 # Audit-13 A13-046: kernel + namespace hardening.
 ProtectKernelTunables=yes
