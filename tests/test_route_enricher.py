@@ -420,7 +420,12 @@ class TestEnrichBatch:
         """BE-8 (Audit 2026-05-31): only well-formed callsigns are sent to the
         upstream route API. A 1-char, >8-char, or non-alphanumeric-leading
         callsign is junk (truncation artifacts, abuse) and must be skipped so
-        it doesn't waste adsbdb.com calls."""
+        it doesn't waste adsbdb.com calls.
+
+        PY-9 (Audit 2026-05-31): also reject callsigns with non-alphanumeric
+        chars anywhere in the middle. The original GLOB `[A-Z0-9]*` only
+        validated the first character; `LOT/123` would slip through.
+        """
         monkeypatch.setattr(config, "ROUTE_CACHE_DAYS", 30)
         monkeypatch.setattr(config, "ROUTE_BATCH_SIZE", 50)
         monkeypatch.setattr(config, "ROUTE_RATE_LIMIT_SEC", 0.0)
@@ -428,6 +433,11 @@ class TestEnrichBatch:
         insert_flight(self.conn, icao="aaaa02", callsign="TOOLONG12")  # 9 chars, too long
         insert_flight(self.conn, icao="aaaa03", callsign="@BADCS")     # bad leading char
         insert_flight(self.conn, icao="aaaa04", callsign="LOT123")     # valid
+        # PY-9 mid-string non-alphanumerics:
+        insert_flight(self.conn, icao="aaaa05", callsign="LOT/123")    # slash mid
+        insert_flight(self.conn, icao="aaaa06", callsign="AB-CD")      # dash mid
+        insert_flight(self.conn, icao="aaaa07", callsign="AB CD")      # space mid
+        insert_flight(self.conn, icao="aaaa08", callsign="AB?CD")      # question mid
         calls = []
         monkeypatch.setattr(self.re, "_fetch_route",
                             lambda cs: calls.append(cs) or self._mock_route())
