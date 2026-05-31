@@ -2506,6 +2506,34 @@ class TestApiFlightPhoto:
         assert row is not None
         assert row["thumbnail_url"] is None
 
+    def test_transient_source_error_does_not_poison_new_aircraft(
+        self, client, db_conn, monkeypatch
+    ):
+        """PY-5 (Audit 2026-05-31): when EVERY source raises for a
+        previously-unseen ICAO, do not write a negative cache row.
+        The next attempt may well succeed; a 30-day negative cache from
+        a transient outage is the bug we are fixing.
+
+        Tests the production path by patching _fetch_photo_with_status
+        directly — leaves photo_sources.fetch_photo unpatched so the
+        identity check at the API boundary uses the status-aware helper.
+        """
+        fid = insert_flight(db_conn, icao="aabbcc")
+        monkeypatch.setattr(
+            photo_sources, "_fetch_photo_with_status",
+            lambda icao: (None, "error"),
+        )
+        r = client.get(f"/api/flights/{fid}/photo")
+        assert r.status_code == 200
+        assert r.json() is None
+        # The decisive assertion: no row written at all.
+        row = db_conn.execute(
+            "SELECT * FROM photos WHERE icao_hex = 'aabbcc'"
+        ).fetchone()
+        assert row is None, (
+            "transient source failure poisoned the cache with a negative row"
+        )
+
     def test_photo_returned_and_stored(self, client, db_conn, monkeypatch):
         fid = insert_flight(db_conn, icao="aabbcc")
         monkeypatch.setattr(photo_sources, "fetch_photo", lambda icao: PhotoResult(
