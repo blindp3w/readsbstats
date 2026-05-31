@@ -15,6 +15,7 @@ import threading
 import time
 
 from . import config, database, http_safe
+from .cleaners import coerce_metric_scalar
 
 log = logging.getLogger("metrics_collector")
 
@@ -146,6 +147,11 @@ def _parse_stats(data: dict) -> tuple[int | None, dict | None]:
         # Misc
         "altitude_suppressed": last1.get("altitude_suppressed"),
     }
+    # PY-4 (Audit 2026-05-31): every leaf goes through coerce_metric_scalar
+    # before reaching SQLite. A dict/list/bool/non-finite/oversized-int
+    # used to raise sqlite3.ProgrammingError and drop the entire sample;
+    # now only the malformed leaves become NULL.
+    row = {k: coerce_metric_scalar(v) for k, v in row.items()}
     return ts, row
 
 

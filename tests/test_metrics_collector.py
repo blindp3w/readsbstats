@@ -252,6 +252,72 @@ class TestParseStats:
         assert row["ac_adsb"] is None
         assert row["ac_mlat"] is None
 
+    # PY-4 (Audit 2026-05-31): malformed scalar values (dict/list/non-finite
+    # float/bool/oversized int) used to make SQLite binding fail and drop the
+    # whole sample. Now each bad leaf becomes None while the rest of the row
+    # is preserved.
+
+    def test_malformed_scalar_values_become_none(self):
+        """A dict, list, non-finite float, bool, or oversized int in any
+        metric field becomes None — the row stays insertable and the other
+        fields keep their values."""
+        data = {
+            "aircraft_with_pos": {"nested": 1},     # dict — drift
+            "aircraft_without_pos": [1, 2, 3],      # list — drift
+            "last1min": {
+                "end": 100.0,
+                "local": {
+                    "signal": float("inf"),         # non-finite
+                    "noise": float("nan"),
+                    "modes": True,                  # bool, not an int
+                    "bad": 2**64,                   # > SQLite signed 64-bit
+                    "accepted": [50, 12],           # valid 2-element array
+                },
+                "messages": 5000,                   # valid baseline
+            },
+        }
+        ts, row = self.mc._parse_stats(data)
+        assert ts == 100
+        # Malformed leaves → None
+        assert row["ac_with_pos"] is None
+        assert row["ac_without_pos"] is None
+        assert row["signal"] is None
+        assert row["noise"] is None
+        assert row["local_modes"] is None
+        assert row["local_bad"] is None
+        # Valid neighbours preserved
+        assert row["messages"] == 5000
+        assert row["local_accepted_0"] == 50
+        assert row["local_accepted_1"] == 12
+
+    def test_malformed_row_is_insertable(self):
+        """End-to-end: a row containing several malformed fields can be
+        bound to SQLite without raising. Before PY-4, sqlite3 would have
+        raised ProgrammingError on the first dict/list binding and dropped
+        the whole sample."""
+        data = {
+            "aircraft_with_pos": {"x": 1},
+            "last1min": {
+                "end": 200.0,
+                "local": {"signal": float("inf")},
+                "messages": 1234,
+            },
+        }
+        ts, row = self.mc._parse_stats(data)
+        conn = make_db()
+        try:
+            # Must not raise.
+            self.mc._insert_row(conn, ts, row)
+            stored = conn.execute(
+                "SELECT messages, signal, ac_with_pos FROM receiver_stats WHERE ts = ?",
+                (ts,),
+            ).fetchone()
+            assert stored["messages"] == 1234
+            assert stored["signal"] is None
+            assert stored["ac_with_pos"] is None
+        finally:
+            conn.close()
+
 
 # ---------------------------------------------------------------------------
 # _insert_row
