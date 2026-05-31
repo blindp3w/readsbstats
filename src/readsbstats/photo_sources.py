@@ -451,8 +451,8 @@ def resolve_photo(
          ``RSBS_WIKIPEDIA_PHOTO`` (default on).
 
     Type-only mode: pass ``icao_hex=""`` to skip steps 1 and 4 — used by
-    ``web._fetch_type_photo`` so it doesn't pollute ``photos`` with an
-    empty-key row.
+    ``api._photos._fetch_type_photo`` so it doesn't pollute ``photos`` with
+    an empty-key row.
 
     The result dict has keys ``thumbnail_url``, ``large_url``, ``link_url``,
     ``photographer``.  ``is_type_photo`` is True iff the photo represents the

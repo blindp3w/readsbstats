@@ -246,7 +246,7 @@ def is_available() -> bool:
 
 def heatmap(cutoff_ts: int | None, precision: int) -> list[tuple[float, float, int]] | None:
     """Return `(rlat, rlon, count)` cells from `hist.positions`. Mirrors
-    the SQLite query in web._compute_heatmap_sync. Returns `None` on
+    the SQLite query in api.map._compute_heatmap_sync. Returns `None` on
     per-query failure so the caller can fall back to SQLite."""
     if not is_available() or _CONN is None:
         return None

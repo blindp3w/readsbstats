@@ -7,8 +7,16 @@
 The `web.py` monolith (3,324 lines, ~30 endpoints + the SPA shell) is split
 into a thin app factory + one `APIRouter` per domain under
 `src/readsbstats/api/`. Pure code-move: no behaviour, response shape, or
-SQL changes; the OpenAPI document is byte-identical to v2.11.8 and the
-route count (`len(app.routes)`) is unchanged (37 entries).
+SQL changes; the set of registered paths is identical to v2.11.8 (sorted
+`paths.keys()` diff is empty) and the route count (`len(app.routes)`) is
+unchanged (37 entries). The *order* of operations in `/openapi.json`
+differs slightly because endpoints are now grouped by their domain
+module — `/api/airlines/...` and `/api/types/.../flights` register with
+the rest of `aircraft.py` instead of after `/api/dates`, and
+`/api/stats/polar` registers with the other stats routes instead of
+after `/api/airspace`. Runtime dispatch is unaffected (the paths don't
+overlap), but OpenAPI consumers that key off operation order will see
+a change.
 
 ### New modules
 
