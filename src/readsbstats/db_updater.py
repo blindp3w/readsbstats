@@ -250,7 +250,14 @@ def update_aircraft_db(conn: sqlite3.Connection) -> int:
 # ---------------------------------------------------------------------------
 
 def update_airlines_db(conn: sqlite3.Connection) -> int:
-    """Download OpenFlights airlines.dat and replace airlines table. Returns row count."""
+    """Download OpenFlights airlines.dat and replace airlines table. Returns row count.
+
+    PY-7 (Audit 2026-05-31): uses the same staging-table + min-ratio guard
+    as update_aircraft_db. A truncated upstream response (a 200 OK with a
+    half-streamed body) that parses to far fewer rows than the existing
+    table is refused — readers continue to see the old `airlines` table
+    until COMMIT, and an interrupted run rolls back wholesale.
+    """
     log.info("Downloading airlines database from OpenFlights…")
     raw = _fetch(AIRLINES_DAT_URL)
     text = raw.decode("utf-8", errors="replace")
@@ -274,13 +281,47 @@ def update_airlines_db(conn: sqlite3.Connection) -> int:
 
     log.info("Parsed %d airline records", len(rows))
 
-    with conn:
-        conn.execute("DELETE FROM airlines")
-        conn.executemany(
-            "INSERT OR REPLACE INTO airlines "
-            "(icao_code, name, iata_code, country, active) VALUES (?,?,?,?,?)",
-            rows,
+    prev_count = conn.execute("SELECT COUNT(*) FROM airlines").fetchone()[0]
+
+    # Flush any pending implicit transaction so BEGIN IMMEDIATE can't fail.
+    conn.commit()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute("DROP TABLE IF EXISTS airlines_new")
+        conn.execute(
+            "CREATE TABLE airlines_new ("
+            "icao_code TEXT PRIMARY KEY, name TEXT, iata_code TEXT, "
+            "country TEXT, active INTEGER)"
         )
+        if rows:
+            conn.executemany(
+                "INSERT OR REPLACE INTO airlines_new "
+                "(icao_code, name, iata_code, country, active) VALUES (?,?,?,?,?)",
+                rows,
+            )
+
+        new_count = conn.execute("SELECT COUNT(*) FROM airlines_new").fetchone()[0]
+        if prev_count > 0 and new_count < int(prev_count * config.AIRLINES_DB_MIN_RATIO):
+            raise RuntimeError(
+                f"airlines swap refused: new={new_count} prev={prev_count} "
+                f"(ratio {new_count / prev_count:.2f} < "
+                f"{config.AIRLINES_DB_MIN_RATIO}); upstream may be truncated"
+            )
+
+        conn.execute("ALTER TABLE airlines RENAME TO airlines_old")
+        conn.execute("ALTER TABLE airlines_new RENAME TO airlines")
+        conn.execute("DROP TABLE airlines_old")
+        conn.commit()
+    except Exception:
+        try:
+            conn.rollback()
+        except sqlite3.Error:
+            pass
+        try:
+            conn.execute("DROP TABLE IF EXISTS airlines_new")
+        except sqlite3.Error:
+            pass
+        raise
 
     # Audit-13 A13-018: per-step cache invalidation.
     enrichment.clear_cache()

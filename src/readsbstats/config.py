@@ -212,6 +212,17 @@ AIRCRAFT_DB_MIN_RATIO = _min_or_default_float(
     _float("RSBS_AIRCRAFT_DB_MIN_RATIO", "0.8"),
     0.0, 0.8,
 )
+# PY-7 (Audit 2026-05-31): same min-ratio guard for the airlines updater.
+# Default 0.8 mirrors aircraft_db. OpenFlights is more volatile than
+# tar1090-db (airlines disappear, new entries added) so the threshold
+# could conceivably be loosened via env var, but the floor here is
+# truncation protection — a sudden 50%-row drop is upstream corruption
+# regardless of OpenFlights churn.
+AIRLINES_DB_MIN_RATIO = _min_or_default_float(
+    "RSBS_AIRLINES_DB_MIN_RATIO",
+    _float("RSBS_AIRLINES_DB_MIN_RATIO", "0.8"),
+    0.0, 0.8,
+)
 # Background prewarmer for map heatmap/coverage caches. On when DuckDB is
 # on; harmless to leave on with DuckDB off (the prewarmer self-disables if
 # the analytics engine isn't available — running the heavy SQLite query
