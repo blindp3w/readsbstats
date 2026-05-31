@@ -107,6 +107,29 @@ def _host_suffix_matches(url: str | None, suffixes: tuple[str, ...]) -> bool:
     return any(host == s or host.endswith("." + s) for s in suffixes)
 
 
+# PY-6 (Audit 2026-05-31): union of every per-source CDN allowlist used
+# by the photo ladder. Used as the authoritative API-boundary pre-render
+# check so cached off-allowlist URLs (written before BE-17 enforcement
+# was tightened) are filtered out before the JSON envelope leaves Python,
+# even when _HOST_ENFORCE is False (log-only mode). Wikipedia thumbnails
+# come from upload.wikimedia.org; article-link enforcement happens in
+# _fetch_wikipedia_type itself.
+_ALL_PHOTO_HOSTS: tuple[str, ...] = (
+    _PLANESPOTTERS_HOSTS
+    + _AIRPORTDATA_HOSTS
+    + ("hexdb.io", "image.airport-data.com", "upload.wikimedia.org",
+       "en.wikipedia.org")
+)
+
+
+def is_photo_url_allowed(url: str | None) -> bool:
+    """True if *url* is empty (nothing to render) OR its https host is on
+    the union of per-source allowlists. Non-https or unparseable URLs
+    return False. Used at the API boundary to suppress off-allowlist
+    URLs from API responses regardless of ``_HOST_ENFORCE``."""
+    return _host_suffix_matches(url, _ALL_PHOTO_HOSTS)
+
+
 def _check_hosts(result: PhotoResult | None, source: str,
                  suffixes: tuple[str, ...]) -> PhotoResult | None:
     """Validate a source's returned URLs against its CDN host allowlist.
