@@ -25,6 +25,7 @@ import threading
 import time
 
 from . import adsbx_enricher, config, database, enrichment, geo, icao_ranges, metrics_collector, notifier
+from .cleaners import clean_short_text
 
 # 24-bit Mode-S address, lowercase hex. Validated *after* stripping the
 # leading ~ that marks MLAT entries. 000000 / ffffff are ADS-B sentinels
@@ -693,7 +694,11 @@ def _poll(conn: sqlite3.Connection) -> None:
             if icao in ("000000", "ffffff"):  # ADS-B "no transponder" sentinels
                 continue
 
-            source_type = ac.get("type")
+            # PY-3 (Audit 2026-05-31): coerce to a bounded string before
+            # SQLite binding. A non-string `type` (dict/list/number) used
+            # to raise sqlite3.ProgrammingError and roll back the whole
+            # poll; an oversized string would bloat positions.source_type.
+            source_type = clean_short_text(ac.get("type"), 32)
             if is_mlat_hex and not source_type:
                 source_type = "mlat"
 

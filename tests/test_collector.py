@@ -756,6 +756,53 @@ class TestPoll:
         ).fetchone()[0]
         assert bad_positions == 0
 
+    def test_poll_source_type_coerces_non_string(self):
+        """PY-3 (Audit 2026-05-31): a non-string `type` field must not
+        abort the poll. A dict / list / number for `type` is treated as
+        missing (NULL) and the rest of the row still processes. For an
+        mlat-hex (leading ``~``) the synthetic ``"mlat"`` fallback still
+        applies.
+        """
+        from readsbstats.collector import _poll
+        self._write_json([
+            # Non-string type for a normal ICAO → source_type = NULL
+            {"hex": "aabbcc", "lat": 52.0, "lon": 21.0, "seen_pos": 0,
+             "type": {"x": 1}},
+            # Non-string type for an mlat-hex → "mlat" fallback still fires
+            {"hex": "~A1B2C3", "lat": 52.1, "lon": 21.1, "seen_pos": 0,
+             "type": [1, 2, 3]},
+            # Valid baseline so we can verify the others didn't roll it back
+            {"hex": "ddeeff", "lat": 52.2, "lon": 21.2, "seen_pos": 0,
+             "type": "adsb_icao"},
+        ])
+        _poll(self.conn)
+        rows = self.conn.execute(
+            "SELECT f.icao_hex, p.source_type FROM positions p "
+            "JOIN flights f ON f.id = p.flight_id ORDER BY f.icao_hex"
+        ).fetchall()
+        by_icao = {r["icao_hex"]: r["source_type"] for r in rows}
+        assert by_icao == {
+            "a1b2c3":   "mlat",       # mlat-hex fallback
+            "aabbcc":   None,         # non-string → NULL
+            "ddeeff":   "adsb_icao",  # baseline preserved
+        }
+
+    def test_poll_source_type_caps_oversized_string(self):
+        """PY-3: an oversized `type` string must be capped, not persisted
+        unbounded (would bloat the positions table over time)."""
+        from readsbstats.collector import _poll
+        self._write_json([
+            {"hex": "aabbcc", "lat": 52.0, "lon": 21.0, "seen_pos": 0,
+             "type": "x" * 10_000},
+        ])
+        _poll(self.conn)
+        row = self.conn.execute(
+            "SELECT p.source_type FROM positions p "
+            "JOIN flights f ON f.id = p.flight_id WHERE f.icao_hex = 'aabbcc'"
+        ).fetchone()
+        assert row is not None
+        assert len(row["source_type"]) == 32
+
     # BE-6 (Audit 2026-05-31): validate the top-level feed shape so a corrupt
     # aircraft.json degrades gracefully (skip bad entries / cycle) instead of
     # raising out of _poll and aborting the whole cycle via main()'s except.
