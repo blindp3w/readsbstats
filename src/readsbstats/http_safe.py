@@ -10,8 +10,11 @@ All outbound HTTP from readsbstats goes through one of:
 Both helpers enforce:
 
   * HTTPS only.
-  * Hostname must resolve to a public IP (``ipaddress`` checks against
-    private / loopback / link-local / reserved / multicast / unspecified).
+  * Hostname must resolve to a globally-reachable IP
+    (``ipaddress.ip_address(x).is_global``). This rejects CGNAT shared
+    address space (100.64/10), benchmark space (198.18/15), and every
+    other non-global category in one predicate — previously the policy
+    was a list of exclusions that missed CGNAT (PY-1, audit 2026-05-31).
   * Redirects are not followed — a 3xx upstream response surfaces as an
     error.  This prevents a hostile or compromised upstream from bouncing us
     onto an internal endpoint such as the cloud metadata service.
@@ -108,18 +111,18 @@ _real_getaddrinfo = socket.getaddrinfo
 # ---------------------------------------------------------------------------
 
 def _ip_is_public(addr: str) -> bool:
+    # PY-1 (Audit 2026-05-31): require is_global so CGNAT (100.64/10) is
+    # rejected — the previous exclusion-list approach missed it because
+    # ipaddress doesn't mark CGNAT as private/loopback/reserved/etc.
+    # We additionally exclude multicast because Python's is_global is True
+    # for multicast (both v4 224/4 and v6 ffXX::) — that's correct per
+    # IANA but wrong for a unicast-only egress policy: multicast must
+    # never be the destination of an outbound HTTPS request.
     try:
         ip = ipaddress.ip_address(addr)
     except ValueError:
         return False
-    return not (
-        ip.is_private
-        or ip.is_loopback
-        or ip.is_link_local
-        or ip.is_reserved
-        or ip.is_multicast
-        or ip.is_unspecified
-    )
+    return ip.is_global and not ip.is_multicast
 
 
 def _resolve_and_validate(

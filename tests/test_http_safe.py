@@ -157,6 +157,53 @@ class TestValidateUrl:
             with pytest.raises(ValueError, match="non-public"):
                 http_safe.validate_url("https://example.com/")
 
+    # PY-1 (Audit 2026-05-31): predicate must use is_global, not a
+    # whitelist of negative checks. The exclusion-list approach missed
+    # CGNAT (100.64/10) and benchmark (198.18/15) — neither is_private
+    # nor is_reserved, but both is_global is False.
+
+    def test_ipv4_cgnat_100_64_rejected(self, monkeypatch):
+        # RFC 6598 shared address space — carrier-grade NAT, must not be
+        # treated as publicly reachable.
+        for ip in ("100.64.0.1", "100.127.255.255"):
+            monkeypatch.setattr(http_safe, "_real_getaddrinfo",
+                                lambda h, p, ip=ip, **kw: _fake_addrinfo(ip))
+            with pytest.raises(ValueError, match="non-public"):
+                http_safe.validate_url("https://example.com/")
+
+    def test_ipv4_benchmark_198_18_rejected(self, monkeypatch):
+        # RFC 2544 benchmarking range — not globally routable.
+        monkeypatch.setattr(http_safe, "_real_getaddrinfo",
+                            lambda h, p, **kw: _fake_addrinfo("198.18.0.1"))
+        with pytest.raises(ValueError, match="non-public"):
+            http_safe.validate_url("https://example.com/")
+
+    def test_ipv4_global_still_passes(self, monkeypatch):
+        # Regression: the is_global tightening must not start rejecting
+        # ordinary public IPs.
+        for ip in ("8.8.8.8", "1.1.1.1"):
+            monkeypatch.setattr(http_safe, "_real_getaddrinfo",
+                                lambda h, p, ip=ip, **kw: _fake_addrinfo(ip))
+            http_safe.validate_url("https://example.com/")
+
+    def test_ipv4_multicast_rejected(self, monkeypatch):
+        # Python's ipaddress.is_global returns True for IPv4 multicast
+        # (224/4). Our predicate adds `not is_multicast` so multicast
+        # never becomes a valid HTTPS destination.
+        for ip in ("224.0.0.1", "233.252.0.1"):
+            monkeypatch.setattr(http_safe, "_real_getaddrinfo",
+                                lambda h, p, ip=ip, **kw: _fake_addrinfo(ip))
+            with pytest.raises(ValueError, match="non-public"):
+                http_safe.validate_url("https://example.com/")
+
+    def test_ipv6_global_scope_multicast_rejected(self, monkeypatch):
+        # Same quirk for IPv6: ff0e::1 (global-scope multicast) has
+        # is_global=True. The egress policy is unicast-only.
+        monkeypatch.setattr(http_safe, "_real_getaddrinfo",
+                            lambda h, p, **kw: _fake_addrinfo_v6("ff0e::1"))
+        with pytest.raises(ValueError, match="non-public"):
+            http_safe.validate_url("https://example.com/")
+
     def test_mixed_addrinfo_one_private_rejects(self, monkeypatch):
         """If getaddrinfo returns multiple records and any is private, the
         whole URL must be rejected — a partially-trusted resolver is the
