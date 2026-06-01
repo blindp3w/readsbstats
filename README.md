@@ -95,11 +95,12 @@ The conf file proxies `/stats/` to uvicorn at `127.0.0.1:8080` and serves the SP
 
 ## Security model
 
-readsbstats has **no built-in authentication or authorization**. It is designed to run bound to `127.0.0.1:8080` behind nginx on a **trusted LAN**. Anyone who can reach the web port can read all flight data and call every mutating endpoint (watchlist edits, settings).
+readsbstats has **no built-in authentication or authorization by default**. It is designed to run bound to `127.0.0.1:8080` behind nginx on a **trusted LAN**. Anyone who can reach the web port can read all flight data and call every mutating endpoint (watchlist edits, settings).
 
 - **The `X-Requested-With` CSRF header is not authentication.** It only blocks cross-site form posts from a browser; it does not identify or authorize a caller. Do not treat it as an access control.
 - **If you expose the UI beyond a trusted LAN, put an authenticating reverse proxy in front** (HTTP basic auth, an OAuth2 proxy, or a VPN/Tailscale). Do not publish `127.0.0.1:8080` directly to the internet.
-- Outbound HTTP (photo/route enrichment) is SSRF-guarded (`http_safe.py`) and provider photo URLs are host-allowlisted before caching (`RSBS_PHOTO_HOST_ENFORCE`).
+- **`RSBS_API_TOKEN`** — opt-in bearer-token gate for mutating endpoints (watchlist add/delete). When set, every POST/DELETE must carry `Authorization: Bearer <token>`. Read endpoints stay open (they were already public on the trusted LAN). Useful as a thin extra layer if the app is reachable from devices you don't fully trust on the LAN; **not** a substitute for a reverse-proxy auth layer when exposed to the internet.
+- Outbound HTTP (photo/route enrichment) is SSRF-guarded (`http_safe.py`) and provider photo URLs are host-allowlisted before caching (`RSBS_PHOTO_HOST_ENFORCE`) and at the API response boundary (audit 2026-05-31 PY-6).
 
 See [Operations → Deployment security](docs/operations.md#deployment-security) for the full trust model.
 

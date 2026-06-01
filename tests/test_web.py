@@ -3248,6 +3248,67 @@ class TestApiWatchlist:
 
 
 # ---------------------------------------------------------------------------
+# SH-1 (Audit 2026-05-31): optional RSBS_API_TOKEN bearer auth on mutating
+# endpoints. No-op when unset (default trusted-LAN posture); when set,
+# Authorization: Bearer <token> is required on POST/DELETE.
+# ---------------------------------------------------------------------------
+
+class TestApiAuthToken:
+    def test_no_token_unset_means_no_auth_required(self, client, monkeypatch):
+        """When RSBS_API_TOKEN is unset, mutating endpoints behave exactly
+        as before — only CSRF is enforced (provided by the test client)."""
+        monkeypatch.setattr(_deps, "_API_TOKEN", "")
+        r = client.post("/api/watchlist",
+                        json={"match_type": "icao", "value": "aabbcc"})
+        assert r.status_code == 201
+
+    def test_token_set_post_without_bearer_rejected(self, client, monkeypatch):
+        monkeypatch.setattr(_deps, "_API_TOKEN", "secret")
+        r = client.post("/api/watchlist",
+                        json={"match_type": "icao", "value": "aabbcc"})
+        assert r.status_code == 401
+
+    def test_token_set_post_with_wrong_bearer_rejected(self, client, monkeypatch):
+        monkeypatch.setattr(_deps, "_API_TOKEN", "secret")
+        r = client.post("/api/watchlist",
+                        headers={"Authorization": "Bearer wrong"},
+                        json={"match_type": "icao", "value": "aabbcc"})
+        assert r.status_code == 401
+
+    def test_token_set_post_with_correct_bearer_accepted(self, client, monkeypatch):
+        monkeypatch.setattr(_deps, "_API_TOKEN", "secret")
+        r = client.post("/api/watchlist",
+                        headers={"Authorization": "Bearer secret"},
+                        json={"match_type": "icao", "value": "aabbcc"})
+        assert r.status_code == 201
+
+    def test_token_set_delete_requires_bearer(self, client, monkeypatch):
+        # First create an entry (without auth so we exercise the rejection
+        # on DELETE specifically).
+        monkeypatch.setattr(_deps, "_API_TOKEN", "")
+        r = client.post("/api/watchlist",
+                        json={"match_type": "icao", "value": "aabbcc"})
+        entry_id = r.json()["id"]
+
+        # Now turn auth on and verify DELETE without bearer is 401.
+        monkeypatch.setattr(_deps, "_API_TOKEN", "secret")
+        r = client.delete(f"/api/watchlist/{entry_id}")
+        assert r.status_code == 401
+
+        # With bearer: 204.
+        r = client.delete(f"/api/watchlist/{entry_id}",
+                          headers={"Authorization": "Bearer secret"})
+        assert r.status_code == 204
+
+    def test_read_endpoints_not_gated(self, client, monkeypatch):
+        """Read-only endpoints (GET /api/watchlist, /api/flights, etc.) are
+        NOT gated — token auth only applies to mutating endpoints."""
+        monkeypatch.setattr(_deps, "_API_TOKEN", "secret")
+        assert client.get("/api/watchlist").status_code == 200
+        assert client.get("/api/flights").status_code == 200
+
+
+# ---------------------------------------------------------------------------
 # API: /api/aircraft/flagged  — flagged aircraft gallery
 # ---------------------------------------------------------------------------
 

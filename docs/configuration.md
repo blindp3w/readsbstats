@@ -64,7 +64,7 @@ Boolean vars accept `1`/`0`, `true`/`false`, `yes`/`no`, `on`/`off`
 |---|---|---|
 | `RSBS_PHOTO_CACHE_DAYS` | `30` | How long to cache aircraft photo URLs |
 | `RSBS_WIKIPEDIA_PHOTO` | `1` | Wikipedia fallback for type photos (`0` to disable) |
-| `RSBS_PHOTO_HOST_ENFORCE` | `0` | Hard-drop provider photo URLs whose host is off the per-source CDN allowlist (Planespotters / airport-data / hexdb). Default (`0`) logs off-allowlist hosts at WARNING but keeps the URL, so legitimate-but-unenumerated CDN hosts aren't silently lost; set `1` to enforce. |
+| `RSBS_PHOTO_HOST_ENFORCE` | `0` | Hard-drop provider photo URLs whose host is off the per-source CDN allowlist (Planespotters / airport-data / hexdb) **at fetch time**. Default (`0`) logs off-allowlist hosts at WARNING but caches the URL, so legitimate-but-unenumerated CDN hosts aren't silently lost. Independent of this, off-allowlist URLs are **always** suppressed at the API response boundary (audit 2026-05-31 PY-6) so the SPA never renders them; the cache row stays for operator diagnostic review. |
 | `RSBS_AIRSPACE_GEOJSON` | _(empty)_ | Path to a custom airspace GeoJSON file; empty = use bundled `static/airspace/poland.geojson`. Files larger than 10 MB are refused (audit-13 A13-041). |
 | `RSBS_ROUTE_CACHE_DAYS` | `30` | How long to cache adsbdb.com route lookups |
 | `RSBS_ROUTE_INTERVAL` | `60` | Seconds between route enricher batch runs (min `1`) |
@@ -136,6 +136,14 @@ Thresholds for the nine receiver-health checks. All effective values are also re
 | `RSBS_WEB_HOST` | `0.0.0.0` | Uvicorn bind address. The systemd unit overrides this to `127.0.0.1`; nginx fronts the port. |
 | `RSBS_WEB_PORT` | `8080` | Internal uvicorn port |
 | `RSBS_ROOT_PATH` | `/stats` | URL prefix for the nginx reverse proxy (trailing slash stripped) |
+| `RSBS_API_TOKEN` | _(empty)_ | Optional bearer-token gate on mutating endpoints (POST/DELETE `/api/watchlist`, audit 2026-05-31 SH-1). Empty = no auth (default trusted-LAN posture). When set, every mutating call must carry `Authorization: Bearer <token>`. Read endpoints are not gated. See [README — Security model](../README.md#security-model). |
+
+### Database updaters
+
+| Variable | Default | Description |
+|---|---|---|
+| `RSBS_AIRCRAFT_DB_MIN_RATIO` | `0.8` | Minimum fraction of the previous `aircraft_db` row count that a freshly-imported tar1090-db CSV must contain before the swap is allowed. Refuses a swap that loses >20% of rows (truncation guard). First-ever imports bypass the check. |
+| `RSBS_AIRLINES_DB_MIN_RATIO` | `0.8` | Same min-ratio guard for OpenFlights airlines import (audit 2026-05-31 PY-7). First-ever imports bypass the check. |
 
 ### UI / pagination
 

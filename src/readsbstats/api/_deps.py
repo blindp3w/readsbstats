@@ -12,6 +12,8 @@ locks), and cache state lives in ``cache`` (shared mutable runtime).
 
 from __future__ import annotations
 
+import hmac
+import os
 import re
 import sqlite3
 import threading
@@ -49,6 +51,28 @@ def db() -> sqlite3.Connection:
 # ---------------------------------------------------------------------------
 # CSRF dependency for mutating endpoints
 # ---------------------------------------------------------------------------
+
+# SH-1 (Audit 2026-05-31): optional bearer-token auth for mutating
+# endpoints. No-op when RSBS_API_TOKEN is unset (default trusted-LAN
+# posture — see README "Security" section). When set, every mutating
+# call must carry `Authorization: Bearer <token>` and the value is
+# compared with hmac.compare_digest. Read at import time; restart the
+# process to rotate the token (the systemd unit reloads env files).
+# Read directly from os.getenv rather than via config.py to keep the
+# secret out of the parsed-config surface (which `/api/settings`
+# returns).
+_API_TOKEN = os.getenv("RSBS_API_TOKEN", "")
+
+
+def _auth_check(authorization: str | None = Header(default=None)) -> None:
+    """Optional bearer-token gate. Apply alongside _csrf_check on every
+    mutating endpoint. No-op when RSBS_API_TOKEN is empty/unset."""
+    if not _API_TOKEN:
+        return
+    expected = f"Bearer {_API_TOKEN}"
+    if not hmac.compare_digest(authorization or "", expected):
+        raise HTTPException(401, "Unauthorized")
+
 
 def _csrf_check(x_requested_with: str | None = Header(None)) -> None:
     # Browsers cannot set custom headers cross-origin without a CORS preflight,
