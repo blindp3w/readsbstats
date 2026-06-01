@@ -43,8 +43,8 @@ RSBS_AIRCRAFT_JSON=/tmp/rsbs_sim.json RSBS_DB_PATH=./db/history.db \
 ## Running tests
 
 ```bash
-.venv/bin/pytest                                              # 1600+ Python tests
-( cd frontend && npm test )                                   # 323 Vitest tests
+.venv/bin/pytest                                              # 1641 Python tests
+( cd frontend && npm test )                                   # 326 Vitest tests
 
 # Coverage
 .venv/bin/pytest --cov=readsbstats --cov-report=term-missing
