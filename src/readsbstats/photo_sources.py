@@ -86,9 +86,10 @@ _HEXDB_HOSTS = _PLANESPOTTERS_HOSTS + _AIRPORTDATA_HOSTS + ("hexdb.io",)
 
 # Fetch-time enforcement of the per-source allowlists. Default OFF (log-only)
 # so a legitimate-but-unenumerated CDN host isn't silently dropped at fetch
-# time; the API-boundary suppression in api/_photos is_photo_url_allowed
-# always filters off-allowlist URLs out of API responses regardless. Mirrored
-# to a module global so tests can monkeypatch it cheaply
+# time; the API-boundary suppression in api/_photos._suppress_off_allowlist
+# (via is_photo_image_url_allowed / is_photo_link_url_allowed) always filters
+# off-allowlist URLs out of API responses regardless. Mirrored to a module
+# global so tests can monkeypatch it cheaply
 # (`monkeypatch.setattr(photo_sources, "_HOST_ENFORCE", True)`).
 _HOST_ENFORCE = config.PHOTO_HOST_ENFORCE
 
@@ -108,27 +109,40 @@ def _host_suffix_matches(url: str | None, suffixes: tuple[str, ...]) -> bool:
     return any(host == s or host.endswith("." + s) for s in suffixes)
 
 
-# PY-6 (Audit 2026-05-31): union of every per-source CDN allowlist used
-# by the photo ladder. Used as the authoritative API-boundary pre-render
-# check so cached off-allowlist URLs (written before BE-17 enforcement
-# was tightened) are filtered out before the JSON envelope leaves Python,
-# even when _HOST_ENFORCE is False (log-only mode). Wikipedia thumbnails
-# come from upload.wikimedia.org; article-link enforcement happens in
-# _fetch_wikipedia_type itself.
-_ALL_PHOTO_HOSTS: tuple[str, ...] = (
+# PY-6 (Audit 2026-05-31): per-field allowlists used at the API boundary
+# so cached off-allowlist URLs (written before BE-17 enforcement was
+# tightened) are filtered before the JSON envelope leaves Python, even
+# when _HOST_ENFORCE is False (log-only mode).
+#
+# Image hosts (thumbnail_url, large_url): only photo CDNs — including
+# upload.wikimedia.org for Wikipedia type thumbnails. en.wikipedia.org
+# is intentionally absent: article pages are HTML, not images. Without
+# this split, a malformed cache row whose thumbnail_url pointed at
+# en.wikipedia.org would render as a broken image in the SPA.
+#
+# Link hosts (link_url): photo CDNs PLUS en.wikipedia.org for the
+# article landing-page link emitted by _fetch_wikipedia_type.
+_IMAGE_HOSTS: tuple[str, ...] = (
     _PLANESPOTTERS_HOSTS
     + _AIRPORTDATA_HOSTS
-    + ("hexdb.io", "image.airport-data.com", "upload.wikimedia.org",
-       "en.wikipedia.org")
+    + ("hexdb.io", "image.airport-data.com", "upload.wikimedia.org")
 )
+_LINK_HOSTS: tuple[str, ...] = _IMAGE_HOSTS + ("en.wikipedia.org",)
 
 
-def is_photo_url_allowed(url: str | None) -> bool:
-    """True if *url* is empty (nothing to render) OR its https host is on
-    the union of per-source allowlists. Non-https or unparseable URLs
-    return False. Used at the API boundary to suppress off-allowlist
-    URLs from API responses regardless of ``_HOST_ENFORCE``."""
-    return _host_suffix_matches(url, _ALL_PHOTO_HOSTS)
+def is_photo_image_url_allowed(url: str | None) -> bool:
+    """True iff *url* is empty (nothing to render) OR its https host is
+    one of the known image CDNs. Used at the API boundary for the
+    ``thumbnail_url`` and ``large_url`` fields. Non-https or
+    unparseable URLs return False."""
+    return _host_suffix_matches(url, _IMAGE_HOSTS)
+
+
+def is_photo_link_url_allowed(url: str | None) -> bool:
+    """True iff *url* is empty OR its https host is one of the photo
+    CDNs OR ``en.wikipedia.org`` (article landing page for Wikipedia
+    type photos)."""
+    return _host_suffix_matches(url, _LINK_HOSTS)
 
 
 def _check_hosts(result: PhotoResult | None, source: str,

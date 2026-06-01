@@ -165,16 +165,20 @@ def api_aircraft_flagged(
         # `photos` / `type_photos` (no per-source allowlist gate at SELECT
         # time). Apply the API-boundary suppression so off-allowlist
         # cached URLs don't reach the SPA, regardless of _HOST_ENFORCE.
-        if not photo_sources.is_photo_url_allowed(d.get("thumbnail_url")):
+        # Image fields and link fields use separate allowlists — see
+        # photo_sources.is_photo_*_url_allowed.
+        thumb = d.get("thumbnail_url")
+        if not thumb or not photo_sources.is_photo_image_url_allowed(thumb):
             d["thumbnail_url"] = None
             d["large_url"]     = None
             d["link_url"]      = None
             d["photographer"]  = None
             d["is_type_photo"] = False
         else:
-            for field in ("large_url", "link_url"):
-                if not photo_sources.is_photo_url_allowed(d.get(field)):
-                    d[field] = None
+            if not photo_sources.is_photo_image_url_allowed(d.get("large_url")):
+                d["large_url"] = None
+            if not photo_sources.is_photo_link_url_allowed(d.get("link_url")):
+                d["link_url"] = None
         aircraft.append(d)
 
     return {"total": total, "aircraft": aircraft}

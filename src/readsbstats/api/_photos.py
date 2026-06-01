@@ -214,21 +214,33 @@ def _suppress_off_allowlist(result: dict | None) -> dict | None:
     The server-side allowlist is the authoritative pre-render check.
     A stale cached row written before BE-17 enforcement was tightened
     could otherwise still flow through the API verbatim. If the
-    ``thumbnail_url`` is off-allowlist the whole result is dropped
-    (no thumbnail = unusable photo card); ``large_url`` and
+    ``thumbnail_url`` is missing or off-allowlist the whole result is
+    dropped (no thumbnail = unusable photo card); ``large_url`` and
     ``link_url`` are nulled individually if off-allowlist.
+
+    Image fields (thumbnail_url, large_url) and link fields (link_url)
+    use separate allowlists — en.wikipedia.org is valid as a link host
+    but not as an image host. Without this split, a malformed cache
+    row whose thumbnail_url pointed at en.wikipedia.org would render
+    as a broken image (HTML article fetched as <img src>).
 
     Applied unconditionally — when enforcement is True, every URL was
     already gated at fetch time so this is a defensive no-op.
     """
     if result is None:
         return None
-    if not photo_sources.is_photo_url_allowed(result.get("thumbnail_url")):
+    thumb = result.get("thumbnail_url")
+    # Drop on missing thumbnail too: a dict with no thumbnail is an
+    # unusable photo card, regardless of allowlist verdict. (The
+    # allowlist helper treats empty/None as "nothing to render" and
+    # returns True, so the explicit check is needed here.)
+    if not thumb or not photo_sources.is_photo_image_url_allowed(thumb):
         return None
     out = dict(result)
-    for field in ("large_url", "link_url"):
-        if not photo_sources.is_photo_url_allowed(out.get(field)):
-            out[field] = None
+    if not photo_sources.is_photo_image_url_allowed(out.get("large_url")):
+        out["large_url"] = None
+    if not photo_sources.is_photo_link_url_allowed(out.get("link_url")):
+        out["link_url"] = None
     return out
 
 
