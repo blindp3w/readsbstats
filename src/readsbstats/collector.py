@@ -731,8 +731,11 @@ def _poll(conn: sqlite3.Connection) -> None:
                 source_type = "mlat"
 
             state = _active.get(icao)
-            # Strict `<` (not `<=`): equal timestamps are new observations;
-            # see _open_flight's last_pos_ts invariant.
+            # Strict `<` (not `<=`): equal pos_ts is permitted here; the ghost
+            # filter further down (`if dt <= 0: continue`) rejects it once we
+            # know the prior fix — avoids divide-by-zero in implied-kts and
+            # drops no-new-fix samples that readsb sometimes re-reports.
+            # See _open_flight's last_pos_ts invariant.
             if state is not None and pos_ts < state["last_pos_ts"]:
                 continue
 
