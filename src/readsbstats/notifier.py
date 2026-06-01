@@ -790,7 +790,7 @@ def _watch_add(conn: sqlite3.Connection, value_raw: str) -> None:
         (match_type, value),
     ).fetchone()
     if existing:
-        _send(f"Already watching: {value.upper()}")
+        _send(f"Already watching: {_h(value.upper())}")
         return
     conn.execute(
         "INSERT INTO watchlist (match_type, value, label, created_at) VALUES (?,?,NULL,strftime('%s','now'))",
@@ -798,7 +798,7 @@ def _watch_add(conn: sqlite3.Connection, value_raw: str) -> None:
     )
     conn.commit()
     tl = _WATCHLIST_TYPE_LABELS[match_type]
-    _send(f"👁 Added to watchlist: <b>{value.upper()}</b> [{tl}]")
+    _send(f"👁 Added to watchlist: <b>{_h(value.upper())}</b> [{tl}]")
 
 
 def _watch_remove(conn: sqlite3.Connection, value_raw: str) -> None:
@@ -823,9 +823,9 @@ def _watch_remove(conn: sqlite3.Connection, value_raw: str) -> None:
         )
         conn.commit()
         if cur.rowcount:
-            _send(f"Removed from watchlist: <b>{value.upper()}</b>")
+            _send(f"Removed from watchlist: <b>{_h(value.upper())}</b>")
             return
-    _send(f"Not in watchlist: {value.upper()}")
+    _send(f"Not in watchlist: {_h(value.upper())}")
 
 
 def _handle_update(update: dict, conn: sqlite3.Connection) -> None:
