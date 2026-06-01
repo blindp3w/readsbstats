@@ -1,5 +1,122 @@
 # Changelog
 
+## 2.13.0 — 2026-06-01
+
+Repository-wide audit follow-up (15 fixes across security, reliability,
+correctness, performance, and chores). 1560 → 1608 backend tests
+(+48 new); frontend 323/323 unchanged. See
+`internal_docs/repository_audit_2026-05-31_current.md` for the audit
+source.
+
+### Security
+
+- **PY-1 (critical)** — SSRF IP filter switched from a list of
+  exclusions to `is_global AND NOT is_multicast`. Closes a hole for
+  CGNAT shared address space (100.64.0.0/10) which Python's `ipaddress`
+  module doesn't flag as `is_private`/`is_reserved`. Also handles the
+  IPv4/IPv6 multicast quirk where Python's `is_global` returns True
+  for multicast (IANA-correct, but wrong for unicast-only HTTPS egress).
+- **PY-6** — Off-allowlist photo URLs are now suppressed at the API
+  response boundary in addition to the fetch-time gate. A stale cached
+  off-allowlist URL (written before BE-17, or returned by a compromised
+  provider) is filtered out of API responses regardless of
+  `RSBS_PHOTO_HOST_ENFORCE`. Cache rows stay for operator diagnostics.
+- **PY-10** — `adsbx_overrides.registration` / `type_code` / `type_desc`
+  capped at 32/16/128 chars before persistence. Prevents one oversized
+  upstream field from bloating the table or downstream UI/Telegram
+  surfaces.
+- **SH-1** — Optional `RSBS_API_TOKEN` bearer-token gate on the two
+  mutating watchlist endpoints. No-op when unset (default trusted-LAN
+  posture unchanged); when set, requires `Authorization: Bearer <token>`.
+  Read endpoints stay open.
+
+### Reliability
+
+- **PY-3** — Collector `source_type` is coerced via `clean_short_text`
+  before SQLite binding. A non-string `type` field (dict/list/number)
+  from a malformed `aircraft.json` no longer raises
+  `sqlite3.ProgrammingError` and rolls back the whole poll.
+- **PY-4** — `metrics_collector._parse_stats` pipes every leaf through
+  `coerce_metric_scalar`. Malformed scalar values (dict, list, bool,
+  non-finite float, oversized int) become NULL instead of dropping the
+  entire metrics sample for the cycle.
+- **PY-5** — Web-specific photo endpoint uses the new public
+  `photo_sources.fetch_photo_with_status` so a transient outage (every
+  source raises for a new ICAO) no longer poisons the cache with a
+  30-day negative row. Existing tests that monkey-patch `fetch_photo`
+  keep working via the `_DEFAULT_FETCH_PHOTO` escape hatch.
+- **PY-7** — `update_airlines_db` now uses the same staging-table +
+  min-ratio guard as `update_aircraft_db`. New
+  `RSBS_AIRLINES_DB_MIN_RATIO` (default 0.8). A truncated OpenFlights
+  response that parses to far fewer rows than the existing table is
+  refused; the old rows survive.
+
+### Correctness
+
+- **PY-2** — Aircraft-metadata enrichment parity. `_SORT_COLS`,
+  `_build_flight_filter`, the `/api/types/{aircraft_type}/flights`
+  COUNT+list query, and the top-aircraft-types stats panel all now use
+  the shared `_ENRICH_REG`/`_ENRICH_TYPE`/`_ENRICH_DESC` constants. A
+  flight whose registration/type is known only via `adsbx_overrides` is
+  now correctly findable via filters, sortable, counted in the type
+  drilldown, and listed in stats. Previously such flights *displayed*
+  the adsbx value but were invisible to those query surfaces.
+- **PY-8** — Route enricher distinguishes `_PermanentError` (mapped
+  from `http_safe.UnsafeURLError` — policy violations like redirect,
+  size-cap, non-HTTPS, private-IP) from `_TransientError`. The loop
+  writes a negative `callsign_routes` row on permanent failure so the
+  existing TTL exclusion suppresses retries for `ROUTE_CACHE_DAYS`.
+  Mirrors the ADSBx enricher pattern. Transient cooldown stays
+  in-memory for network blips.
+- **PY-9** — Route callsign SQL filter adds `NOT GLOB '*[^A-Z0-9]*'`.
+  Previously the first-character-only GLOB let `LOT/123`, `AB-CD`,
+  `AB CD`, `AB?CD` through (filtering only the leading char) — those
+  wasted upstream calls and polluted the route cache with garbage misses.
+
+### Performance
+
+- **PY-11** — Map trail CTE bounded by `RSBS_MAP_TRAIL_WINDOW_SECONDS`
+  (default 3600s, min 60s). A long flight with 10k+ historical
+  positions no longer forces SQLite to rank the whole partition for a
+  50-point trail. The default 1h window is 6× the 600s live-view
+  activity bound so actively-tracked aircraft trails are unchanged.
+
+### Chores
+
+- **FE-1** — Removed unused `tailwindcss` direct devDependency from
+  `frontend/package.json`. `@tailwindcss/vite` carries it transitively.
+- **CFG-1** — Trimmed audit-trail narrative comments in four production
+  modules (`api/_deps.py`, `collector.py`, `photo_sources.py`,
+  `db_updater.py`) to keep only the active invariants. Removed unused
+  `Response` import in `api/aircraft.py`. Historical narrative moved
+  to `internal_docs/security/audit-history.md`.
+
+### Infrastructure (used by multiple fixes)
+
+- New `src/readsbstats/cleaners.py` — `clean_short_text(value, limit)`
+  and `coerce_metric_scalar(value)`. Consolidates three near-identical
+  bounded-string / numeric-coercion patterns across collector,
+  adsbx_enricher, and metrics_collector.
+- New `photo_sources.fetch_photo_with_status` — public alias of the
+  existing private status-aware helper.
+- New `photo_sources.is_photo_url_allowed` — host-union allowlist check
+  used at the API response boundary.
+
+### Dropped (false positive)
+
+- **PY-12** — The audit claimed the duplicate-timestamp comments in
+  `collector.py` contradicted the code. Re-validation found them
+  consistent; no change.
+
+### New env vars
+
+- `RSBS_API_TOKEN` — optional bearer-token gate for mutating endpoints
+  (SH-1).
+- `RSBS_AIRLINES_DB_MIN_RATIO` (default `0.8`) — airlines updater
+  truncation guard (PY-7).
+- `RSBS_MAP_TRAIL_WINDOW_SECONDS` (default `3600`, min `60`) — map
+  trail time-window bound (PY-11).
+
 ## 2.12.2 — 2026-05-31
 
 ### Fix — `db_updater` weekly timer collided with the running collector
