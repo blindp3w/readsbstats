@@ -148,8 +148,8 @@ readsbstats/
 │   ├── purge_ghosts.py         # One-shot: remove ghost positions
 │   ├── purge_bad_gs.py         # One-shot: null implausible gs values
 │   └── purge_mlat_gs_spikes.py # One-shot: null MLAT gs spikes
-├── frontend/                   # React 19 + Vite 7 SPA
-├── tests/                      # pytest (1330+ tests) + Playwright UI (81 tests)
+├── frontend/                   # React 19 + Vite 8 SPA (323 Vitest tests)
+├── tests/                      # pytest (1600+ tests) + Playwright UI (84 tests)
 ├── static/airspace/            # Bundled airspace GeoJSON
 ├── systemd/                    # Service + timer unit files
 └── docs/                       # Public documentation
@@ -166,7 +166,7 @@ readsbstats/
 
 | Guide | Contents |
 |---|---|
-| [Configuration](docs/configuration.md) | All 70 `RSBS_*` env vars, logging, DuckDB, airspace config |
+| [Configuration](docs/configuration.md) | All 77 `RSBS_*` env vars, logging, DuckDB, airspace config |
 | [API Reference](docs/api.md) | All API endpoints, SPA routes, database schema |
 | [Integrations](docs/integrations.md) | Telegram setup, bot commands, ghost/GS filtering |
 | [Operations](docs/operations.md) | Updating code, DB sync, useful commands, backups |

@@ -14,7 +14,7 @@ Environment="RSBS_FLIGHT_GAP=1200"
 
 ## Environment variables
 
-All 70 `RSBS_*` vars in `config.py`, grouped by section. Numeric values
+All 77 `RSBS_*` vars in `config.py`, grouped by section. Numeric values
 that fall below the documented minimum log a stderr warning and fall
 back to the listed default (see `_min_or_default_int`/`_float`).
 Boolean vars accept `1`/`0`, `true`/`false`, `yes`/`no`, `on`/`off`
