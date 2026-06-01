@@ -117,14 +117,30 @@ def _feeder_details_readsb(status_path: str) -> list[tuple[str, str]]:
     return details
 
 
+# W-2 (Audit 2026-06-01): loopback-only carve-out from http_safe.safe_httpx_get
+# (which is HTTPS-only). The URL is pre-validated to loopback by
+# _is_safe_status_url before this function is called. The 256 KB cap protects
+# against a misbehaving local FR24 daemon — monitor.json is ~10 KB in practice.
+# A naive post-`get()` len(resp.content) check is insufficient: httpx buffers
+# the full body before returning. Streaming via aiter_bytes() lets us abort
+# mid-stream, mirroring http_safe.safe_httpx_get's pattern.
+_FR24_MAX_BYTES = 256 * 1024
+
+
 async def _feeder_details_fr24(status_url: str) -> list[tuple[str, str]]:
     """Fetch FR24 monitor.json and extract key fields."""
     details: list[tuple[str, str]] = []
     try:
-        async with httpx.AsyncClient(timeout=4.0) as client:
-            resp = await client.get(status_url)
-            resp.raise_for_status()
-            data = resp.json()
+        async with httpx.AsyncClient(timeout=4.0, follow_redirects=False) as client:
+            async with client.stream("GET", status_url) as resp:
+                resp.raise_for_status()
+                buf = bytearray()
+                async for chunk in resp.aiter_bytes():
+                    buf.extend(chunk)
+                    if len(buf) > _FR24_MAX_BYTES:
+                        # Carve-out cap: abort mid-stream, don't buffer further.
+                        return details
+                data = json.loads(bytes(buf))
     except Exception:
         return details
     if data.get("build_version"):
