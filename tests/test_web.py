@@ -2785,6 +2785,51 @@ class TestPhotoFallback:
         assert row is not None
         assert row["thumbnail_url"] == "https://attacker.example/thumb.jpg"
 
+    def test_thumbnail_on_en_wikipedia_org_rejected_as_image(
+        self, client, db_conn
+    ):
+        """Code-review follow-up: en.wikipedia.org is allowed as link_url
+        (article landing page from the Wikipedia type-photo step) but
+        must NOT pass the image-host allowlist for thumbnail_url. A
+        malformed cache row pointing thumbnail_url at an article page
+        would otherwise render as a broken <img> in the SPA."""
+        fid = insert_flight(db_conn, icao="aabbcc")
+        db_conn.execute(
+            "INSERT INTO photos VALUES (?,?,?,?,?,?)",
+            ("aabbcc",
+             "https://en.wikipedia.org/wiki/Boeing_737",        # article page
+             "https://upload.wikimedia.org/wiki/B738-large.jpg",
+             "https://en.wikipedia.org/wiki/Boeing_737",
+             "Wikipedia", int(time.time())),
+        )
+        db_conn.commit()
+        r = client.get(f"/api/flights/{fid}/photo")
+        assert r.status_code == 200
+        assert r.json() is None, (
+            "en.wikipedia.org thumbnail_url must be rejected as an image"
+        )
+
+    def test_link_url_on_en_wikipedia_org_kept(self, client, db_conn):
+        """Counterpart: en.wikipedia.org IS valid for link_url (Wikipedia
+        article landing page from the type-photo step). Don't null it
+        when the thumbnail is on an allowed image host."""
+        fid = insert_flight(db_conn, icao="aabbcc")
+        db_conn.execute(
+            "INSERT INTO photos VALUES (?,?,?,?,?,?)",
+            ("aabbcc",
+             "https://upload.wikimedia.org/thumb.jpg",          # valid image
+             "https://upload.wikimedia.org/large.jpg",
+             "https://en.wikipedia.org/wiki/Boeing_737",        # valid link
+             "Wikipedia", int(time.time())),
+        )
+        db_conn.commit()
+        r = client.get(f"/api/flights/{fid}/photo")
+        assert r.status_code == 200
+        data = r.json()
+        assert data is not None
+        assert data["thumbnail_url"] == "https://upload.wikimedia.org/thumb.jpg"
+        assert data["link_url"]      == "https://en.wikipedia.org/wiki/Boeing_737"
+
     def test_off_allowlist_large_only_nulled_thumbnail_kept(
         self, client, db_conn
     ):
