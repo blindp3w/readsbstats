@@ -1162,6 +1162,44 @@ class TestResolvePhotoErrorGrace:
         )
         self.conn.commit()
 
+    def test_resolve_photo_honours_patch_of_public_alias(self, monkeypatch):
+        """Code-review follow-up: tests can monkeypatch
+        photo_sources.fetch_photo_with_status (the public alias) to control
+        resolve_photo's behaviour. Before the fix, _call_fetcher called the
+        private _fetch_photo_with_status directly, so patches on the public
+        name were silently ignored."""
+        # Seed an entry in aircraft_db so step 5 has a probe icao.
+        # We use icao_hex="" + a type_code so the resolver enters step 5
+        # via the probe path (steps 1, 3 skipped for empty icao).
+        self.conn.execute(
+            "INSERT INTO aircraft_db (icao_hex, registration, type_code, type_desc) "
+            "VALUES ('abc999','SP-PROBE','B738','Boeing 737')"
+        )
+        self.conn.commit()
+
+        calls: list[str] = []
+        sentinel = photo_sources.PhotoResult(
+            thumbnail_url="https://plnspttrs.net/sentinel.jpg",
+            large_url=None, link_url=None, photographer="patched",
+        )
+
+        def _patched(icao_hex: str):
+            calls.append(icao_hex)
+            return (sentinel, "hit")
+
+        monkeypatch.setattr(photo_sources, "fetch_photo_with_status", _patched)
+
+        result, is_type = photo_sources.resolve_photo(
+            self.conn, "", "B738", cache_seconds=30 * 86400,
+        )
+        assert calls, (
+            "fetch_photo_with_status (public alias) was patched but never called; "
+            "resolve_photo._call_fetcher must route through the alias"
+        )
+        assert result is not None
+        assert result["photographer"] == "patched"
+        assert is_type is True
+
     def test_source_error_preserves_stale_specific_row(self, monkeypatch):
         """Audit 2026-05-25: a transient source outage (every source raises)
         must NOT overwrite a positive cached photo with NULL. The stale row is

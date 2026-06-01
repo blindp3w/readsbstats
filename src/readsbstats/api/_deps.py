@@ -56,20 +56,32 @@ def db() -> sqlite3.Connection:
 # endpoints. No-op when RSBS_API_TOKEN is unset (default trusted-LAN
 # posture — see README "Security" section). When set, every mutating
 # call must carry `Authorization: Bearer <token>` and the value is
-# compared with hmac.compare_digest. Read at import time; restart the
-# process to rotate the token (the systemd unit reloads env files).
+# compared with hmac.compare_digest.
+#
 # Read directly from os.getenv rather than via config.py to keep the
 # secret out of the parsed-config surface (which `/api/settings`
-# returns).
-_API_TOKEN = os.getenv("RSBS_API_TOKEN", "")
+# returns). Read at request time, not import time — so tests using
+# monkeypatch.setenv work and operators can SIGHUP-rotate the env var
+# without a full module reload. Production cost is negligible
+# (os.environ is a dict lookup).
+def _get_api_token() -> str:
+    return os.getenv("RSBS_API_TOKEN", "")
+
+
+# Module-level binding kept for back-compat with existing tests that
+# do `monkeypatch.setattr(_deps, "_API_TOKEN", "secret")`. When the
+# attribute is present and non-empty it overrides the env var; otherwise
+# _auth_check falls back to os.getenv.
+_API_TOKEN: str | None = None
 
 
 def _auth_check(authorization: str | None = Header(default=None)) -> None:
     """Optional bearer-token gate. Apply alongside _csrf_check on every
-    mutating endpoint. No-op when RSBS_API_TOKEN is empty/unset."""
-    if not _API_TOKEN:
+    mutating endpoint. No-op when no token is configured."""
+    token = _API_TOKEN if _API_TOKEN else _get_api_token()
+    if not token:
         return
-    expected = f"Bearer {_API_TOKEN}"
+    expected = f"Bearer {token}"
     if not hmac.compare_digest(authorization or "", expected):
         raise HTTPException(401, "Unauthorized")
 
