@@ -30,9 +30,7 @@ def db_conn():
 
 @pytest.fixture()
 def client(db_conn, monkeypatch):
-    from readsbstats import route_enricher
     monkeypatch.setattr(_deps, "_db", db_conn)
-    monkeypatch.setattr(route_enricher, "start_background_enricher", lambda: None)
     cache._cache.clear()
     with TestClient(web.app, raise_server_exceptions=True,
                     headers={"X-Requested-With": "XMLHttpRequest"}) as c:
@@ -93,3 +91,27 @@ class TestStatsWindowBoundary:
             f"{data.get('flights_last_7d')}"
         )
         assert data.get("trends", {}).get("flights_7d_prev") == 1
+
+    def test_filtered_branch_boundary_uses_same_operators(
+        self, client, db_conn,
+    ):
+        """The filtered (`?from=&to=`) branch computes flights_24h /
+        flights_7d from a separate `live` sub-query in stats.py. The W-7
+        operator fix touches both blocks; lock the filtered path too so a
+        future copy-paste regression in one block doesn't slip past CI.
+        """
+        now = int(time.time())
+        cutoff_24h = now - 86400
+        _insert(db_conn, "cc0001", cutoff_24h)         # at 24h boundary
+        _insert(db_conn, "cc0002", cutoff_24h - 86400) # in prev_24h
+
+        # An all-encompassing range forces the filtered branch without
+        # excluding either flight from the unrelated `agg` totals.
+        r = client.get(f"/api/stats?from=0&to={now + 1}")
+        assert r.status_code == 200
+        data = r.json()
+        assert data.get("flights_last_24h") == 1, (
+            f"filtered-branch boundary regression; got flights_last_24h="
+            f"{data.get('flights_last_24h')}"
+        )
+        assert data.get("trends", {}).get("flights_24h_prev") == 1

@@ -43,9 +43,7 @@ def client(db_conn, monkeypatch):
     Default X-Requested-With header makes existing mutating tests pass the
     CSRF check; tests for missing-header rejection construct their own client.
     """
-    from readsbstats import route_enricher
     monkeypatch.setattr(_deps, "_db", db_conn)
-    monkeypatch.setattr(route_enricher, "start_background_enricher", lambda: None)
     cache._cache.clear()
     with TestClient(web.app, raise_server_exceptions=True,
                     headers={"X-Requested-With": "XMLHttpRequest"}) as c:
@@ -55,9 +53,7 @@ def client(db_conn, monkeypatch):
 @pytest.fixture()
 def raw_client(db_conn, monkeypatch):
     """TestClient WITHOUT default X-Requested-With — for CSRF rejection tests."""
-    from readsbstats import route_enricher
     monkeypatch.setattr(_deps, "_db", db_conn)
-    monkeypatch.setattr(route_enricher, "start_background_enricher", lambda: None)
     cache._cache.clear()
     with TestClient(web.app, raise_server_exceptions=True) as c:
         yield c
