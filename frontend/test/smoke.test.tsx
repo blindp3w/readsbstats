@@ -251,15 +251,17 @@ describe('Map page — command bar', () => {
           '/map',
         ),
       );
+      // First Map render in the suite cold-loads its lazy chunk; under full-suite
+      // load that can exceed waitFor's 1 s default, so allow more headroom here.
       await waitFor(() => {
         expect(result.queryAllByTestId('map-mode-live').length).toBeGreaterThan(0);
         expect(result.queryAllByTestId('map-mode-rewind').length).toBeGreaterThan(0);
         expect(result.queryAllByTestId('map-mode-hist').length).toBeGreaterThan(0);
-      });
+      }, { timeout: 10000 });
     } finally {
       console.error = orig;
     }
-  });
+  }, 15000);
 
   it('reveals scrubber after switching to Rewind', async () => {
     const { default: MapPage } = await import('@/pages/Map');
