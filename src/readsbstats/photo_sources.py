@@ -84,11 +84,12 @@ _AIRPORTDATA_HOSTS = ("airport-data.com",)
 # union of the known photo CDNs plus its own host.
 _HEXDB_HOSTS = _PLANESPOTTERS_HOSTS + _AIRPORTDATA_HOSTS + ("hexdb.io",)
 
-# Default OFF: log off-allowlist hosts for one release before switching to hard
-# rejection, so a legitimate-but-unenumerated CDN host isn't silently dropped
-# (audit 2026-05-31, BE-17).  Mirrored to a module global so tests can
-# monkeypatch it cheaply (``monkeypatch.setattr(photo_sources, "_HOST_ENFORCE",
-# True)``) without touching the parsed config singleton.
+# Fetch-time enforcement of the per-source allowlists. Default OFF (log-only)
+# so a legitimate-but-unenumerated CDN host isn't silently dropped at fetch
+# time; the API-boundary suppression in api/_photos is_photo_url_allowed
+# always filters off-allowlist URLs out of API responses regardless. Mirrored
+# to a module global so tests can monkeypatch it cheaply
+# (`monkeypatch.setattr(photo_sources, "_HOST_ENFORCE", True)`).
 _HOST_ENFORCE = config.PHOTO_HOST_ENFORCE
 
 

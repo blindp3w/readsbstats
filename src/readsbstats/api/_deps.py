@@ -117,11 +117,11 @@ _FLAGS_EXPR_F   = f"(COALESCE(adb.flags, 0) | COALESCE(axo.flags, 0) | {_ANON_SQ
 _FLAGS_EXPR_SUB = f"(COALESCE(adb.flags, 0) | COALESCE(axo.flags, 0) | {_ANON_SQL_SUB})"
 _FLAGS_EXPR_AF  = f"(COALESCE(adb.flags, 0) | COALESCE(axo.flags, 0) | {_ANON_SQL_AF})"
 
-# BE-14 (Audit 2026-05-31): shared aircraft-metadata enrichment fragment.
-# Resolves reg/type/desc from the flight row first, then aircraft_db, then the
-# airplanes.live-confirmed adsbx_overrides — so the live map, flight list, and
-# stats all agree on the displayed registration/type.  `_ENRICH_JOIN` provides
-# the two LEFT JOINs these expressions depend on (alias `f` must be in scope).
+# Shared aircraft-metadata enrichment: flight row first, then aircraft_db,
+# then airplanes.live-confirmed adsbx_overrides — every surface that shows
+# registration/type/type_desc must use these or it'll disagree with the
+# flight list. `_ENRICH_JOIN` provides the two LEFT JOINs these depend on;
+# alias `f` must be in scope.
 _ENRICH_REG  = "COALESCE(f.registration,  adb.registration, axo.registration)"
 _ENRICH_TYPE = "COALESCE(f.aircraft_type, adb.type_code,    axo.type_code)"
 _ENRICH_DESC = "COALESCE(adb.type_desc,   axo.type_desc,    '')"
