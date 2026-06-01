@@ -689,6 +689,42 @@ def recover_aircraft_db_swap(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def recover_airlines_db_swap(conn: sqlite3.Connection) -> None:
+    """Detect and recover from an airlines staging swap interrupted between
+    the rename steps (mirrors ``recover_aircraft_db_swap``).
+
+    Audit 2026-06-01 W: ``update_airlines_db`` does the identical
+    rename swap as ``update_aircraft_db`` but had no symmetric recovery, so
+    a crash left an orphan ``airlines_old``/``airlines_new`` indefinitely.
+    Three table-name presences are possible after an interrupted run:
+      * ``airlines_new`` only → build phase crashed; drop the stale staging
+        table.
+      * ``airlines_old`` only (no ``airlines``) → first RENAME succeeded but
+        the second didn't. Rename old back to canonical.
+      * ``airlines`` + ``airlines_old`` → second RENAME succeeded but the
+        final DROP didn't. Drop the leftover old copy.
+    """
+    _log = logging.getLogger(__name__)
+    names = {
+        row[0] for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' "
+            "AND name IN ('airlines', 'airlines_new', 'airlines_old')"
+        ).fetchall()
+    }
+    if "airlines" not in names and "airlines_old" in names:
+        _log.warning(
+            "airlines recovery: restoring airlines_old after interrupted swap"
+        )
+        conn.execute("ALTER TABLE airlines_old RENAME TO airlines")
+    elif "airlines_old" in names:
+        _log.info("airlines recovery: dropping leftover airlines_old")
+        conn.execute("DROP TABLE airlines_old")
+    if "airlines_new" in names:
+        _log.info("airlines recovery: dropping leftover airlines_new")
+        conn.execute("DROP TABLE airlines_new")
+    conn.commit()
+
+
 def ensure_base_schema(path: str = config.DB_PATH) -> None:
     """Web-server startup bootstrap (BE-3, Audit 2026-05-31).
 
@@ -709,6 +745,7 @@ def ensure_base_schema(path: str = config.DB_PATH) -> None:
     conn = connect(path)
     try:
         recover_aircraft_db_swap(conn)
+        recover_airlines_db_swap(conn)
         base = {
             row[0] for row in conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' "
@@ -737,6 +774,7 @@ def init_db(path: str = config.DB_PATH) -> None:
         # aircraft_db_old were the only surviving copy, the recovery's
         # 'canonical present + _old leftover' branch would then drop it.
         recover_aircraft_db_swap(conn)
+        recover_airlines_db_swap(conn)
         conn.executescript(DDL)
         _migrate(conn)
         conn.execute(

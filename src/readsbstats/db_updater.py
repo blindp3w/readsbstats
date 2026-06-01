@@ -269,6 +269,12 @@ def update_airlines_db(conn: sqlite3.Connection) -> int:
     conn.commit()
     try:
         conn.execute("BEGIN IMMEDIATE")
+        # Audit 2026-06-01 W: defensive cleanup matching update_aircraft_db.
+        # If a previous run was interrupted mid-swap, airlines_old may linger.
+        # `recover_airlines_db_swap` handles this on startup, but dropping
+        # here belt-and-braces guards against an unclean state surviving into
+        # an in-process update.
+        conn.execute("DROP TABLE IF EXISTS airlines_old")
         conn.execute("DROP TABLE IF EXISTS airlines_new")
         conn.execute(
             "CREATE TABLE airlines_new ("
