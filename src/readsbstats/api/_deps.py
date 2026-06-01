@@ -197,12 +197,20 @@ def _assert_top1_column(order_col: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Sort allowlists — never interpolate raw URL params into ORDER BY
+# Sort allowlists — never interpolate raw URL params into ORDER BY.
+#
+# CONTRACT: every consumer of _SORT_COLS must build its ORDER BY inside a
+# query that includes `_FLIGHT_JOIN` (or at minimum `_ENRICH_JOIN`). The
+# `registration` and `aircraft_type` entries are `_ENRICH_REG` /
+# `_ENRICH_TYPE`, which reference the `adb` AND `axo` aliases. A SELECT
+# without those joins will fail at runtime with "no such column:
+# axo.registration". A new lightweight handler that wants to skip the
+# adsbx_overrides join must either pass its own ORDER BY (not consult
+# _SORT_COLS) or extend _SORT_COLS with a sibling table-free dict.
+#
+# Current consumers (all join _FLIGHT_JOIN): api/flights.py (list +
+# export.csv), api/aircraft.py (drilldown list).
 # ---------------------------------------------------------------------------
-# PY-2 (Audit 2026-05-31): registration / aircraft_type now use the shared
-# _ENRICH_REG / _ENRICH_TYPE expressions so sorting matches what the list
-# displays (which falls back through flights → aircraft_db → adsbx_overrides).
-# All callers using these sort cols also use _FLIGHT_JOIN, so `axo` is in scope.
 _SORT_COLS: dict[str, str] = {
     "first_seen":     "f.first_seen",
     "icao_hex":       "f.icao_hex",

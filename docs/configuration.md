@@ -144,6 +144,7 @@ Thresholds for the nine receiver-health checks. All effective values are also re
 |---|---|---|
 | `RSBS_AIRCRAFT_DB_MIN_RATIO` | `0.8` | Minimum fraction of the previous `aircraft_db` row count that a freshly-imported tar1090-db CSV must contain before the swap is allowed. Refuses a swap that loses >20% of rows (truncation guard). First-ever imports bypass the check. |
 | `RSBS_AIRLINES_DB_MIN_RATIO` | `0.8` | Same min-ratio guard for OpenFlights airlines import (audit 2026-05-31 PY-7). First-ever imports bypass the check. |
+| `RSBS_ADSBX_OVERRIDES_TTL_DAYS` | `365` | Maximum age before `adsbx_overrides` rows are eligible for the weekly db_updater purge. The UPSERT clause preserves confirmed metadata across transient upstream gaps; this purge clears genuinely stale rows so a re-registered tail number doesn't keep surfacing the old value. `0` disables the purge. |
 
 ### UI / pagination
 

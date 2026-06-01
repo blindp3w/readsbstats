@@ -332,6 +332,61 @@ class TestUpsertOverrides:
         assert row["f"] == 0
 
 
+class TestPurgeStaleOverrides:
+    """Code-review follow-up: complement to the preserve-confirmed-data
+    UPSERT. Adsbx overrides for airframes not seen in a long time get
+    purged so genuinely stale metadata can re-confirm on the next
+    sighting instead of persisting forever via COALESCE."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        importlib.reload(enrichment)
+        self.conn = make_db()
+        yield
+        self.conn.close()
+
+    def _seed(self, icao: str, last_seen: int) -> None:
+        self.conn.execute(
+            "INSERT INTO adsbx_overrides "
+            "(icao_hex, flags, registration, type_code, type_desc, first_seen, last_seen) "
+            "VALUES (?, 1, 'SP-OLD', 'B738', 'Boeing 737', ?, ?)",
+            (icao, last_seen - 86400, last_seen),
+        )
+        self.conn.commit()
+
+    def test_purge_deletes_rows_older_than_ttl(self):
+        now = int(time.time())
+        self._seed("old001", now - 400 * 86400)        # 400 days old → delete
+        self._seed("old002", now - 200 * 86400)        # 200 days old → delete
+        self._seed("new001", now - 100 * 86400)        # 100 days old → keep
+
+        from readsbstats import adsbx_enricher
+        deleted = adsbx_enricher.purge_stale_overrides(self.conn, max_age_days=180)
+
+        assert deleted == 2
+        remaining = {r["icao_hex"] for r in self.conn.execute(
+            "SELECT icao_hex FROM adsbx_overrides"
+        ).fetchall()}
+        assert remaining == {"new001"}
+
+    def test_purge_disabled_when_max_age_zero(self):
+        now = int(time.time())
+        self._seed("old001", now - 1000 * 86400)
+        from readsbstats import adsbx_enricher
+        deleted = adsbx_enricher.purge_stale_overrides(self.conn, max_age_days=0)
+        assert deleted == 0
+        assert self.conn.execute(
+            "SELECT COUNT(*) FROM adsbx_overrides"
+        ).fetchone()[0] == 1
+
+    def test_purge_returns_zero_when_no_stale_rows(self):
+        now = int(time.time())
+        self._seed("fresh001", now - 10 * 86400)
+        from readsbstats import adsbx_enricher
+        deleted = adsbx_enricher.purge_stale_overrides(self.conn, max_age_days=180)
+        assert deleted == 0
+
+
 # ---------------------------------------------------------------------------
 # enrichment.lookup_adsbx
 # ---------------------------------------------------------------------------

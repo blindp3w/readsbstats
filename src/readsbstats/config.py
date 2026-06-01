@@ -223,6 +223,18 @@ AIRLINES_DB_MIN_RATIO = _min_or_default_float(
     _float("RSBS_AIRLINES_DB_MIN_RATIO", "0.8"),
     0.0, 0.8,
 )
+# Code-review follow-up: maximum age (days) before adsbx_overrides rows are
+# eligible for deletion by the weekly db_updater. The UPSERT clause in
+# adsbx_enricher._upsert_overrides preserves confirmed metadata across
+# transient upstream gaps; this purge clears genuinely-stale rows so an
+# airframe whose registration has actually been removed doesn't keep
+# surfacing the old value forever. 0 disables the purge. Default 365
+# days = 1 year of un-seen-ness, generous enough for airframes that pass
+# overhead only occasionally.
+ADSBX_OVERRIDES_TTL_DAYS = _int(
+    *_register("adsbx_overrides_ttl_days", "RSBS_ADSBX_OVERRIDES_TTL_DAYS",
+               "365", "ADSBX_OVERRIDES_TTL_DAYS")
+)
 # Background prewarmer for map heatmap/coverage caches. On when DuckDB is
 # on; harmless to leave on with DuckDB off (the prewarmer self-disables if
 # the analytics engine isn't available — running the heavy SQLite query
