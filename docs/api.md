@@ -45,8 +45,8 @@ The web server exposes a JSON API at `http://YOUR_PI_IP/stats/api/`.
 | Method | Path | Description |
 |---|---|---|
 | GET | `/api/watchlist` | List all watchlist entries (with `airborne` flag) |
-| POST | `/api/watchlist` | Add entry: `{match_type, value, label?}`. Requires `X-Requested-With` header. |
-| DELETE | `/api/watchlist/{id}` | Remove entry. Requires `X-Requested-With` header. |
+| POST | `/api/watchlist` | Add entry: `{match_type, value, label?}`. Requires `X-Requested-With: XMLHttpRequest`. Also requires `Authorization: Bearer <token>` when `RSBS_API_TOKEN` is set. |
+| DELETE | `/api/watchlist/{id}` | Remove entry. Same auth requirements as POST. |
 
 ## Enrichment
 
