@@ -66,10 +66,13 @@ def api_stats(
                     WHEN callsign IS NOT NULL AND callsign != '' AND length(callsign) >= 3
                     THEN substr(callsign,1,3) END)                                AS unique_airlines,
                 MIN(first_seen)                                                   AS oldest_flight,
-                SUM(CASE WHEN first_seen > ? THEN 1 ELSE 0 END)                  AS flights_24h,
-                SUM(CASE WHEN first_seen > ? THEN 1 ELSE 0 END)                  AS flights_7d,
-                SUM(CASE WHEN first_seen > ? AND first_seen <= ? THEN 1 ELSE 0 END) AS flights_prev_24h,
-                SUM(CASE WHEN first_seen > ? AND first_seen <= ? THEN 1 ELSE 0 END) AS flights_prev_7d,
+                -- Audit 2026-06-01 S: half-open [lo, hi) — matches
+                -- _build_date_filter and excludes double-counting at the
+                -- per-second cutoff boundary.
+                SUM(CASE WHEN first_seen >= ? THEN 1 ELSE 0 END)                  AS flights_24h,
+                SUM(CASE WHEN first_seen >= ? THEN 1 ELSE 0 END)                  AS flights_7d,
+                SUM(CASE WHEN first_seen >= ? AND first_seen < ? THEN 1 ELSE 0 END) AS flights_prev_24h,
+                SUM(CASE WHEN first_seen >= ? AND first_seen < ? THEN 1 ELSE 0 END) AS flights_prev_7d,
                 ROUND(100.0 * SUM(adsb_positions) / NULLIF(SUM(total_positions),0), 1) AS adsb_pct,
                 ROUND(100.0 * SUM(mlat_positions) / NULLIF(SUM(total_positions),0), 1) AS mlat_pct,
                 SUM(CASE WHEN max_alt_baro >= 0     AND max_alt_baro < 1000  THEN 1 ELSE 0 END) AS alt_0_1k,
@@ -121,10 +124,11 @@ def api_stats(
         live = conn.execute(
             """
             SELECT
-                SUM(CASE WHEN first_seen > ? THEN 1 ELSE 0 END)                     AS flights_24h,
-                SUM(CASE WHEN first_seen > ? THEN 1 ELSE 0 END)                     AS flights_7d,
-                SUM(CASE WHEN first_seen > ? AND first_seen <= ? THEN 1 ELSE 0 END) AS flights_prev_24h,
-                SUM(CASE WHEN first_seen > ? AND first_seen <= ? THEN 1 ELSE 0 END) AS flights_prev_7d
+                -- Audit 2026-06-01 S: half-open [lo, hi) — see main block above.
+                SUM(CASE WHEN first_seen >= ? THEN 1 ELSE 0 END)                     AS flights_24h,
+                SUM(CASE WHEN first_seen >= ? THEN 1 ELSE 0 END)                     AS flights_7d,
+                SUM(CASE WHEN first_seen >= ? AND first_seen < ? THEN 1 ELSE 0 END) AS flights_prev_24h,
+                SUM(CASE WHEN first_seen >= ? AND first_seen < ? THEN 1 ELSE 0 END) AS flights_prev_7d
             FROM flights
             """,
             (cutoff_24h, cutoff_7d, cutoff_prev_24h, cutoff_24h, cutoff_prev_7d, cutoff_7d),

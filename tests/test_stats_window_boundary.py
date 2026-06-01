@@ -1,0 +1,95 @@
+"""Regression for stats 24h/7d window boundary (Audit 2026-06-01 S).
+
+`api/stats.py` previously used `first_seen > cutoff` for `flights_24h` and
+`flights_7d`, while `flights_prev_*` used `first_seen > ? AND first_seen <= ?`.
+A flight at exactly the cutoff second was excluded from current and counted
+in previous (1-flight drift in the Stats page trend delta).
+
+Fix: half-open [lo, hi) for both windows — `>=` lower bound, `<` upper bound
+— matching `_deps._build_date_filter`'s convention.
+"""
+from __future__ import annotations
+
+import time
+
+import pytest
+from fastapi.testclient import TestClient
+
+from readsbstats import cache, enrichment, web
+from readsbstats.api import _deps
+from tests._helpers import make_db
+
+
+@pytest.fixture()
+def db_conn():
+    conn = make_db()
+    enrichment.clear_cache()
+    yield conn
+    conn.close()
+
+
+@pytest.fixture()
+def client(db_conn, monkeypatch):
+    from readsbstats import route_enricher
+    monkeypatch.setattr(_deps, "_db", db_conn)
+    monkeypatch.setattr(route_enricher, "start_background_enricher", lambda: None)
+    cache._cache.clear()
+    with TestClient(web.app, raise_server_exceptions=True,
+                    headers={"X-Requested-With": "XMLHttpRequest"}) as c:
+        yield c
+
+
+def _insert(conn, icao, first_seen):
+    conn.execute(
+        "INSERT INTO flights (icao_hex, callsign, first_seen, last_seen, "
+        "max_distance_nm, total_positions, adsb_positions, mlat_positions, "
+        "primary_source, lat_min, lat_max, lon_min, lon_max) "
+        "VALUES (?, 'LOT123', ?, ?, 100.0, 10, 9, 1, 'adsb', 0, 0, 0, 0)",
+        (icao, first_seen, first_seen + 600),
+    )
+    conn.commit()
+
+
+class TestStatsWindowBoundary:
+    """flights_24h must include the flight at exactly `cutoff_24h`, and
+    flights_prev_24h must exclude it (half-open [lo, hi))."""
+
+    def test_flight_at_cutoff_24h_counts_in_current_not_previous(
+        self, client, db_conn,
+    ):
+        now = int(time.time())
+        cutoff_24h = now - 86400
+        # Three flights: at cutoff, one second inside, and a day earlier.
+        _insert(db_conn, "aa0001", cutoff_24h)           # at boundary
+        _insert(db_conn, "aa0002", cutoff_24h + 1)       # inside 24h
+        _insert(db_conn, "aa0003", cutoff_24h - 86400)   # solidly in prev_24h
+
+        r = client.get("/api/stats")
+        assert r.status_code == 200
+        data = r.json()
+        # Current is exposed as `flights_last_24h` at the top level; previous
+        # is `trends.flights_24h_prev`.
+        assert data.get("flights_last_24h") == 2, (
+            f"expected boundary flight included; got flights_last_24h="
+            f"{data.get('flights_last_24h')}"
+        )
+        assert data.get("trends", {}).get("flights_24h_prev") == 1, (
+            f"expected prev_24h = 1 (only the day-old flight); got "
+            f"{data.get('trends')}"
+        )
+
+    def test_flight_at_cutoff_7d_counts_in_current_not_previous(
+        self, client, db_conn,
+    ):
+        now = int(time.time())
+        cutoff_7d = now - 7 * 86400
+        _insert(db_conn, "bb0001", cutoff_7d)             # at 7d boundary
+        _insert(db_conn, "bb0002", cutoff_7d - 7 * 86400) # solidly in prev_7d
+
+        r = client.get("/api/stats")
+        data = r.json()
+        assert data.get("flights_last_7d") == 1, (
+            f"expected boundary flight in flights_last_7d; got "
+            f"{data.get('flights_last_7d')}"
+        )
+        assert data.get("trends", {}).get("flights_7d_prev") == 1
