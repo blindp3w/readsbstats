@@ -97,8 +97,8 @@ snapshot_db('/mnt/ext/readsbstats/history.db')
 
 ## Deployment security
 
-readsbstats ships **no authentication and no authorization**. The trust model is
-"bind to loopback, sit behind nginx on a trusted LAN."
+readsbstats ships **no authentication and no authorization by default**. The
+trust model is "bind to loopback, sit behind nginx on a trusted LAN."
 
 **What this means in practice:**
 
@@ -111,6 +111,14 @@ readsbstats ships **no authentication and no authorization**. The trust model is
   logged-in browser. It does not identify, authenticate, or authorize the
   caller — a direct `curl` with that header passes it. Never treat it as access
   control.
+- **Optional bearer-token gate (audit 2026-05-31 SH-1).** Setting
+  `RSBS_API_TOKEN=<value>` requires every mutating call to carry
+  `Authorization: Bearer <value>`; comparison uses `hmac.compare_digest`. No-op
+  when the env var is unset (default trusted-LAN posture unchanged). Read
+  endpoints are NOT gated — they were already public on the trusted LAN. This
+  is a thin extra layer for deployments where the LAN itself isn't fully
+  trusted; it is **not** a substitute for a reverse-proxy auth layer when the
+  app is reachable from the public internet.
 - **`flight_id` path params are integer-typed; `{icao_hex}` path params are
   validated** against `^~?[0-9a-fA-F]{6}$` before any DB or outbound work, and
   feeder `status_path` values are `realpath`-checked under `RSBS_FEEDER_STATUS_ROOT`.
@@ -120,13 +128,16 @@ readsbstats ships **no authentication and no authorization**. The trust model is
 **If you expose the UI beyond a trusted LAN**, put an authenticating layer in
 front of nginx — HTTP basic auth, an OAuth2 reverse proxy (e.g. oauth2-proxy),
 or a VPN / Tailscale tailnet. Do not publish `127.0.0.1:8080` or the nginx
-`/stats/` location to the public internet without one.
+`/stats/` location to the public internet without one. `RSBS_API_TOKEN` alone
+is not enough for public exposure.
 
 **Outbound HTTP** (photo + route enrichment) is centralised in `http_safe.py`
-with an SSRF guard (HTTPS-only, public-IP-only, redirect-blocked). Provider
-photo URLs are additionally checked against per-source CDN host allowlists
-before they are cached or rendered; set `RSBS_PHOTO_HOST_ENFORCE=1` to hard-drop
-off-allowlist hosts (default logs them only — see `docs/configuration.md`).
+with an SSRF guard (HTTPS-only, globally-reachable-IP-only, multicast-blocked,
+redirect-blocked). Provider photo URLs are additionally checked against
+per-source CDN host allowlists before they are cached, and at the API response
+boundary on every photo emission (audit 2026-05-31 PY-6) so cached
+off-allowlist URLs never reach the SPA regardless of `RSBS_PHOTO_HOST_ENFORCE`.
+The image-host and link-host allowlists are separate — see `docs/configuration.md`.
 
 ## Database integrity & startup recovery
 
