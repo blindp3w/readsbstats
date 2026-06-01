@@ -103,7 +103,7 @@ export default function GalleryPage() {
           type="single"
           value={String(filter) || 'all'}
           onValueChange={(v) => {
-            update({ flags: v === 'all' ? null : v, offset: 0 });
+            update({ flags: v === 'all' ? null : v, offset: null });
           }}
           aria-label="Filter by flag"
           data-testid="gallery-filter-group"
@@ -122,7 +122,7 @@ export default function GalleryPage() {
         <SortPopover
           value={String(sort)}
           currentLabel={currentSortLabel}
-          onChange={(v) => update({ sort_by: v === 'last_seen' ? null : v, offset: 0 })}
+          onChange={(v) => update({ sort_by: v === 'last_seen' ? null : v, offset: null })}
         />
       </div>
 
@@ -198,7 +198,7 @@ export default function GalleryPage() {
           total={q.data.total}
           limit={PAGE_SIZE}
           offset={Number(offset)}
-          onOffsetChange={(o) => update({ offset: o })}
+          onOffsetChange={(o) => update({ offset: o || null })}
         />
       )}
     </div>

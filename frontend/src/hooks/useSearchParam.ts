@@ -15,14 +15,8 @@ import { useSearchParams } from 'react-router-dom';
 
 export type ParamValue = string | number;
 
-export function useSearchParam(
-  key: string,
-  defaultValue: number,
-): [number, (next: number) => void];
-export function useSearchParam(
-  key: string,
-  defaultValue: string,
-): [string, (next: string) => void];
+export function useSearchParam(key: string, defaultValue: number): [number, (next: number) => void];
+export function useSearchParam(key: string, defaultValue: string): [string, (next: string) => void];
 export function useSearchParam(
   key: string,
   defaultValue: string | number,
@@ -82,10 +76,14 @@ function isDefaultValue(next: ParamValue, defaultValue: ParamValue): boolean {
 // (e.g. "clicking Military filter resets pagination to page 0"):
 //
 //   const update = useSearchParamBatch();
-//   onClick={() => update({ flags: 'military', offset: 0 })};
+//   onClick={() => update({ flags: 'military', offset: null })};
 //
-// Values that match the empty-string / zero default are stripped from the URL.
-// Pass `null` to explicitly remove a param.
+// Values of `null` or `''` are stripped. Audit 2026-06-01 W: previously
+// `=== 0` was also stripped, baking a page-specific default (offset's 0
+// reset) into a generic helper; that silently dropped any future param
+// where 0 is meaningful (min_alt=0, zero-based index, squawk literal `0`).
+// Pass `null` explicitly to reset a param to its default — that's the
+// documented sentinel.
 export function useSearchParamBatch(): (updates: Record<string, ParamValue | null>) => void {
   const [, setParams] = useSearchParams();
   return useCallback(
@@ -94,7 +92,7 @@ export function useSearchParamBatch(): (updates: Record<string, ParamValue | nul
         (prev) => {
           const out = new URLSearchParams(prev);
           for (const [k, v] of Object.entries(updates)) {
-            if (v === null || v === '' || v === 0) {
+            if (v === null || v === '') {
               out.delete(k);
             } else {
               out.set(k, String(v));

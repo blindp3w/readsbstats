@@ -152,7 +152,7 @@ export default function AircraftPage() {
             sortBy={sortBy}
             sortDir={sortDir}
             onSortChange={(k, d) => {
-              update({ sort_by: k, sort_dir: d, offset: 0 });
+              update({ sort_by: k, sort_dir: d, offset: null });
             }}
           />
           {flightsQ.data && flightsQ.data.total > PAGE_SIZE && (
