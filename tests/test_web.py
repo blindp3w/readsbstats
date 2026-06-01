@@ -1764,24 +1764,30 @@ class TestFeederDetailParsers:
 
     def test_fr24_details_success(self, monkeypatch):
         import asyncio
+        import json
         import httpx as _httpx
 
-        class FakeResp:
+        payload = {
+            "build_version": "1.2.3",
+            "feed_status": "connected",
+            "feed_alias": "T-KZXX1",
+            "feed_num_ac_tracked": 42,
+            "rx_connected": "1",
+            "mlat-ok": "0",
+        }
+
+        class FakeStream:
+            def __init__(self): self.body = json.dumps(payload).encode()
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): return False
             def raise_for_status(self): pass
-            def json(self):
-                return {
-                    "build_version": "1.2.3",
-                    "feed_status": "connected",
-                    "feed_alias": "T-KZXX1",
-                    "feed_num_ac_tracked": 42,
-                    "rx_connected": "1",
-                    "mlat-ok": "0",
-                }
+            async def aiter_bytes(self):
+                yield self.body
 
         class FakeClient:
             async def __aenter__(self): return self
             async def __aexit__(self, *a): pass
-            async def get(self, url): return FakeResp()
+            def stream(self, method, url): return FakeStream()
 
         monkeypatch.setattr(_httpx, "AsyncClient", lambda **kw: FakeClient())
         result = asyncio.get_event_loop().run_until_complete(
@@ -1805,7 +1811,7 @@ class TestFeederDetailParsers:
         class FakeClient:
             async def __aenter__(self): return self
             async def __aexit__(self, *a): pass
-            async def get(self, url): raise ConnectionError("down")
+            def stream(self, method, url): raise ConnectionError("down")
 
         monkeypatch.setattr(_httpx, "AsyncClient", lambda **kw: FakeClient())
         result = asyncio.get_event_loop().run_until_complete(
