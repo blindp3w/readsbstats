@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Query
-from fastapi.responses import Response  # noqa: F401  — kept for parity with web.py imports
 
 from .. import config, icao_ranges, photo_sources, schemas
 from . import _deps, _photos

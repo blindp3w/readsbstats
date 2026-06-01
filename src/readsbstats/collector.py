@@ -303,13 +303,11 @@ def _open_flight(
     _active[icao] = {
         "flight_id": flight_id,
         "last_seen": pos_ts,
-        # Audit-13 A13-012: previously `pos_ts - 1` paired with a `<=` skip
-        # below; that double-counted "no backstep allowed" and silently
-        # dropped the next position whenever readsb's clock stepped back
-        # by 1 s (NTP correction). With `pos_ts` here and strict `<` in
-        # the poll loop, an equal-timestamp sample is treated as a new
-        # observation and a backward step is rejected only when actually
-        # backward.
+        # Invariant: paired with the strict `<` skip in the poll loop —
+        # equal timestamps are processed as new observations; only
+        # strictly-backward `pos_ts < last_pos_ts` is rejected. Keeps the
+        # collector resilient to NTP backward-steps without dropping
+        # legitimate same-second samples.
         "last_pos_ts": pos_ts,
         "last_lat": lat,
         "last_lon": lon,
@@ -703,8 +701,8 @@ def _poll(conn: sqlite3.Connection) -> None:
                 source_type = "mlat"
 
             state = _active.get(icao)
-            # Audit-13 A13-012: strict `<` (not `<=`) — equal timestamp
-            # is treated as a new observation. See _open_flight comment.
+            # Strict `<` (not `<=`): equal timestamps are new observations;
+            # see _open_flight's last_pos_ts invariant.
             if state is not None and pos_ts < state["last_pos_ts"]:
                 continue
 

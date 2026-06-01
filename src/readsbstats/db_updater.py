@@ -137,38 +137,21 @@ def update_aircraft_db(conn: sqlite3.Connection) -> int:
     raw = _fetch(AIRCRAFT_CSV_URL)
     log.info("Downloaded %.1f MB in %.1fs", len(raw) / 1_048_576, time.time() - t0)
 
-    # Audit 2026-05-26 / 2026-05-31 (BE-9): stream-decode, parse, and insert
-    # in chunks instead of materialising the full decompressed text *and* the
-    # ~620k-row tuple list in memory. The compressed payload is already
-    # buffered by safe_urlopen (~10 MB); the decoded text is ~50 MB. Streaming
-    # + chunked executemany keeps peak RSS bounded by one chunk, which matters
-    # on the Pi's tight MemoryMax.
-    #
-    # BE-2 (Audit 2026-05-31) + 3.45.x fix: build the staging table AND swap it
-    # in inside ONE explicit transaction:
+    # Atomic staging-table swap in ONE transaction:
     #   1. CREATE aircraft_db_new
     #   2. chunked INSERT (old aircraft_db stays queryable to WAL readers)
-    #   3. validate new count vs. previous (config.AIRCRAFT_DB_MIN_RATIO)
-    #   4. RENAME aircraft_db → aircraft_db_old
-    #   5. RENAME aircraft_db_new → aircraft_db
-    #   6. DROP aircraft_db_old
-    # SQLite DDL (CREATE / ALTER … RENAME / DROP) is fully transactional and,
-    # on Python ≥3.6 in legacy mode, is NOT implicitly committed — so the
-    # CREATE, the chunked INSERTs, and the rename-rename-drop all live in the
-    # same unit of work and are guaranteed visible to one another on this
-    # connection. An interrupted run rolls back wholesale: `aircraft_db_new`
-    # never lingers and `aircraft_db` is never observably absent (WAL readers
-    # keep seeing the old table until COMMIT).
-    #
-    # Why one transaction and not two: an earlier revision built the staging
-    # table in its own committed `with conn:` block, then opened a separate
-    # transaction for the INSERTs. On SQLite 3.45.x (Ubuntu 24.04) the
-    # freshly-created `aircraft_db_new` was not visible to the next
-    # transaction's INSERT — "no such table: aircraft_db_new". Keeping
-    # everything in a single transaction closes that cross-transaction
-    # DDL-visibility gap. The collector is stopped during a DB refresh (see
-    # scripts/update.sh), so holding the write lock for the multi-second build
-    # is safe.
+    #   3. row-count vs. previous validation (AIRCRAFT_DB_MIN_RATIO floor)
+    #   4. RENAME aircraft_db → aircraft_db_old → aircraft_db_new → aircraft_db
+    #   5. DROP aircraft_db_old
+    # Single transaction is required on SQLite 3.45.x (Pi's Ubuntu 24.04) —
+    # splitting the CREATE and the INSERTs across two transactions hit a
+    # cross-transaction DDL-visibility bug where the second transaction
+    # couldn't see the freshly-created staging table. The collector is
+    # stopped during the refresh (scripts/update.sh), so holding the write
+    # lock for the build is safe.
+    # Streaming + chunked executemany keeps peak RSS bounded by one chunk —
+    # ~50 MB decoded text + ~620k-row tuple list would otherwise blow the
+    # Pi's MemoryMax.
     _recover_aborted_swap(conn)
 
     prev_count = conn.execute("SELECT COUNT(*) FROM aircraft_db").fetchone()[0]
