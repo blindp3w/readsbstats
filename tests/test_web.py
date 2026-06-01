@@ -3860,22 +3860,19 @@ class TestMapSnapshot:
         assert aircraft[0]["ts"] == at - 30
         assert aircraft[0]["lat"] == 51.0
 
-    def test_trail_bounded_by_window(self, client, db_conn, monkeypatch):
-        """PY-11 (Audit 2026-05-31): the trail CTE must exclude positions
-        older than MAP_TRAIL_WINDOW_SECONDS. Without the bound, a long
-        flight with thousands of historical positions would force SQLite
-        to rank the whole partition just to return `trail_count` points.
-        """
+    def test_trail_bounded_by_window_live(self, client, db_conn, monkeypatch):
+        """PY-11 (Audit 2026-05-31): for the live view, the trail CTE must
+        exclude positions older than MAP_TRAIL_WINDOW_SECONDS. Without the
+        bound, a long flight with thousands of historical positions would
+        force SQLite to rank the whole partition just to return
+        `trail_count` points."""
         from readsbstats import config
         monkeypatch.setattr(config, "MAP_TRAIL_WINDOW_SECONDS", 1800)  # 30 min
 
         now = int(time.time())
-        at = now - 60
+        at = now - 10                                                  # is_live
         fid = insert_flight(db_conn, icao="aabbcc", first_seen=at - 7200)
 
-        # Mix of in-window and out-of-window positions.
-        # In-window: ts in (at-1800, at]
-        # Out-of-window: ts <= at-1800
         rows = []
         for offset in (1500, 1000, 600, 300, 100):           # in-window
             rows.append((fid, at - offset, 51.0, 11.0, "adsb_icao"))
@@ -3890,15 +3887,57 @@ class TestMapSnapshot:
 
         r = client.get(f"/api/map/snapshot?at={at}&trail=50")
         assert r.status_code == 200
-        trail = r.json()["aircraft"][0]["trail"]
-        # All returned points must be inside the window.
+        body = r.json()
+        assert body["is_live"] is True
+        trail = body["aircraft"][0]["trail"]
         for lat, lon, ts in trail:
             assert ts > at - 1800, (
                 f"trail point ts={ts} is older than at-window={at - 1800}; "
-                f"window bound missing"
+                f"window bound missing for live view"
             )
-        # All five in-window points should be present.
         assert len(trail) == 5
+
+    def test_trail_unbounded_for_historical_replay(self, client, db_conn,
+                                                    monkeypatch):
+        """Finding from code review: PY-11's window bound silently truncates
+        long historical-replay trails. When `at` is far enough from `now`
+        that `is_live=False`, the user is reviewing past activity and
+        expects to see the whole flight track up to `at`, not just the
+        last MAP_TRAIL_WINDOW_SECONDS seconds.
+        """
+        from readsbstats import config
+        monkeypatch.setattr(config, "MAP_TRAIL_WINDOW_SECONDS", 1800)  # 30 min
+
+        now = int(time.time())
+        # Historical: at is hours in the past so is_live=False.
+        at = now - 4 * 3600
+        fid = insert_flight(db_conn, icao="aabbcc", first_seen=at - 7200)
+
+        rows = []
+        # 3 positions inside the live-style window
+        for offset in (1500, 1000, 100):
+            rows.append((fid, at - offset, 51.0, 11.0, "adsb_icao"))
+        # 3 positions older than 1800s but still part of the flight track
+        for offset in (3000, 5000, 7000):
+            rows.append((fid, at - offset, 52.0, 12.0, "adsb_icao"))
+        db_conn.executemany(
+            "INSERT INTO positions (flight_id, ts, lat, lon, source_type) "
+            "VALUES (?,?,?,?,?)",
+            rows,
+        )
+        db_conn.commit()
+
+        r = client.get(f"/api/map/snapshot?at={at}&trail=50")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["is_live"] is False, "expected is_live=False for historical at"
+        trail = body["aircraft"][0]["trail"]
+        # All six points should be present — the historical view doesn't
+        # truncate to the live-view window.
+        assert len(trail) == 6, (
+            f"historical replay returned {len(trail)} points; "
+            "the live-view MAP_TRAIL_WINDOW_SECONDS bound should not apply"
+        )
 
     def test_snapshot_enriches_reg_type_from_aircraft_db(self, client, db_conn):
         # BE-14: registration/aircraft_type missing on the flight row must be
