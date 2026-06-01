@@ -1,5 +1,83 @@
 # Changelog
 
+## Unreleased
+
+Repository audit 2026-06-01 follow-ups — correctness sweep across
+warnings and small `suggestion`-level items. No `critical` findings
+were raised by the audit. See
+`internal_docs/repository_audit_2026-06-01.md` for the audit source
+and per-finding rationale.
+
+### Security
+
+- **notifier (W-1)** — `/watch` and `/unwatch` confirmations now
+  wrap the user-supplied value in `_h()` before interpolating into
+  HTML-mode Telegram messages, matching the canonical pattern used
+  by `_send_watchlist_list`. A value containing `&`/`<`/`>` previously
+  made Telegram reject the message with HTTP 400 (silently dropped
+  confirmation).
+- **api/feeders (W-2)** — `_feeder_details_fr24` switched from
+  buffered `client.get()` to streaming `client.stream()` +
+  `aiter_bytes()` with a hard 256 KB cap, aborting mid-stream.
+  Loopback-only carve-out from `safe_httpx_get` (HTTPS-only) is now
+  documented inline. A misbehaving local FR24 daemon can no longer
+  OOM the uvicorn worker by returning an unbounded body.
+
+### Reliability
+
+- **collector (W-4)** — MLAT outlier filter skipped when `p75 == 0`,
+  preventing every positive GS reading on a mostly-zero distribution
+  (taxi, ground movement) from being silently nulled.
+- **collector (W)** — `_close_flight` docstring now states the
+  transaction precondition explicitly so future callers don't accidentally
+  invoke it from an autocommit connection.
+- **collector (S)** — ghost-filter comment reconciled with its
+  `dt <= 0` gate; small regression test locks the equal-`pos_ts` drop.
+- **db_updater (W)** — symmetric crash-recovery for the airlines
+  staging swap: new `database.recover_airlines_db_swap()` is called
+  from `ensure_base_schema` and `init_db` alongside the existing
+  aircraft recovery, and `update_airlines_db` now drops
+  `airlines_old` defensively at start (mirrors `update_aircraft_db`).
+- **api/stats (S)** — `flights_24h` / `flights_7d` and their
+  previous-window counterparts use half-open `[lo, hi)` boundaries,
+  matching `_build_date_filter`. A flight whose `first_seen` lands
+  exactly on the cutoff second now counts in the current window
+  (was: counted in the previous window only — 1-flight delta drift).
+- **downsample (S)** — `lttb_indices` clamps both empty-bucket
+  fallbacks and the default `best_idx` so a boundary alignment can
+  no longer produce an index `>= n`.
+
+### Architecture
+
+- **W-3 — route_enricher relocated to collector** — the background
+  route enricher used to start in the web process, making web a
+  second SQLite writer alongside the collector. It now starts in
+  `collector.main()` next to `adsbx_enricher`, restoring the
+  single-writer model. Side benefit: multi-worker uvicorn deployments
+  no longer fan out N parallel route-enricher threads.
+
+### Docs
+
+- **operations.md (W-5)** — new "Storage and retention" section with
+  Pi-4 sizing rule of thumb (~200 MB per million `positions` rows
+  measured), guidance for enabling `RSBS_RETENTION_DAYS`, and a note
+  on first-purge lock-time risk. Default stays `0` (keep forever).
+
+### Chores
+
+- **notifier.py, db_updater.py** — removed dead `import urllib.request`
+  (egress goes through `http_safe.safe_urlopen`).
+- **hooks/useSearchParam (W)** — `useSearchParamBatch` no longer strips
+  `=== 0`. Callers in Gallery/Aircraft/History updated to pass `null`
+  for "reset pagination" intent. Zero values now round-trip through
+  the URL (intentional — `min_alt=0`, zero-based index, squawk `0`).
+- **pages/Map (S)** — HIST playback now calls `setMode('live')` on
+  catch-up (mirroring the rewind branch) and wraps the non-terminal
+  `next` in `clampHist`.
+- **pages/Flight (S)** — `PositionTable` sampler retains the last fix
+  even when modulo stride misses it. (The dual sampling/truncation
+  notices remain deliberately distinct per code-review fix #1.)
+
 ## 2.13.0 — 2026-06-01
 
 Repository-wide audit follow-up (15 fixes across security, reliability,
