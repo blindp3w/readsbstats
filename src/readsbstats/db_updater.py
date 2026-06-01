@@ -20,7 +20,6 @@ import logging
 import sqlite3
 import sys
 import time
-import urllib.request
 
 from . import adsbx_enricher, config, database, enrichment, http_safe
 

@@ -27,7 +27,6 @@ import threading
 import time
 import urllib.error
 import urllib.parse
-import urllib.request
 
 from . import config, database, http_safe, icao_ranges, photo_sources
 
