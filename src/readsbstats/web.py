@@ -24,7 +24,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import analytics, cache, config, database, route_enricher
+from . import analytics, cache, config, database
 from .api import _deps  # used by _startup_migrate() to read the test-injected _db
 from .api import (
     aircraft as _api_aircraft,
@@ -77,9 +77,9 @@ def _startup_migrate() -> None:
 async def _lifespan(app_: FastAPI) -> AsyncIterator[None]:
     log.info("Starting web server — DB: %s", config.DB_PATH)
     await asyncio.to_thread(_startup_migrate)
-    # Background migrations (positions indexes, bearing backfill) are owned by
-    # the collector so two processes don't fight on the SQLite write lock.
-    route_enricher.start_background_enricher()
+    # Audit 2026-06-01 W-3: background migrations AND route enrichment are
+    # owned by the collector so two processes don't fight on the SQLite write
+    # lock. Web is read-only (except for the per-request response cache).
     # Eager-init DuckDB so the first user hit doesn't pay extension+ATTACH
     # cost (~1–2 s). If the engine is up, also kick off the prewarmer so
     # users land on warm cache instead of triggering the cold-scan path.

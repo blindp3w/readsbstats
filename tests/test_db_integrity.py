@@ -178,6 +178,10 @@ class TestMainFailClosed:
             lambda *a, **k: called.append("adsbx"),
         )
         monkeypatch.setattr(
+            collector.route_enricher, "start_background_enricher",
+            lambda *a, **k: called.append("route_enricher"),
+        )
+        monkeypatch.setattr(
             collector.metrics_collector, "start_metrics_collector",
             lambda *a, **k: called.append("metrics"),
         )
