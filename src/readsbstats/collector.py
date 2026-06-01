@@ -317,7 +317,21 @@ def _open_flight(
 
 
 def _close_flight(conn: sqlite3.Connection, icao: str) -> None:
-    """Finalise a flight: compute primary_source, delete if too few positions."""
+    """Finalise a flight: compute primary_source, delete if too few positions.
+
+    Precondition (Audit 2026-06-01 W): the caller must ensure these writes
+    commit or roll back atomically. The function issues 3-5 dependent writes
+    (DELETE active_flights, optional DELETE flights, UPDATE positions.gs=NULL,
+    UPDATE flights.max_gs, UPDATE flights.primary_source) and does NOT open
+    its own transaction. All current callers satisfy this:
+
+      * ``_poll`` (gap closure ~ :792, expiry ~ :941): inside an implicit
+        deferred transaction that ``_poll`` commits at the end of the cycle.
+      * shutdown (``main`` ~ :1304): wrapped explicitly in ``with conn:``.
+
+    Do NOT call this from a connection in autocommit mode
+    (``isolation_level=None``); partial state on failure will not roll back.
+    """
     state = _active.pop(icao, None)
     if state is None:
         return
