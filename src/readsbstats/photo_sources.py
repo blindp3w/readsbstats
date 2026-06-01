@@ -523,7 +523,11 @@ def resolve_photo(
 
     def _call_fetcher(target: str) -> tuple[PhotoResult | None, str]:
         if use_status_helper:
-            return _fetch_photo_with_status(target)
+            # Code-review follow-up: route through the public alias so
+            # tests that monkeypatch `photo_sources.fetch_photo_with_status`
+            # actually intercept this call. Calling the private name
+            # directly bypassed the public-API patch surface.
+            return fetch_photo_with_status(target)
         photo = fetcher(target)
         return photo, ("hit" if photo else "miss")
 

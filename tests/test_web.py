@@ -3352,6 +3352,28 @@ class TestApiAuthToken:
         assert client.get("/api/watchlist").status_code == 200
         assert client.get("/api/flights").status_code == 200
 
+    def test_token_picked_up_from_env_at_call_time(self, client, monkeypatch):
+        """Code-review follow-up: tests using monkeypatch.setenv (the
+        natural pytest pattern) must also work, not just
+        monkeypatch.setattr(_deps, '_API_TOKEN', ...). Before the fix,
+        _API_TOKEN was captured at module import time so setenv after
+        import was invisible to _auth_check, causing test assertions
+        of 401 to silently pass for the wrong reason."""
+        # Ensure the module-level binding is empty so the env-var path runs.
+        monkeypatch.setattr(_deps, "_API_TOKEN", None)
+        monkeypatch.setenv("RSBS_API_TOKEN", "env-secret")
+
+        # Without bearer → 401.
+        r = client.post("/api/watchlist",
+                        json={"match_type": "icao", "value": "aabbcc"})
+        assert r.status_code == 401
+
+        # With correct bearer → 201.
+        r = client.post("/api/watchlist",
+                        headers={"Authorization": "Bearer env-secret"},
+                        json={"match_type": "icao", "value": "aabbcc"})
+        assert r.status_code == 201
+
 
 # ---------------------------------------------------------------------------
 # API: /api/aircraft/flagged  — flagged aircraft gallery
