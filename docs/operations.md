@@ -95,6 +95,47 @@ snapshot_db('/mnt/ext/readsbstats/history.db')
 "
 ```
 
+## Storage and retention
+
+The `positions` table is the dominant on-disk consumer — every five-second
+poll appends one row per visible aircraft. As a rough Pi-4 sizing rule
+measured against a developer database with ~4.2 M `positions` rows in
+826 MB: **expect roughly 200 MB per million `positions` rows** including
+indexes and WAL overhead. A continuously-running receiver with ~50
+concurrent aircraft visible writes on the order of 30 M positions per
+month — about 6 GB raw on disk before any rollup.
+
+`RSBS_RETENTION_DAYS=0` (keep forever) is the default. For most home
+installations on a 32 GB or larger SSD this is fine, and full history is
+the feature most users want. Operators who run on smaller storage, or who
+want to bound growth, set a non-zero value:
+
+```ini
+# /etc/readsbstats.env
+Environment="RSBS_RETENTION_DAYS=365"
+```
+
+After restarting `readsbstats-collector`, the next purge cycle drops
+`positions` rows older than the cutoff. **The first purge after enabling
+retention on a long-running database can hold the SQLite write lock for
+several minutes** — schedule the restart during quiet hours, and verify
+with `journalctl -u readsbstats-collector -f` that purge completes before
+walking away. Subsequent purges are incremental and quick.
+
+Flight-level aggregates in the `flights` table (per-flight max altitude,
+max speed, max distance, primary source, first/last seen) **persist
+independently** of any `positions` purge — historical Stats / Aircraft
+pages keep their summary numbers even after the per-position fixes age
+out. Only the position log on the Flight page and the per-flight chart
+endpoints lose detail.
+
+See `docs/configuration.md` for the full list of `RSBS_RETENTION_*`
+tunables (cutoff days, batch size, min positions to keep).
+
+Two-tier rollup (keep raw N days, LTTB-downsample older flights to a
+few hundred points each) is on the roadmap but not yet implemented — the
+current retention strategy is hard-cutoff only.
+
 ## Deployment security
 
 readsbstats ships **no authentication and no authorization by default**. The
