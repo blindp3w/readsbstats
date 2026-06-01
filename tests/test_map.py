@@ -27,9 +27,7 @@ def db_conn():
 
 @pytest.fixture()
 def client(db_conn, monkeypatch):
-    from readsbstats import route_enricher
     monkeypatch.setattr(_deps, "_db", db_conn)
-    monkeypatch.setattr(route_enricher, "start_background_enricher", lambda: None)
     cache._cache.clear()
     with TestClient(web.app, raise_server_exceptions=True) as c:
         yield c

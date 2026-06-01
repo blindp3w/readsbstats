@@ -139,6 +139,10 @@ async def _feeder_details_fr24(status_url: str) -> list[tuple[str, str]]:
                     buf.extend(chunk)
                     if len(buf) > _FR24_MAX_BYTES:
                         # Carve-out cap: abort mid-stream, don't buffer further.
+                        log.debug(
+                            "FR24 monitor.json exceeded %d KB cap; discarding",
+                            _FR24_MAX_BYTES // 1024,
+                        )
                         return details
                 data = json.loads(bytes(buf))
     except Exception:
