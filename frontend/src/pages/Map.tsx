@@ -170,16 +170,21 @@ export default function MapPage() {
           return next;
         });
       } else {
-        // HIST: advance histAt forward toward now.
+        // HIST: advance histAt forward toward now. Audit 2026-06-01 S:
+        // on catch-up, mirror the rewind branch and flip back to 'live'
+        // (otherwise the UI sat in HIST mode with playback stopped).
+        // Clamp the non-terminal advance via clampHist to match the
+        // scrub/seek handlers and avoid one-tick overshoot.
         setHistAt((v) => {
           if (v == null) return v;
           const nowSec = Math.floor(Date.now() / 1000);
           const next = v + speed * (PLAYBACK_TICK_MS / 1000);
           if (next >= nowSec) {
             setPlaying(false);
+            setMode('live');
             return nowSec;
           }
-          return next;
+          return clampHist(next);
         });
       }
     }, PLAYBACK_TICK_MS);
