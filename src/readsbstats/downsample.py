@@ -41,7 +41,10 @@ def lttb_indices(points: Sequence[tuple[float, float]], target: int) -> list[int
         next_start = int((i + 1) * bucket_size) + 1
         next_end   = min(int((i + 2) * bucket_size) + 1, n)
         if next_end <= next_start:
-            next_end = next_start + 1
+            # Audit 2026-06-01 S: re-clamp to n. For target very close to n a
+            # truncated bucket alignment could otherwise produce next_end > n
+            # and IndexError inside the centroid loop below.
+            next_end = min(next_start + 1, n)
         avg_x = 0.0
         avg_y = 0.0
         for k in range(next_start, next_end):
@@ -54,10 +57,13 @@ def lttb_indices(points: Sequence[tuple[float, float]], target: int) -> list[int
         cur_start = int(i * bucket_size) + 1
         cur_end   = min(int((i + 1) * bucket_size) + 1, n)
         if cur_end <= cur_start:
-            cur_end = cur_start + 1
+            # Audit 2026-06-01 S: re-clamp to n; see next_end clamp above.
+            cur_end = min(cur_start + 1, n)
 
         ax, ay = points[a]
-        best_idx = cur_start
+        # Belt-and-braces: if alignment ever drives cur_start to n, clamp the
+        # default best_idx so the result still indexes in [0, n).
+        best_idx = min(cur_start, n - 1)
         best_area = -1.0
         for k in range(cur_start, cur_end):
             bx, by = points[k]

@@ -73,3 +73,25 @@ def test_all_indices_within_input_range():
     points = [(i, math.cos(i / 5.0)) for i in range(200)]
     out = lttb_indices(points, 30)
     assert all(0 <= idx < 200 for idx in out)
+
+
+@pytest.mark.parametrize("n,target", [
+    (5,   4),
+    (10,  8),
+    (100, 99),
+    (502, 500),
+    (1000, 999),
+])
+def test_boundary_alignment_never_produces_out_of_range_index(n, target):
+    """Audit 2026-06-01 S regression: with `target` close to `n`, the
+    bucket-empty guard at line 56-57 used to allow `cur_end > n`, and the
+    default `best_idx = cur_start` could equal `n`. Downstream callers
+    indexing `points[best_idx]` would then crash. Lock both:
+      * No IndexError raised by lttb_indices itself.
+      * Every returned index is in [0, n).
+    """
+    points = [(i, math.sin(i / 7.0)) for i in range(n)]
+    out = lttb_indices(points, target)
+    assert all(0 <= idx < n for idx in out), (
+        f"out-of-range index for n={n} target={target}: {out}"
+    )
