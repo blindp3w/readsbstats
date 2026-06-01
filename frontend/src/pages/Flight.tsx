@@ -608,11 +608,20 @@ function PositionTable({
   if (positions.length === 0) {
     return <p className="text-sm text-[var(--color-text-dim)]">No positions recorded.</p>;
   }
-  // Sample if too many — full table would be heavy DOM.
-  const sampled =
-    positions.length > 500
-      ? positions.filter((_, i) => i % Math.ceil(positions.length / 500) === 0)
-      : positions;
+  // Sample if too many — full table would be heavy DOM. Audit 2026-06-01 S:
+  // a pure `i % stride === 0` sampler always keeps positions[0] but generally
+  // drops positions[len-1] (landing / last-seen, the most operationally
+  // interesting point). Stride-sample as before, then append the last fix if
+  // the sampler missed it. Cheap, deterministic, and preserves the modulo
+  // sampler's even spacing on the rest.
+  const sampled = (() => {
+    if (positions.length <= 500) return positions;
+    const stride = Math.ceil(positions.length / 500);
+    const picks = positions.filter((_, i) => i % stride === 0);
+    const last = positions[positions.length - 1];
+    if (picks[picks.length - 1] !== last) picks.push(last);
+    return picks;
+  })();
   const rssi = computeRssiStats(sampled);
   const rssiSpark = rssi.hasAny ? sampled.map((p) => (p.rssi == null ? rssi.median : p.rssi)) : [];
 

@@ -101,10 +101,12 @@ describe('Position log footer (review fix #1)', () => {
   });
 
   it('sampling note divides rendered by fetched, and no truncation note when fetched == total', async () => {
-    // 600 fetched == total. 600 > 500 → sampled to every-2nd = 300 rows.
+    // 600 fetched == total. 600 > 500 → sampled every-2nd = 300 picks, plus
+    // the last fix (Audit 2026-06-01 S: PositionTable retains positions[len-1]
+    // when the modulo sampler misses it). Net: 301 sampled rows.
     installFetch(600, 600);
     const { findByText, queryByText } = renderPage();
-    await findByText(/Showing 300 of 600 positions \(sampled\)/i);
+    await findByText(/Showing 301 of 600 positions \(sampled\)/i);
     // fetched == total → no truncation note.
     expect(queryByText(/fixes/i)).toBeNull();
   });
