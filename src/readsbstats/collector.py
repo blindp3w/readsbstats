@@ -696,6 +696,17 @@ def _poll(conn: sqlite3.Connection) -> None:
             # SQLite binding. A non-string `type` (dict/list/number) used
             # to raise sqlite3.ProgrammingError and roll back the whole
             # poll; an oversized string would bloat positions.source_type.
+            #
+            # Behaviour change (code-review note): for a numeric `type`
+            # value — not produced by stock readsb but possible from a
+            # custom feed — the old path raised and the outer try/except
+            # skipped that aircraft entry. The new path stores
+            # source_type=NULL and processes the row. Downstream
+            # `_is_adsb(None)` / `_is_mlat(None)` both return False, so
+            # the position is counted as `other` rather than ADS-B or
+            # MLAT. Record-and-degrade beats whole-poll rollback; if a
+            # feed format ever emits numeric `type` codes routinely,
+            # add an explicit mapping here.
             source_type = clean_short_text(ac.get("type"), 32)
             if is_mlat_hex and not source_type:
                 source_type = "mlat"

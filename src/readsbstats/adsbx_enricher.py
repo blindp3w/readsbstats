@@ -132,10 +132,16 @@ def _upsert_overrides(conn: sqlite3.Connection, entries: list[dict]) -> int:
     Upsert parsed entries into adsbx_overrides.
     Returns the number of rows upserted.
 
-    Audit-13 A13-066: previously did N round-trip `conn.execute(...)`
-    calls; an entries batch of a few hundred dominated each poll's
-    write latency. `executemany` with the same UPSERT clause issues
-    one prepared-statement bind per row inside one transaction.
+    The COALESCE clause is intentional: a previously-confirmed value is
+    preserved if the current poll has it absent or null. This protects
+    against airplanes.live transient gaps but means a TRULY removed
+    registration is never cleared by this function alone — see
+    :func:`purge_stale_overrides` for the time-based cleanup that
+    handles the long-tail case.
+
+    Audit-13 A13-066: `executemany` with the same UPSERT clause issues
+    one prepared-statement bind per row inside one transaction; the
+    pre-A13-066 code did N round-trip `conn.execute(...)` calls.
     """
     if not entries:
         return 0
@@ -164,6 +170,36 @@ def _upsert_overrides(conn: sqlite3.Connection, entries: list[dict]) -> int:
     for e in entries:
         enrichment.invalidate_adsbx(e["icao_hex"])
     return len(entries)
+
+
+def purge_stale_overrides(conn: sqlite3.Connection, max_age_days: int) -> int:
+    """Delete adsbx_overrides rows whose ``last_seen`` is older than
+    ``max_age_days``. Returns the number of rows deleted.
+
+    Code-review follow-up for the audit 2026-05-31 review pass: the
+    COALESCE upsert in :func:`_upsert_overrides` never clears confirmed
+    metadata, which protects against transient upstream gaps but means
+    an airframe whose registration is genuinely removed (re-registered,
+    deregistered) keeps the stale value forever. Run this periodically
+    from the weekly db_updater so very-old rows expire and let
+    `_upsert_overrides` re-confirm fresh values on the next sighting.
+
+    ``max_age_days <= 0`` disables the purge.
+    """
+    if max_age_days <= 0:
+        return 0
+    cutoff = int(time.time()) - max_age_days * 86400
+    with conn:
+        cur = conn.execute(
+            "DELETE FROM adsbx_overrides WHERE last_seen < ?",
+            (cutoff,),
+        )
+    deleted = cur.rowcount or 0
+    if deleted:
+        log.info("Purged %d stale adsbx_overrides row(s) (last_seen < %d days ago)",
+                 deleted, max_age_days)
+        enrichment.clear_cache()
+    return deleted
 
 
 # ---------------------------------------------------------------------------

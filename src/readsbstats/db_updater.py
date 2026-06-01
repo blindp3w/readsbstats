@@ -22,7 +22,7 @@ import sys
 import time
 import urllib.request
 
-from . import config, database, enrichment, http_safe
+from . import adsbx_enricher, config, database, enrichment, http_safe
 
 logging.basicConfig(
     level=logging.INFO,
@@ -356,9 +356,17 @@ def main() -> None:
         update_aircraft_db(conn)
         update_airlines_db(conn)
         backfill_flights(conn)
-        # `clear_cache()` is already called inside `update_aircraft_db` and
-        # `update_airlines_db` (audit-13 A13-018); this final call is a
-        # belt-and-suspenders no-op kept for explicitness.
+        # Code-review follow-up: clear out adsbx_overrides rows for
+        # airframes that haven't been seen in a long time so genuinely
+        # stale metadata (re-registered tail numbers etc.) doesn't
+        # accumulate forever. The UPSERT in adsbx_enricher preserves
+        # confirmed values across transient gaps — this is the
+        # complementary long-tail cleanup.
+        adsbx_enricher.purge_stale_overrides(conn, config.ADSBX_OVERRIDES_TTL_DAYS)
+        # `clear_cache()` is already called inside `update_aircraft_db`,
+        # `update_airlines_db`, and `purge_stale_overrides` when it
+        # actually deleted anything (audit-13 A13-018); this final call
+        # is belt-and-suspenders for the no-purge case.
         enrichment.clear_cache()
         log.info("db_updater complete")
     except Exception:
