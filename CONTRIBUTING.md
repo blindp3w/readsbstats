@@ -80,7 +80,7 @@ Keep PRs focused — one feature or fix per PR.
 
 ```
 src/readsbstats/   # Python package — collector, web server, enrichment, notifier
-frontend/          # React 19 + Vite 7 SPA (npm run dev / npm run build)
+frontend/          # React 19 + Vite 8 SPA (npm run dev / npm run build)
 scripts/           # CLI one-shot tools + deployment shell scripts
 tests/             # pytest test suite (Python) + Playwright UI tests
 systemd/           # .service / .timer unit files

@@ -86,6 +86,8 @@ All paths below are handled by the React SPA at the catch-all; FastAPI API route
 
 ## Database schema
 
+Current schema version: **5** (stored in the internal `schema_version` table). The collector owns full schema creation and slow background migrations; the web server applies only fast `_migrate()` additions.
+
 | Table | Purpose |
 |---|---|
 | `flights` | One row per flight: ICAO, callsign, reg, type, timestamps, aggregates (max alt, max speed, max distance, ADS-B/MLAT position counts, origin/dest ICAO) |
@@ -99,4 +101,5 @@ All paths below are handled by the React SPA at the catch-all; FastAPI API route
 | `type_photos` | Cached representative photo per aircraft type code |
 | `watchlist` | User-defined watchlist entries |
 | `adsbx_overrides` | airplanes.live-confirmed flags |
-| `receiver_stats` | Receiver metrics time-series (43 columns; opt-in) |
+| `receiver_stats` | Receiver metrics time-series (44 columns; opt-in) |
+| `schema_version` | Internal: one row per applied schema version (`version`, `applied_at`); latest is 5 |

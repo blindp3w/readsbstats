@@ -43,8 +43,8 @@ RSBS_AIRCRAFT_JSON=/tmp/rsbs_sim.json RSBS_DB_PATH=./db/history.db \
 ## Running tests
 
 ```bash
-.venv/bin/pytest                                              # 1330+ Python tests
-( cd frontend && npm test )                                   # 142 Vitest tests
+.venv/bin/pytest                                              # 1600+ Python tests
+( cd frontend && npm test )                                   # 323 Vitest tests
 
 # Coverage
 .venv/bin/pytest --cov=readsbstats --cov-report=term-missing
@@ -58,7 +58,7 @@ pip install -e ".[ui-tests]"
 playwright install chromium webkit
 
 # Run
-pytest tests/ui/ -v -m ui          # 81 tests (React SPA, 6 devices × pages)
+pytest tests/ui/ -v -m ui          # 84 tests (React SPA, 6 devices × pages)
 pytest tests/ui/ -v -m ui -k "settings"   # single page
 ```
 
@@ -74,7 +74,7 @@ Screenshots saved to `tests/ui/screenshots/` (gitignored).
 | `tests/test_icao_ranges.py` | ICAO address → country lookup |
 | `tests/test_db_updater.py` | Aircraft/airline DB download |
 | `tests/test_map.py` | `/map` routes and snapshot API |
-| `tests/ui/test_v2_smoke.py` | Playwright: 81 tests across all pages and viewports |
+| `tests/ui/test_mobile_smoke.py` | Playwright: 84 tests across all pages and viewports |
 
 ## Build and deploy to the Pi
 
