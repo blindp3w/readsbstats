@@ -274,6 +274,7 @@ def _enrich_batch(conn: sqlite3.Connection, client: httpx.Client | None = None) 
 
     processed = 0
     transient_failures = 0
+    permanent_failures = 0
     cooled_off = 0
     now = time.time()
     for row in rows:
@@ -323,6 +324,7 @@ def _enrich_batch(conn: sqlite3.Connection, client: httpx.Client | None = None) 
                     _store_route(conn, cs, None)
             except sqlite3.Error:
                 log.exception("Failed to persist negative cache for %s", cs)
+            permanent_failures += 1
         except Exception:
             log.exception("Route enricher error for callsign %s", cs)
         processed += 1
@@ -335,8 +337,20 @@ def _enrich_batch(conn: sqlite3.Connection, client: httpx.Client | None = None) 
     if transient_failures:
         log.warning(
             "Route enricher: %d/%d callsign(s) skipped due to transient API errors"
-            " — will retry next batch",
+            " in batch — will retry next batch",
             transient_failures, processed,
+        )
+    if permanent_failures:
+        # Code-review follow-up: surface permanent failures at batch-level
+        # too. Without this an upstream API migration that turns every
+        # callsign into a _PermanentError produced only per-callsign WARNINGs
+        # and no summary; operators monitoring for the "skipped" pattern
+        # saw nothing. Negative cache rows are already in place; this log
+        # just gives ops one alertable line per batch.
+        log.warning(
+            "Route enricher: %d/%d callsign(s) skipped due to permanent API errors"
+            " in batch — cached as miss, will not retry until cache expiry",
+            permanent_failures, processed,
         )
     if processed:
         log.info("Route enrichment: processed %d callsign(s)", processed)

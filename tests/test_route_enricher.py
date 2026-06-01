@@ -619,6 +619,40 @@ class TestEnrichBatch:
         # permanent failures get a DB-backed TTL, not an in-memory cooldown.
         assert "PERM123" not in self.re._transient_failure_at
 
+    def test_all_permanent_failures_emit_batch_summary(self, monkeypatch, caplog):
+        """Code review follow-up: when every callsign in a batch hits
+        _PermanentError, the batch-level summary WARNING must still fire.
+        Before the fix, only `transient_failures` guarded the summary log,
+        so an upstream API migration (every callsign permanent) produced
+        only per-callsign WARNINGs and no batch summary — operators
+        watching for the summary pattern saw nothing.
+        """
+        import logging
+
+        monkeypatch.setattr(config, "ROUTE_CACHE_DAYS", 30)
+        monkeypatch.setattr(config, "ROUTE_BATCH_SIZE", 10)
+        monkeypatch.setattr(config, "ROUTE_RATE_LIMIT_SEC", 0.0)
+        insert_flight(self.conn, icao="aa0001", callsign="PERM001")
+        insert_flight(self.conn, icao="aa0002", callsign="PERM002")
+        insert_flight(self.conn, icao="aa0003", callsign="PERM003")
+
+        def _raise_permanent(*_a, **_kw):
+            raise self.re._PermanentError("redirect blocked")
+        monkeypatch.setattr(self.re, "_fetch_route", _raise_permanent)
+
+        with caplog.at_level(logging.WARNING, logger="route_enricher"):
+            self.re._enrich_batch(self.conn)
+
+        # The batch-level summary must mention permanent failures.
+        summary_msgs = [
+            r.getMessage() for r in caplog.records
+            if "skipped" in r.getMessage() and "batch" in r.getMessage().lower()
+        ]
+        assert summary_msgs, (
+            "No batch-level summary WARNING emitted for an all-permanent batch. "
+            f"WARNINGs seen: {[r.getMessage() for r in caplog.records]}"
+        )
+
     def test_permanent_failure_skipped_on_next_batch(self, monkeypatch):
         """After a permanent failure writes the negative row, the cutoff
         query at the top of _enrich_batch must skip the callsign so the
