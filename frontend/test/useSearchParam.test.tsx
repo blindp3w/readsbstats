@@ -94,10 +94,10 @@ describe('useSearchParamBatch — v7 stale-state workaround', () => {
     const { result } = renderHook(Probe, {
       wrapper: wrap('/?range=24h&offset=100'),
     });
-    // Add a new param + change an existing one in a single batch
-    act(() => result.current.update({ flags: 'interesting', offset: 0 }));
+    // Add a new param + reset offset via explicit null sentinel.
+    act(() => result.current.update({ flags: 'interesting', offset: null }));
     const params = new URLSearchParams(result.current.search);
-    // offset=0 is treated as default → removed
+    // explicit null removes
     expect(params.get('offset')).toBeNull();
     // existing range untouched
     expect(params.get('range')).toBe('24h');
@@ -119,14 +119,32 @@ describe('useSearchParamBatch — v7 stale-state workaround', () => {
     expect(params.get('p')).toBe('1');
   });
 
-  it('zero numeric value is treated as default (removed)', () => {
+  it('zero numeric value is preserved (callers pass null to reset)', () => {
+    // Audit 2026-06-01 W: the helper used to strip `v === 0` to support a
+    // single `offset` caller where 0 was the default. That baked a
+    // page-specific default into a generic helper — any future param where
+    // 0 is meaningful (zero-based index, min_alt=0, squawk literal `0`)
+    // was silently dropped. Now: zero values round-trip into the URL;
+    // callers wanting "reset" must pass the documented `null` sentinel.
+    function Probe() {
+      const update = useSearchParamBatch();
+      const loc = useLocation();
+      return { update, search: loc.search };
+    }
+    const { result } = renderHook(Probe, { wrapper: wrap('/') });
+    act(() => result.current.update({ min_alt: 0 }));
+    const params = new URLSearchParams(result.current.search);
+    expect(params.get('min_alt')).toBe('0');
+  });
+
+  it('null still removes the param (explicit sentinel)', () => {
     function Probe() {
       const update = useSearchParamBatch();
       const loc = useLocation();
       return { update, search: loc.search };
     }
     const { result } = renderHook(Probe, { wrapper: wrap('/?offset=100') });
-    act(() => result.current.update({ offset: 0 }));
+    act(() => result.current.update({ offset: null }));
     const params = new URLSearchParams(result.current.search);
     expect(params.get('offset')).toBeNull();
   });
@@ -156,9 +174,9 @@ describe('useSearchParamBatch — v7 stale-state workaround', () => {
       return { update, search: loc.search };
     }
     const { result } = renderHook(Probe, { wrapper: wrap('/?range=24h') });
-    act(() => result.current.update({ flags: 'military', offset: 50, page: 0 }));
+    act(() => result.current.update({ flags: 'military', offset: 50, page: null }));
     const params = new URLSearchParams(result.current.search);
-    // page=0 is default-stripped; flags + offset committed; range preserved.
+    // page=null removes; flags + offset committed; range preserved.
     expect(params.get('flags')).toBe('military');
     expect(params.get('offset')).toBe('50');
     expect(params.get('page')).toBeNull();

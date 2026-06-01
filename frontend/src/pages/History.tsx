@@ -152,7 +152,7 @@ export default function HistoryPage() {
   // (useSearchParam's per-param setter is stale-reads-prone when chained — see
   //  hooks/useSearchParam.ts.)
   const onSortChange = (key: SortKey, dir: SortDir) => {
-    update({ sort_by: key, sort_dir: dir, offset: 0 });
+    update({ sort_by: key, sort_dir: dir, offset: null });
   };
 
   const resetFilters = () => {
@@ -166,7 +166,7 @@ export default function HistoryPage() {
       source: null,
       flags: null,
       squawk: null,
-      offset: 0,
+      offset: null,
     });
   };
 
@@ -249,9 +249,9 @@ export default function HistoryPage() {
 
   const removeChip = (field: FieldKey) => {
     if (field === 'date') {
-      update({ date_from: null, date_to: null, offset: 0 });
+      update({ date_from: null, date_to: null, offset: null });
     } else {
-      update({ [field]: null, offset: 0 });
+      update({ [field]: null, offset: null });
     }
   };
 
@@ -260,10 +260,10 @@ export default function HistoryPage() {
       update({
         date_from: value.from || null,
         date_to: value.to || null,
-        offset: 0,
+        offset: null,
       });
     } else if (typeof value === 'string') {
-      update({ [field]: value || null, offset: 0 });
+      update({ [field]: value || null, offset: null });
     }
   };
 
