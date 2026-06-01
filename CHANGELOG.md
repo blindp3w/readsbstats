@@ -3,10 +3,54 @@
 ## 2.13.0 — 2026-06-01
 
 Repository-wide audit follow-up (15 fixes across security, reliability,
-correctness, performance, and chores). 1560 → 1608 backend tests
-(+48 new); frontend 323/323 unchanged. See
+correctness, performance, and chores) plus 9 code-review follow-ups
+on the same branch. 1560 → 1617 backend tests (+57 new); frontend
+323/323 unchanged. See
 `internal_docs/repository_audit_2026-05-31_current.md` for the audit
 source.
+
+### Code-review follow-ups (post-audit, same release)
+
+- **api/map.py** — PY-11's trail-window bound now only applies to the
+  live view (`is_live=True`). Historical replay returns the full pre-`at`
+  trail (still capped by `trail_count`), so a 4-hour transatlantic
+  flight reviewed at `at = now − 12 h` no longer shows only its last
+  hour as a stub.
+- **route_enricher.py** — when every callsign in a batch hits
+  `_PermanentError`, a batch-level summary WARNING is now emitted in
+  addition to the per-callsign WARNINGs. Operators monitoring for the
+  "skipped" pattern see permanent failures too, not just transient.
+- **photo_sources.py** — `is_photo_url_allowed` split into
+  `is_photo_image_url_allowed` (image CDNs only) and
+  `is_photo_link_url_allowed` (image CDNs + en.wikipedia.org). Closes a
+  latent path where a thumbnail_url pointing at an `en.wikipedia.org`
+  article page would render as a broken `<img>` in the SPA.
+- **api/_photos.py** — `_suppress_off_allowlist` now also drops dicts
+  whose `thumbnail_url` is empty/None (the allowlist helper treats null
+  as "nothing to render" → True; the explicit check closes the gap).
+- **api/_deps.py** — `_API_TOKEN` is read at request time via
+  `os.getenv`, not captured at module import. Tests using
+  `monkeypatch.setenv("RSBS_API_TOKEN", ...)` now correctly exercise
+  the auth path. The module-level `_API_TOKEN` attribute is preserved
+  for existing tests that `monkeypatch.setattr` it.
+- **photo_sources.py** — `resolve_photo._call_fetcher` routes through
+  the public `fetch_photo_with_status` alias instead of the private
+  name, so tests patching the public alias work as expected.
+- **adsbx_enricher.py / db_updater.py** — added
+  `purge_stale_overrides()`, called from the weekly db_updater. A
+  re-registered tail-number's stale `adsbx_overrides` row expires
+  after `RSBS_ADSBX_OVERRIDES_TTL_DAYS` (default 365) instead of
+  persisting forever via COALESCE.
+- **api/_deps.py** — `_SORT_COLS` CONTRACT comment: consumers must
+  build ORDER BY inside a query that joins `adsbx_overrides`
+  (via `_FLIGHT_JOIN` or `_ENRICH_JOIN`). Latent runtime-crash gap
+  for hypothetical future handlers.
+- **collector.py** — comment notes the PY-3 behaviour change for
+  numeric `type` values (now stored as NULL instead of aborting
+  the entry); points future devs to where a numeric→tag mapping
+  would go.
+
+New env var: `RSBS_ADSBX_OVERRIDES_TTL_DAYS` (default 365, 0 disables).
 
 ### Security
 
