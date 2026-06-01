@@ -24,7 +24,7 @@ import sys
 import threading
 import time
 
-from . import adsbx_enricher, config, database, enrichment, geo, icao_ranges, metrics_collector, notifier
+from . import adsbx_enricher, config, database, enrichment, geo, icao_ranges, metrics_collector, notifier, route_enricher
 from .cleaners import clean_short_text
 
 # 24-bit Mode-S address, lowercase hex. Validated *after* stripping the
@@ -1287,6 +1287,10 @@ def main() -> None:
         _load_notified(conn)
         notifier.start_command_listener(config.DB_PATH)
     adsbx_enricher.start_background_enricher()
+    # Audit 2026-06-01 W-3: route_enricher used to start in the web process,
+    # making it a second writer alongside the collector. Move it here so the
+    # single-writer model (collector owns SQLite writes) is restored.
+    route_enricher.start_background_enricher()
     metrics_collector.start_metrics_collector()
     start_notification_consumer()
     _sd_notify("READY=1")
