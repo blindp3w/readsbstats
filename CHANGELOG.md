@@ -1,10 +1,11 @@
 # Changelog
 
-## Unreleased
+## 2.13.1 — 2026-06-01
 
 Repository audit 2026-06-01 follow-ups — correctness sweep across
 warnings and small `suggestion`-level items. No `critical` findings
-were raised by the audit. See
+were raised by the audit. 1573 → 1641 backend tests (+68 new);
+323 → 326 frontend tests. See
 `internal_docs/repository_audit_2026-06-01.md` for the audit source
 and per-finding rationale.
 
