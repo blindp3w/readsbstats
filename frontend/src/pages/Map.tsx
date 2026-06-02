@@ -104,6 +104,20 @@ export default function MapPage() {
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState<PlaybackSpeed>(1);
 
+  // `nowSec` (epoch seconds) drives the scrubber bounds. It must advance over
+  // real time so the user can always scrub up to the present, but reading
+  // `Date.now()` during render is impure (react-hooks/purity) and produced a
+  // fresh value every render. Hold it in state and refresh on an interval —
+  // 10 s matches the live snapshot poll; bounds a few seconds stale are
+  // imperceptible against a multi-hour HIST window.
+  const [nowSec, setNowSec] = useState(0);
+  useEffect(() => {
+    const tick = () => setNowSec(Math.floor(Date.now() / 1000));
+    tick();
+    const id = window.setInterval(tick, 10_000);
+    return () => window.clearInterval(id);
+  }, []);
+
   // In HIST mode with no date picked, don't fire a snapshot fetch — `at == null`
   // would otherwise be interpreted as Live by the backend.
   const snapshotEnabled = mode !== 'hist' || histAt != null;
@@ -173,8 +187,9 @@ export default function MapPage() {
         // HIST: advance histAt forward toward now. Audit 2026-06-01 S:
         // on catch-up, mirror the rewind branch and flip back to 'live'
         // (otherwise the UI sat in HIST mode with playback stopped).
-        // Clamp the non-terminal advance via clampHist to match the
-        // scrub/seek handlers and avoid one-tick overshoot.
+        // Clamp the non-terminal advance against the same fresh clock used
+        // for the catch-up check (matches clampHist's [now-MAX, now] bounds)
+        // to avoid one-tick overshoot.
         setHistAt((v) => {
           if (v == null) return v;
           const nowSec = Math.floor(Date.now() / 1000);
@@ -184,12 +199,12 @@ export default function MapPage() {
             setMode('live');
             return nowSec;
           }
-          return clampHist(next);
+          return Math.max(nowSec - MAX_REWIND_SEC, Math.min(nowSec, next));
         });
       }
     }, PLAYBACK_TICK_MS);
     return () => window.clearInterval(id);
-  }, [playing, mode, speed]);
+  }, [playing, mode, speed, MAX_REWIND_SEC]);
 
   const aircraft = snapshot.data?.aircraft ?? [];
 
@@ -247,12 +262,12 @@ export default function MapPage() {
     if (composed != null) setHistAt(clampHist(composed));
   };
   const onHistTimeChange = (nextHHMM: string) => {
-    const date = histAt != null ? unixToISO(histAt) : unixToISO(Math.floor(Date.now() / 1000));
+    const date = histAt != null ? unixToISO(histAt) : unixToISO(nowSec);
     const composed = composeUnix(date, nextHHMM);
     if (composed != null) setHistAt(clampHist(composed));
   };
 
-  const nowSecForBounds = Math.floor(Date.now() / 1000);
+  const nowSecForBounds = nowSec;
   function clampHist(v: number): number {
     return Math.max(nowSecForBounds - MAX_REWIND_SEC, Math.min(nowSecForBounds, v));
   }
