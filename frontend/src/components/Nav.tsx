@@ -1,7 +1,9 @@
 import { useState } from 'react';
 import { NavLink, Link, useLocation } from 'react-router-dom';
+import { useQuery } from '@tanstack/react-query';
 import { HamburgerMenuIcon, CaretDownIcon } from '@radix-ui/react-icons';
 import { cn } from '@/lib/cn';
+import { apiJson } from '@/lib/api';
 import { useUnitsStore, type UnitSystem } from '@/store/units';
 import {
   Select,
@@ -31,7 +33,6 @@ const UNIT_OPTIONS: { value: UnitSystem; label: string; units: string }[] = [
 // Top nav. Mirrors the v1 Jinja nav structure (8 links + brand). The
 // mobile menu is a Radix DropdownMenu (below md/720 px under the
 // project's 15 px html font-size); desktop is a flat horizontal list.
-// Touch targets: every link is min-h-[44px] on mobile.
 //
 // Sprint 1 #1 (M10.1): at md and lg viewports (720–1199 px) the last
 // four items collapse into a `More ▾` dropdown so the row fits on
@@ -58,9 +59,26 @@ const OVERFLOW_LINKS: NavItem[] = [
   { to: '/settings', label: 'Settings' },
 ];
 
-const LINKS = [...INLINE_LINKS, ...OVERFLOW_LINKS];
+// Opt-in VDL2/ACARS tab. Inserted into the overflow set only when the backend
+// reports the feature is enabled (RSBS_VDL2_ENABLED). Kept before Settings so
+// Settings stays last. See internal_docs/features/vdl2-ui-integration.md.
+const VDL2_LINK: NavItem = { to: '/vdl2', label: 'VDL2' };
 
-const OVERFLOW_PATHS = new Set(OVERFLOW_LINKS.map((l) => l.to));
+// Reads the capability flag from the shared ['settings'] query (App.tsx seeds
+// the same key on boot, so this adds no extra request) and returns the link
+// arrays to render. When VDL2 is disabled the lists are identical to before.
+function useNavLinks(): { inlineLinks: NavItem[]; overflowLinks: NavItem[] } {
+  const settingsQ = useQuery({
+    queryKey: ['settings'],
+    queryFn: () => apiJson<{ vdl2_enabled?: boolean }>('settings'),
+    staleTime: 60_000,
+  });
+  const vdl2Enabled = settingsQ.data?.vdl2_enabled === true;
+  const overflowLinks = vdl2Enabled
+    ? [...OVERFLOW_LINKS.slice(0, 3), VDL2_LINK, OVERFLOW_LINKS[3]]
+    : OVERFLOW_LINKS;
+  return { inlineLinks: INLINE_LINKS, overflowLinks };
+}
 
 function UnitsSelect() {
   const units = useUnitsStore((s) => s.units);
@@ -132,9 +150,9 @@ function UnitsSelect() {
 // `border-b-2 border-accent` underline when the current route belongs
 // to the overflow set) so it reads as a peer of the inline NavLinks
 // rather than a generic button.
-function MoreNavMenu() {
+function MoreNavMenu({ overflowLinks }: { overflowLinks: NavItem[] }) {
   const { pathname } = useLocation();
-  const isActive = OVERFLOW_PATHS.has(pathname);
+  const isActive = overflowLinks.some((l) => l.to === pathname);
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -156,7 +174,7 @@ function MoreNavMenu() {
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent data-testid="nav-more-content" className="min-w-[180px]">
-        {OVERFLOW_LINKS.map((l) => (
+        {overflowLinks.map((l) => (
           <DropdownMenuItem key={l.to} asChild>
             <NavLink
               to={l.to}
@@ -177,7 +195,7 @@ function MoreNavMenu() {
   );
 }
 
-function MobileNavMenu() {
+function MobileNavMenu({ links }: { links: NavItem[] }) {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -191,7 +209,7 @@ function MobileNavMenu() {
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent data-testid="nav-links" className="min-w-[220px]">
-        {LINKS.map((l) => (
+        {links.map((l) => (
           <DropdownMenuItem key={l.to} asChild>
             <NavLink
               to={l.to}
@@ -216,6 +234,7 @@ function MobileNavMenu() {
 }
 
 export function Nav() {
+  const { inlineLinks, overflowLinks } = useNavLinks();
   return (
     <nav
       data-testid="app-nav"
@@ -240,7 +259,7 @@ export function Nav() {
         <div className="flex items-center gap-2 md:order-2">
           <LiveCountBadge />
           <UnitsSelect />
-          <MobileNavMenu />
+          <MobileNavMenu links={[...inlineLinks, ...overflowLinks]} />
         </div>
 
         {/* Desktop horizontal nav — hidden below md. The mobile flow uses
@@ -253,7 +272,7 @@ export function Nav() {
           className="hidden md:flex md:flex-row md:items-center md:gap-4"
           data-testid="nav-links-desktop"
         >
-          {INLINE_LINKS.map((l) => (
+          {inlineLinks.map((l) => (
             <li key={l.to}>
               <NavLink
                 to={l.to}
@@ -273,7 +292,7 @@ export function Nav() {
               </NavLink>
             </li>
           ))}
-          {OVERFLOW_LINKS.map((l) => (
+          {overflowLinks.map((l) => (
             <li key={l.to} className="hidden xl:list-item">
               <NavLink
                 to={l.to}
@@ -293,7 +312,7 @@ export function Nav() {
             </li>
           ))}
           <li className="xl:hidden">
-            <MoreNavMenu />
+            <MoreNavMenu overflowLinks={overflowLinks} />
           </li>
         </ul>
       </div>

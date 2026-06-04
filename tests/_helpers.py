@@ -37,6 +37,19 @@ def make_db() -> sqlite3.Connection:
     return conn
 
 
+def make_vdl2_db() -> sqlite3.Connection:
+    """Fresh in-memory VDL2 SQLite with its schema applied.
+
+    Parallels :func:`make_db` but for the separate ``vdl2.db`` store. Uses
+    the feature's own connect()/ensure_schema() so FTS5 + triggers are built
+    exactly as in production (when this SQLite build has FTS5)."""
+    from readsbstats.vdl2 import db as vdl2_db
+
+    conn = vdl2_db.connect(":memory:")
+    vdl2_db.ensure_schema(conn)
+    return conn
+
+
 class CountingConn:
     """Sqlite3 connection wrapper that counts `.commit()` calls.
 

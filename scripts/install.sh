@@ -106,6 +106,10 @@ cp "$APP_DIR/systemd/readsbstats-dbcheck.timer"         /etc/systemd/system/
 cp "$APP_DIR/systemd/readsbstats-dbcheck-full.service"  /etc/systemd/system/
 cp "$APP_DIR/systemd/readsbstats-dbcheck-full.timer"    /etc/systemd/system/
 cp "$APP_DIR/systemd/notify-telegram@.service"          /etc/systemd/system/
+# Opt-in VDL2/ACARS ingest — copied so it's available, but NOT enabled here.
+# Enable later with: sudo systemctl enable --now readsbstats-vdl2.service
+# (and set RSBS_VDL2_ENABLED=true on readsbstats-web). See docs/operations.md.
+cp "$APP_DIR/systemd/readsbstats-vdl2.service"          /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable --now readsbstats-collector.service
 systemctl enable --now readsbstats-web.service

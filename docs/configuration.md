@@ -209,6 +209,24 @@ Environment="RSBS_AIRSPACE_GEOJSON=/opt/readsbstats/my_airspace.geojson"
 
 `RSBS_USE_DUCKDB=1` enables columnar scans for `/api/map/heatmap` and `/api/map/coverage`. The DuckDB extension binary is pre-fetched by `scripts/update.sh` to avoid a ~5 s download on first hit. SQLite remains the only write path — DuckDB is read-only. Set `RSBS_PREWARM_MAP_CACHE=1` (on by default when DuckDB is available) to keep all 8 cache entries hot at half-TTL.
 
+## VDL2 / ACARS (opt-in)
+
+Disabled by default. Ingests VDL Mode 2 / ACARS messages from an external
+decoder into a **separate** SQLite database, leaving `history.db` untouched.
+See [Operations → VDL2 / ACARS ingest](operations.md#vdl2--acars-ingest) for the
+decoder runbook and the two-switch enablement model.
+
+| Variable | Default | Description |
+|---|---|---|
+| `RSBS_VDL2_ENABLED` | `false` | Master switch. Set on **both** `readsbstats-web` (tab + `/api/vdl2`) and `readsbstats-vdl2` (ingest). |
+| `RSBS_VDL2_DB_PATH` | `/mnt/ext/readsbstats/vdl2.db` | Separate message store (FTS5 + WAL). Never the core DB. |
+| `RSBS_VDL2_RETENTION_DAYS` | `90` | Prune messages older than this. `0` = keep forever. |
+| `RSBS_VDL2_UDP_HOST` | `127.0.0.1` | Bind address for the JSON-over-UDP listener. |
+| `RSBS_VDL2_UDP_PORT` | `5555` | UDP port the decoder feeds. |
+| `RSBS_VDL2_DECODER` | `vdlm2dec` | JSON dialect to expect: `vdlm2dec` or `dumpvdl2`. |
+| `RSBS_VDL2_PURGE_INTERVAL` | `3600` | Seconds between retention prunes. |
+| `RSBS_VDL2_BODY_MAX` | `4096` | Max stored message-body length (chars). |
+
 ## Database crash safety
 
 The collector and web server both open the SQLite DB with `journal_mode = WAL` and `synchronous = FULL` (changed from `NORMAL` in v2.1.19 after a power outage). FULL adds one fsync per write commit — negligible at the 5-second poll cadence, and necessary because USB HDDs commonly lie about `SYNCHRONIZE CACHE`.

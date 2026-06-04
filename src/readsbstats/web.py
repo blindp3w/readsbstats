@@ -69,8 +69,26 @@ def _startup_migrate() -> None:
     """
     if _deps._db is not None:
         database._migrate(_deps._db)
+    else:
+        database.ensure_base_schema()
+    _ensure_vdl2_schema()
+
+
+def _ensure_vdl2_schema() -> None:
+    """Create the SEPARATE vdl2.db schema when the feature is enabled, so the
+    read-only API works even before/without the ingest service running.
+    Writes only to vdl2.db — never touches history.db. No-op when disabled."""
+    if not config.VDL2_ENABLED:
         return
-    database.ensure_base_schema()
+    from .vdl2 import db as vdl2_db
+    if vdl2_db._conn is not None:        # respect a test-injected connection
+        vdl2_db.ensure_schema(vdl2_db._conn)
+        return
+    conn = vdl2_db.connect()
+    try:
+        vdl2_db.ensure_schema(conn)
+    finally:
+        conn.close()
 
 
 @asynccontextmanager
@@ -216,6 +234,20 @@ app.include_router(_api_map.router)
 app.include_router(_api_dates.router)
 app.include_router(_api_health.router)
 app.include_router(_api_feeders.router)
+
+
+# ---------------------------------------------------------------------------
+# Optional feature routers — registered only when their flag is on. Kept in a
+# function so tests can build a throwaway FastAPI(), monkeypatch the flag, and
+# assert the routes are present/absent. MUST run before the SPA catch-all.
+# ---------------------------------------------------------------------------
+def _include_optional_routers(app_: FastAPI) -> None:
+    if config.VDL2_ENABLED:
+        from .api import vdl2 as _api_vdl2
+        app_.include_router(_api_vdl2.router)
+
+
+_include_optional_routers(app)
 
 
 # ---------------------------------------------------------------------------

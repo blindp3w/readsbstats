@@ -201,6 +201,34 @@ DUCKDB_TEMP_DIR   = os.getenv("RSBS_DUCKDB_TEMP_DIR",
 DUCKDB_HOME_DIR   = os.getenv("RSBS_DUCKDB_HOME_DIR",
                               "/mnt/ext/readsbstats/duckdb-home")
 
+# ---------------------------------------------------------------------------
+# VDL2 / ACARS (opt-in, SEPARATE DB) — disabled by default
+# ---------------------------------------------------------------------------
+# Optional feature: ingest VDL Mode 2 / ACARS messages decoded by an external
+# decoder (vdlm2dec, consume-only) into a SEPARATE SQLite DB. The core app is
+# fully unaffected when RSBS_VDL2_ENABLED is false — no router, no nav item,
+# no ingest, no schema creation. history.db is never touched.
+# See internal_docs/features/vdl2-research.md + vdl2-ui-integration.md.
+VDL2_ENABLED        = _bool(*_register("vdl2_enabled",  "RSBS_VDL2_ENABLED", False, "VDL2_ENABLED"))
+VDL2_DB_PATH        = os.getenv(*_register("vdl2_db_path", "RSBS_VDL2_DB_PATH",
+                                "/mnt/ext/readsbstats/vdl2.db", "VDL2_DB_PATH", secret=True))
+VDL2_RETENTION_DAYS = _int(*_register("vdl2_retention", "RSBS_VDL2_RETENTION_DAYS", "90", "VDL2_RETENTION_DAYS"))  # 0 = keep forever
+# Internal tunables (not surfaced via /api/settings). Range-validated per the
+# project rule (parse via _int, floor via _min_or_default_int).
+VDL2_UDP_HOST       = os.getenv("RSBS_VDL2_UDP_HOST", "127.0.0.1")   # bind localhost; decoder feeds line-delimited JSON here
+VDL2_UDP_PORT       = _min_or_default_int("RSBS_VDL2_UDP_PORT", _int("RSBS_VDL2_UDP_PORT", "5555"), 1, 5555)
+# Decoder whose JSON dialect the ingest normalizer expects. vdlm2dec is the
+# working decoder for the Airspy Mini; dumpvdl2 is the documented future swap.
+_VDL2_DECODERS      = ("vdlm2dec", "dumpvdl2")
+_VDL2_DECODER_RAW   = os.getenv("RSBS_VDL2_DECODER", "vdlm2dec").strip().lower()
+if _VDL2_DECODER_RAW not in _VDL2_DECODERS:
+    print(f"ERROR: RSBS_VDL2_DECODER={_VDL2_DECODER_RAW!r} not in {_VDL2_DECODERS}, using 'vdlm2dec'", file=sys.stderr)
+VDL2_DECODER        = _VDL2_DECODER_RAW if _VDL2_DECODER_RAW in _VDL2_DECODERS else "vdlm2dec"
+VDL2_PURGE_INTERVAL_SEC = _min_or_default_int("RSBS_VDL2_PURGE_INTERVAL", _int("RSBS_VDL2_PURGE_INTERVAL", "3600"), 60, 3600)
+# Floor at 256 so a typo'd 0/negative can't silently store empty bodies (which
+# would make every message body blank and FTS search useless).
+VDL2_BODY_MAX       = _min_or_default_int("RSBS_VDL2_BODY_MAX", _int("RSBS_VDL2_BODY_MAX", "4096"), 256, 4096)
+
 # Audit 2026-05-26: minimum fraction of the previous aircraft_db row count
 # that a freshly-imported tar1090-db CSV must contain before the swap is
 # allowed. Protects against truncated upstream downloads (a successful 200

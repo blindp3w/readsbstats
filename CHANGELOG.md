@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **VDL2 / ACARS Messages tab (opt-in)** — a new, fully pluggable feature
+  that ingests VDL Mode 2 / ACARS messages decoded by an external decoder
+  (`vdlm2dec`, consume-only) and shows them in a live "VDL2" tab: newest-first
+  feed, per-aircraft browsing, label/registration/hex filters, and FTS5
+  full-text search. Gated by `RSBS_VDL2_ENABLED` (default off) — when disabled
+  there is no nav item, no `/api/vdl2` router, and no ingest. Data lives in a
+  **separate `vdl2.db`** (FTS5 + WAL); the core `history.db` schema is never
+  touched. Ingest is a standalone `readsbstats-vdl2` systemd service listening
+  for line-delimited JSON over UDP; a per-decoder normalizer makes switching to
+  `dumpvdl2` a config flip. New env vars: `RSBS_VDL2_ENABLED`,
+  `RSBS_VDL2_DB_PATH`, `RSBS_VDL2_RETENTION_DAYS`, `RSBS_VDL2_UDP_HOST/PORT`,
+  `RSBS_VDL2_DECODER`. See `docs/operations.md` for the decoder runbook.
+
 ## 2.13.1 — 2026-06-01
 
 Repository audit 2026-06-01 follow-ups — correctness sweep across

@@ -48,6 +48,17 @@ The web server exposes a JSON API at `http://YOUR_PI_IP/stats/api/`.
 | POST | `/api/watchlist` | Add entry: `{match_type, value, label?}`. Requires `X-Requested-With: XMLHttpRequest`. Also requires `Authorization: Bearer <token>` when `RSBS_API_TOKEN` is set. |
 | DELETE | `/api/watchlist/{id}` | Remove entry. Same auth requirements as POST. |
 
+## VDL2 / ACARS (opt-in)
+
+Registered only when `RSBS_VDL2_ENABLED` is set. Read-only; queries the separate
+`vdl2.db`. All endpoints return 404 when the feature is disabled.
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/api/vdl2/messages` | Newest-first feed. Query: `limit` (≤100), `before_id` (keyset pagination), `label`, `hex` (prefix), `reg` (prefix), `since`/`until` (epoch), `q` (FTS5 full-text, `LIKE` fallback). Returns `{messages, next_before_id}`. |
+| GET | `/api/vdl2/messages/{icao_hex}` | All messages from one airframe (6-hex ICAO), newest-first. |
+| GET | `/api/vdl2/stats` | `{total, last_hour, aircraft}` counts. |
+
 ## Enrichment
 
 | Method | Path | Description |
@@ -81,12 +92,15 @@ All paths below are handled by the React SPA at the catch-all; FastAPI API route
 | `/stats/metrics` | Metrics charts + health banner |
 | `/stats/settings` | Runtime settings (read-only) |
 | `/stats/map` | Live map + rewind + heatmap + coverage |
+| `/stats/vdl2` | VDL2 / ACARS messages (shows a disabled notice unless `RSBS_VDL2_ENABLED`) |
 | `/stats/live` | 302 → `/stats/map` |
 | `/stats/v2/*` | 301 → `/stats/*` (back-compat) |
 
 ## Database schema
 
 Current schema version: **5** (stored in the internal `schema_version` table). The collector owns full schema creation and slow background migrations; the web server applies only fast `_migrate()` additions.
+
+> The opt-in VDL2 feature uses a **separate** database (`RSBS_VDL2_DB_PATH`, default `vdl2.db`) with its own `PRAGMA user_version` schema (table `vdl2_messages` + FTS5 `vdl2_fts`). It is independent of the version-5 core schema below and is never created or migrated unless `RSBS_VDL2_ENABLED` is set.
 
 | Table | Purpose |
 |---|---|

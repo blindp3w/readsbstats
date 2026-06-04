@@ -111,6 +111,16 @@ def _settings_ui() -> dict:
     }
 
 
+def _settings_vdl2() -> dict:
+    # Opt-in VDL2/ACARS feature. `vdl2_enabled` is the capability flag the SPA
+    # reads to show/hide the Messages tab. Mask the DB path (secret), like db_path.
+    return {
+        "vdl2_enabled":   config.VDL2_ENABLED,
+        "vdl2_db_path":   os.path.basename(config.VDL2_DB_PATH) or "(default)",
+        "vdl2_retention": config.VDL2_RETENTION_DAYS,
+    }
+
+
 def _settings_telegram() -> dict:
     # Mask the token + chat id (#H8 + audit-12 #171) — consumer never sees
     # raw secrets, just whether they're configured.
@@ -139,6 +149,7 @@ def _settings_payload() -> dict:
         **_settings_health(),
         **_settings_ui(),
         **_settings_telegram(),
+        **_settings_vdl2(),
     }
 
 
