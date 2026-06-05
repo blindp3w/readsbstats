@@ -18,6 +18,8 @@ function stubFetch(s: Stub) {
     const url = typeof input === 'string' ? input : input.toString();
     let body: unknown = {};
     if (url.includes('/api/settings')) body = { vdl2_enabled: s.vdl2_enabled ?? false };
+    else if (url.includes('/api/health'))
+      body = { vdl2: { enabled: s.vdl2_enabled ?? false, available: s.vdl2_enabled ?? false } };
     else if (url.includes('/api/vdl2/oooi')) body = s.oooi ?? { dep: null, arr: null, dsta: null, has_oooi: false };
     return new Response(JSON.stringify(body), {
       status: 200,

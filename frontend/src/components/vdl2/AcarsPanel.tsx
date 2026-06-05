@@ -4,7 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { Alert } from '@/components/ui/Alert';
 import { MessageList } from '@/components/vdl2/MessageList';
-import { useVdl2Enabled } from '@/hooks/useVdl2Enabled';
+import { useVdl2Available } from '@/hooks/useVdl2Enabled';
 import type { Vdl2MessagesResponse } from '@/lib/types';
 
 // Opt-in: ACARS messages received during one flight, shown on the flight-detail
@@ -25,7 +25,9 @@ interface Props {
 }
 
 export function AcarsPanel({ icao, firstSeen, lastSeen, context = 'flight' }: Props) {
-  const enabled = useVdl2Enabled();
+  // Gate on RUNTIME availability (vdl2.db queryable), not just config-enabled, so
+  // a flag-on-but-db-unavailable state hides cleanly instead of fetching → 503.
+  const enabled = useVdl2Available();
   const q = useQuery({
     queryKey: ['vdl2-flight', icao, firstSeen, lastSeen],
     enabled: enabled && !!icao,

@@ -402,6 +402,17 @@ export default function MapPage() {
         </div>
       )}
 
+      {/* VDL2 overlay fetch failed while the toggle is on — surface it instead of
+          leaving the toggle on with silently-missing data. */}
+      {showVdl2 && (vdl2ActiveQ.isError || vdl2PositionsQ.isError) && (
+        <div
+          className="pointer-events-auto absolute inset-x-3 top-3 z-[10]"
+          data-testid="map-vdl2-error"
+        >
+          <Alert variant="warn">VDL2 overlay unavailable — couldn’t load ACARS positions.</Alert>
+        </div>
+      )}
+
       {/* Bottom command bar */}
       <MapCommandBar
         mode={mode}

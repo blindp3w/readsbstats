@@ -25,6 +25,21 @@ class TestParseDep:
         assert rec["t_on"] is None and rec["t_in"] is None
 
 
+class TestParseOffTime:
+    def test_dep_parses_3letter_off_tei(self):
+        # OFF is a 3-letter TEI key; the parser must capture it (not just 2-letter keys).
+        rec = oooi.parse_oooi("DEP / FI LO1/AN SP-ABC/DA EPWA/DS EGLL/OT 0030/OFF 0042")
+        assert rec is not None
+        assert rec["t_out"] == "0030"
+        assert rec["t_off"] == "0042"
+
+    def test_unknown_keys_are_ignored(self):
+        # A non-OOOI key must not become a field (whitelist), but a real one alongside still parses.
+        rec = oooi.parse_oooi("DEP / ZZ junk/OT 0030")
+        assert rec is not None
+        assert rec["t_out"] == "0030"
+
+
 class TestParseArr:
     def test_full_arr_uses_ad_for_dest(self):
         rec = oooi.parse_oooi("ARR / FI JA401/AN CC-AWE/DA SPJC/AD SCEL/ON 0145/IN 0157")

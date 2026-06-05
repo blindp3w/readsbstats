@@ -66,10 +66,11 @@ CREATE INDEX IF NOT EXISTS idx_vdl2_icao     ON vdl2_messages(icao_hex, ts DESC)
 CREATE INDEX IF NOT EXISTS idx_vdl2_label_id ON vdl2_messages(label, id DESC);
 CREATE INDEX IF NOT EXISTS idx_vdl2_icao_id  ON vdl2_messages(icao_hex, id DESC);
 CREATE INDEX IF NOT EXISTS idx_vdl2_reg_id   ON vdl2_messages(registration COLLATE NOCASE, id DESC);
--- Partial index for the map positions overlay (/api/vdl2/positions): only the
--- sparse structured-position rows are indexed, so the lat/lon + ts filter is
--- served without scanning the (mostly position-less) table.
-CREATE INDEX IF NOT EXISTS idx_vdl2_pos      ON vdl2_messages(ts DESC) WHERE lat IS NOT NULL AND lon IS NOT NULL;
+-- Map positions overlay (/api/vdl2/positions) runs two index-served candidate
+-- queries (precise Label-16 bodies + coarse lat/lon columns), each ordered by
+-- (ts DESC, id DESC). These cover them; a single OR query would full-scan.
+CREATE INDEX IF NOT EXISTS idx_vdl2_label_ts_id ON vdl2_messages(label, ts DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_vdl2_pos_ts_id   ON vdl2_messages(ts DESC, id DESC) WHERE lat IS NOT NULL AND lon IS NOT NULL;
 """
 
 # External-content FTS5 over body. Triggers keep it in sync; the delete/update
