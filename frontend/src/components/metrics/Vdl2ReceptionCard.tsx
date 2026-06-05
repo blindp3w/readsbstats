@@ -1,39 +1,93 @@
+import { useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
+import type { EChartsOption } from 'echarts';
 import { apiJson } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
-import { KpiCard } from '@/components/stats/KpiCard';
+import { EChart } from '@/components/charts/EChart';
+import { CHART_COLORS } from '@/components/charts/theme';
+import { useFormat } from '@/hooks/useFormat';
 import { fmtAgo } from '@/lib/format';
-import type { Vdl2ReceptionResponse } from '@/lib/types';
+import {
+  buildPanelOption,
+  buildSignalSmallMultiplesOption,
+  smallMultHeight,
+  type MetricsResp,
+} from '@/pages/metricsCharts';
+import type { Vdl2TimeseriesResp } from '@/lib/types';
 
 // A feed quiet for longer than this reads as "stale" — VDL2/ACARS is bursty, so
 // keep it lenient to avoid false alarms during genuine quiet spells.
 const STALE_SEC = 600;
+// Up to six per-frequency sub-panels (matches the backend top-6).
+const FREQ_COLORS = [
+  CHART_COLORS.orange,
+  CHART_COLORS.accent,
+  CHART_COLORS.success,
+  CHART_COLORS.purple,
+  CHART_COLORS.warn,
+  CHART_COLORS.danger,
+];
 
-// Reuse fmtAgo's relative formatting but feed it the SERVER-computed age (pass
-// `now = ts + ageSec`) so the label has no client/server clock skew and stays
-// pure (no Date.now() in render).
 function fmtFreshness(ts: number | null, ageSec: number | null): string {
   if (ts == null || ageSec == null) return 'no data';
+  // Feed fmtAgo the server-computed age (now = ts + age) so there's no clock skew.
   return fmtAgo(ts, ts + ageSec);
 }
 
-// VDL2 reception / receiver-health card for the Metrics page. vdlm2dec-only:
-// shows message rate, per-frequency activity, distinct aircraft, and feed
-// freshness — NO signal level (that field exists only in dumpvdl2). Self-gating
-// via the `enabled` prop: when false it makes no /api/vdl2/reception call AND
-// renders nothing (the parent still gates mounting on availability).
-export function Vdl2ReceptionCard({ enabled = true }: { enabled?: boolean }) {
-  const { data } = useQuery({
-    queryKey: ['vdl2-reception'],
-    queryFn: () => apiJson<Vdl2ReceptionResponse>('vdl2/reception'),
+// VDL2 reception card: two range-driven ECharts — total message rate (msgs/min)
+// and per-frequency small multiples (signal-panel style) — over the Metrics
+// page's [from, to] window. vdlm2dec-only; NO signal level. Self-gating: renders
+// nothing and makes no request when `enabled` is false.
+export function Vdl2ReceptionCard({
+  enabled = true,
+  from,
+  to,
+}: {
+  enabled?: boolean;
+  from: number;
+  to: number;
+}) {
+  const { fmtTs, fmtAxisTime, fmtAxisDate } = useFormat();
+  const { data: resp } = useQuery<Vdl2TimeseriesResp>({
+    queryKey: ['vdl2-timeseries', from, to],
     enabled,
-    refetchInterval: 15_000,
-    staleTime: 15_000,
+    queryFn: () => apiJson<Vdl2TimeseriesResp>(`vdl2/timeseries?from=${from}&to=${to}`),
+    placeholderData: (prev) => prev,
+    staleTime: 30_000,
   });
+
+  const freqKeys = useMemo(() => resp?.metrics.slice(1) ?? [], [resp]);
+
+  const rateOption = useMemo<EChartsOption>(
+    () =>
+      buildPanelOption(
+        resp as MetricsResp | undefined,
+        ['rate'],
+        [CHART_COLORS.orange],
+        fmtAxisTime,
+        fmtAxisDate,
+        fmtTs,
+      ),
+    [resp, fmtAxisTime, fmtAxisDate, fmtTs],
+  );
+  const freqOption = useMemo<EChartsOption>(
+    () =>
+      buildSignalSmallMultiplesOption(
+        resp as MetricsResp | undefined,
+        freqKeys,
+        FREQ_COLORS,
+        freqKeys,
+        fmtAxisTime,
+        fmtAxisDate,
+        fmtTs,
+      ),
+    [resp, freqKeys, fmtAxisTime, fmtAxisDate, fmtTs],
+  );
 
   if (!enabled) return null;
 
-  const stale = data != null && (data.newest_age_sec == null || data.newest_age_sec > STALE_SEC);
+  const ageSec = resp?.newest_age_sec ?? null;
+  const stale = resp != null && (ageSec == null || ageSec > STALE_SEC);
 
   return (
     <Card data-testid="metrics-vdl2-reception">
@@ -47,53 +101,28 @@ export function Vdl2ReceptionCard({ enabled = true }: { enabled?: boolean }) {
               : 'text-xs text-[var(--color-text-dim)]'
           }
         >
-          {stale ? '⚠ ' : ''}
-          {data ? `last message ${fmtFreshness(data.newest_ts, data.newest_age_sec)}` : '—'}
+          {resp
+            ? `${resp.total.toLocaleString()} msgs · ${stale ? '⚠ ' : ''}last ${fmtFreshness(
+                resp.newest_ts,
+                ageSec,
+              )}`
+            : '—'}
         </span>
       </CardHeader>
       <CardContent className="space-y-4">
-        <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
-          <KpiCard
-            label="Messages / min (60m trend)"
-            value={data ? data.msgs_last_min : '—'}
-            series={data?.rate_sparkline}
-            testid="vdl2-kpi-rate"
-          />
-          <KpiCard
-            label="Last hour"
-            value={data ? data.msgs_last_hour : '—'}
-            testid="vdl2-kpi-hour"
-          />
-          <KpiCard
-            label="Aircraft (last hour)"
-            value={data ? data.aircraft_last_hour : '—'}
-            testid="vdl2-kpi-aircraft"
-          />
-        </div>
-        <div data-testid="vdl2-reception-per-freq">
-          <div className="mb-1 text-xs font-medium uppercase tracking-wide text-[var(--color-text-dim)]">
-            Per frequency (24h)
+        {resp && (
+          <div data-testid="vdl2-rate-chart">
+            <div className="mb-1 text-xs font-medium uppercase tracking-wide text-[var(--color-text-dim)]">
+              Message rate — msgs/min
+            </div>
+            <EChart option={rateOption} group="metrics" height={180} />
           </div>
-          {data && data.per_freq.length > 0 ? (
-            <ul className="space-y-1 text-sm">
-              {data.per_freq.map((f) => (
-                <li
-                  key={f.freq_mhz ?? 'unknown'}
-                  data-testid="vdl2-freq-row"
-                  className="flex items-center justify-between gap-2"
-                >
-                  <span className="font-mono">
-                    {f.freq_mhz != null ? `${f.freq_mhz.toFixed(3)} MHz` : 'unknown'}
-                  </span>
-                  <span className="tabnum text-[var(--color-text-dim)]">
-                    {f.messages.toLocaleString()} msg · {f.aircraft.toLocaleString()} ac
-                  </span>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <p className="text-sm text-[var(--color-text-dim)]">No messages received yet.</p>
-          )}
+        )}
+        <div data-testid="vdl2-freq-charts">
+          <div className="mb-1 text-xs font-medium uppercase tracking-wide text-[var(--color-text-dim)]">
+            Per-frequency — msgs/min
+          </div>
+          <EChart option={freqOption} group="metrics" height={smallMultHeight(freqKeys.length)} />
         </div>
       </CardContent>
     </Card>

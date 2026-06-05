@@ -1,26 +1,27 @@
 /**
- * VDL2 reception card (Metrics page) — vdlm2dec-only receiver-health card.
- * Locks the per-frequency table, KPI tiles, freshness line + "stale" styling,
- * and the self-gating `enabled` prop (no fetch when the availability gate is off).
+ * VDL2 reception card — two range-driven charts (message rate + per-frequency
+ * small multiples) with a slim freshness/total header. ECharts is globally
+ * mocked to null (jsdom has no canvas), so we assert the chart wrappers + header,
+ * not chart internals.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, waitFor, screen } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { TooltipProvider } from '@/components/ui/Tooltip';
 import { Vdl2ReceptionCard } from '@/components/metrics/Vdl2ReceptionCard';
 
 const FIXTURE = {
-  msgs_last_min: 2,
-  msgs_last_hour: 12,
-  msgs_24h: 240,
-  aircraft_last_hour: 5,
+  bucket_seconds: 60,
+  metrics: ['rate', '136.725', '136.875'],
+  freqs: [136.725, 136.875],
+  total: 556,
   newest_ts: 1000,
   newest_age_sec: 8,
-  per_freq: [
-    { freq_mhz: 136.725, messages: 100, aircraft: 4 },
-    { freq_mhz: 136.975, messages: 50, aircraft: 3 },
+  data: [
+    [1000, 1060],
+    [2, 1],
+    [1.5, 0.5],
+    [0.5, 0.5],
   ],
-  rate_sparkline: Array.from({ length: 60 }, (_, i) => i % 4),
 };
 
 let fixture: Record<string, unknown> = FIXTURE;
@@ -29,7 +30,7 @@ let fetchSpy: ReturnType<typeof vi.fn>;
 function stubFetch() {
   fetchSpy = vi.fn(async (input: RequestInfo | URL) => {
     const url = typeof input === 'string' ? input : input.toString();
-    const body = url.includes('/api/vdl2/reception') ? fixture : { ok: true };
+    const body = url.includes('/api/vdl2/timeseries') ? fixture : { ok: true };
     return new Response(JSON.stringify(body), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
@@ -42,9 +43,7 @@ function renderCard(enabled = true) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
   return render(
     <QueryClientProvider client={qc}>
-      <TooltipProvider delayDuration={0}>
-        <Vdl2ReceptionCard enabled={enabled} />
-      </TooltipProvider>
+      <Vdl2ReceptionCard enabled={enabled} from={900} to={1100} />
     </QueryClientProvider>,
   );
 }
@@ -55,27 +54,17 @@ beforeEach(() => {
 });
 
 describe('Vdl2ReceptionCard', () => {
-  it('renders KPI tiles and the per-frequency table', async () => {
+  it('renders both chart wrappers and the header total + freshness', async () => {
     renderCard();
-    await waitFor(() => expect(screen.getAllByTestId('vdl2-freq-row')).toHaveLength(2));
-    const rows = screen.getAllByTestId('vdl2-freq-row');
-    expect(rows).toHaveLength(2);
-    expect(rows[0].textContent).toContain('136.725 MHz');
-    expect(screen.getByTestId('vdl2-kpi-rate').textContent).toContain('2');
-    expect(screen.getByTestId('vdl2-kpi-aircraft').textContent).toContain('5');
+    await waitFor(() => screen.getByTestId('vdl2-rate-chart'));
+    expect(screen.getByTestId('vdl2-freq-charts')).toBeTruthy();
+    const fresh = screen.getByTestId('vdl2-reception-freshness');
+    expect(fresh.textContent).toContain('556');
+    expect(fresh.textContent).toContain('8s ago');
+    expect(fresh.textContent).not.toContain('⚠');
   });
 
-  it('shows fresh styling (no warning) when the feed is recent', async () => {
-    renderCard();
-    await waitFor(() =>
-      expect(screen.getByTestId('vdl2-reception-freshness').textContent).toContain(
-        'last message 8s ago',
-      ),
-    );
-    expect(screen.getByTestId('vdl2-reception-freshness').textContent).not.toContain('⚠');
-  });
-
-  it('flags a stale feed when newest_age_sec exceeds the threshold', async () => {
+  it('flags a stale feed', async () => {
     fixture = { ...FIXTURE, newest_age_sec: 1200 };
     renderCard();
     await waitFor(() =>
@@ -84,9 +73,8 @@ describe('Vdl2ReceptionCard', () => {
     expect(screen.getByTestId('vdl2-reception-freshness').className).toContain('color-danger');
   });
 
-  it('makes no request and renders nothing when not enabled', async () => {
+  it('renders nothing and makes no request when not enabled', async () => {
     const { container } = renderCard(false);
-    // Self-gating: no fetch and no card at all (parent gates mounting too).
     await waitFor(() => expect(fetchSpy).not.toHaveBeenCalled());
     expect(screen.queryByTestId('metrics-vdl2-reception')).toBeNull();
     expect(container.firstChild).toBeNull();
