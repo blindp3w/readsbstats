@@ -545,10 +545,24 @@ def _read_aircraft_json() -> dict | None:
     return data
 
 
+# Audit 17: expected tuple length per notification kind (1 kind tag + N args).
+# The producer in _poll builds these positionally; asserting the arity here
+# turns a future field-reorder/misalignment into a visible, dropped-with-warning
+# event instead of silently passing the wrong args to a Telegram caption builder.
+_NOTIFY_ARITY = {"mil": 7, "int": 7, "anon": 7, "sqk": 6, "wl": 9}
+
+
 def _dispatch_one(item: tuple) -> None:
     """Dispatch a single queued notification.  Exceptions are caller's
     responsibility (the consumer logs and continues)."""
     kind = item[0]
+    expected = _NOTIFY_ARITY.get(kind)
+    if expected is not None and len(item) != expected:
+        log.warning(
+            "_dispatch_one: kind=%r expected %d fields, got %d — dropping",
+            kind, expected, len(item),
+        )
+        return
     if kind == "mil":
         notifier.notify_military(item[1], item[2], item[3], item[4], item[5], item[6])
     elif kind == "int":

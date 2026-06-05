@@ -22,9 +22,10 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 
-# Allow imports from src/ when run from project root
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
-
+# Audit 17: dropped the ad-hoc `sys.path.insert(.../src)` — it diverged from
+# every other script (which rely on the installed package / pyproject's
+# `pythonpath = ["src", "scripts"]` under pytest) and would shadow an installed
+# readsbstats with whatever lives at the resolved relative path.
 from readsbstats import config, database
 from readsbstats.metrics_collector import _COLS, _INSERT_SQL
 

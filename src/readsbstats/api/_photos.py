@@ -36,6 +36,11 @@ _type_fetch_locks: "_OrderedDict[str, asyncio.Lock]" = _OrderedDict()
 
 
 def _type_lock(type_code: str) -> asyncio.Lock:
+    # Thread-safety invariant (Audit 17): `_type_fetch_locks` is mutated only
+    # from this function, which runs exclusively on the event-loop thread (the
+    # async photo handlers). There is therefore no concurrent access and no
+    # lock guarding the OrderedDict is needed. If a future caller ever touches
+    # it from a thread-pool worker, add a threading.Lock around the mutations.
     existing = _type_fetch_locks.get(type_code)
     if existing is not None:
         _type_fetch_locks.move_to_end(type_code)

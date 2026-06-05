@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
-import { apiFetch, apiJson } from '@/lib/api';
+import { apiFetch, apiJson, ApiError } from '@/lib/api';
 import type {
   WatchlistEntry,
   WatchlistMatchType as MatchType,
@@ -342,8 +342,9 @@ export default function WatchlistPage() {
 function describeMutationError(err: Error): string {
   // ApiError.body is JSON-encoded from FastAPI; extract `detail` if we can.
   // Plain Error.message looks like "HTTP 409 Conflict"; that's already useful.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const body = (err as any).body as string | undefined;
+  // Audit 17: narrow with `instanceof ApiError` instead of an `as any` cast —
+  // apiFetch throws ApiError, which exposes the typed `body`.
+  const body = err instanceof ApiError ? err.body : undefined;
   if (body) {
     try {
       const parsed = JSON.parse(body) as { detail?: string };

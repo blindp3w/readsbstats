@@ -2137,6 +2137,26 @@ class TestClampCaption:
     def test_default_limit_is_1024(self):
         assert notifier._PHOTO_CAPTION_MAX == 1024
 
+    def test_truncation_does_not_split_html_entity(self):
+        """Audit 17: the final-fallback truncation must not cut through an HTML
+        entity (`&amp;`) — Telegram 400s on malformed HTML and drops the alert."""
+        s = "&amp;" * 300  # 1500 chars, no trailing note/link line to strip
+        out = notifier._clamp_caption(s, limit=1024)
+        assert len(out) <= 1024
+        assert out.endswith("…")
+        body = out[:-1]  # drop the ellipsis
+        amp = body.rfind("&")
+        assert amp == -1 or ";" in body[amp:], f"dangling entity: {body[-8:]!r}"
+
+    def test_truncation_does_not_split_html_tag(self):
+        """The final-fallback truncation must not leave a half-open `<tag`."""
+        s = "<i>x</i>" * 200  # 1600 chars of balanced tags
+        out = notifier._clamp_caption(s, limit=1024)
+        assert len(out) <= 1024
+        body = out[:-1]
+        lt = body.rfind("<")
+        assert lt == -1 or ">" in body[lt:], f"dangling tag: {body[-8:]!r}"
+
 
 class TestDispatchTruncates:
     @pytest.fixture(autouse=True)

@@ -276,7 +276,7 @@ class TestUpsertOverrides:
         assert row["first_seen"] == first       # unchanged
 
     def test_upsert_invalidates_enrichment_cache(self):
-        enrichment._adsbx_cache["aaa111"] = {"flags": 0}
+        enrichment._adsbx_cache.put("aaa111", {"flags": 0})
         entries = [{"icao_hex": "aaa111", "flags": 1,
                     "registration": "X", "type_code": None, "type_desc": None}]
         self.enricher._upsert_overrides(self.conn, entries)
@@ -431,12 +431,12 @@ class TestLookupAdsbx:
         assert enrichment._adsbx_cache["zzz999"] is None
 
     def test_invalidate_busts_cache(self):
-        enrichment._adsbx_cache["aaa111"] = {"flags": 1}
+        enrichment._adsbx_cache.put("aaa111", {"flags": 1})
         enrichment.invalidate_adsbx("aaa111")
         assert "aaa111" not in enrichment._adsbx_cache
 
     def test_clear_cache_clears_adsbx(self):
-        enrichment._adsbx_cache["aaa111"] = {"flags": 1}
+        enrichment._adsbx_cache.put("aaa111", {"flags": 1})
         enrichment.clear_cache()
         assert "aaa111" not in enrichment._adsbx_cache
 

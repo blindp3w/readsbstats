@@ -172,6 +172,26 @@ class TestScanOrphanMaxGs:
         orphans = scan_orphan_max_gs(self.conn)
         assert fid not in orphans
 
+    def test_orphan_when_all_gs_nulled(self):
+        """Audit 17: a flight whose only GS samples were all nulled (e.g. by a
+        prior purge) but still carries a stale max_gs is an orphan — its correct
+        max_gs is NULL. The old INNER JOIN dropped such flights entirely, so the
+        phantom max_gs was never reset."""
+        fid = insert_flight(self.conn, max_gs=600.0)
+        insert_pos(self.conn, fid, 1000, None)
+        insert_pos(self.conn, fid, 1081, None)
+        orphans = scan_orphan_max_gs(self.conn)
+        assert fid in orphans
+        assert orphans[fid] is None
+
+    def test_no_orphan_when_max_gs_already_null(self):
+        """A flight with no GS data AND max_gs already NULL is correct — not an
+        orphan, must not be flagged."""
+        fid = insert_flight(self.conn, max_gs=None)
+        insert_pos(self.conn, fid, 1000, None)
+        orphans = scan_orphan_max_gs(self.conn)
+        assert fid not in orphans
+
 
 # ---------------------------------------------------------------------------
 # _new_max_gs — empty-list guard (audit-12 #164)

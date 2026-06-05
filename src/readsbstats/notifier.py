@@ -410,7 +410,17 @@ def _clamp_caption(caption: str, limit: int = _PHOTO_CAPTION_MAX) -> str:
     stripped = _TRAILING_LINK_LINE_RE.sub("", stripped)
     if len(stripped) <= limit:
         return stripped
-    return stripped[: limit - 1] + "…"
+    # Audit 17: plain-truncate, but don't slice through an HTML entity
+    # (`&amp;`) or a tag (`<i>`) — Telegram 400s on malformed HTML and drops
+    # the whole alert. Trim back to before any trailing unterminated `&`/`<`.
+    cut = stripped[: limit - 1]
+    amp = cut.rfind("&")
+    if amp != -1 and ";" not in cut[amp:]:
+        cut = cut[:amp]
+    lt = cut.rfind("<")
+    if lt != -1 and ">" not in cut[lt:]:
+        cut = cut[:lt]
+    return cut + "…"
 
 
 def _dispatch_with_photo(

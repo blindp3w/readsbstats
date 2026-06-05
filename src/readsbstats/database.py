@@ -5,7 +5,7 @@ import logging
 import os
 import sqlite3
 import time
-from . import config
+from . import config, geo
 
 SCHEMA_VERSION = 5
 
@@ -428,23 +428,22 @@ def backfill_bearing(path: str = config.DB_PATH) -> None:
             # f-stringed). Both are numeric today but going through bound
             # params lets SQLite reuse the prepared statement across
             # batches and removes a latent injection trap.
+            # Audit 17: route through the canonical geo SQL helpers instead of
+            # hand-rolling the great-circle formulas (the A13-076 consolidation
+            # missed this backfill). Bind order is identical to the previous
+            # inline SQL: bearing_sql emits [rlon, rlat, rlat, rlon] and
+            # haversine_sql emits [rlat, rlat, rlat, rlon, rlon]. Ordering by
+            # the full distance is monotonic with the old inner `a` term.
+            bearing_expr = geo.bearing_sql("p.lat", "p.lon", "?", "?")
+            dist_expr = geo.haversine_sql("p.lat", "p.lon", "?", "?")
             conn.execute(
                 f"""
                 UPDATE flights SET max_distance_bearing = (
-                    SELECT (degrees(atan2(
-                        sin(radians(p.lon - ?)) * cos(radians(p.lat)),
-                        cos(radians(?)) * sin(radians(p.lat))
-                            - sin(radians(?)) * cos(radians(p.lat))
-                              * cos(radians(p.lon - ?))
-                    )) + 360) % 360
+                    SELECT {bearing_expr}
                     FROM positions p
                     WHERE p.flight_id = flights.id
                       AND p.lat IS NOT NULL AND p.lon IS NOT NULL
-                    ORDER BY (
-                        sin(radians((p.lat - ?) / 2)) * sin(radians((p.lat - ?) / 2))
-                      + cos(radians(?)) * cos(radians(p.lat))
-                      * sin(radians((p.lon - ?) / 2)) * sin(radians((p.lon - ?) / 2))
-                    ) DESC
+                    ORDER BY {dist_expr} DESC
                     LIMIT 1
                 )
                 WHERE id IN ({placeholders})
@@ -481,6 +480,10 @@ def _build_positions_indexes(path: str = config.DB_PATH) -> None:
         )
         # Audit 2026-05-26: composite covering `WHERE flight_id=? ORDER BY ts`
         # used by /api/flights/{id} positions, purge_ghosts, purge_bad_gs.
+        # NOTE (Audit 17): this index is ALSO declared in the top-level DDL
+        # (search `idx_positions_flight_ts`) so a fresh install gets it while
+        # `positions` is still empty (cheap). Keep BOTH definitions byte-for-byte
+        # identical — they are the single logical source for this index.
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_positions_flight_ts "
             "ON positions(flight_id, ts)"
@@ -674,26 +677,7 @@ def recover_aircraft_db_swap(conn: sqlite3.Connection) -> None:
     otherwise the 'canonical present + _old leftover' branch would drop the
     only surviving copy of the data.
     """
-    _log = logging.getLogger(__name__)
-    names = {
-        row[0] for row in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' "
-            "AND name IN ('aircraft_db', 'aircraft_db_new', 'aircraft_db_old')"
-        ).fetchall()
-    }
-    if "aircraft_db" not in names and "aircraft_db_old" in names:
-        _log.warning(
-            "aircraft_db recovery: restoring aircraft_db_old after "
-            "interrupted swap"
-        )
-        conn.execute("ALTER TABLE aircraft_db_old RENAME TO aircraft_db")
-    elif "aircraft_db_old" in names:
-        _log.info("aircraft_db recovery: dropping leftover aircraft_db_old")
-        conn.execute("DROP TABLE aircraft_db_old")
-    if "aircraft_db_new" in names:
-        _log.info("aircraft_db recovery: dropping leftover aircraft_db_new")
-        conn.execute("DROP TABLE aircraft_db_new")
-    conn.commit()
+    _recover_swap(conn, "aircraft_db")
 
 
 def recover_airlines_db_swap(conn: sqlite3.Connection) -> None:
@@ -711,24 +695,34 @@ def recover_airlines_db_swap(conn: sqlite3.Connection) -> None:
       * ``airlines`` + ``airlines_old`` → second RENAME succeeded but the
         final DROP didn't. Drop the leftover old copy.
     """
+    _recover_swap(conn, "airlines")
+
+
+def _recover_swap(conn: sqlite3.Connection, base: str) -> None:
+    """Shared staging-swap recovery for ``recover_aircraft_db_swap`` /
+    ``recover_airlines_db_swap`` (Audit 17 — the two were byte-identical apart
+    from the table name). ``base`` is the canonical table; ``{base}_new`` /
+    ``{base}_old`` are the staging copies. ``base`` is an internal literal
+    (never user input), so interpolating it into the DDL is safe.
+    """
     _log = logging.getLogger(__name__)
+    new, old = f"{base}_new", f"{base}_old"
     names = {
         row[0] for row in conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' "
-            "AND name IN ('airlines', 'airlines_new', 'airlines_old')"
+            "AND name IN (?, ?, ?)",
+            (base, new, old),
         ).fetchall()
     }
-    if "airlines" not in names and "airlines_old" in names:
-        _log.warning(
-            "airlines recovery: restoring airlines_old after interrupted swap"
-        )
-        conn.execute("ALTER TABLE airlines_old RENAME TO airlines")
-    elif "airlines_old" in names:
-        _log.info("airlines recovery: dropping leftover airlines_old")
-        conn.execute("DROP TABLE airlines_old")
-    if "airlines_new" in names:
-        _log.info("airlines recovery: dropping leftover airlines_new")
-        conn.execute("DROP TABLE airlines_new")
+    if base not in names and old in names:
+        _log.warning("%s recovery: restoring %s after interrupted swap", base, old)
+        conn.execute(f"ALTER TABLE {old} RENAME TO {base}")
+    elif old in names:
+        _log.info("%s recovery: dropping leftover %s", base, old)
+        conn.execute(f"DROP TABLE {old}")
+    if new in names:
+        _log.info("%s recovery: dropping leftover %s", base, new)
+        conn.execute(f"DROP TABLE {new}")
     conn.commit()
 
 
