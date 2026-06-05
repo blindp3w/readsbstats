@@ -72,3 +72,7 @@ CLAUDE.md
 
 # superpowers brainstorming companion artifacts
 .superpowers/
+
+# superpowers process artifacts (specs/plans) — distilled into docs/decisions
+# when architecturally significant; the raw workflow docs stay local-only.
+docs/superpowers/
