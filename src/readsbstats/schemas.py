@@ -340,3 +340,75 @@ class Vdl2StatsResponse(ApiModel):
     top_labels: list[Vdl2TopLabel] = []
     top_airlines: list[Vdl2TopAirline] = []
     hourly: list[int] = []
+    # % of flights in the last 24h whose airframe also transmitted ACARS in the
+    # flight window. Null when the cross-DB ATTACH is unavailable (don't fail the
+    # card) — computed on the core history.db connection, not the vdl2.db one.
+    flights_overlap_pct: Optional[float] = None
+
+
+class Vdl2FreqStat(ApiModel):
+    freq_mhz: Optional[float] = None
+    messages: int = 0
+    aircraft: int = 0
+
+
+class Vdl2ReceptionResponse(ApiModel):
+    """Receiver-health card data for the Metrics page. vdlm2dec-only — carries no
+    signal level (that field exists only in dumpvdl2's JSON). Freshness
+    (`newest_age_sec`) is the key 'is the VDL2 SDR alive?' signal."""
+    msgs_last_min: int = 0
+    msgs_last_hour: int = 0
+    msgs_24h: int = 0
+    aircraft_last_hour: int = 0
+    newest_ts: Optional[int] = None
+    newest_age_sec: Optional[int] = None
+    per_freq: list[Vdl2FreqStat] = []
+    rate_sparkline: list[int] = []
+
+
+class Vdl2ActiveResponse(ApiModel):
+    """ICAO hexes that transmitted ACARS in the last N minutes — for the map's
+    'transmitting now' marker badge (client-side merge with the live snapshot)."""
+    icao_hex: list[str] = []
+    count: int = 0
+
+
+class Vdl2Position(ApiModel):
+    lat: Optional[float] = None
+    lon: Optional[float] = None
+    icao_hex: Optional[str] = None
+    ts: Optional[int] = None
+    label: Optional[str] = None
+
+
+class Vdl2PositionsResponse(ApiModel):
+    """VDL2-derived positions for the optional map overlay. Sparse on an
+    H1-dominated feed — only messages whose decoder emitted structured lat/lon."""
+    points: list[Vdl2Position] = []
+    count: int = 0
+
+
+class Vdl2OooiEvent(ApiModel):
+    """One parsed OOOI (Out/Off/On/In) block-time report. Times are raw HHMM
+    strings as transmitted; the frontend formats/compares them."""
+    type: Optional[str] = None
+    registration: Optional[str] = None
+    flight: Optional[str] = None
+    dep_icao: Optional[str] = None
+    dest_icao: Optional[str] = None
+    t_out: Optional[str] = None
+    t_off: Optional[str] = None
+    t_on: Optional[str] = None
+    t_in: Optional[str] = None
+    ts: Optional[int] = None
+
+
+class Vdl2OooiSummary(ApiModel):
+    """Flight-detail OOOI summary: the latest DEP + latest ARR parsed from the
+    airframe's ACARS bodies in the flight window, plus a cheap `dsta`
+    destination-airport fallback (from XID frames) when no OOOI body parses.
+    EXPERIMENTAL — carrier-variant; commonly empty on an H1-dominated feed."""
+    dep: Optional[Vdl2OooiEvent] = None
+    arr: Optional[Vdl2OooiEvent] = None
+    dsta: Optional[str] = None
+    has_oooi: bool = False

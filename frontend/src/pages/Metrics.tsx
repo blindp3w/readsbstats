@@ -14,6 +14,8 @@ import { CHART_COLORS } from '@/components/charts/theme';
 import { fmtBytes } from '@/lib/format';
 import { useFormat } from '@/hooks/useFormat';
 import { HealthStripe, type HealthResp } from '@/components/metrics/HealthStripe';
+import { Vdl2ReceptionCard } from '@/components/metrics/Vdl2ReceptionCard';
+import { useVdl2Available } from '@/hooks/useVdl2Enabled';
 import {
   SMALL_MULT_HEIGHT,
   buildPanelOption,
@@ -162,6 +164,10 @@ export default function MetricsPage() {
   const hasData =
     !!metricsQ.data && metricsQ.data.data.length > 0 && metricsQ.data.data[0]?.length > 0;
 
+  // Optional VDL2 reception card — only when the feature is on AND vdl2.db is
+  // queryable (separate runtime bit from the feature flag).
+  const vdl2Available = useVdl2Available();
+
   return (
     <div className="mx-auto max-w-7xl space-y-4 px-4 py-6" data-testid="page-metrics">
       <header className="flex flex-wrap items-end justify-between gap-3">
@@ -181,6 +187,8 @@ export default function MetricsPage() {
       </header>
 
       <HealthStripe q={healthQ} />
+
+      {vdl2Available && <Vdl2ReceptionCard enabled={vdl2Available} />}
 
       {metricsQ.isError && (
         <Alert variant="error">Failed to load metrics: {(metricsQ.error as Error).message}</Alert>

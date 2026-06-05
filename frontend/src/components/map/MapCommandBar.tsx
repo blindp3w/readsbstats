@@ -32,6 +32,10 @@ interface Props {
   showCoverage: boolean;
   onToggleCoverage: () => void;
   coverageLoading?: boolean;
+  // Optional VDL2 overlay toggle — only passed when the feature is available.
+  showVdl2?: boolean;
+  onToggleVdl2?: () => void;
+  vdl2Loading?: boolean;
   sidebarOpen: boolean;
   onToggleSidebar: () => void;
 
@@ -87,6 +91,9 @@ export function MapCommandBar(props: Props) {
     showCoverage,
     onToggleCoverage,
     coverageLoading,
+    showVdl2,
+    onToggleVdl2,
+    vdl2Loading,
     sidebarOpen,
     onToggleSidebar,
     snapshotAt,
@@ -250,6 +257,9 @@ export function MapCommandBar(props: Props) {
             showCoverage={showCoverage}
             onToggleCoverage={onToggleCoverage}
             coverageLoading={coverageLoading}
+            showVdl2={showVdl2}
+            onToggleVdl2={onToggleVdl2}
+            vdl2Loading={vdl2Loading}
             sidebarOpen={sidebarOpen}
             onToggleSidebar={onToggleSidebar}
           />
@@ -263,6 +273,9 @@ export function MapCommandBar(props: Props) {
             showCoverage={showCoverage}
             onToggleCoverage={onToggleCoverage}
             coverageLoading={coverageLoading}
+            showVdl2={showVdl2}
+            onToggleVdl2={onToggleVdl2}
+            vdl2Loading={vdl2Loading}
             sidebarOpen={sidebarOpen}
             onToggleSidebar={onToggleSidebar}
           />

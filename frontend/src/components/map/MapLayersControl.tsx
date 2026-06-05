@@ -12,7 +12,13 @@ interface Props {
   coverageLoading?: boolean;
   sidebarOpen: boolean;
   onToggleSidebar: () => void;
-  // Layout variant. `inline` renders 3 pills in a row (used at lg+);
+  // Optional VDL2 overlay toggle — only wired when the feature is on AND
+  // vdl2.db is queryable (the parent passes `onToggleVdl2` only then). When
+  // absent, no VDL2 pill renders, so the control is unchanged with VDL2 off.
+  showVdl2?: boolean;
+  onToggleVdl2?: () => void;
+  vdl2Loading?: boolean;
+  // Layout variant. `inline` renders the pills in a row (used at lg+);
   // `popover` collapses to a single icon trigger (used at <lg and <sm).
   variant: 'inline' | 'popover';
 }
@@ -30,6 +36,9 @@ export function MapLayersControl({
   coverageLoading,
   sidebarOpen,
   onToggleSidebar,
+  showVdl2,
+  onToggleVdl2,
+  vdl2Loading,
   variant,
 }: Props) {
   const items = (
@@ -48,6 +57,15 @@ export function MapLayersControl({
         loading={coverageLoading}
         onClick={onToggleCoverage}
       />
+      {onToggleVdl2 && (
+        <LayerToggle
+          testid="map-toggle-vdl2"
+          label="ACARS"
+          active={!!showVdl2}
+          loading={vdl2Loading}
+          onClick={onToggleVdl2}
+        />
+      )}
       <LayerToggle
         testid="map-toggle-list"
         label="List"
@@ -65,7 +83,8 @@ export function MapLayersControl({
     );
   }
 
-  const activeCount = (showHeatmap ? 1 : 0) + (showCoverage ? 1 : 0) + (sidebarOpen ? 1 : 0);
+  const activeCount =
+    (showHeatmap ? 1 : 0) + (showCoverage ? 1 : 0) + (showVdl2 ? 1 : 0) + (sidebarOpen ? 1 : 0);
 
   return (
     <Popover>

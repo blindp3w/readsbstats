@@ -64,6 +64,18 @@ interface Props {
   // GeoJSON [lng, lat] inside this component (single boundary).
   heatmapPoints?: [number, number, number][];
   coveragePolygon?: [number, number][];
+  // VDL2 overlay (opt-in). `vdl2Positions` are structured ACARS position
+  // reports (lat/lon already in [lat, lon] order from the API). `acarsActive`
+  // is the set of icao_hex that transmitted ACARS recently — live aircraft in
+  // the set get a 'talking now' ring. Both undefined ⇒ nothing renders.
+  vdl2Positions?: {
+    lat: number;
+    lon: number;
+    icao_hex: string | null;
+    ts: number | null;
+    label: string | null;
+  }[];
+  acarsActive?: Set<string>;
 }
 
 // CartoDB Dark Matter raster basemap — free, no API key, CC-BY 4.0.
@@ -140,6 +152,7 @@ const HEATMAP_PAINT = {
 const RECEIVER_COLOR = '#5b9af9';
 const TRAIL_COLOR = '#5b9af9';
 const COVERAGE_COLOR = '#a855f7';
+const VDL2_COLOR = '#f59e0b'; // amber — distinct from receiver blue / coverage purple
 
 export default function LiveMap({
   aircraft,
@@ -150,6 +163,8 @@ export default function LiveMap({
   initialCenter,
   heatmapPoints,
   coveragePolygon,
+  vdl2Positions,
+  acarsActive,
 }: Props) {
   const mapRef = useRef<MapRef | null>(null);
 
@@ -223,6 +238,39 @@ export default function LiveMap({
     }
     return Object.values(byIcao);
   }, [aircraft]);
+
+  // ─── VDL2 position overlay ─────────────────────────────────────────────
+  // Structured ACARS positions from /api/vdl2/positions ([lat, lon]); swap to
+  // GeoJSON [lng, lat] once at the boundary. Sparse on an H1-dominated feed.
+  const vdl2PositionsGeoJSON = useMemo<GeoJSON.FeatureCollection | null>(() => {
+    if (!vdl2Positions || vdl2Positions.length === 0) return null;
+    return {
+      type: 'FeatureCollection',
+      features: vdl2Positions
+        .filter((p) => p.lat != null && p.lon != null)
+        .map((p) => ({
+          type: 'Feature',
+          properties: { icao_hex: p.icao_hex, label: p.label },
+          geometry: { type: 'Point', coordinates: [p.lon, p.lat] },
+        })),
+    };
+  }, [vdl2Positions]);
+
+  // ─── "Transmitting ACARS now" highlight ────────────────────────────────
+  // A ring under each live aircraft whose icao_hex transmitted ACARS recently.
+  // Built from the deduped live positions ∩ acarsActive — no marker DOM change
+  // (the ring is a canvas circle layer, so it never rotates with the icon).
+  const acarsHighlightGeoJSON = useMemo<GeoJSON.FeatureCollection | null>(() => {
+    if (!acarsActive || acarsActive.size === 0) return null;
+    const features = dedupedAircraft
+      .filter((a) => a.lat != null && a.lon != null && acarsActive.has(a.icao_hex))
+      .map((a) => ({
+        type: 'Feature' as const,
+        properties: {},
+        geometry: { type: 'Point' as const, coordinates: [a.lon as number, a.lat as number] },
+      }));
+    return features.length > 0 ? { type: 'FeatureCollection', features } : null;
+  }, [acarsActive, dedupedAircraft]);
 
   // ─── Selected aircraft trail ───────────────────────────────────────────
   // trail tuples are [lat, lon, ts]; convert + swap. Only the selected
@@ -314,6 +362,40 @@ export default function LiveMap({
             id="coverage-line"
             type="line"
             paint={{ 'line-color': COVERAGE_COLOR, 'line-width': 2 }}
+          />
+        </Source>
+      )}
+
+      {/* VDL2-derived positions — small amber dots (opt-in overlay). */}
+      {vdl2PositionsGeoJSON && (
+        <Source id="vdl2-positions" type="geojson" data={vdl2PositionsGeoJSON}>
+          <Layer
+            id="vdl2-positions-dot"
+            type="circle"
+            paint={{
+              'circle-radius': 4,
+              'circle-color': VDL2_COLOR,
+              'circle-opacity': 0.85,
+              'circle-stroke-width': 1,
+              'circle-stroke-color': '#1c1917',
+            }}
+          />
+        </Source>
+      )}
+
+      {/* "Transmitting ACARS now" ring under matching live aircraft. */}
+      {acarsHighlightGeoJSON && (
+        <Source id="vdl2-active" type="geojson" data={acarsHighlightGeoJSON}>
+          <Layer
+            id="vdl2-active-ring"
+            type="circle"
+            paint={{
+              'circle-radius': 14,
+              'circle-color': 'transparent',
+              'circle-stroke-width': 2,
+              'circle-stroke-color': VDL2_COLOR,
+              'circle-stroke-opacity': 0.9,
+            }}
           />
         </Source>
       )}

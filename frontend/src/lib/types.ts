@@ -86,6 +86,67 @@ export interface Vdl2StatsResponse {
   top_labels: Vdl2TopLabel[];
   top_airlines: Vdl2TopAirline[];
   hourly: number[];
+  // % of last-24h flights also seen on VDL2. Null when the cross-DB join is
+  // unavailable — the tile is hidden in that case.
+  flights_overlap_pct?: number | null;
+}
+
+export interface Vdl2FreqStat {
+  freq_mhz: number | null;
+  messages: number;
+  aircraft: number;
+}
+
+// Receiver-health card for the Metrics page (vdlm2dec-only — no signal level).
+// `newest_age_sec` is the freshness signal that answers "is the VDL2 SDR alive?".
+export interface Vdl2ReceptionResponse {
+  msgs_last_min: number;
+  msgs_last_hour: number;
+  msgs_24h: number;
+  aircraft_last_hour: number;
+  newest_ts: number | null;
+  newest_age_sec: number | null;
+  per_freq: Vdl2FreqStat[];
+  rate_sparkline: number[];
+}
+
+// Map overlay: airframes that transmitted ACARS recently ("transmitting now").
+export interface Vdl2ActiveResponse {
+  icao_hex: string[];
+  count: number;
+}
+
+export interface Vdl2Position {
+  lat: number;
+  lon: number;
+  icao_hex: string | null;
+  ts: number | null;
+  label: string | null;
+}
+
+export interface Vdl2PositionsResponse {
+  points: Vdl2Position[];
+  count: number;
+}
+
+export interface Vdl2OooiEvent {
+  type: 'DEP' | 'ARR' | null;
+  registration: string | null;
+  flight: string | null;
+  dep_icao: string | null;
+  dest_icao: string | null;
+  t_out: string | null;
+  t_off: string | null;
+  t_on: string | null;
+  t_in: string | null;
+  ts: number | null;
+}
+
+export interface Vdl2OooiSummary {
+  dep: Vdl2OooiEvent | null;
+  arr: Vdl2OooiEvent | null;
+  dsta: string | null;
+  has_oooi: boolean;
 }
 
 // Subset of /api/settings the SPA reads. Shared so the ['settings'] query has a
