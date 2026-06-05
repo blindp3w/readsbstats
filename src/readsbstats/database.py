@@ -255,9 +255,16 @@ CREATE TABLE IF NOT EXISTS schema_version (
 """
 
 
-def connect(path: str = config.DB_PATH) -> sqlite3.Connection:
-    """Return a connection with WAL mode and row_factory set."""
-    conn = sqlite3.connect(path, check_same_thread=False)
+def connect(path: str = config.DB_PATH, *, uri: bool = False) -> sqlite3.Connection:
+    """Return a connection with WAL mode and row_factory set.
+
+    ``uri=True`` enables SQLite URI filenames so the caller can later ATTACH a
+    database read-only via ``file:...?mode=ro`` (URI processing is a per-connection
+    flag). Only the web reader (``api/_deps.db``, which ATTACHes vdl2.db) needs it;
+    the collector/writer and everything else keep the default so a path containing
+    ``?`` or a leading ``file:`` is never reinterpreted. Behavior-neutral for plain
+    paths and ``:memory:`` even when uri=True."""
+    conn = sqlite3.connect(path, check_same_thread=False, uri=uri)
     conn.row_factory = sqlite3.Row
     conn.executescript(
         "PRAGMA journal_mode = WAL;"

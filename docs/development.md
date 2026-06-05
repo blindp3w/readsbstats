@@ -50,6 +50,15 @@ RSBS_AIRCRAFT_JSON=/tmp/rsbs_sim.json RSBS_DB_PATH=./db/history.db \
 .venv/bin/pytest --cov=readsbstats --cov-report=term-missing
 ```
 
+> **Run the linter before pushing.** CI runs `eslint . --max-warnings 0` as a
+> separate job and fails on any warning — `npm test` only runs Vitest and will
+> **not** catch lint errors (e.g. `react-hooks/set-state-in-effect`). Run it
+> locally so strict-lint failures don't surface only in CI:
+>
+> ```bash
+> ( cd frontend && npm run lint )
+> ```
+
 ### Playwright mobile UI tests (optional, local only)
 
 ```bash

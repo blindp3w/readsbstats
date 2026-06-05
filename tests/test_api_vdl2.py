@@ -1,0 +1,250 @@
+"""Tests for the VDL2 read-only API + the optional-router gating in web.py."""
+from __future__ import annotations
+
+import sqlite3
+import threading
+import time
+
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+from readsbstats import config, web
+from readsbstats.api import _deps
+from readsbstats.api import vdl2 as vdl2_api
+from readsbstats.vdl2 import db as vdl2_db
+from tests._helpers import make_db, make_vdl2_db
+
+
+@pytest.fixture(autouse=True)
+def _clear_cache():
+    # /api/vdl2/stats is cached module-globally; clear between tests so cached
+    # values (or a cached 200 hiding a 503 path) don't leak across tests.
+    from readsbstats import cache
+    cache._cache.clear()
+    yield
+
+
+def _seed(conn):
+    base = int(time.time())
+    rows = [
+        {"ts": base - 30, "icao_hex": "48e95d", "registration": "SP-LYF",
+         "flight": "LO6550", "label": "H1", "body": "depart EPWA gate 12"},
+        {"ts": base - 20, "icao_hex": "48af11", "registration": "SP-LVS",
+         "flight": "LO0304", "label": "Q0", "body": "clearance request"},
+        {"ts": base - 10, "icao_hex": "48e95d", "registration": "SP-LYF",
+         "flight": "LO6550", "label": "H1", "body": "position report krakow"},
+    ]
+    vdl2_db.insert_messages(conn, rows)
+    conn.commit()
+
+
+@pytest.fixture()
+def client(monkeypatch):
+    """Fresh app with the VDL2 router included and an in-memory vdl2 conn injected."""
+    monkeypatch.setattr(config, "VDL2_ENABLED", True)
+    conn = make_vdl2_db()
+    _seed(conn)
+    monkeypatch.setattr(vdl2_db, "_conn", conn)
+    app = FastAPI()
+    web._include_optional_routers(app)
+    with TestClient(app) as c:
+        yield c
+    conn.close()
+
+
+class TestMessagesFeed:
+    def test_newest_first(self, client):
+        data = client.get("/api/vdl2/messages").json()
+        bodies = [m["body"] for m in data["messages"]]
+        assert bodies[0] == "position report krakow"   # most recent ts first
+        assert len(data["messages"]) == 3
+
+    def test_pagination_keyset(self, client):
+        first = client.get("/api/vdl2/messages?limit=2").json()
+        assert len(first["messages"]) == 2
+        assert first["next_before_id"] is not None
+        nxt = client.get(f"/api/vdl2/messages?limit=2&before_id={first['next_before_id']}").json()
+        assert len(nxt["messages"]) == 1
+        assert nxt["next_before_id"] is None
+
+    def test_filter_by_label(self, client):
+        data = client.get("/api/vdl2/messages?label=Q0").json()
+        assert len(data["messages"]) == 1
+        assert data["messages"][0]["flight"] == "LO0304"
+
+    def test_filter_by_hex_prefix(self, client):
+        data = client.get("/api/vdl2/messages?hex=48e9").json()
+        assert {m["icao_hex"] for m in data["messages"]} == {"48e95d"}
+
+    def test_filter_by_reg_prefix(self, client):
+        data = client.get("/api/vdl2/messages?reg=SP-LV").json()
+        assert all(m["registration"] == "SP-LVS" for m in data["messages"])
+
+    def test_fts_search(self, client):
+        data = client.get("/api/vdl2/messages?q=krakow").json()
+        assert len(data["messages"]) == 1
+        assert "krakow" in data["messages"][0]["body"]
+
+    def test_fts_search_multi_term_is_and(self, client):
+        # "position report krakow" message exists; "clearance request" + "depart
+        # EPWA gate 12" do not contain both terms.
+        both = client.get("/api/vdl2/messages?q=report%20krakow").json()
+        assert len(both["messages"]) == 1
+        # AND across terms: no single message contains both 'gate' and 'krakow'.
+        neither = client.get("/api/vdl2/messages?q=gate%20krakow").json()
+        assert neither["messages"] == []
+
+    def test_fts_search_special_chars_no_500(self, client):
+        # Punctuation must not raise an FTS5 MATCH syntax error.
+        r = client.get('/api/vdl2/messages?q=gate "12" (EPWA)')
+        assert r.status_code == 200
+
+    def test_raw_excluded_from_list(self, client):
+        data = client.get("/api/vdl2/messages?limit=1").json()
+        assert "raw" not in data["messages"][0]
+
+
+class TestPerAircraft:
+    def test_by_icao(self, client):
+        data = client.get("/api/vdl2/messages/48e95d").json()
+        assert len(data["messages"]) == 2
+        assert all(m["icao_hex"] == "48e95d" for m in data["messages"])
+
+    def test_bad_icao_404(self, client):
+        assert client.get("/api/vdl2/messages/zzz").status_code == 404
+
+    def test_since_until_window(self, client):
+        # _seed inserts 48e95d messages at base-30 and base-10 (base≈now).
+        now = int(time.time())
+        data = client.get(f"/api/vdl2/messages/48e95d?since={now - 15}").json()
+        assert len(data["messages"]) == 1  # only the base-10 message is within window
+        none = client.get(f"/api/vdl2/messages/48e95d?until={now - 3600}").json()
+        assert none["messages"] == []
+
+
+class TestStatsExtended:
+    def test_top_labels_airlines_hourly(self, monkeypatch):
+        monkeypatch.setattr(config, "VDL2_ENABLED", True)
+        vconn = make_vdl2_db()
+        now = int(time.time())
+        # IATA-format flight ids (LO6550, LO0304) — must group on the 2-char
+        # operator prefix, NOT substr(,1,3) which would split LO6/LO0.
+        vdl2_db.insert_messages(vconn, [
+            {"ts": now - 100, "icao_hex": "48e95d", "flight": "LO6550", "label": "H1", "body": "a"},
+            {"ts": now - 200, "icao_hex": "48af11", "flight": "LO0304", "label": "H1", "body": "b"},
+            {"ts": now - 300, "icao_hex": "48af11", "flight": "FR99X", "label": "Q0", "body": "c"},
+            {"ts": now - 5 * 3600, "icao_hex": "48af11", "flight": "LO9999", "label": "H1", "body": "d"},
+        ])
+        vconn.commit()
+        monkeypatch.setattr(vdl2_db, "_conn", vconn)
+        core = make_db()
+        core.execute(
+            "INSERT INTO airlines (icao_code, name, iata_code, country, active) "
+            "VALUES ('LOT', 'LOT Polish Airlines', 'LO', 'Poland', 1)"
+        )
+        core.commit()
+        monkeypatch.setattr(_deps, "_db", core)
+
+        app = FastAPI()
+        web._include_optional_routers(app)
+        with TestClient(app) as c:
+            data = c.get("/api/vdl2/stats").json()
+
+        labels = {l["label"]: l["messages"] for l in data["top_labels"]}
+        assert labels["H1"] == 3 and labels["Q0"] == 1
+        airlines = {a["code"]: a for a in data["top_airlines"]}
+        assert airlines["LO"]["messages"] == 3                  # LO6550+LO0304+LO9999, NOT fragmented
+        assert airlines["LO"]["name"] == "LOT Polish Airlines"  # resolved via iata_code
+        assert airlines["FR"]["name"] is None                   # unknown code → degrade
+        assert len(data["hourly"]) == 24
+        assert data["hourly"][23] == 3   # current hour (newest bucket) — must not be dropped
+        assert data["hourly"][18] == 1   # ~5h ago bucket
+        vconn.close()
+        core.close()
+
+
+class TestStats:
+    def test_counts(self, client):
+        data = client.get("/api/vdl2/stats").json()
+        assert data["total"] == 3
+        assert data["aircraft"] == 2
+        assert data["last_hour"] == 3
+
+
+class TestFailureModes:
+    def test_endpoints_503_when_db_unavailable(self, monkeypatch):
+        monkeypatch.setattr(config, "VDL2_ENABLED", True)
+
+        def boom(*a, **k):
+            raise sqlite3.OperationalError("unable to open database file")
+
+        monkeypatch.setattr(vdl2_db, "web_conn", boom)
+        app = FastAPI()
+        web._include_optional_routers(app)
+        with TestClient(app) as c:
+            assert c.get("/api/vdl2/messages").status_code == 503
+            assert c.get("/api/vdl2/messages/48e95d").status_code == 503
+            assert c.get("/api/vdl2/stats").status_code == 503
+
+    def test_until_le_since_400(self, monkeypatch):
+        monkeypatch.setattr(config, "VDL2_ENABLED", True)
+        conn = make_vdl2_db()
+        monkeypatch.setattr(vdl2_db, "_conn", conn)
+        app = FastAPI()
+        web._include_optional_routers(app)
+        with TestClient(app) as c:
+            assert c.get("/api/vdl2/messages?since=100&until=100").status_code == 400
+            assert c.get("/api/vdl2/messages/48e95d?since=200&until=100").status_code == 400
+        conn.close()
+
+
+class TestConnRegistry:
+    def test_close_all_web_conns(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "VDL2_ENABLED", True)
+        monkeypatch.setattr(config, "VDL2_DB_PATH", str(tmp_path / "vdl2.db"))
+        monkeypatch.setattr(vdl2_db, "_conn", None)
+        monkeypatch.setattr(vdl2_db, "_thread_local", threading.local())
+        with vdl2_db._web_conns_lock:
+            vdl2_db._web_conns.clear()
+        c = vdl2_db.web_conn()
+        c.execute("SELECT 1")  # usable
+        vdl2_db.close_all_web_conns()
+        with pytest.raises(sqlite3.ProgrammingError):
+            c.execute("SELECT 1")  # closed
+
+
+class TestHealth:
+    def test_disabled(self, monkeypatch):
+        monkeypatch.setattr(config, "VDL2_ENABLED", False)
+        assert vdl2_api.vdl2_health() == {"enabled": False, "available": False}
+
+    def test_available(self, monkeypatch):
+        monkeypatch.setattr(config, "VDL2_ENABLED", True)
+        conn = make_vdl2_db()
+        vdl2_db.insert_messages(conn, [{"ts": 123, "icao_hex": "48e95d", "body": "x"}])
+        conn.commit()
+        monkeypatch.setattr(vdl2_db, "_conn", conn)
+        monkeypatch.setattr(_deps, "_db", make_db())
+        h = vdl2_api.vdl2_health()
+        assert h["enabled"] is True and h["available"] is True
+        assert h["messages"] == 1 and h["newest_ts"] == 123
+        conn.close()
+
+
+class TestGating:
+    def test_router_absent_when_disabled(self, monkeypatch):
+        monkeypatch.setattr(config, "VDL2_ENABLED", False)
+        app = FastAPI()
+        web._include_optional_routers(app)
+        paths = {r.path for r in app.routes}
+        assert not any(p.startswith("/api/vdl2") for p in paths)
+        with TestClient(app) as c:
+            assert c.get("/api/vdl2/messages").status_code == 404
+
+    def test_router_present_when_enabled(self, monkeypatch):
+        monkeypatch.setattr(config, "VDL2_ENABLED", True)
+        app = FastAPI()
+        web._include_optional_routers(app)
+        paths = {r.path for r in app.routes}
+        assert "/api/vdl2/messages" in paths

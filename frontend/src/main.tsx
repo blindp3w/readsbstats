@@ -19,6 +19,10 @@ const AircraftPage = lazy(() => import('@/pages/Aircraft'));
 const MetricsPage = lazy(() => import('@/pages/Metrics'));
 const FlightPage = lazy(() => import('@/pages/Flight'));
 const MapPage = lazy(() => import('@/pages/Map'));
+// Opt-in VDL2/ACARS feature. Route is always registered (lazy chunk only loads
+// on navigation); the page self-guards when the feature is disabled, and the
+// nav item only appears when /api/settings reports vdl2_enabled.
+const Vdl2Page = lazy(() => import('@/pages/Vdl2'));
 
 // TanStack Query defaults — see plan H3.
 // - refetchOnWindowFocus off: don't thrash backend on tab focus.
@@ -59,6 +63,7 @@ const router = createBrowserRouter(
         { path: 'feeders', element: <FeedersPage />, errorElement: <RouteError /> },
         { path: 'watchlist', element: <WatchlistPage />, errorElement: <RouteError /> },
         { path: 'settings', element: <SettingsPage />, errorElement: <RouteError /> },
+        { path: 'vdl2', element: <Vdl2Page />, errorElement: <RouteError /> },
       ],
     },
   ],

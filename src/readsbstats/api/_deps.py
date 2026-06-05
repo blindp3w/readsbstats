@@ -17,6 +17,7 @@ import os
 import re
 import sqlite3
 import threading
+import urllib.parse
 from datetime import datetime, timezone
 
 from fastapi import Header, HTTPException
@@ -43,9 +44,71 @@ def db() -> sqlite3.Connection:
         return _db
     conn = getattr(_thread_local, "conn", None)
     if conn is None:
-        conn = database.connect()
+        # uri=True so _maybe_attach_vdl2 can attach vdl2.db read-only (file:?mode=ro).
+        conn = database.connect(uri=True)
+        _maybe_attach_vdl2(conn)
         _thread_local.conn = conn
     return conn
+
+
+# ---------------------------------------------------------------------------
+# Optional VDL2 read-time join. When RSBS_VDL2_ENABLED, the separate vdl2.db is
+# ATTACHed READ-ONLY (file:...?mode=ro — enforced, not by convention) so the
+# flights query can compute a `has_acars` flag and filter on it. Best-effort: a
+# missing/table-less/unattachable vdl2.db leaves it not-attached, and callers
+# gate on `vdl2_attached(conn)` so the core query degrades to "no badge" instead
+# of erroring. Never touches history.db; no-op when the feature is disabled.
+#
+# mode=ro on a WAL DB works on SQLite >= 3.22 when the -shm/-wal exist or the
+# directory is writable (both true here — the collector is the live writer and
+# /mnt/ext is writable). On a read-only mount the attach fails and the feature
+# degrades, surfaced honestly via the `vdl2.attach_available` bit in /api/health.
+# ---------------------------------------------------------------------------
+def _vdl2_ro_uri() -> str:
+    return f"file:{urllib.parse.quote(os.path.abspath(config.VDL2_DB_PATH))}?mode=ro"
+
+
+def _maybe_attach_vdl2(conn: sqlite3.Connection) -> None:
+    # Attach state is read back via PRAGMA database_list (sqlite3.Connection has
+    # no __dict__ to memoise a flag on).
+    if not config.VDL2_ENABLED or vdl2_attached(conn):
+        return
+    # mode=ro won't create a missing file, but skip early to avoid a noisy error.
+    if not os.path.exists(config.VDL2_DB_PATH):
+        return
+    try:
+        conn.execute("ATTACH DATABASE ? AS vdl2db", (_vdl2_ro_uri(),))
+        has_table = conn.execute(
+            "SELECT 1 FROM vdl2db.sqlite_master WHERE type='table' AND name='vdl2_messages'"
+        ).fetchone()
+        if not has_table:
+            conn.execute("DETACH DATABASE vdl2db")
+    except sqlite3.Error:
+        try:
+            conn.execute("DETACH DATABASE vdl2db")
+        except sqlite3.Error:
+            pass
+
+
+def vdl2_attached(conn: sqlite3.Connection) -> bool:
+    """True when vdl2.db is attached on this connection — the gate for emitting
+    the `has_acars` column/filter (so a missing vdl2.db never 500s /api/flights).
+    Stateless: reads the live attach list (cheap, ~3 rows)."""
+    try:
+        return any(r["name"] == "vdl2db" for r in conn.execute("PRAGMA database_list"))
+    except sqlite3.Error:
+        return False
+
+
+# Computed badge column for flight rows — only safe when vdl2db is attached.
+# Boolean EXISTS over the flight's time window; uses idx_vdl2_icao (icao_hex, ts).
+_HAS_ACARS_EXPR = """
+    CASE WHEN EXISTS(
+        SELECT 1 FROM vdl2db.vdl2_messages v
+        WHERE v.icao_hex = f.icao_hex
+          AND v.ts >= f.first_seen AND v.ts <= f.last_seen
+    ) THEN 1 ELSE 0 END AS has_acars
+"""
 
 
 # ---------------------------------------------------------------------------
@@ -393,6 +456,7 @@ def _build_flight_filter(
     date_to:   str | None = None,
     from_ts: int | None = None,
     to_ts:   int | None = None,
+    has_acars: bool | None = None,
 ) -> tuple[str, list]:
     """Return (WHERE clause, params list) for the shared flight filter params.
 
@@ -481,6 +545,15 @@ def _build_flight_filter(
     if squawk:
         conditions.append("f.squawk = ?")
         params.append(squawk.strip())
+
+    # Only emitted when the handler has confirmed vdl2db is attached (it passes
+    # has_acars=None otherwise), so the vdl2db reference is always resolvable.
+    if has_acars:
+        conditions.append(
+            "EXISTS(SELECT 1 FROM vdl2db.vdl2_messages v "
+            "WHERE v.icao_hex = f.icao_hex "
+            "AND v.ts >= f.first_seen AND v.ts <= f.last_seen)"
+        )
 
     where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
     return where, params

@@ -6,7 +6,7 @@ The web server exposes a JSON API at `http://YOUR_PI_IP/stats/api/`.
 
 | Method | Path | Description |
 |---|---|---|
-| GET | `/api/flights` | Flight list. Filters: `from`/`to` (Unix epoch, preferred — browser-local midnight), `date`, `date_from`/`date_to` (YYYY-MM-DD receiver local time, backward compat), `icao`, `callsign`, `reg`, `type`, `source`, `flags`, `squawk`. Sortable, paginated. |
+| GET | `/api/flights` | Flight list. Filters: `from`/`to` (Unix epoch, preferred — browser-local midnight), `date`, `date_from`/`date_to` (YYYY-MM-DD receiver local time, backward compat), `icao`, `callsign`, `reg`, `type`, `source`, `flags`, `squawk`. Sortable, paginated. **When `RSBS_VDL2_ENABLED` (and `vdl2.db` is attachable), each row gains `has_acars` (0/1) and `has_acars=true` filters to flights with ACARS in their window; absent/ignored otherwise.** |
 | GET | `/api/flights/export.csv` | CSV export of flight list (same filters as above, no pagination) |
 | GET | `/api/flights/{id}` | Flight detail (metadata + other flights by the same aircraft). The raw position timeline is **not** embedded by default — `positions` is an empty list. Pass `?include_positions=true` to embed the full list (the SPA instead uses the two endpoints below). |
 | GET | `/api/flights/{id}/positions` | Paginated raw positions for the inspection table. `limit` (default 1000, max 2000), `offset`. Returns `{total, limit, offset, positions}`. |
@@ -48,6 +48,21 @@ The web server exposes a JSON API at `http://YOUR_PI_IP/stats/api/`.
 | POST | `/api/watchlist` | Add entry: `{match_type, value, label?}`. Requires `X-Requested-With: XMLHttpRequest`. Also requires `Authorization: Bearer <token>` when `RSBS_API_TOKEN` is set. |
 | DELETE | `/api/watchlist/{id}` | Remove entry. Same auth requirements as POST. |
 
+## VDL2 / ACARS (opt-in)
+
+Registered only when `RSBS_VDL2_ENABLED` is set. Read-only; queries the separate
+`vdl2.db`; typed via `schemas.Vdl2*` response models. All endpoints return 404
+when the feature is disabled, and **503 `{"detail": "VDL2 database unavailable"}`**
+when enabled but `vdl2.db` can't be opened/queried. `since`/`until` are `ge=0`
+and a request with `until <= since` is rejected with 400. Runtime availability is
+exposed at `/api/health` → `vdl2.available` (the SPA gates surfaces on it).
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/api/vdl2/messages` | Newest-first feed. Query: `limit` (≤100), `before_id` (keyset pagination), `label`, `hex` (prefix), `reg` (prefix), `since`/`until` (epoch), `q` (FTS5 full-text, `LIKE` fallback). Returns `{messages, next_before_id}`. |
+| GET | `/api/vdl2/messages/{icao_hex}` | All messages from one airframe (6-hex ICAO), newest-first. Accepts `since`/`until` (epoch) to scope to a flight window (used by the flight-detail ACARS panel), plus `limit`/`before_id`/`q`. |
+| GET | `/api/vdl2/stats` | `{total, last_hour, aircraft, top_labels[], top_airlines[], hourly[24]}`. `top_airlines` codes are name-resolved via the core `airlines` table (degrades to codes); `hourly` is last-24h message counts, zero-filled. |
+
 ## Enrichment
 
 | Method | Path | Description |
@@ -59,7 +74,7 @@ The web server exposes a JSON API at `http://YOUR_PI_IP/stats/api/`.
 
 | Method | Path | Description |
 |---|---|---|
-| GET | `/api/health` | Liveness probe (DB ping) |
+| GET | `/api/health` | Liveness probe (DB ping). Includes a `vdl2` block: `{enabled, available, schema_version, fts, messages, newest_ts, newest_age_sec, attach_available}` (available=false / fields omitted when the feature is off or vdl2.db is unreachable). |
 | GET | `/api/metrics` | Receiver metrics time-series. `range`: `1h`/`6h`/`24h`/`48h`/`7d`/`30d`/`90d` or custom. Auto-downsamples. |
 | GET | `/api/metrics/health` | 9 rule-based and baseline-aware health checks over `receiver_stats`. Cached 60 s. |
 | GET | `/api/settings` | Read-only runtime settings dict (secrets masked). Includes `map_history_hours` (rewind slider cap), `time_format`, `page_size`, and all `RSBS_*` tunables. |
@@ -81,12 +96,15 @@ All paths below are handled by the React SPA at the catch-all; FastAPI API route
 | `/stats/metrics` | Metrics charts + health banner |
 | `/stats/settings` | Runtime settings (read-only) |
 | `/stats/map` | Live map + rewind + heatmap + coverage |
+| `/stats/vdl2` | VDL2 / ACARS messages (shows a disabled notice unless `RSBS_VDL2_ENABLED`) |
 | `/stats/live` | 302 → `/stats/map` |
 | `/stats/v2/*` | 301 → `/stats/*` (back-compat) |
 
 ## Database schema
 
 Current schema version: **5** (stored in the internal `schema_version` table). The collector owns full schema creation and slow background migrations; the web server applies only fast `_migrate()` additions.
+
+> The opt-in VDL2 feature uses a **separate** database (`RSBS_VDL2_DB_PATH`, default `vdl2.db`) with its own `PRAGMA user_version` schema (table `vdl2_messages` + FTS5 `vdl2_fts`). It is independent of the version-5 core schema below and is never created or migrated unless `RSBS_VDL2_ENABLED` is set.
 
 | Table | Purpose |
 |---|---|

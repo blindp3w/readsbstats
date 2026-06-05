@@ -1,0 +1,67 @@
+[Unit]
+Description=readsbstats VDL2 / ACARS ingest listener
+# Opt-in feature. NOT enabled by install.sh — enable explicitly with
+#   sudo systemctl enable --now readsbstats-vdl2.service
+# Consume-only: an external decoder (vdlm2dec) feeds line-delimited JSON over
+# UDP to RSBS_VDL2_UDP_HOST:PORT. This service writes a SEPARATE vdl2.db; it
+# never touches history.db. See docs/operations.md for the decoder runbook.
+After=network.target
+OnFailure=notify-telegram@%n.service
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
+[Service]
+Type=notify
+WatchdogSec=60
+User=readsbstats
+Group=readsbstats
+WorkingDirectory=/opt/readsbstats
+ExecStart=/opt/readsbstats/venv/bin/python -m readsbstats.vdl2_collector
+Restart=on-failure
+RestartSec=10
+TimeoutStartSec=120
+
+# Single source of truth for the VDL2 flag + tunables, shared with
+# readsbstats-web so one file gates both surfaces (the `-` makes it optional —
+# no failure if absent). Set RSBS_VDL2_ENABLED=true there, then
+# `systemctl enable --now readsbstats-vdl2`. When the flag is false this unit
+# starts, sends READY, and exits cleanly (dormant — see vdl2_collector.main).
+EnvironmentFile=-/etc/readsbstats/vdl2.env
+
+# Be polite to the Pi — readsb/tar1090 and the core collector come first
+CPUQuota=10%
+MemoryMax=256M
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+
+# Security hardening (mirrors readsbstats-collector.service)
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/mnt/ext/readsbstats
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+# AF_INET/AF_INET6 needed for the UDP listener; AF_UNIX for sd_notify
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+
+# Logging goes to journald
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=readsbstats-vdl2
+
+[Install]
+WantedBy=multi-user.target

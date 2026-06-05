@@ -20,7 +20,10 @@ import { FlagBadgeStrip } from '@/components/stats/FlagBadgeStrip';
 import { RangeContextLine } from '@/components/stats/RangeContextLine';
 import { AboutReceiverFooter } from '@/components/stats/AboutReceiverFooter';
 import { SectionAnchors } from '@/components/stats/SectionAnchors';
+import { STATS_SECTIONS } from '@/components/stats/sections';
+import { Vdl2StatsCard } from '@/components/stats/Vdl2StatsCard';
 import { TopChartMultiples } from '@/components/stats/TopChartMultiples';
+import { useVdl2Available } from '@/hooks/useVdl2Enabled';
 import { buildBarOption, type StatsResponse } from './statsCharts';
 
 // StatsResponse used to live here; Audit-15 moved it to ./statsCharts so
@@ -88,6 +91,14 @@ export default function StatsPage() {
 
   const flightsDelta = pickFlightsDelta(range.value, stats);
 
+  // Opt-in VDL2 section + its TOC anchor. Gate on runtime availability (vdl2.db
+  // queryable), not just the config flag — otherwise an enabled-but-unavailable
+  // store renders an empty section whose card would 503 on /api/vdl2/stats.
+  const vdl2Available = useVdl2Available();
+  const sections = vdl2Available
+    ? [...STATS_SECTIONS, { id: 'vdl2', label: 'VDL2' }]
+    : STATS_SECTIONS;
+
   return (
     <div
       className="mx-auto max-w-7xl space-y-4 px-4 py-6 [&_section]:scroll-mt-[calc(var(--rsbs-nav-h,41px)+60px)]"
@@ -108,7 +119,7 @@ export default function StatsPage() {
         right={<RangeContextLine state={range} isFetching={isRefetching} />}
       />
 
-      <SectionAnchors />
+      <SectionAnchors sections={sections} />
 
       {statsQ.isError && (
         <Alert variant="error">Failed to load stats: {(statsQ.error as Error).message}</Alert>
@@ -275,6 +286,15 @@ export default function StatsPage() {
           </Card>
         </div>
       </section>
+
+      {vdl2Available && (
+        <section id="vdl2" className="space-y-4" aria-labelledby="vdl2-heading">
+          <h2 id="vdl2-heading" className="text-sm font-semibold text-[var(--color-text-dim)]">
+            VDL2 / ACARS
+          </h2>
+          <Vdl2StatsCard enabled={vdl2Available} />
+        </section>
+      )}
 
       <AboutReceiverFooter
         totalFlights={stats?.lifetime?.total_flights}

@@ -3,6 +3,7 @@ import { ChevronUpIcon, ChevronDownIcon } from '@radix-ui/react-icons';
 import { Table, THead, TBody, TR, TH, TD } from '@/components/ui/Table';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { Alert } from '@/components/ui/Alert';
+import { Badge } from '@/components/ui/Badge';
 import { FlagBadge, SourceBadge } from '@/components/FlagBadge';
 import { fmtDur } from '@/lib/format';
 import { useFormat } from '@/hooks/useFormat';
@@ -51,6 +52,9 @@ export interface Flight {
   total_positions: number;
   origin_icao?: string | null;
   dest_icao?: string | null;
+  // Present only when RSBS_VDL2_ENABLED (computed by /api/flights). Absent → no
+  // ACARS column rendered.
+  has_acars?: 0 | 1;
 }
 
 export type SortKey =
@@ -93,6 +97,8 @@ export function FlightsTable({ flights, isLoading, error, sortBy, sortDir, onSor
   // When no row in the current result set has route data, drop the column
   // entirely rather than showing a column full of "—".
   const hasAnyRoute = (flights ?? []).some((f) => f.origin_icao || f.dest_icao);
+  // Column only appears when the backend returned has_acars (VDL2 enabled).
+  const hasAnyAcars = (flights ?? []).some((f) => f.has_acars !== undefined);
 
   const cols: ColDef[] = [
     { key: 'first_seen', label: 'First seen' },
@@ -102,6 +108,7 @@ export function FlightsTable({ flights, isLoading, error, sortBy, sortDir, onSor
     { key: 'registration', label: 'Reg' },
     { key: 'aircraft_type', label: 'Type', hideOnMobile: true },
     ...(hasAnyRoute ? ([{ key: null, label: 'Route', hideOnMobile: true }] as ColDef[]) : []),
+    ...(hasAnyAcars ? ([{ key: null, label: 'ACARS', hideOnMobile: true }] as ColDef[]) : []),
     { key: 'primary_source', label: 'Source', hideOnMobile: true },
     { key: 'max_alt_baro', label: altLabel(), hideOnMobile: true },
     { key: 'max_gs', label: spdLabel(), hideOnMobile: true },
@@ -231,6 +238,11 @@ export function FlightsTable({ flights, isLoading, error, sortBy, sortDir, onSor
                 ) : (
                   '—'
                 )}
+              </TD>
+            )}
+            {hasAnyAcars && (
+              <TD className="hidden md:table-cell" data-testid={`flights-row-${f.id}-acars`}>
+                {f.has_acars ? <Badge variant="muted">acars</Badge> : '—'}
               </TD>
             )}
             <TD className="hidden md:table-cell">

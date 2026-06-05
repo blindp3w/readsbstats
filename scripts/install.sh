@@ -106,6 +106,15 @@ cp "$APP_DIR/systemd/readsbstats-dbcheck.timer"         /etc/systemd/system/
 cp "$APP_DIR/systemd/readsbstats-dbcheck-full.service"  /etc/systemd/system/
 cp "$APP_DIR/systemd/readsbstats-dbcheck-full.timer"    /etc/systemd/system/
 cp "$APP_DIR/systemd/notify-telegram@.service"          /etc/systemd/system/
+# Opt-in VDL2/ACARS ingest — copied so it's available, but NOT enabled here.
+# The shared flag lives in /etc/readsbstats/vdl2.env (read by web + ingest).
+# To turn the feature on: set RSBS_VDL2_ENABLED=true there, restart web, then
+# `systemctl enable --now readsbstats-vdl2.service`. See docs/operations.md.
+cp "$APP_DIR/systemd/readsbstats-vdl2.service"          /etc/systemd/system/
+mkdir -p /etc/readsbstats
+if [ ! -f /etc/readsbstats/vdl2.env ]; then
+    cp "$APP_DIR/systemd/readsbstats-vdl2.env.example" /etc/readsbstats/vdl2.env
+fi
 systemctl daemon-reload
 systemctl enable --now readsbstats-collector.service
 systemctl enable --now readsbstats-web.service

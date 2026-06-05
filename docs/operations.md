@@ -73,6 +73,73 @@ Environment="RSBS_METRICS_ENABLED=1"
 
 The collector polls every 60 s and stores 43 metrics in `receiver_stats`. The `/metrics` page displays 10 time-series charts with automatic downsampling (raw ≤24h, 5-min ≤7d, 15-min ≤30d, 1-hour ≤90d).
 
+## VDL2 / ACARS ingest
+
+Opt-in feature (default off). Decodes VHF Data Link Mode 2 / ACARS from a
+**separate SDR** and stores messages in their own `vdl2.db` — the core
+`history.db` is never touched. readsbstats is **consume-only**: you run the
+decoder; readsbstats runs only the UDP ingest listener and the web tab.
+
+**Turning it on** — one flag, one enable:
+
+1. Set `RSBS_VDL2_ENABLED=true` in `/etc/readsbstats/vdl2.env` (the single shared
+   file, read by both `readsbstats-web` and `readsbstats-vdl2`). `install.sh`
+   seeds it from the example with the flag `false`.
+2. `systemctl enable --now readsbstats-vdl2.service` — start the listener.
+
+```bash
+sudo sed -i 's/RSBS_VDL2_ENABLED=false/RSBS_VDL2_ENABLED=true/' /etc/readsbstats/vdl2.env
+sudo systemctl restart readsbstats-web          # web picks up the shared flag
+sudo systemctl enable --now readsbstats-vdl2    # start the ingest listener
+```
+
+The web surfaces gate on **runtime availability** (`/api/health` → `vdl2.available`),
+so the Messages tab / History "Has ACARS" filter appear only once `vdl2.db` is
+actually reachable — a missing/corrupt DB shows an explicit "unavailable" state
+and `/api/vdl2/*` return `503`, never a broken page or a silent no-op.
+
+**Integrity:** the ingest service writes a `.vdl2_dirty_shutdown` sentinel next to
+`vdl2.db` and clears it on a clean stop; if it's present at startup (unclean
+shutdown) it runs `PRAGMA quick_check` before writing and refuses to write on
+failure. Retention prune runs in batches so the first big cleanup can't starve
+inserts. Watch ingest health via the periodic summary line:
+`journalctl -u readsbstats-vdl2 | grep 'vdl2 ingest:'`.
+
+**Decoder (run separately, owns the SDR).** Feed line-delimited JSON over UDP
+to the listener (default `127.0.0.1:5556` — 5555 is left free for SpyServer so
+the ingest listener can keep running while the SDR is handed to SpyServer):
+
+```bash
+# vdlm2dec on an Airspy Mini, 4 PL channels, linearity gain 14:
+vdlm2dec -g 14 -j 127.0.0.1:5556 136.725 136.775 136.875 136.975
+```
+
+> Verify the exact `-j` / `-i` flag syntax against your `vdlm2dec` build's help
+> output — flags have drifted across versions. Only one process may hold the
+> Airspy at a time (no SpyServer/SDR++ against the same device concurrently).
+
+**Switching decoders.** `dumpvdl2` cannot drive the Airspy Mini (fixed sample
+rate), but if you move to a compatible SDR, set `RSBS_VDL2_DECODER=dumpvdl2` and
+point it at the same port:
+`dumpvdl2 --output decoded:json:udp:address=127.0.0.1,port=5556 …`. No
+readsbstats code change is required (a per-decoder normalizer handles the JSON).
+
+**Retention.** The ingest service prunes messages older than
+`RSBS_VDL2_RETENTION_DAYS` (default 90) every hour. Message volume is modest
+(thousands–tens of thousands/day at a busy site); at ~1 KB/row stored that's
+well within the Pi's `/mnt/ext` headroom. Set `0` to keep everything and manage
+size yourself.
+
+```bash
+# VDL2 ingest log / status
+journalctl -u readsbstats-vdl2 -n 30
+systemctl is-active readsbstats-vdl2
+```
+
+To disable entirely: `systemctl disable --now readsbstats-vdl2` and unset
+`RSBS_VDL2_ENABLED` on `readsbstats-web`. The tab, API, and ingest all
+disappear; `history.db` is unaffected.
+
 ## Polar range plot tuning
 
 The plot auto-scales ring spacing to your actual max detection range. To adjust angular bucket size, edit `BUCKET_DEG` in `src/readsbstats/api/stats.py` → `api_stats_polar`:
