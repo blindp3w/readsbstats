@@ -38,7 +38,10 @@ def api_flights(
     conn = _deps.db()
     # Only surface the VDL2 `has_acars` column/filter when vdl2.db is actually
     # attached (RSBS_VDL2_ENABLED + file present). Otherwise the param is ignored
-    # and the query is identical to the no-VDL2 build.
+    # and the query is identical to the no-VDL2 build. Re-attempt the attach per
+    # request (idempotent) so a vdl2.db that appears AFTER this thread's core
+    # connection was created still gets picked up without a web restart.
+    _deps._maybe_attach_vdl2(conn)
     show_acars = _deps.vdl2_attached(conn)
     where, params = _deps._build_flight_filter(
         date, icao, callsign, registration, aircraft_type, source, flags, squawk,

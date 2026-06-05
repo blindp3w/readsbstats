@@ -32,6 +32,8 @@ function stubFetch(s: Stub) {
     const url = typeof input === 'string' ? input : input.toString();
     let body: unknown = {};
     if (url.includes('/api/settings')) body = { vdl2_enabled: s.vdl2_enabled ?? false };
+    else if (url.includes('/api/health'))
+      body = { vdl2: { enabled: s.vdl2_enabled ?? false, available: s.vdl2_enabled ?? false } };
     else if (url.includes('/api/vdl2/messages'))
       body = { messages: s.messages ?? [], next_before_id: null };
     else if (url.includes('/flights')) body = AIRCRAFT_FIXTURE;

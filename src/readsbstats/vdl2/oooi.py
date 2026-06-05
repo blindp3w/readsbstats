@@ -28,7 +28,10 @@ import re
 
 from ..cleaners import clean_short_text
 
-_FIELD = re.compile(r"^([A-Z]{2})\s+(\S.*)$")
+# TEI keys are 2 OR 3 letters (OFF is 3). Greedy {2,3} still backtracks to 2 for
+# `ON`/`IN`/`OT` (the 3rd char is the value-separating space).
+_FIELD = re.compile(r"^([A-Z]{2,3})\s+(\S.*)$")
+_OOOI_KEYS = frozenset({"AN", "FI", "DA", "DS", "AD", "OT", "OFF", "ON", "IN"})
 _ID_CAP = 16   # registration / flight / airport idents are short
 
 
@@ -53,7 +56,9 @@ def parse_oooi(body: object) -> dict | None:
     for seg in segments[1:]:
         m = _FIELD.match(seg)
         if m:
-            fields[m.group(1).upper()] = m.group(2).strip()
+            key = m.group(1).upper()
+            if key in _OOOI_KEYS:
+                fields[key] = m.group(2).strip()
     if not fields:
         return None
 

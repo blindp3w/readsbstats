@@ -35,7 +35,22 @@
   SMT/TEI parser matched 0 messages (air-side downlinks are proprietary Teledyne
   ACMS, not ground-side SMT); documented in `vdl2/oooi.py`. The practical signals
   are the XID `dsta` destination and Label-16 body positions (now parsed).
-- Tests: **1737 Python**, **357 Vitest** (all green).
+### Fixed (follow-up review)
+
+- **OOOI parser** now captures the 3-letter `OFF` TEI (was 2-letter-only) + a TEI whitelist.
+- **`/api/vdl2/positions`** replaced the single OR query (full table scan) with two index-served
+  candidate queries (`idx_vdl2_label_ts_id`, `idx_vdl2_pos_ts_id`) merged in Python: precise body
+  parsing is now gated to Label-16 rows only (no false `precise` from non-AUTPOS bodies), and
+  independent caps + a final merge stop no-fix Label-16 bursts from starving valid coarse points.
+- **`vdl2.db` re-attach** per request in `/api/flights` + `flights_overlap_pct`, so a vdl2.db that
+  appears after a web thread's connection opened still surfaces `has_acars`/overlap without a restart.
+- **Mobile map** now shows the ACARS overlay toggle (the sub-`sm` `MapLayersControl` was missing the
+  VDL2 props; the three call sites now spread a shared prop object so they can't drift).
+- **AcarsPanel + OooiCard** gate on runtime `vdl2.available` (not just config-enabled), so a
+  flag-on-but-db-unavailable state hides cleanly instead of erroring — making "fully absent" accurate.
+- Map overlay surfaces a fetch error; reception endpoint logs slow queries; OooiCard copy reflects
+  that `dsta` (not block times) is the common signal on air-side feeds.
+- Tests: **1743 Python**, **359 Vitest** (all green).
 
 ## 2.14.0 — 2026-06-05
 

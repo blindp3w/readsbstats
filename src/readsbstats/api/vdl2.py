@@ -339,6 +339,9 @@ def _flights_overlap_pct() -> float | None:
     index → a full flights scan); the per-row EXISTS is served by idx_vdl2_icao."""
     try:
         core = _deps.db()
+        # Re-attempt the attach per request (idempotent) so a vdl2.db created
+        # after this thread's core connection opened still attaches.
+        _deps._maybe_attach_vdl2(core)
         if not _deps.vdl2_attached(core):
             return None
         since = int(time.time()) - 24 * 3600
@@ -373,7 +376,11 @@ def api_vdl2_reception() -> dict:
     if cached is not None:
         return cached
     with _vdl2_guard():
+        t0 = time.perf_counter()
         result = _compute_reception()
+        elapsed_ms = (time.perf_counter() - t0) * 1000
+        if elapsed_ms > 250:
+            log.warning("vdl2 reception query slow: %.0f ms", elapsed_ms)
         cache._set_cache("vdl2-reception", result)
         return result
 
@@ -526,29 +533,54 @@ def api_vdl2_positions(minutes: int = Query(60, ge=1, le=1440)) -> dict:
     if cached is not None:
         return cached
     with _vdl2_guard():
-        conn = vdl2_db.web_conn()
-        cutoff = int(time.time()) - minutes * 60
-        # AUTPOS bodies (label 16) for precise fixes + any row with a coarse XID
-        # column fix. Bounded by the ts window + cap; the body regex is cheap.
-        rows = conn.execute(
-            "SELECT lat, lon, icao_hex, ts, label, body FROM vdl2_messages "
-            "WHERE ts >= ? AND (label = '16' OR (lat IS NOT NULL AND lon IS NOT NULL)) "
-            "ORDER BY id DESC LIMIT ?",
-            (cutoff, _POSITIONS_CAP),
-        ).fetchall()
-        points = []
-        for r in rows:
-            parsed = vdl2_positions.parse_position(r["body"])
-            if parsed is not None:
-                lat, lon, precise = parsed["lat"], parsed["lon"], True
-            elif r["lat"] is not None and r["lon"] is not None:
-                lat, lon, precise = r["lat"], r["lon"], False
-            else:
-                continue   # label-16 row whose body didn't parse and no column fix
-            points.append({
-                "lat": lat, "lon": lon, "icao_hex": r["icao_hex"],
-                "ts": r["ts"], "label": r["label"], "precise": precise,
-            })
-        out = {"points": points, "count": len(points)}
+        out = _compute_positions(minutes)
         cache._set_cache(f"vdl2-positions-{minutes}", out)
         return out
+
+
+def _compute_positions(minutes: int) -> dict:
+    """Two index-served candidate queries merged in Python (a single OR query
+    full-scans; see idx_vdl2_label_ts_id / idx_vdl2_pos_ts_id). Precise fixes are
+    parsed ONLY from Label-16 AUTPOS bodies (so a coordinate-looking body on a
+    non-16 row can't masquerade as precise); coarse XID column fixes are the
+    fallback. Independent caps + a final merge/cap so a burst of no-fix Label-16
+    rows can't starve valid coarse points."""
+    conn = vdl2_db.web_conn()
+    cutoff = int(time.time()) - minutes * 60
+
+    label_rows = conn.execute(
+        "SELECT id, icao_hex, ts, label, body FROM vdl2_messages "
+        "WHERE label = '16' AND ts >= ? ORDER BY ts DESC, id DESC LIMIT ?",
+        (cutoff, _POSITIONS_CAP),
+    ).fetchall()
+    coarse_rows = conn.execute(
+        "SELECT id, lat, lon, icao_hex, ts, label FROM vdl2_messages "
+        "WHERE lat IS NOT NULL AND lon IS NOT NULL AND ts >= ? "
+        "ORDER BY ts DESC, id DESC LIMIT ?",
+        (cutoff, _POSITIONS_CAP),
+    ).fetchall()
+
+    points: list[dict] = []
+    seen: set[int] = set()
+    for r in label_rows:
+        parsed = vdl2_positions.parse_position(r["body"])
+        if parsed is None:
+            continue   # no-fix Label-16 body — discarded (does not consume the final cap)
+        seen.add(r["id"])
+        points.append({
+            "_id": r["id"], "lat": parsed["lat"], "lon": parsed["lon"],
+            "icao_hex": r["icao_hex"], "ts": r["ts"], "label": r["label"], "precise": True,
+        })
+    for r in coarse_rows:
+        if r["id"] in seen:
+            continue   # same row already emitted as a precise fix
+        points.append({
+            "_id": r["id"], "lat": r["lat"], "lon": r["lon"],
+            "icao_hex": r["icao_hex"], "ts": r["ts"], "label": r["label"], "precise": False,
+        })
+
+    points.sort(key=lambda p: (p["ts"] or 0, p["_id"]), reverse=True)
+    points = points[:_POSITIONS_CAP]
+    for p in points:
+        del p["_id"]   # internal merge key — not part of the public Vdl2Position contract
+    return {"points": points, "count": len(points)}

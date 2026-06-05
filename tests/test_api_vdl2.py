@@ -363,6 +363,55 @@ class TestMapOverlay:
         assert by["48af11"]["lat"] == 52.1 and by["48af11"]["precise"] is False
         vconn.close()
 
+    def test_positions_non_label16_body_not_precise(self, monkeypatch):
+        # BE-006: a coarse XID row (has lat/lon columns, label != 16) whose body
+        # happens to contain coordinate-looking text must NOT be marked precise,
+        # and must return the trusted column fix — not the body text.
+        now = int(time.time())
+        vconn, app = self._make(monkeypatch, [
+            {"ts": now - 20, "icao_hex": "48e95d", "label": "H1",
+             "lat": 52.1, "lon": 20.4, "body": "free text N 52.166,E 020.772"},
+        ])
+        with TestClient(app) as c:
+            data = c.get("/api/vdl2/positions?minutes=60").json()
+        assert data["count"] == 1
+        p = data["points"][0]
+        assert p["lat"] == 52.1 and p["lon"] == 20.4
+        assert p["precise"] is False
+
+    def test_positions_nofix_label16_does_not_starve_coarse(self, monkeypatch):
+        # BE-007: a burst of no-fix Label-16 rows (newest) must not consume the cap
+        # and starve an older valid coarse point. Two independent capped queries fix this.
+        now = int(time.time())
+        monkeypatch.setattr(vdl2_api, "_POSITIONS_CAP", 2)
+        # Coarse row inserted FIRST (lowest id); the no-fix Label-16 burst has
+        # higher ids, so under the old `ORDER BY id DESC LIMIT 2` it would crowd
+        # the coarse row out entirely.
+        vconn, app = self._make(monkeypatch, [
+            {"ts": now - 100, "icao_hex": "48cc00", "lat": 50.0, "lon": 19.9, "body": "xid"},
+            {"ts": now - 5, "icao_hex": "48aa01", "label": "16", "body": "N   .    MMMM.MMM"},
+            {"ts": now - 4, "icao_hex": "48aa02", "label": "16", "body": "no fix here"},
+            {"ts": now - 3, "icao_hex": "48aa03", "label": "16", "body": "still no fix"},
+        ])
+        with TestClient(app) as c:
+            data = c.get("/api/vdl2/positions?minutes=60").json()
+        hexes = {p["icao_hex"] for p in data["points"]}
+        assert "48cc00" in hexes   # the valid coarse point survived the no-fix burst
+
+    def test_positions_sorted_newest_first(self, monkeypatch):
+        now = int(time.time())
+        vconn, app = self._make(monkeypatch, [
+            {"ts": now - 300, "icao_hex": "48aa01", "lat": 52.0, "lon": 20.0, "body": "x"},
+            {"ts": now - 10, "icao_hex": "48aa02", "label": "16",
+             "body": "N 52.166,E 020.772"},
+            {"ts": now - 120, "icao_hex": "48aa03", "lat": 51.0, "lon": 19.0, "body": "y"},
+        ])
+        with TestClient(app) as c:
+            data = c.get("/api/vdl2/positions?minutes=60").json()
+        tss = [p["ts"] for p in data["points"]]
+        assert tss == sorted(tss, reverse=True)
+        assert "id" not in data["points"][0]   # internal id not leaked
+
     def test_overlay_empty(self, monkeypatch):
         vconn, app = self._make(monkeypatch, [])
         with TestClient(app) as c:

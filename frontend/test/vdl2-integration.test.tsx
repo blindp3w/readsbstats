@@ -20,6 +20,9 @@ function stubFetch(s: Stub) {
     const url = typeof input === 'string' ? input : (input as Request).url ?? String(input);
     let body: unknown = {};
     if (url.includes('/api/settings')) body = { vdl2_enabled: s.vdl2_enabled ?? false };
+    else if (url.includes('/api/health'))
+      // AcarsPanel now gates on runtime availability (/api/health), not config.
+      body = { vdl2: { enabled: s.vdl2_enabled ?? false, available: s.vdl2_enabled ?? false } };
     else if (url.includes('/api/vdl2/messages')) body = { messages: s.messages ?? [], next_before_id: null };
     else if (url.includes('/api/vdl2/stats'))
       body = { total: 0, last_hour: 0, aircraft: 0, top_labels: [], top_airlines: [], hourly: [] };
