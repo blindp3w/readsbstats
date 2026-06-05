@@ -494,6 +494,68 @@ class TestOooi:
         vconn.close()
 
 
+class TestTimeseries:
+    def _make(self, monkeypatch, rows):
+        monkeypatch.setattr(config, "VDL2_ENABLED", True)
+        vconn = make_vdl2_db()
+        vdl2_db.insert_messages(vconn, rows)
+        vconn.commit()
+        monkeypatch.setattr(vdl2_db, "_conn", vconn)
+        monkeypatch.setattr(_deps, "_db", make_db())
+        app = FastAPI()
+        web._include_optional_routers(app)
+        return vconn, app
+
+    def test_buckets_normalize_and_zero_fill(self, monkeypatch):
+        now = int(time.time())
+        vconn, app = self._make(monkeypatch, [
+            {"ts": now - 90, "icao_hex": "48e95d", "freq": 136.725, "body": "a"},
+            {"ts": now - 80, "icao_hex": "48af11", "freq": 136.725, "body": "b"},
+        ])
+        with TestClient(app) as c:
+            data = c.get(f"/api/vdl2/timeseries?from={now - 180}&to={now}").json()
+        assert data["bucket_seconds"] == 60
+        assert data["metrics"][0] == "rate"
+        assert data["total"] == 2
+        ts_col, rate_col = data["data"][0], data["data"][1]
+        assert len(ts_col) == 3
+        assert max(rate_col) == 2.0
+        assert min(rate_col) == 0.0
+
+    def test_top_freqs_capped_and_rate_counts_all(self, monkeypatch):
+        now = int(time.time())
+        rows = []
+        for i, f in enumerate([136.700, 136.725, 136.775, 136.825, 136.875, 136.925, 136.975]):
+            for _ in range(7 - i):
+                rows.append({"ts": now - 100, "icao_hex": f"48{i:04x}", "freq": f, "body": "x"})
+        vconn, app = self._make(monkeypatch, rows)
+        with TestClient(app) as c:
+            data = c.get(f"/api/vdl2/timeseries?from={now - 600}&to={now}").json()
+        assert len(data["freqs"]) == 6
+        assert data["freqs"][0] == 136.7
+        assert 136.975 not in data["freqs"]
+        assert data["total"] == sum(range(1, 8))
+
+    def test_window_validation_and_503(self, monkeypatch):
+        now = int(time.time())
+        vconn, app = self._make(monkeypatch, [])
+        with TestClient(app) as c:
+            assert c.get(f"/api/vdl2/timeseries?from={now}&to={now}").status_code == 400
+        vconn.close()
+
+    def test_503_when_db_unavailable(self, monkeypatch):
+        monkeypatch.setattr(config, "VDL2_ENABLED", True)
+
+        def boom(*a, **k):
+            raise sqlite3.OperationalError("unable to open database file")
+
+        monkeypatch.setattr(vdl2_db, "web_conn", boom)
+        app = FastAPI()
+        web._include_optional_routers(app)
+        with TestClient(app) as c:
+            assert c.get("/api/vdl2/timeseries").status_code == 503
+
+
 class TestFailureModes:
     def test_endpoints_503_when_db_unavailable(self, monkeypatch):
         monkeypatch.setattr(config, "VDL2_ENABLED", True)

@@ -391,6 +391,20 @@ class Vdl2PositionsResponse(ApiModel):
     count: int = 0
 
 
+class Vdl2TimeseriesResponse(ApiModel):
+    """Bucketed VDL2 reception time-series for the Metrics page, in the same
+    columnar shape as /api/metrics so the frontend chart builders are reused.
+    Series values are normalized to msgs/min; `total` is the raw count in the
+    window (the series must NOT be summed to get a count)."""
+    bucket_seconds: int = 0
+    metrics: list[str] = []           # ["rate", "<freq>", ...]
+    freqs: list[float] = []           # the top frequencies, same order as metrics[1:]
+    total: int = 0
+    newest_ts: Optional[int] = None
+    newest_age_sec: Optional[int] = None
+    data: list[list[float]] = []      # [[ts...], [rate...], [freq1...], ...]
+
+
 class Vdl2OooiEvent(ApiModel):
     """One parsed OOOI (Out/Off/On/In) block-time report. Times are raw HHMM
     strings as transmitted; the frontend formats/compares them."""
