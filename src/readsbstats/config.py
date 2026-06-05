@@ -216,7 +216,7 @@ VDL2_RETENTION_DAYS = _int(*_register("vdl2_retention", "RSBS_VDL2_RETENTION_DAY
 # Internal tunables (not surfaced via /api/settings). Range-validated per the
 # project rule (parse via _int, floor via _min_or_default_int).
 VDL2_UDP_HOST       = os.getenv("RSBS_VDL2_UDP_HOST", "127.0.0.1")   # bind localhost; decoder feeds line-delimited JSON here
-VDL2_UDP_PORT       = _min_or_default_int("RSBS_VDL2_UDP_PORT", _int("RSBS_VDL2_UDP_PORT", "5555"), 1, 5555)
+VDL2_UDP_PORT       = _min_or_default_int("RSBS_VDL2_UDP_PORT", _int("RSBS_VDL2_UDP_PORT", "5556"), 1, 5556)
 # Decoder whose JSON dialect the ingest normalizer expects. vdlm2dec is the
 # working decoder for the Airspy Mini; dumpvdl2 is the documented future swap.
 _VDL2_DECODERS      = ("vdlm2dec", "dumpvdl2")

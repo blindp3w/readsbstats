@@ -106,11 +106,12 @@ inserts. Watch ingest health via the periodic summary line:
 `journalctl -u readsbstats-vdl2 | grep 'vdl2 ingest:'`.
 
 **Decoder (run separately, owns the SDR).** Feed line-delimited JSON over UDP
-to the listener (default `127.0.0.1:5555`):
+to the listener (default `127.0.0.1:5556` — 5555 is left free for SpyServer so
+the ingest listener can keep running while the SDR is handed to SpyServer):
 
 ```bash
 # vdlm2dec on an Airspy Mini, 4 PL channels, linearity gain 14:
-vdlm2dec -g 14 -j 127.0.0.1:5555 136.725 136.775 136.875 136.975
+vdlm2dec -g 14 -j 127.0.0.1:5556 136.725 136.775 136.875 136.975
 ```
 
 > Verify the exact `-j` / `-i` flag syntax against your `vdlm2dec` build's help
@@ -120,7 +121,7 @@ vdlm2dec -g 14 -j 127.0.0.1:5555 136.725 136.775 136.875 136.975
 **Switching decoders.** `dumpvdl2` cannot drive the Airspy Mini (fixed sample
 rate), but if you move to a compatible SDR, set `RSBS_VDL2_DECODER=dumpvdl2` and
 point it at the same port:
-`dumpvdl2 --output decoded:json:udp:address=127.0.0.1,port=5555 …`. No
+`dumpvdl2 --output decoded:json:udp:address=127.0.0.1,port=5556 …`. No
 readsbstats code change is required (a per-decoder normalizer handles the JSON).
 
 **Retention.** The ingest service prunes messages older than

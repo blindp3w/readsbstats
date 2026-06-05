@@ -5,7 +5,7 @@ systemd/readsbstats-vdl2.service). **Consume-only**: the operator runs an
 external decoder (vdlm2dec by default) and points it at this listener with
 line-delimited JSON over UDP, e.g.::
 
-    vdlm2dec -g 14 -j 127.0.0.1:5555 136.725 136.775 136.875 136.975
+    vdlm2dec -g 14 -j 127.0.0.1:5556 136.725 136.775 136.875 136.975
 
 This service binds ``RSBS_VDL2_UDP_HOST:RSBS_VDL2_UDP_PORT``, normalizes each
 datagram into the separate ``vdl2.db`` (never touches ``history.db``), and
