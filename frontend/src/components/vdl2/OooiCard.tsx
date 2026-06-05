@@ -3,7 +3,7 @@ import { CheckIcon, Cross2Icon } from '@radix-ui/react-icons';
 import { apiJson } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Badge } from '@/components/ui/Badge';
-import { useVdl2Available } from '@/hooks/useVdl2Enabled';
+import { useVdl2FlightWindow } from '@/hooks/useVdl2Enabled';
 import type { Vdl2OooiSummary } from '@/lib/types';
 
 // EXPERIMENTAL: route confirmation + (when available) OOOI block times for this
@@ -12,7 +12,6 @@ import type { Vdl2OooiSummary } from '@/lib/types';
 // destination from XID frames — block times appear only when an OOOI body parses.
 // A ✓/✗ chip confirms the reported route against the scheduled origin/dest.
 // Renders NOTHING when nothing parsed and there's no `dsta`.
-const SLACK_SEC = 1800;
 
 interface Props {
   icao: string;
@@ -39,22 +38,18 @@ function TimeRow({ label, value }: { label: string; value: string | null }) {
 }
 
 export function OooiCard({ icao, firstSeen, lastSeen, scheduledOrigin, scheduledDest }: Props) {
-  // Gate on RUNTIME availability (vdl2.db queryable), not just config-enabled.
-  const enabled = useVdl2Available();
+  const { available, since, until } = useVdl2FlightWindow(firstSeen, lastSeen);
   const q = useQuery({
-    queryKey: ['vdl2-oooi', icao, firstSeen, lastSeen],
-    enabled: enabled && !!icao,
+    queryKey: ['vdl2-oooi', icao, since, until],
+    enabled: available && !!icao,
     queryFn: () => {
-      const p = new URLSearchParams({
-        since: String(firstSeen - SLACK_SEC),
-        until: String(lastSeen + SLACK_SEC),
-      });
+      const p = new URLSearchParams({ since: String(since), until: String(until) });
       return apiJson<Vdl2OooiSummary>(`vdl2/oooi/${icao}?${p.toString()}`);
     },
     staleTime: 60_000,
   });
 
-  if (!enabled) return null;
+  if (!available) return null;
   const data = q.data;
   // Nothing meaningful parsed → don't show an empty card.
   if (!data || (!data.has_oooi && !data.dsta)) return null;
