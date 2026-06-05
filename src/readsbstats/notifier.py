@@ -162,6 +162,12 @@ def _send(text: str) -> bool:
     if not telegram_enabled():
         return False
     try:
+        # Audit 17: clamp at the single transport chokepoint so NO caller can
+        # over-run Telegram's 4096-char sendMessage limit (an over-limit body
+        # makes Telegram 400 and the alert is silently dropped). This covers
+        # both the text-only dispatch path and the sendPhoto text fallback;
+        # the photo path's own 1024 clamp makes this a no-op there.
+        text = _clamp_caption(text, _MESSAGE_MAX)
         payload = json.dumps({
             "chat_id":                  config.TELEGRAM_CHAT_ID,
             "text":                     text,
@@ -244,6 +250,7 @@ def _get_photo_result(
 
 _MAX_PHOTO_BYTES = 10 * 1024 * 1024  # Telegram's sendPhoto limit
 _PHOTO_CAPTION_MAX = 1024            # Telegram's caption limit on sendPhoto
+_MESSAGE_MAX = 4096                  # Telegram's text limit on sendMessage
 
 _MIME_TO_FILENAME: dict[str, str] = {
     "image/jpeg": "photo.jpg",

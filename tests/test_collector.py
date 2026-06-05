@@ -1394,6 +1394,32 @@ class TestMlatGsAccelFilter:
         self._poll(self.conn)
         assert self._gs_at("aabbcc") == pytest.approx(210.0)
 
+    def test_mlat_accel_window_matches_last_valid_gs(self):
+        """Audit 17: acceleration must be measured over the time since the last
+        *valid* GS, not the last *sample*. After a nulled middle sample, the
+        gs-delta spans two intervals; dividing it by a one-interval dt (the old
+        bug) inflates the computed accel and over-nulls a legitimate change."""
+        self.conn.execute(
+            "INSERT INTO aircraft_db (icao_hex, registration, type_code, flags)"
+            " VALUES ('aabbcc', 'SP-ABC', 'A319', 0)"
+        )
+        self.conn.commit()
+        # Position 1 (t0): gs=400 — valid baseline, last_gs=400 at t0.
+        self._write([{"hex": "aabbcc", "lat": 52.0, "lon": 21.0,
+                       "seen_pos": 0, "gs": 400.0, "type": "mlat"}], self.now)
+        self._poll(self.conn)
+        # Position 2 (t+5): gs=800 nulled by the hard limit; last_gs stays 400 @ t0.
+        self._write([{"hex": "aabbcc", "lat": 52.001, "lon": 21.001,
+                       "seen_pos": 0, "gs": 800.0, "type": "mlat"}], self.now + 5)
+        self._poll(self.conn)
+        # Position 3 (t+10): gs=460. Real accel since the last valid gs (t0):
+        # 60/10 = 6 kts/s < 8 → keep. The old mismatched window 60/5 = 12 > 8
+        # would have wrongly nulled it.
+        self._write([{"hex": "aabbcc", "lat": 52.002, "lon": 21.002,
+                       "seen_pos": 0, "gs": 460.0, "type": "mlat"}], self.now + 10)
+        self._poll(self.conn)
+        assert self._gs_at("aabbcc") == pytest.approx(460.0)
+
 
 # ---------------------------------------------------------------------------
 # _update_flight_agg — aggregate column correctness

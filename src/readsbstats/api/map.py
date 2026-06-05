@@ -151,7 +151,10 @@ def _compute_coverage_sync(window: str) -> dict:
 
     polygon: list[list[float]] = []
     for i in range(_deps._NUM_BUCKETS):
-        dist = by_bucket.get(i, 0.0)
+        # Audit 17: a bucket's MAX(dist) can be NULL (None) — e.g. a DuckDB
+        # result with a NULL-producing distance expr. Coalesce to 0.0 so the
+        # bucket collapses to the receiver instead of raising on `None > 0`.
+        dist = by_bucket.get(i, 0.0) or 0.0
         if dist > 0:
             lat, lon = geo.destination_point(
                 config.RECEIVER_LAT, config.RECEIVER_LON, float(i * _deps._BUCKET_DEG), dist
@@ -160,7 +163,7 @@ def _compute_coverage_sync(window: str) -> dict:
             lat, lon = config.RECEIVER_LAT, config.RECEIVER_LON
         polygon.append([lat, lon])
 
-    max_range = max(by_bucket.values(), default=0.0)
+    max_range = max((v or 0.0 for v in by_bucket.values()), default=0.0)
     return {"polygon": polygon, "max_range_nm": max_range, "window": window}
 
 

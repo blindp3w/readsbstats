@@ -2654,10 +2654,17 @@ class TestApiFlightPhoto:
         assert data["thumbnail_url"] == "https://plnspttrs.net/thumb.jpg"
         assert data["photographer"] == "Alice"
         assert data["icao_hex"] == "aabbcc"
+        # Audit 17: assert every column lands in its named column (guards the
+        # positive INSERT against a future schema reorder — it must name columns
+        # explicitly, not rely on positional VALUES order).
         row = db_conn.execute(
-            "SELECT thumbnail_url FROM photos WHERE icao_hex = 'aabbcc'"
+            "SELECT thumbnail_url, large_url, link_url, photographer "
+            "FROM photos WHERE icao_hex = 'aabbcc'"
         ).fetchone()
         assert row["thumbnail_url"] == "https://plnspttrs.net/thumb.jpg"
+        assert row["large_url"] == "https://plnspttrs.net/large.jpg"
+        assert row["link_url"] == "https://plnspttrs.net/photo"
+        assert row["photographer"] == "Alice"
 
     def test_cached_photo_served_from_db(self, client, db_conn):
         # PY-6: use an allowlisted host.
@@ -3785,6 +3792,23 @@ class TestApiMapCoverage:
         self._insert_position_at(db_conn, bearing_deg=5.0, dist_nm=100.0)
         self._insert_position_at(db_conn, bearing_deg=95.0, dist_nm=200.0)
         assert client.get("/api/map/coverage?window=all").json()["max_range_nm"] == pytest.approx(200.0)
+
+    def test_null_distance_bucket_does_not_crash(self, monkeypatch):
+        """Audit 17: a bucket whose max distance is None (e.g. a DuckDB result
+        with a NULL-producing distance expr) must collapse to the receiver
+        location, not raise TypeError comparing None > 0 / max(None,...)."""
+        from readsbstats.api import map as map_mod
+        cache._cache.clear()
+        # analytics.coverage is the DuckDB path; return a None bucket value.
+        monkeypatch.setattr(map_mod.analytics, "coverage",
+                            lambda *a, **k: {0: None, 1: 100.0})
+        result = map_mod._compute_coverage_sync("all")
+        assert len(result["polygon"]) == 36
+        # bucket 0 (None) collapses to the receiver location
+        assert result["polygon"][0][0] == pytest.approx(config.RECEIVER_LAT, abs=1e-6)
+        assert result["polygon"][0][1] == pytest.approx(config.RECEIVER_LON, abs=1e-6)
+        # max_range ignores the None and reflects the real bucket
+        assert result["max_range_nm"] == pytest.approx(100.0)
 
     def test_bucket_uses_max_distance(self, client, db_conn):
         """Two positions both in bucket 0 — polygon uses the farther one."""

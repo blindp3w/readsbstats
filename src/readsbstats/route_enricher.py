@@ -226,6 +226,15 @@ def _fetch_route(callsign: str, client: httpx.Client | None = None) -> dict | No
         log.warning("Route fetch policy error for %s: %s", callsign, exc)
         raise _PermanentError(str(exc)) from exc
     except httpx.HTTPStatusError as exc:
+        # Audit 17: a non-404 4xx (400/410/422 …) is a deterministic client
+        # error — the same request will fail identically every batch. Map it
+        # to _PermanentError so the loop writes a TTL-bounded negative cache
+        # row instead of refetching the bad callsign forever. 429 (rate
+        # limited) and 5xx stay transient (retry via the in-memory cooldown).
+        code = getattr(exc.response, "status_code", None)
+        if code is not None and 400 <= code < 500 and code != 429:
+            log.warning("Route fetch permanent HTTP %s for %s", code, callsign)
+            raise _PermanentError(str(exc)) from exc
         log.debug("Route fetch HTTP error for %s: %s", callsign, exc)
         raise _TransientError(str(exc)) from exc
     except Exception as exc:

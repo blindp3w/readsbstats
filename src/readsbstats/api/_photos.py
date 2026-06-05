@@ -109,7 +109,9 @@ async def _fetch_photo(icao_hex: str) -> dict | None:
             "fetched_at":    now,
         }
         conn.execute(
-            "INSERT OR REPLACE INTO photos VALUES (?,?,?,?,?,?)",
+            "INSERT OR REPLACE INTO photos "
+            "(icao_hex, thumbnail_url, large_url, link_url, photographer, fetched_at) "
+            "VALUES (?,?,?,?,?,?)",
             (icao_hex, pr.thumbnail_url, pr.large_url, pr.link_url, pr.photographer, now),
         )
     elif status == "error":

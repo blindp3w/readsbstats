@@ -214,13 +214,19 @@ def _load_active(conn: sqlite3.Connection) -> None:
         """
     ).fetchall()
     for row in rows:
+        # Audit 17: test `pos_ts is not None`, not truthiness — a LEFT JOIN with
+        # no positions row yields NULL (→ None), but a real epoch `0` is a
+        # legitimate (if pathological) timestamp and must not be conflated with
+        # "no position" or it would drop the restored ghost/GS-filter baseline.
+        has_pos = row["pos_ts"] is not None
         _active[row["icao_hex"]] = {
             "flight_id": row["flight_id"],
             "last_seen": row["last_seen"],
-            "last_pos_ts": row["pos_ts"] if row["pos_ts"] else row["last_seen"],
-            "last_lat": row["lat"] if row["pos_ts"] else None,
-            "last_lon": row["lon"] if row["pos_ts"] else None,
-            "last_gs": row["gs"] if row["pos_ts"] else None,
+            "last_pos_ts": row["pos_ts"] if has_pos else row["last_seen"],
+            "last_lat": row["lat"] if has_pos else None,
+            "last_lon": row["lon"] if has_pos else None,
+            "last_gs": row["gs"] if has_pos else None,
+            "last_gs_ts": row["pos_ts"] if has_pos else row["last_seen"],
         }
     log.info("Loaded %d active flights from DB", len(_active))
 
@@ -312,6 +318,7 @@ def _open_flight(
         "last_lat": lat,
         "last_lon": lon,
         "last_gs": gs,
+        "last_gs_ts": pos_ts,
     }
     return flight_id
 
@@ -866,7 +873,14 @@ def _poll(conn: sqlite3.Connection) -> None:
                     and not is_new_flight):
                 prev_gs = state.get("last_gs")
                 if prev_gs is not None:
-                    dt_gs = pos_ts - state["last_pos_ts"]
+                    # Audit 17: measure acceleration over the interval since the
+                    # last *valid* GS, not the last sample. last_gs retains the
+                    # last trusted value across nulled samples, so pairing it
+                    # with last_pos_ts (which advances on every sample) would
+                    # divide a multi-interval gs-delta by a one-interval dt and
+                    # inflate accel. Fall back to last_pos_ts for pre-upgrade
+                    # state dicts that predate last_gs_ts.
+                    dt_gs = pos_ts - state.get("last_gs_ts", state["last_pos_ts"])
                     if dt_gs > 0:
                         accel = abs(gs - prev_gs) / dt_gs
                         if accel > config.MAX_GS_ACCEL_KTS_S:
@@ -898,6 +912,7 @@ def _poll(conn: sqlite3.Connection) -> None:
             _active[icao]["last_lon"] = lon
             if gs is not None:
                 _active[icao]["last_gs"] = gs
+                _active[icao]["last_gs_ts"] = pos_ts
 
             # ----------------------------------------------------------------
             # Queue notifications (sent after transaction commits).

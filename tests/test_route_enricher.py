@@ -953,6 +953,50 @@ class TestFetchRoute:
         with pytest.raises(self.mod._PermanentError):
             self.mod._fetch_route("LOT123")
 
+    def test_non_404_4xx_treated_as_permanent(self, monkeypatch):
+        """Audit 17: a non-404 4xx (400/410/422) is a deterministic client
+        error — surface as _PermanentError so the loop writes a TTL-bounded
+        negative cache row instead of refetching the bad callsign every batch
+        forever (the old code mapped it to _TransientError → infinite leak)."""
+        import httpx
+        self._bypass_validate(monkeypatch)
+
+        class FakeResp:
+            status_code = 400
+            content = b""
+            def raise_for_status(self):
+                raise httpx.HTTPStatusError("400", request=None, response=self)
+
+        class FakeClient:
+            def __enter__(self): return self
+            def __exit__(self, *a): pass
+            def get(self, url, **kw): return FakeResp()
+
+        monkeypatch.setattr(httpx, "Client", lambda **kw: FakeClient())
+        with pytest.raises(self.mod._PermanentError):
+            self.mod._fetch_route("BADCS")
+
+    def test_429_treated_as_transient(self, monkeypatch):
+        """429 (rate limited) stays transient — retry later via the in-memory
+        cooldown, don't poison the DB cache for a temporary throttle."""
+        import httpx
+        self._bypass_validate(monkeypatch)
+
+        class FakeResp:
+            status_code = 429
+            content = b""
+            def raise_for_status(self):
+                raise httpx.HTTPStatusError("429", request=None, response=self)
+
+        class FakeClient:
+            def __enter__(self): return self
+            def __exit__(self, *a): pass
+            def get(self, url, **kw): return FakeResp()
+
+        monkeypatch.setattr(httpx, "Client", lambda **kw: FakeClient())
+        with pytest.raises(self.mod._TransientError):
+            self.mod._fetch_route("LOT123")
+
     def test_oversized_response_treated_as_permanent(self, monkeypatch):
         """PY-8: response over the size cap is a deterministic policy
         rejection from safe_httpx_get — permanent, not transient."""
