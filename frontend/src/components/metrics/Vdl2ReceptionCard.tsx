@@ -118,12 +118,24 @@ export function Vdl2ReceptionCard({
             <EChart option={rateOption} group="metrics" height={180} />
           </div>
         )}
-        <div data-testid="vdl2-freq-charts">
-          <div className="mb-1 text-xs font-medium uppercase tracking-wide text-[var(--color-text-dim)]">
-            Per-frequency — msgs/min
+        {resp && (
+          <div data-testid="vdl2-freq-charts">
+            <div className="mb-1 text-xs font-medium uppercase tracking-wide text-[var(--color-text-dim)]">
+              Per-frequency — msgs/min
+            </div>
+            {freqKeys.length > 0 ? (
+              <EChart
+                option={freqOption}
+                group="metrics"
+                height={smallMultHeight(freqKeys.length)}
+              />
+            ) : (
+              <p className="text-sm text-[var(--color-text-dim)]">
+                No per-frequency data in this window.
+              </p>
+            )}
           </div>
-          <EChart option={freqOption} group="metrics" height={smallMultHeight(freqKeys.length)} />
-        </div>
+        )}
       </CardContent>
     </Card>
   );
