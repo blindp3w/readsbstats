@@ -15,7 +15,13 @@ PrivateDevices=yes
 ProtectHome=yes
 ProtectSystem=strict
 ReadWritePaths=/mnt/ext/readsbstats
-TimeoutStartSec=120
+# quick_check is read-only but reads every page off the (USB) disk while the
+# collector writes; a read-only WAL reader also walks the -wal frames, so wall
+# time scales with DB + WAL size and disk contention, not CPU. Measured ~60 s
+# standalone on a 1.2 GB DB with a 119 MB WAL, and >120 s during a deploy/reboot
+# I/O storm. 120 s was too tight (false 'timeout' failures + Telegram alerts);
+# 600 s leaves headroom as the DB grows.
+TimeoutStartSec=600
 
 # Audit-13 A13-046: kernel + namespace hardening.
 ProtectKernelTunables=yes
