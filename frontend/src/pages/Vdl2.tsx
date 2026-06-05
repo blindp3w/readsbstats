@@ -45,9 +45,15 @@ export default function Vdl2Page() {
     return () => clearTimeout(t);
   }, [qInput, setQ]);
   // Keep the box in sync when `q` changes externally (back/forward, Clear).
-  useEffect(() => {
+  // Adjust during render (React's "you might not need an effect" pattern) rather
+  // than in a useEffect — react-hooks/set-state-in-effect is an error under the
+  // strict lint config. setQInput to an unchanged value is a no-op, and we only
+  // reset when the last-seen `q` actually changes, so this can't loop.
+  const [prevQ, setPrevQ] = useState(q);
+  if (q !== prevQ) {
+    setPrevQ(q);
     setQInput(q);
-  }, [q]);
+  }
 
   const feed = useInfiniteQuery({
     queryKey: ['vdl2-messages', { q, label, reg, hex }],
