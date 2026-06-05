@@ -74,6 +74,8 @@ interface Props {
     icao_hex: string | null;
     ts: number | null;
     label: string | null;
+    // true = precise (~0.001°) Label-16 body fix; false = coarse (~0.1°) XID fix.
+    precise?: boolean | null;
   }[];
   acarsActive?: Set<string>;
 }
@@ -250,7 +252,7 @@ export default function LiveMap({
         .filter((p) => p.lat != null && p.lon != null)
         .map((p) => ({
           type: 'Feature',
-          properties: { icao_hex: p.icao_hex, label: p.label },
+          properties: { icao_hex: p.icao_hex, label: p.label, precise: !!p.precise },
           geometry: { type: 'Point', coordinates: [p.lon, p.lat] },
         })),
     };
@@ -369,15 +371,19 @@ export default function LiveMap({
       {/* VDL2-derived positions — small amber dots (opt-in overlay). */}
       {vdl2PositionsGeoJSON && (
         <Source id="vdl2-positions" type="geojson" data={vdl2PositionsGeoJSON}>
+          {/* Precise Label-16 body fixes render as solid amber dots; coarse
+              (~11 km) XID fixes render as smaller hollow rings to signal lower
+              confidence. Data-driven via the per-point `precise` property. */}
           <Layer
             id="vdl2-positions-dot"
             type="circle"
             paint={{
-              'circle-radius': 4,
+              'circle-radius': ['case', ['get', 'precise'], 4, 3],
               'circle-color': VDL2_COLOR,
-              'circle-opacity': 0.85,
-              'circle-stroke-width': 1,
-              'circle-stroke-color': '#1c1917',
+              'circle-opacity': ['case', ['get', 'precise'], 0.9, 0],
+              'circle-stroke-width': ['case', ['get', 'precise'], 1, 1.5],
+              'circle-stroke-color': ['case', ['get', 'precise'], '#1c1917', VDL2_COLOR],
+              'circle-stroke-opacity': ['case', ['get', 'precise'], 1, 0.7],
             }}
           />
         </Source>
