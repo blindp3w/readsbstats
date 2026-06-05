@@ -69,3 +69,6 @@ CLAUDE.md
 
 # Playwright MCP output (screenshots / console / snapshots)
 .playwright-mcp/
+
+# superpowers brainstorming companion artifacts
+.superpowers/
