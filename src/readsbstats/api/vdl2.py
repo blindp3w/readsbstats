@@ -492,6 +492,117 @@ def _compute_oooi(icao_hex: str, since: int | None, until: int | None) -> dict:
     return {"dep": dep, "arr": arr, "dsta": dsta, "has_oooi": dep is not None or arr is not None}
 
 
+_TIMESERIES_TOP_FREQS = 6
+
+
+def _timeseries_bucket(span: int) -> int:
+    """Bucket width (seconds) for a window span. Mirrors /api/metrics, but with a
+    60 s minimum — vdl2_messages are individual rows, so there is no raw mode."""
+    if span <= 86_400:
+        return 60
+    if span <= 604_800:
+        return 300
+    if span <= 2_592_000:
+        return 900
+    if span <= 7_776_000:
+        return 3600
+    return 14400
+
+
+def _fmt_freq(f: float) -> str:
+    return f"{f:g}"
+
+
+@router.get("/api/vdl2/timeseries", response_model=schemas.Vdl2TimeseriesResponse,
+            response_model_exclude_unset=True)
+def api_vdl2_timeseries(
+    from_ts: int | None = Query(None, alias="from", ge=0),
+    to_ts: int | None = Query(None, alias="to", ge=0),
+) -> dict:
+    """Bucketed reception time-series (msgs/min total + per top-frequency) for the
+    Metrics page's two VDL2 charts, over the picker's [from, to] window. Columnar
+    like /api/metrics so the frontend reuses its chart builders. Not cached — from/to
+    are stable per page mount and the SPA holds a 30 s staleTime."""
+    now = int(time.time())
+    if to_ts is None:
+        to_ts = now
+    if from_ts is None:
+        from_ts = to_ts - 86_400
+    if to_ts <= from_ts:
+        raise HTTPException(400, "to must be greater than from")
+    with _vdl2_guard():
+        t0 = time.perf_counter()
+        result = _compute_timeseries(from_ts, to_ts)
+        elapsed_ms = (time.perf_counter() - t0) * 1000
+        if elapsed_ms > 250:
+            log.warning("vdl2 timeseries query slow: %.0f ms", elapsed_ms)
+        return result
+
+
+def _compute_timeseries(from_ts: int, to_ts: int) -> dict:
+    conn = vdl2_db.web_conn()
+    bucket = _timeseries_bucket(to_ts - from_ts)
+
+    total = conn.execute(
+        "SELECT COUNT(*) AS n FROM vdl2_messages WHERE ts >= ? AND ts < ?",
+        (from_ts, to_ts),
+    ).fetchone()["n"]
+    newest = conn.execute("SELECT MAX(ts) AS newest FROM vdl2_messages").fetchone()["newest"]
+
+    top = [
+        r["f"] for r in conn.execute(
+            "SELECT ROUND(freq, 3) AS f, COUNT(*) AS c FROM vdl2_messages "
+            "WHERE freq IS NOT NULL AND ts >= ? AND ts < ? "
+            "GROUP BY f ORDER BY c DESC, f LIMIT ?",
+            (from_ts, to_ts, _TIMESERIES_TOP_FREQS),
+        ).fetchall()
+    ]
+
+    n = max(1, (to_ts - from_ts + bucket - 1) // bucket)
+    buckets = [from_ts + i * bucket for i in range(n)]
+    n = len(buckets)
+
+    rate = [0] * n
+    for r in conn.execute(
+        "SELECT CAST((ts - ?) / ? AS INT) AS bi, COUNT(*) AS c FROM vdl2_messages "
+        "WHERE ts >= ? AND ts < ? GROUP BY bi",
+        (from_ts, bucket, from_ts, to_ts),
+    ).fetchall():
+        i = r["bi"]
+        if 0 <= i < n:
+            rate[i] = r["c"]
+
+    cols = {f: [0] * n for f in top}
+    if top:
+        topset = set(top)
+        for r in conn.execute(
+            "SELECT CAST((ts - ?) / ? AS INT) AS bi, ROUND(freq, 3) AS f, COUNT(*) AS c "
+            "FROM vdl2_messages "
+            "WHERE freq IS NOT NULL AND ts >= ? AND ts < ? GROUP BY bi, f",
+            (from_ts, bucket, from_ts, to_ts),
+        ).fetchall():
+            if r["f"] in topset:
+                i = r["bi"]
+                if 0 <= i < n:
+                    cols[r["f"]][i] = r["c"]
+
+    per_min = 60.0 / bucket
+
+    def norm(counts: list[int]) -> list[float]:
+        return [round(c * per_min, 2) for c in counts]
+
+    data = [[float(b) for b in buckets], norm(rate)] + [norm(cols[f]) for f in top]
+    return {
+        "bucket_seconds": bucket,
+        "metrics": ["rate"] + [_fmt_freq(f) for f in top],
+        "freqs": top,
+        "total": total,
+        "newest_ts": newest,
+        "newest_age_sec": (int(time.time()) - newest) if newest is not None else None,
+        "data": data,
+    }
+
+
 # Map-overlay caps. Positions are sampled to avoid shipping a huge GeoJSON to the
 # map when a chatty position-reporting fleet is in range.
 _POSITIONS_CAP = 2000
