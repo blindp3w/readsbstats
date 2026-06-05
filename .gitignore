@@ -57,15 +57,27 @@ internal_docs/
 NOTES.md
 scratchpad.md
 
-# Local dev overrides
-CLAUDE.local.md
-
-# Claude.md backup artifacts
-CLAUDE.old.md
-
-# Claude Code (AI assistant local context — not for public repo)
+# AI assistant / agent context — ALL local-only, never public.
+# Hard internal/public split: agent context + internal_docs/ stay off GitHub;
+# only docs/ (incl. docs/decisions ADRs) and code are public.
+# NOTE: gitignore has NO inline comments — keep each pattern on its own line.
+# Claude Code dir (settings.local.json, commands, hooks):
 .claude/
-CLAUDE.md
+# CLAUDE.md at any depth + CLAUDE.local.md / CLAUDE.old.md / future variants:
+CLAUDE*.md
+.clauderc
+# Other agent tools (Codex, Gemini, Cursor, Aider, Serena MCP, Copilot):
+AGENTS.md
+GEMINI.md
+.cursor/
+.cursorrules
+.aider*
+.serena/
+# Copilot only — do NOT ignore all of .github/ (workflows are public):
+.github/copilot-instructions.md
+# MCP server configs may embed tokens / private endpoints:
+.mcp.json
+mcp.json
 
 # Playwright MCP output (screenshots / console / snapshots)
 .playwright-mcp/
