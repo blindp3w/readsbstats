@@ -446,16 +446,23 @@ def _fmt_freq(f: float) -> str:
     return f"{f:g}"
 
 
+# Largest window the timeseries endpoint will aggregate. The Metrics range picker
+# only offers up to 90 d; cap a little above a year so a crafted/buggy request
+# (e.g. from=0) can't allocate a multi-million-entry bucket grid on the Pi.
+_TIMESERIES_MAX_SPAN = 366 * 86_400
+
+
 @router.get("/api/vdl2/timeseries", response_model=schemas.Vdl2TimeseriesResponse,
             response_model_exclude_unset=True)
 def api_vdl2_timeseries(
-    from_ts: int | None = Query(None, alias="from", ge=0),
-    to_ts: int | None = Query(None, alias="to", ge=0),
+    from_ts: int | None = Query(None, alias="from", ge=0, le=10_000_000_000),
+    to_ts: int | None = Query(None, alias="to", ge=0, le=10_000_000_000),
 ) -> dict:
     """Bucketed reception time-series (msgs/min total + per top-frequency) for the
     Metrics page's two VDL2 charts, over the picker's [from, to] window. Columnar
     like /api/metrics so the frontend reuses its chart builders. Not cached — from/to
-    are stable per page mount and the SPA holds a 30 s staleTime."""
+    are stable per page mount and the SPA holds a 30 s staleTime. The window is
+    capped (`_TIMESERIES_MAX_SPAN`) so an over-wide request can't blow up memory."""
     now = int(time.time())
     if to_ts is None:
         to_ts = now
@@ -463,6 +470,8 @@ def api_vdl2_timeseries(
         from_ts = to_ts - 86_400
     if to_ts <= from_ts:
         raise HTTPException(400, "to must be greater than from")
+    if to_ts - from_ts > _TIMESERIES_MAX_SPAN:
+        raise HTTPException(400, "window too large")
     with _vdl2_guard():
         t0 = time.perf_counter()
         result = _compute_timeseries(from_ts, to_ts)
