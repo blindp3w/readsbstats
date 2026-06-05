@@ -2,6 +2,55 @@
 
 ## Unreleased
 
+### Changed
+
+- **VDL2 deep-review remediation** (`internal_docs/vdl2_deep_review_2026-06-05.md`).
+  Reliability/correctness hardening of the opt-in VDL2 feature, all behind the
+  same flag and still degrading cleanly when `vdl2.db` is absent:
+  - **Fail-open + honest availability** — a corrupt/missing `vdl2.db` no longer
+    risks web startup; `/api/vdl2/*` return **503** when unavailable. `/api/health`
+    now exposes two independent runtime bits — `vdl2.available` (store queryable;
+    gates the Messages tab + Stats section) and `vdl2.attach_available` (read-only
+    cross-DB ATTACH usable; gates the History "Has ACARS" filter/badge) — so each
+    SPA surface shows an explicit unavailable state instead of silently no-opping,
+    and never flashes the wrong state while `/api/health` is still loading.
+  - **Read-only cross-DB join** — the flights `has_acars` attach is now
+    `file:…?mode=ro` (enforced read-only; core `database.connect` opens `uri=True`).
+  - **Ingest integrity** — `_flush` rolls back on partial-insert failure;
+    retention prune runs in batches; a `.vdl2_dirty_shutdown` sentinel triggers
+    `PRAGMA quick_check` after an unclean stop; periodic ingest summary logs.
+  - **Schema** — FTS index is (re)built when FTS5 becomes available later
+    (decoupled from `user_version`); an idempotent `migrate()` brings new indexes
+    to existing DBs; id-aligned indexes back the feed ordering.
+  - **API** — Pydantic `response_model`s for `/api/vdl2/*`; `until>since`
+    validation; FTS search is multi-term AND (was a single phrase).
+  - **Normalizer** — label uppercased; `raw` JSON capped (`RSBS_VDL2_RAW_MAX`);
+    far-future timestamps clamped; dumpvdl2 `freq` converted Hz→MHz.
+  - **Ops** — single shared flag in `/etc/readsbstats/vdl2.env` (read by both
+    web + ingest), removing the duplicated unit env.
+
+### Added
+
+- **VDL2 / ACARS Messages tab (opt-in)** — a new, fully pluggable feature
+  that ingests VDL Mode 2 / ACARS messages decoded by an external decoder
+  (`vdlm2dec`, consume-only) and shows them in a live "VDL2" tab: newest-first
+  feed, per-aircraft browsing, label/registration/hex filters, and FTS5
+  full-text search. Gated by `RSBS_VDL2_ENABLED` (default off) — when disabled
+  there is no nav item, no `/api/vdl2` router, and no ingest. Data lives in a
+  **separate `vdl2.db`** (FTS5 + WAL); the core `history.db` schema is never
+  touched. Ingest is a standalone `readsbstats-vdl2` systemd service listening
+  for line-delimited JSON over UDP; a per-decoder normalizer makes switching to
+  `dumpvdl2` a config flip. New env vars: `RSBS_VDL2_ENABLED`,
+  `RSBS_VDL2_DB_PATH`, `RSBS_VDL2_RETENTION_DAYS`, `RSBS_VDL2_UDP_HOST/PORT`,
+  `RSBS_VDL2_DECODER`. See `docs/operations.md` for the decoder runbook.
+- **VDL2 surfaced across core pages (opt-in)** — when `RSBS_VDL2_ENABLED`:
+  an **ACARS panel** on the flight-detail page (messages during that flight),
+  a **"has ACARS" badge + filter** on the history list, and a **VDL2 card** on
+  the Stats page (counts, top labels, top airlines, 24h trend). All read-time
+  joins: the history list ATTACHes `vdl2.db` read-only and degrades to "no
+  badge" if it's missing; `history.db` is never modified and `/api/flights` is
+  unchanged when the feature is off.
+
 ### Fixed
 
 - **DB-check timers no longer false-fail on a large DB** — `quick_check` on a

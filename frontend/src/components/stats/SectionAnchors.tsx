@@ -5,29 +5,19 @@
 
 import { useEffect, useState } from 'react';
 import { cn } from '@/lib/cn';
+import { STATS_SECTIONS, type Section } from './sections';
 
-interface Section {
-  id: string;
-  label: string;
-}
-
-// Module-local (not exported) so the file's only export is the component
-// itself — `react-refresh/only-export-components` hygiene. Nothing
-// outside this file references SECTIONS.
-const SECTIONS: Section[] = [
-  { id: 'overview', label: 'Overview' },
-  { id: 'activity', label: 'Activity' },
-  { id: 'rankings', label: 'Rankings' },
-  { id: 'coverage', label: 'Coverage' },
-];
-
-export function SectionAnchors() {
-  const [active, setActive] = useState<string>(SECTIONS[0].id);
+// Callers may pass a `sections` prop to add/remove entries (e.g. Stats appends a
+// gated "VDL2" section); defaults to the shared STATS_SECTIONS.
+export function SectionAnchors({ sections = STATS_SECTIONS }: { sections?: Section[] }) {
+  const [active, setActive] = useState<string>(sections[0].id);
+  // Re-run the observer when the set of section ids changes (e.g. VDL2 toggles).
+  const ids = sections.map((s) => s.id).join(',');
 
   useEffect(() => {
-    const els = SECTIONS.map((s) => document.getElementById(s.id)).filter(
-      (el): el is HTMLElement => el !== null,
-    );
+    const els = sections
+      .map((s) => document.getElementById(s.id))
+      .filter((el): el is HTMLElement => el !== null);
     if (els.length === 0) return;
 
     const obs = new IntersectionObserver(
@@ -49,7 +39,12 @@ export function SectionAnchors() {
     );
     els.forEach((el) => obs.observe(el));
     return () => obs.disconnect();
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- re-run when the id set changes
+  }, [ids]);
+
+  // Derive (don't store) the highlighted id so it can't go stale if the
+  // currently-active section is removed (e.g. VDL2 toggles off).
+  const activeId = sections.some((s) => s.id === active) ? active : sections[0]?.id;
 
   return (
     <nav
@@ -57,8 +52,8 @@ export function SectionAnchors() {
       data-testid="stats-section-anchors"
       className="hidden xl:flex xl:flex-wrap xl:items-center xl:gap-2"
     >
-      {SECTIONS.map((s) => {
-        const isActive = active === s.id;
+      {sections.map((s) => {
+        const isActive = activeId === s.id;
         return (
           <a
             key={s.id}

@@ -18,6 +18,7 @@ import { buildFlightProfileOption, type ProfileRow } from './flightCharts';
 import { IsolationPills } from '@/components/charts/IsolationPills';
 import { KpiSparkline } from '@/components/stats/KpiSparkline';
 import { MetricCell } from '@/components/flight/MetricCell';
+import { AcarsPanel } from '@/components/vdl2/AcarsPanel';
 import { RssiCell } from '@/components/flight/RssiCell';
 import { haversineNm, bearingFromReceiver } from '@/lib/geo';
 import { useIsMobile } from '@/hooks/useIsMobile';
@@ -216,6 +217,11 @@ export default function FlightPage() {
               />
             </CardContent>
           </Card>
+          <AcarsPanel
+            icao={detailQ.data.flight.icao_hex}
+            firstSeen={detailQ.data.flight.first_seen}
+            lastSeen={detailQ.data.flight.last_seen}
+          />
           {detailQ.data.other_flights && detailQ.data.other_flights.length > 0 && (
             <Card data-testid="flight-other-flights-card">
               <CardHeader>

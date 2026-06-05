@@ -100,7 +100,8 @@ def api_health() -> dict:
         db_ok = True
     except Exception:
         db_ok = False
-    return {"status": "ok" if db_ok else "degraded"}
+    from .vdl2 import vdl2_health
+    return {"status": "ok" if db_ok else "degraded", "vdl2": vdl2_health()}
 
 
 @router.get("/api/metrics/health")

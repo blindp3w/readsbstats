@@ -18,6 +18,10 @@ ExecStart=/opt/readsbstats/venv/bin/uvicorn readsbstats.web:app \
 Restart=on-failure
 RestartSec=5
 
+# Shared opt-in VDL2 flag (one file gates web surfaces + the ingest service).
+# Optional (`-`): absent ⇒ feature off. See systemd/readsbstats-vdl2.env.example.
+EnvironmentFile=-/etc/readsbstats/vdl2.env
+
 CPUQuota=50%
 # Bumped from 384M → 1024M on 2026-05-16: the /api/map/heatmap endpoint
 # scans + GROUPs over millions of positions on a busy receiver, and the

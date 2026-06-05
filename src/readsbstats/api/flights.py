@@ -29,16 +29,22 @@ def api_flights(
     source: str | None = Query(None, description="adsb | mlat | mixed | other"),
     flags: str | None = Query(None, description="military | interesting | anonymous"),
     squawk: str | None = Query(None),
+    has_acars: bool | None = Query(None, description="only flights with VDL2/ACARS (opt-in)"),
     sort_by: str | None = Query(None),
     sort_dir: str | None = Query(None, description="asc | desc"),
     limit: int = Query(config.DEFAULT_PAGE_SIZE, ge=1, le=config.MAX_PAGE_SIZE),
     offset: int = Query(0, ge=0, le=500_000),
 ) -> dict:
+    conn = _deps.db()
+    # Only surface the VDL2 `has_acars` column/filter when vdl2.db is actually
+    # attached (RSBS_VDL2_ENABLED + file present). Otherwise the param is ignored
+    # and the query is identical to the no-VDL2 build.
+    show_acars = _deps.vdl2_attached(conn)
     where, params = _deps._build_flight_filter(
         date, icao, callsign, registration, aircraft_type, source, flags, squawk,
         date_from=date_from, date_to=date_to, from_ts=from_ts, to_ts=to_ts,
+        has_acars=(True if (has_acars and show_acars) else None),
     )
-    conn = _deps.db()
 
     # Only JOIN extra tables for COUNT when filters need them
     needs_join = registration or aircraft_type or flags
@@ -51,9 +57,10 @@ def api_flights(
     sort_col = _deps._SORT_COLS.get(sort_by or "", "f.first_seen")
     sort_order = "ASC" if sort_dir == "asc" else "DESC"
 
+    acars_col = f", {_deps._HAS_ACARS_EXPR}" if show_acars else ""
     rows = conn.execute(
         f"""
-        SELECT {_deps._FLIGHT_COLS}
+        SELECT {_deps._FLIGHT_COLS}{acars_col}
         FROM flights f {_deps._FLIGHT_JOIN}
         {where}
         ORDER BY {sort_col} {sort_order}

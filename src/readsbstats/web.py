@@ -13,6 +13,7 @@ unambiguous (catch-all must come LAST).
 
 import asyncio
 import logging
+import sqlite3
 import sys
 import urllib.parse
 from collections.abc import AsyncIterator
@@ -69,8 +70,35 @@ def _startup_migrate() -> None:
     """
     if _deps._db is not None:
         database._migrate(_deps._db)
+    else:
+        database.ensure_base_schema()
+    _ensure_vdl2_schema()
+
+
+def _ensure_vdl2_schema() -> None:
+    """Create the SEPARATE vdl2.db schema when the feature is enabled, so the
+    read-only API works even before/without the ingest service running.
+    Writes only to vdl2.db — never touches history.db. No-op when disabled.
+
+    FAIL-OPEN: a feature-local DB problem (corrupt file, missing parent dir,
+    permission/mount failure) must NOT take down the core web app. On error we
+    log and continue; VDL2 surfaces then report unavailable (/api/health
+    vdl2.available=False) and /api/vdl2/* return 503, while history/stats/map
+    keep serving."""
+    if not config.VDL2_ENABLED:
         return
-    database.ensure_base_schema()
+    from .vdl2 import db as vdl2_db
+    try:
+        if vdl2_db._conn is not None:        # respect a test-injected connection
+            vdl2_db.ensure_schema(vdl2_db._conn, build_fts=False)
+            return
+        conn = vdl2_db.connect()
+        try:
+            vdl2_db.ensure_schema(conn, build_fts=False)  # collector owns the FTS rebuild
+        finally:
+            conn.close()
+    except (OSError, sqlite3.Error) as exc:
+        log.warning("VDL2 schema unavailable; continuing without VDL2 DB: %s", exc)
 
 
 @asynccontextmanager
@@ -91,6 +119,9 @@ async def _lifespan(app_: FastAPI) -> AsyncIterator[None]:
     yield
     cache._stop_prewarmer()
     analytics.close()
+    if config.VDL2_ENABLED:
+        from .vdl2 import db as vdl2_db
+        vdl2_db.close_all_web_conns()
     log.info("Web server stopped")
 
 
@@ -216,6 +247,20 @@ app.include_router(_api_map.router)
 app.include_router(_api_dates.router)
 app.include_router(_api_health.router)
 app.include_router(_api_feeders.router)
+
+
+# ---------------------------------------------------------------------------
+# Optional feature routers — registered only when their flag is on. Kept in a
+# function so tests can build a throwaway FastAPI(), monkeypatch the flag, and
+# assert the routes are present/absent. MUST run before the SPA catch-all.
+# ---------------------------------------------------------------------------
+def _include_optional_routers(app_: FastAPI) -> None:
+    if config.VDL2_ENABLED:
+        from .api import vdl2 as _api_vdl2
+        app_.include_router(_api_vdl2.router)
+
+
+_include_optional_routers(app)
 
 
 # ---------------------------------------------------------------------------

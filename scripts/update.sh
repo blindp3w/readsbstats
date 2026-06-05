@@ -191,6 +191,7 @@ cp "$APP_DIR/systemd/readsbstats-dbcheck.timer"         /etc/systemd/system/
 cp "$APP_DIR/systemd/readsbstats-dbcheck-full.service"  /etc/systemd/system/
 cp "$APP_DIR/systemd/readsbstats-dbcheck-full.timer"    /etc/systemd/system/
 cp "$APP_DIR/systemd/notify-telegram@.service"          /etc/systemd/system/
+cp "$APP_DIR/systemd/readsbstats-vdl2.service"          /etc/systemd/system/  # opt-in; enablement unchanged
 systemctl daemon-reload
 systemctl enable --now readsbstats-dbcheck.timer readsbstats-dbcheck-full.timer
 
@@ -212,6 +213,10 @@ fi
 if [[ "$MODE" == "code" || "$MODE" == "full" ]]; then
   echo "==> Restarting services"
   systemctl restart readsbstats-collector readsbstats-web
+  # Opt-in VDL2 ingest: only restart it if the operator has it running.
+  if systemctl is-active --quiet readsbstats-vdl2; then
+    systemctl restart readsbstats-vdl2
+  fi
   sleep 2
   echo "==> Service status"
   systemctl is-active readsbstats-collector readsbstats-web

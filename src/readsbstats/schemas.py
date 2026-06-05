@@ -281,3 +281,62 @@ class StatsResponse(ApiModel):
     top_airports: list[dict] = []
     # {"from": ts, "to": ts} ("from" is a Python keyword) or null — passthrough.
     range: Optional[dict] = None
+
+
+# ---------------------------------------------------------------------------
+# VDL2 / ACARS (opt-in feature)
+# ---------------------------------------------------------------------------
+
+class Vdl2Message(ApiModel):
+    """One VDL2/ACARS message row (the `raw` JSON is excluded from list responses).
+    extra="allow" keeps any SELECT column not named here, so the model can't drop
+    fields — it documents the contract the SPA's Vdl2Message interface mirrors."""
+
+    id: int
+    ts: int
+    icao_hex: Optional[str] = None
+    registration: Optional[str] = None
+    flight: Optional[str] = None
+    label: Optional[str] = None
+    mode: Optional[str] = None
+    block_id: Optional[str] = None
+    ack: Optional[str] = None
+    msgno: Optional[str] = None
+    freq: Optional[float] = None
+    station_id: Optional[str] = None
+    toaddr: Optional[str] = None
+    dsta: Optional[str] = None
+    lat: Optional[float] = None
+    lon: Optional[float] = None
+    alt: Optional[int] = None
+    epu: Optional[float] = None
+    app_name: Optional[str] = None
+    app_ver: Optional[str] = None
+    body: Optional[str] = None
+    decoder: Optional[str] = None
+
+
+class Vdl2MessagesResponse(ApiModel):
+    messages: list[Vdl2Message] = []
+    next_before_id: Optional[int] = None
+
+
+class Vdl2TopLabel(ApiModel):
+    label: Optional[str] = None
+    messages: int = 0
+    aircraft: int = 0
+
+
+class Vdl2TopAirline(ApiModel):
+    code: Optional[str] = None
+    messages: int = 0
+    name: Optional[str] = None
+
+
+class Vdl2StatsResponse(ApiModel):
+    total: int = 0
+    last_hour: int = 0
+    aircraft: int = 0
+    top_labels: list[Vdl2TopLabel] = []
+    top_airlines: list[Vdl2TopAirline] = []
+    hourly: list[int] = []
