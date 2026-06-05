@@ -84,13 +84,11 @@ describe('Vdl2ReceptionCard', () => {
     expect(screen.getByTestId('vdl2-reception-freshness').className).toContain('color-danger');
   });
 
-  it('makes no request and shows the empty state when not enabled', async () => {
-    renderCard(false);
-    await waitFor(() =>
-      expect(screen.getByTestId('vdl2-reception-per-freq').textContent).toContain(
-        'No messages received yet',
-      ),
-    );
-    expect(fetchSpy).not.toHaveBeenCalled();
+  it('makes no request and renders nothing when not enabled', async () => {
+    const { container } = renderCard(false);
+    // Self-gating: no fetch and no card at all (parent gates mounting too).
+    await waitFor(() => expect(fetchSpy).not.toHaveBeenCalled());
+    expect(screen.queryByTestId('metrics-vdl2-reception')).toBeNull();
+    expect(container.firstChild).toBeNull();
   });
 });

@@ -50,7 +50,11 @@
   flag-on-but-db-unavailable state hides cleanly instead of erroring — making "fully absent" accurate.
 - Map overlay surfaces a fetch error; reception endpoint logs slow queries; OooiCard copy reflects
   that `dsta` (not block times) is the common signal on air-side feeds.
-- Tests: **1743 Python**, **359 Vitest** (all green).
+- **`/api/vdl2/positions`** over-fetches Label-16 candidates (bounded) so a burst of no-fix AUTPOS
+  bodies can't starve older *precise* fixes (not just coarse ones).
+- **`Vdl2ReceptionCard`** is now truly self-gating — renders nothing (not an empty shell) when
+  `enabled` is false, matching the detail panels.
+- Tests: **1744 Python**, **359 Vitest** (all green).
 
 ## 2.14.0 — 2026-06-05
 
