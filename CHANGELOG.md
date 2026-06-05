@@ -25,7 +25,17 @@
     parses Out/Off/On/In block times from ACARS **bodies** (OOOI is not a label),
     with a ✓/✗ route-confirmation chip vs the scheduled origin/dest and a `dsta`
     destination fallback. Carrier-variant; commonly empty on an H1-dominated feed.
-- Tests: **1727 Python**, **357 Vitest** (all green).
+  - **Precise map positions (Label-16 AUTPOS)** — `/api/vdl2/positions` now parses
+    precise (~0.001°) coordinates from Label-16 AUTPOS message **bodies**
+    (`vdl2/positions.py`), preferring them over the coarse (~0.1°) VDL2 XID
+    link-frame fixes in the lat/lon columns; each point carries a `precise` flag.
+    Validated against a real LOT feed (8 precise + 10 coarse where the columns
+    alone gave 10 coarse).
+- **VDL2 real-feed validation** — on a 413-message live LOT dump the OOOI
+  SMT/TEI parser matched 0 messages (air-side downlinks are proprietary Teledyne
+  ACMS, not ground-side SMT); documented in `vdl2/oooi.py`. The practical signals
+  are the XID `dsta` destination and Label-16 body positions (now parsed).
+- Tests: **1737 Python**, **357 Vitest** (all green).
 
 ## 2.14.0 — 2026-06-05
 

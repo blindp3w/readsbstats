@@ -11,9 +11,15 @@ Verified TEI map (vdl2-research.md §3, OAG ACARS OOOI doc):
 ``AD``=arrival aerodrome, ``FI``=carrier+flight number, and ``OT``/``OFF``/``ON``/
 ``IN`` = the four OOOI times.
 
-EXPERIMENTAL: airline layout variants exist; not every carrier uses this exact
-format. The parser is deliberately conservative — it recognises only an exact
-``DEP``/``ARR`` lead token and fails SOFT to ``None`` on anything non-conforming,
+EXPERIMENTAL — and validated against a real vdlm2dec LOT feed (413 msgs/4.6 h):
+**0 matches.** The slash-TEI form above is the ARINC-620 *ground-side* Standard
+Message Text (what an aggregator/airline host sees). A VDL2 receiver captures the
+raw *air-side* downlink, which for this carrier is proprietary Teledyne ACMS
+(``#DFB``/``#CFB``/``#T1B`` …) — OOOI block times are embedded there, not as
+SMT/TEI. So this parser is correct but commonly empty on air-side feeds; the only
+OOOI-class signal that reliably fires is the ``dsta`` destination from XID frames
+(surfaced as the card's fallback). The parser is deliberately conservative —
+recognises only an exact ``DEP``/``ARR`` lead token and fails SOFT to ``None`` —
 so a noisy free-text feed never produces bogus OOOI cards.
 """
 from __future__ import annotations

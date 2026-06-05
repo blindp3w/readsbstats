@@ -19,6 +19,7 @@ from fastapi import APIRouter, HTTPException, Query
 from .. import cache, config, schemas
 from ..vdl2 import db as vdl2_db
 from ..vdl2 import oooi
+from ..vdl2 import positions as vdl2_positions
 from . import _deps
 
 log = logging.getLogger("vdl2.api")
@@ -515,22 +516,39 @@ def api_vdl2_active(minutes: int = Query(10, ge=1, le=120)) -> dict:
 @router.get("/api/vdl2/positions", response_model=schemas.Vdl2PositionsResponse,
             response_model_exclude_unset=True)
 def api_vdl2_positions(minutes: int = Query(60, ge=1, le=1440)) -> dict:
-    """VDL2-derived positions (lat/lon) from the last `minutes` minutes, for the
-    optional map overlay. Only structured-position messages carry coordinates, so
-    this is sparse on an H1-dominated feed. Capped + cached ~30 s."""
+    """VDL2-derived positions from the last `minutes` minutes, for the optional
+    map overlay. Two sources, precise preferred (validated against a real feed):
+    Label-16 AUTPOS bodies carry **precise** (~0.001°) coordinates parsed here;
+    the lat/lon columns hold only **coarse** (~0.1°) VDL2 XID link-frame fixes
+    used as a fallback. Each point carries `precise`. Sparse on an H1-dominated
+    feed. Capped + cached ~30 s."""
     cached = cache._get_cache(f"vdl2-positions-{minutes}")
     if cached is not None:
         return cached
     with _vdl2_guard():
         conn = vdl2_db.web_conn()
         cutoff = int(time.time()) - minutes * 60
+        # AUTPOS bodies (label 16) for precise fixes + any row with a coarse XID
+        # column fix. Bounded by the ts window + cap; the body regex is cheap.
         rows = conn.execute(
-            "SELECT lat, lon, icao_hex, ts, label FROM vdl2_messages "
-            "WHERE lat IS NOT NULL AND lon IS NOT NULL AND ts >= ? "
+            "SELECT lat, lon, icao_hex, ts, label, body FROM vdl2_messages "
+            "WHERE ts >= ? AND (label = '16' OR (lat IS NOT NULL AND lon IS NOT NULL)) "
             "ORDER BY id DESC LIMIT ?",
             (cutoff, _POSITIONS_CAP),
         ).fetchall()
-        points = [dict(r) for r in rows]
+        points = []
+        for r in rows:
+            parsed = vdl2_positions.parse_position(r["body"])
+            if parsed is not None:
+                lat, lon, precise = parsed["lat"], parsed["lon"], True
+            elif r["lat"] is not None and r["lon"] is not None:
+                lat, lon, precise = r["lat"], r["lon"], False
+            else:
+                continue   # label-16 row whose body didn't parse and no column fix
+            points.append({
+                "lat": lat, "lon": lon, "icao_hex": r["icao_hex"],
+                "ts": r["ts"], "label": r["label"], "precise": precise,
+            })
         out = {"points": points, "count": len(points)}
         cache._set_cache(f"vdl2-positions-{minutes}", out)
         return out

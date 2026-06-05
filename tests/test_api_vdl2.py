@@ -342,6 +342,27 @@ class TestMapOverlay:
         assert p["lat"] == 52.1 and p["lon"] == 20.9 and p["label"] == "16"
         vconn.close()
 
+    def test_positions_parses_precise_label16_body(self, monkeypatch):
+        now = int(time.time())
+        vconn, app = self._make(monkeypatch, [
+            # Label-16 AUTPOS: precise fix in the BODY, no lat/lon column.
+            {"ts": now - 20, "icao_hex": "48e95d", "label": "16",
+             "body": "WA921  ,N 52.166,E 020.772,4406, 251,2054, 72"},
+            # Coarse XID column fix, no precise body.
+            {"ts": now - 40, "icao_hex": "48af11", "lat": 52.1, "lon": 20.4, "body": "xid"},
+        ])
+        with TestClient(app) as c:
+            data = c.get("/api/vdl2/positions?minutes=60").json()
+        by = {p["icao_hex"]: p for p in data["points"]}
+        assert data["count"] == 2
+        # precise body fix, parsed from the AUTPOS text
+        assert abs(by["48e95d"]["lat"] - 52.166) < 1e-6
+        assert abs(by["48e95d"]["lon"] - 20.772) < 1e-6
+        assert by["48e95d"]["precise"] is True
+        # coarse XID column fix, flagged not-precise
+        assert by["48af11"]["lat"] == 52.1 and by["48af11"]["precise"] is False
+        vconn.close()
+
     def test_overlay_empty(self, monkeypatch):
         vconn, app = self._make(monkeypatch, [])
         with TestClient(app) as c:
