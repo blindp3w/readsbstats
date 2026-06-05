@@ -149,7 +149,7 @@ readsbstats/
 │   ├── purge_ghosts.py         # One-shot: remove ghost positions
 │   ├── purge_bad_gs.py         # One-shot: null implausible gs values
 │   └── purge_mlat_gs_spikes.py # One-shot: null MLAT gs spikes
-├── frontend/                   # React 19 + Vite 8 SPA (358 Vitest tests)
+├── frontend/                   # React 19 + Vite 8 SPA (359 Vitest tests)
 ├── tests/                      # pytest (1745 tests) + Playwright UI (84 tests)
 ├── static/airspace/            # Bundled airspace GeoJSON
 ├── systemd/                    # Service + timer unit files
