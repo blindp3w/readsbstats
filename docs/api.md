@@ -51,7 +51,11 @@ The web server exposes a JSON API at `http://YOUR_PI_IP/stats/api/`.
 ## VDL2 / ACARS (opt-in)
 
 Registered only when `RSBS_VDL2_ENABLED` is set. Read-only; queries the separate
-`vdl2.db`. All endpoints return 404 when the feature is disabled.
+`vdl2.db`; typed via `schemas.Vdl2*` response models. All endpoints return 404
+when the feature is disabled, and **503 `{"detail": "VDL2 database unavailable"}`**
+when enabled but `vdl2.db` can't be opened/queried. `since`/`until` are `ge=0`
+and a request with `until <= since` is rejected with 400. Runtime availability is
+exposed at `/api/health` → `vdl2.available` (the SPA gates surfaces on it).
 
 | Method | Path | Description |
 |---|---|---|
@@ -70,7 +74,7 @@ Registered only when `RSBS_VDL2_ENABLED` is set. Read-only; queries the separate
 
 | Method | Path | Description |
 |---|---|---|
-| GET | `/api/health` | Liveness probe (DB ping) |
+| GET | `/api/health` | Liveness probe (DB ping). Includes a `vdl2` block: `{enabled, available, schema_version, fts, messages, newest_ts, newest_age_sec, attach_available}` (available=false / fields omitted when the feature is off or vdl2.db is unreachable). |
 | GET | `/api/metrics` | Receiver metrics time-series. `range`: `1h`/`6h`/`24h`/`48h`/`7d`/`30d`/`90d` or custom. Auto-downsamples. |
 | GET | `/api/metrics/health` | 9 rule-based and baseline-aware health checks over `receiver_stats`. Cached 60 s. |
 | GET | `/api/settings` | Read-only runtime settings dict (secrets masked). Includes `map_history_hours` (rewind slider cap), `time_format`, `page_size`, and all `RSBS_*` tunables. |

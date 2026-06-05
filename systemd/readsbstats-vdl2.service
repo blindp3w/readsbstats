@@ -21,14 +21,12 @@ Restart=on-failure
 RestartSec=10
 TimeoutStartSec=120
 
-# Enabling this unit means you want ingest running, so the app flag is set here.
-# IMPORTANT: also set RSBS_VDL2_ENABLED=true on readsbstats-web (e.g. via
-# `systemctl edit readsbstats-web`) so the Messages tab + /api/vdl2 appear.
-Environment=RSBS_VDL2_ENABLED=true
-# Override the port/decoder/retention here or via `systemctl edit` if needed:
-# Environment=RSBS_VDL2_UDP_PORT=5555
-# Environment=RSBS_VDL2_DECODER=vdlm2dec
-# Environment=RSBS_VDL2_RETENTION_DAYS=90
+# Single source of truth for the VDL2 flag + tunables, shared with
+# readsbstats-web so one file gates both surfaces (the `-` makes it optional —
+# no failure if absent). Set RSBS_VDL2_ENABLED=true there, then
+# `systemctl enable --now readsbstats-vdl2`. When the flag is false this unit
+# starts, sends READY, and exits cleanly (dormant — see vdl2_collector.main).
+EnvironmentFile=-/etc/readsbstats/vdl2.env
 
 # Be polite to the Pi — readsb/tar1090 and the core collector come first
 CPUQuota=10%

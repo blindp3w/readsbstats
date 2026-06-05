@@ -228,6 +228,9 @@ VDL2_PURGE_INTERVAL_SEC = _min_or_default_int("RSBS_VDL2_PURGE_INTERVAL", _int("
 # Floor at 256 so a typo'd 0/negative can't silently store empty bodies (which
 # would make every message body blank and FTS search useless).
 VDL2_BODY_MAX       = _min_or_default_int("RSBS_VDL2_BODY_MAX", _int("RSBS_VDL2_BODY_MAX", "4096"), 256, 4096)
+# Cap on the stored verbatim `raw` decoder JSON. Bounded by the UDP datagram size
+# already, but caps per-row growth against a hostile/misconfigured local sender.
+VDL2_RAW_MAX        = _min_or_default_int("RSBS_VDL2_RAW_MAX", _int("RSBS_VDL2_RAW_MAX", "8192"), 256, 8192)
 
 # Audit 2026-05-26: minimum fraction of the previous aircraft_db row count
 # that a freshly-imported tar1090-db CSV must contain before the swap is

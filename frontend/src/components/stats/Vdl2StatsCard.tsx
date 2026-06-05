@@ -2,33 +2,17 @@ import { useQuery } from '@tanstack/react-query';
 import { apiJson } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { KpiCard } from '@/components/stats/KpiCard';
+import type { Vdl2StatsResponse } from '@/lib/types';
 
-// VDL2 / ACARS summary for the Stats page. Self-contained; Stats gates whether
-// it renders (only when the feature is enabled). Reuses KpiCard (which renders a
-// KpiSparkline from the `series` prop) for the 24h trend.
-interface TopLabel {
-  label: string;
-  messages: number;
-  aircraft: number;
-}
-interface TopAirline {
-  code: string;
-  messages: number;
-  name: string | null;
-}
-interface Vdl2StatsResponse {
-  total: number;
-  last_hour: number;
-  aircraft: number;
-  top_labels: TopLabel[];
-  top_airlines: TopAirline[];
-  hourly: number[];
-}
-
-export function Vdl2StatsCard() {
+// VDL2 / ACARS summary for the Stats page. Reuses KpiCard (which renders a
+// KpiSparkline from the `series` prop) for the 24h trend. Self-gating via the
+// `enabled` prop so an accidental render outside the Stats gate makes no
+// /api/vdl2/stats call.
+export function Vdl2StatsCard({ enabled = true }: { enabled?: boolean }) {
   const { data } = useQuery({
     queryKey: ['vdl2-stats'],
     queryFn: () => apiJson<Vdl2StatsResponse>('vdl2/stats'),
+    enabled,
     staleTime: 120_000,
   });
 

@@ -16,7 +16,9 @@ from readsbstats.vdl2 import db as vdl2_db
 
 
 def _core_db(path: str):
-    conn = database.connect(path)
+    # uri=True mirrors production _deps.db(): the read-only `file:…?mode=ro`
+    # ATTACH only resolves when the main connection was opened in URI mode.
+    conn = database.connect(path, uri=True)
     conn.executescript(database.DDL)
     database._migrate(conn)
     return conn
@@ -67,6 +69,14 @@ def test_has_acars_filter_narrows_results_and_total(attached):
         data = c.get("/api/flights?has_acars=true").json()
     assert data["total"] == 1
     assert [f["icao_hex"] for f in data["flights"]] == ["48e95d"]
+
+
+def test_attach_is_read_only(attached):
+    # The mode=ro attach must reject writes through vdl2db — enforced boundary,
+    # not convention.
+    import sqlite3
+    with pytest.raises(sqlite3.OperationalError):
+        attached.execute("INSERT INTO vdl2db.vdl2_messages (ts) VALUES (1)")
 
 
 def test_single_position_flight_boundary(tmp_path, monkeypatch):

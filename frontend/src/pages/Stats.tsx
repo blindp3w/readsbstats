@@ -23,7 +23,7 @@ import { SectionAnchors } from '@/components/stats/SectionAnchors';
 import { STATS_SECTIONS } from '@/components/stats/sections';
 import { Vdl2StatsCard } from '@/components/stats/Vdl2StatsCard';
 import { TopChartMultiples } from '@/components/stats/TopChartMultiples';
-import { useVdl2Enabled } from '@/hooks/useVdl2Enabled';
+import { useVdl2Available } from '@/hooks/useVdl2Enabled';
 import { buildBarOption, type StatsResponse } from './statsCharts';
 
 // StatsResponse used to live here; Audit-15 moved it to ./statsCharts so
@@ -91,9 +91,11 @@ export default function StatsPage() {
 
   const flightsDelta = pickFlightsDelta(range.value, stats);
 
-  // Opt-in VDL2 section + its TOC anchor (only when the feature is enabled).
-  const vdl2Enabled = useVdl2Enabled();
-  const sections = vdl2Enabled
+  // Opt-in VDL2 section + its TOC anchor. Gate on runtime availability (vdl2.db
+  // queryable), not just the config flag — otherwise an enabled-but-unavailable
+  // store renders an empty section whose card would 503 on /api/vdl2/stats.
+  const vdl2Available = useVdl2Available();
+  const sections = vdl2Available
     ? [...STATS_SECTIONS, { id: 'vdl2', label: 'VDL2' }]
     : STATS_SECTIONS;
 
@@ -285,12 +287,12 @@ export default function StatsPage() {
         </div>
       </section>
 
-      {vdl2Enabled && (
+      {vdl2Available && (
         <section id="vdl2" className="space-y-4" aria-labelledby="vdl2-heading">
           <h2 id="vdl2-heading" className="text-sm font-semibold text-[var(--color-text-dim)]">
             VDL2 / ACARS
           </h2>
-          <Vdl2StatsCard />
+          <Vdl2StatsCard enabled={vdl2Available} />
         </section>
       )}
 

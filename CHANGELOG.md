@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+### Changed
+
+- **VDL2 deep-review remediation** (`internal_docs/vdl2_deep_review_2026-06-05.md`).
+  Reliability/correctness hardening of the opt-in VDL2 feature, all behind the
+  same flag and still degrading cleanly when `vdl2.db` is absent:
+  - **Fail-open + honest availability** — a corrupt/missing `vdl2.db` no longer
+    risks web startup; `/api/vdl2/*` return **503** when unavailable. `/api/health`
+    now exposes two independent runtime bits — `vdl2.available` (store queryable;
+    gates the Messages tab + Stats section) and `vdl2.attach_available` (read-only
+    cross-DB ATTACH usable; gates the History "Has ACARS" filter/badge) — so each
+    SPA surface shows an explicit unavailable state instead of silently no-opping,
+    and never flashes the wrong state while `/api/health` is still loading.
+  - **Read-only cross-DB join** — the flights `has_acars` attach is now
+    `file:…?mode=ro` (enforced read-only; core `database.connect` opens `uri=True`).
+  - **Ingest integrity** — `_flush` rolls back on partial-insert failure;
+    retention prune runs in batches; a `.vdl2_dirty_shutdown` sentinel triggers
+    `PRAGMA quick_check` after an unclean stop; periodic ingest summary logs.
+  - **Schema** — FTS index is (re)built when FTS5 becomes available later
+    (decoupled from `user_version`); an idempotent `migrate()` brings new indexes
+    to existing DBs; id-aligned indexes back the feed ordering.
+  - **API** — Pydantic `response_model`s for `/api/vdl2/*`; `until>since`
+    validation; FTS search is multi-term AND (was a single phrase).
+  - **Normalizer** — label uppercased; `raw` JSON capped (`RSBS_VDL2_RAW_MAX`);
+    far-future timestamps clamped; dumpvdl2 `freq` converted Hz→MHz.
+  - **Ops** — single shared flag in `/etc/readsbstats/vdl2.env` (read by both
+    web + ingest), removing the duplicated unit env.
+
 ### Added
 
 - **VDL2 / ACARS Messages tab (opt-in)** — a new, fully pluggable feature

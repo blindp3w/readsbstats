@@ -9,19 +9,15 @@ import { Button } from '@/components/ui/Button';
 import { Badge } from '@/components/ui/Badge';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { Alert } from '@/components/ui/Alert';
+import { PageSkeleton } from '@/components/PageSkeleton';
 import { MessageList } from '@/components/vdl2/MessageList';
-import type { Settings, Vdl2MessagesResponse } from '@/lib/types';
+import { useVdl2Health } from '@/hooks/useVdl2Enabled';
+import type { Settings, Vdl2MessagesResponse, Vdl2StatsResponse } from '@/lib/types';
 
 // VDL2 / ACARS message feed (opt-in feature; the nav item + this page only
 // appear when RSBS_VDL2_ENABLED). Data comes from the SEPARATE vdl2.db via
 // /api/vdl2/*. Message bodies are untrusted upstream text — always rendered as
 // plain React text children, which React escapes automatically (no raw HTML).
-
-interface Vdl2Stats {
-  total: number;
-  last_hour: number;
-  aircraft: number;
-}
 
 const PAGE = 100;
 
@@ -32,6 +28,7 @@ export default function Vdl2Page() {
     staleTime: 60_000,
   });
   const enabled = settingsQ.data?.vdl2_enabled === true;
+  const { available, isLoading: healthLoading } = useVdl2Health();
 
   // Filters live in the URL so the view is shareable + back-button friendly.
   const [q, setQ] = useSearchParam('q', '');
@@ -74,18 +71,44 @@ export default function Vdl2Page() {
 
   const stats = useQuery({
     queryKey: ['vdl2-stats'],
-    queryFn: () => apiJson<Vdl2Stats>('vdl2/stats'),
+    queryFn: () => apiJson<Vdl2StatsResponse>('vdl2/stats'),
     enabled,
     refetchInterval: 15_000,
     staleTime: 5_000,
   });
 
-  if (settingsQ.isSuccess && !enabled) {
+  // Show the skeleton while settings load AND while the health bit is still
+  // resolving for an enabled feature — otherwise `available` is briefly false
+  // and the page flashes the "unavailable" notice before the first /api/health
+  // response lands.
+  if (settingsQ.isLoading || (enabled && healthLoading)) {
+    return <PageSkeleton />;
+  }
+  if (settingsQ.isError) {
+    return (
+      <div className="mx-auto max-w-5xl px-4 py-6" data-testid="page-vdl2">
+        <Alert variant="error">
+          Failed to load runtime settings: {(settingsQ.error as Error).message}
+        </Alert>
+      </div>
+    );
+  }
+  if (!enabled) {
     return (
       <div className="mx-auto max-w-5xl px-4 py-6" data-testid="page-vdl2">
         <Alert variant="info" data-testid="vdl2-disabled">
           The VDL2 / ACARS feature is disabled. Set <code>RSBS_VDL2_ENABLED=true</code> on the web
           and ingest services to enable it.
+        </Alert>
+      </div>
+    );
+  }
+  if (!available) {
+    return (
+      <div className="mx-auto max-w-5xl px-4 py-6" data-testid="page-vdl2">
+        <Alert variant="warn" data-testid="vdl2-unavailable">
+          VDL2 is enabled but its database isn’t reachable yet (no messages stored, or the ingest
+          service hasn’t started). The feed will appear once data is available.
         </Alert>
       </div>
     );

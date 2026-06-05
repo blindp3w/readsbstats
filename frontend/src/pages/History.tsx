@@ -3,7 +3,7 @@ import { CaretDownIcon, Cross2Icon, PlusIcon } from '@radix-ui/react-icons';
 import { useQuery } from '@tanstack/react-query';
 import { apiJson, apiUrl } from '@/lib/api';
 import { useSearchParam, useSearchParamBatch } from '@/hooks/useSearchParam';
-import { useVdl2Enabled } from '@/hooks/useVdl2Enabled';
+import { useVdl2AttachAvailable } from '@/hooks/useVdl2Enabled';
 import { cn } from '@/lib/cn';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Input } from '@/components/ui/Input';
@@ -124,8 +124,14 @@ export default function HistoryPage() {
   const [flags, setFlags] = useSearchParam('flags', '');
   const [squawk, setSquawk] = useSearchParam('squawk', '');
   const [hasAcars] = useSearchParam('has_acars', '');
-  const vdl2Enabled = useVdl2Enabled();
-  const fieldDefs = vdl2Enabled ? [...FIELD_DEFS, VDL2_FIELD_DEF] : FIELD_DEFS;
+  // Gate the "Has ACARS" filter offer/badge on the read-only ATTACH being usable
+  // (the bit the flights `has_acars` filter actually depends on), not just the
+  // config flag or the `available` bit — otherwise the filter would be offered
+  // but no-op. The param SEND below is intentionally NOT gated on this (backend
+  // ignores has_acars when its own ATTACH is down) so a shared `?has_acars=true`
+  // link doesn't flash unfiltered results while the health bit resolves.
+  const vdl2AttachAvailable = useVdl2AttachAvailable();
+  const fieldDefs = vdl2AttachAvailable ? [...FIELD_DEFS, VDL2_FIELD_DEF] : FIELD_DEFS;
   const [sortByRaw] = useSearchParam('sort_by', 'first_seen');
   const [sortDirRaw] = useSearchParam('sort_dir', 'desc');
   const [offset, setOffset] = useSearchParam('offset', 0);
@@ -144,7 +150,10 @@ export default function HistoryPage() {
   if (source) queryParams.set('source', String(source));
   if (flags) queryParams.set('flags', String(flags));
   if (squawk) queryParams.set('squawk', String(squawk));
-  if (vdl2Enabled && hasAcars) queryParams.set('has_acars', 'true');
+  // Not gated on vdl2AttachAvailable: the backend ignores has_acars when its
+  // ATTACH is down, so sending it unconditionally avoids a shared-link flash of
+  // unfiltered results before the health bit resolves.
+  if (hasAcars) queryParams.set('has_acars', 'true');
   queryParams.set('sort_by', sortBy);
   queryParams.set('sort_dir', sortDir);
   queryParams.set('limit', String(PAGE_SIZE));
@@ -251,7 +260,9 @@ export default function HistoryPage() {
       out.push({ field: 'flags', label: 'Flag', value: labelFromMap(FLAG_OPTIONS, String(flags)) });
     }
     if (squawk) out.push({ field: 'squawk', label: 'Squawk', value: String(squawk) });
-    if (vdl2Enabled && hasAcars) out.push({ field: 'has_acars', label: 'ACARS', value: 'yes' });
+    if (vdl2AttachAvailable && hasAcars) {
+      out.push({ field: 'has_acars', label: 'ACARS', value: 'yes' });
+    }
     return out;
   }, [
     dateFromStr,
@@ -263,7 +274,7 @@ export default function HistoryPage() {
     source,
     flags,
     squawk,
-    vdl2Enabled,
+    vdl2AttachAvailable,
     hasAcars,
   ]);
 

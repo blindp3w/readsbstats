@@ -107,6 +107,55 @@ class TestRetention:
         assert conn.execute("SELECT COUNT(*) FROM vdl2_messages").fetchone()[0] == 2
 
 
+class TestMigrate:
+    def test_migrate_adds_indexes_to_existing_db(self):
+        # Simulate a DB created before the id-aligned indexes existed: base table
+        # only, user_version already at current. migrate() must still add them.
+        conn = vdl2_db.connect(":memory:")
+        conn.executescript(vdl2_db._DDL_MESSAGES)
+        conn.execute(f"PRAGMA user_version = {vdl2_db.VDL2_SCHEMA_VERSION}")
+        conn.commit()
+        vdl2_db.migrate(conn)
+        idx = {r[1] for r in conn.execute("PRAGMA index_list(vdl2_messages)")}
+        assert "idx_vdl2_label_id" in idx
+        assert "idx_vdl2_icao_id" in idx
+        assert "idx_vdl2_reg_id" in idx
+
+    def test_fts_built_and_populated_when_available_later(self):
+        # DB first created without FTS (only base table), rows inserted, then
+        # migrate() runs on an FTS-capable build → FTS created AND rebuilt from
+        # the existing rows.
+        conn = vdl2_db.connect(":memory:")
+        conn.executescript(vdl2_db._DDL_MESSAGES)
+        conn.execute(f"PRAGMA user_version = {vdl2_db.VDL2_SCHEMA_VERSION}")
+        conn.commit()
+        vdl2_db.insert_messages(conn, [_msg(body="retroactive lublin message")])
+        conn.commit()
+        assert vdl2_db.has_fts(conn) is False
+        vdl2_db.migrate(conn)
+        assert vdl2_db.has_fts(conn) is True
+        hits = conn.execute(
+            "SELECT rowid FROM vdl2_fts WHERE vdl2_fts MATCH ?", ('"lublin"',)
+        ).fetchall()
+        assert len(hits) == 1   # 'rebuild' populated the index from existing rows
+
+
+class TestBatchedPrune:
+    def test_prune_batches_delete_all_old(self):
+        conn = make_vdl2_db()
+        now = 1_000_000_000
+        old = [_msg(ts=now - 100 * 86400, body=f"old {i}") for i in range(5)]
+        vdl2_db.insert_messages(conn, old + [_msg(ts=now - 1 * 86400, body="recent")])
+        conn.commit()
+        removed = vdl2_db.prune(conn, 90, now=now, batch=2)   # forces multiple batches
+        assert removed == 5
+        assert conn.execute("SELECT COUNT(*) FROM vdl2_messages").fetchone()[0] == 1
+        # FTS stays in sync across batches.
+        assert conn.execute(
+            "SELECT COUNT(*) FROM vdl2_fts WHERE vdl2_fts MATCH ?", ('"old"',)
+        ).fetchone()[0] == 0
+
+
 class TestNoFtsFallback:
     def test_has_fts_false_when_only_base_table(self):
         # Simulate a build/DB without FTS by creating only the base table.

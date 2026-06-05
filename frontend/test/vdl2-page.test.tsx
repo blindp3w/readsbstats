@@ -12,9 +12,11 @@ import { MemoryRouter } from 'react-router-dom';
 import { TooltipProvider } from '@/components/ui/Tooltip';
 import Vdl2Page from '@/pages/Vdl2';
 import { Nav } from '@/components/Nav';
+import { Vdl2StatsCard } from '@/components/stats/Vdl2StatsCard';
 
 interface StubResponses {
   vdl2_enabled?: boolean;
+  available?: boolean;
   messages?: unknown[];
   stats?: { total: number; last_hour: number; aircraft: number };
 }
@@ -23,7 +25,10 @@ function stubFetch(r: StubResponses) {
   globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
     const url = typeof input === 'string' ? input : (input as Request).url ?? String(input);
     let body: unknown = {};
+    const available = r.available ?? r.vdl2_enabled ?? false;
     if (url.includes('/api/settings')) body = { vdl2_enabled: r.vdl2_enabled ?? false };
+    else if (url.includes('/api/health'))
+      body = { status: 'ok', vdl2: { enabled: r.vdl2_enabled ?? false, available } };
     else if (url.includes('/api/vdl2/stats')) body = r.stats ?? { total: 0, last_hour: 0, aircraft: 0 };
     else if (url.includes('/api/vdl2/messages')) body = { messages: r.messages ?? [], next_before_id: null };
     else if (url.includes('/api/live')) body = { count: 0, aircraft: [] };
@@ -77,10 +82,48 @@ describe('Vdl2 page', () => {
     expect(await findByTestId('vdl2-disabled')).toBeTruthy();
   });
 
+  it('shows the unavailable notice when enabled but vdl2.db not reachable', async () => {
+    stubFetch({ vdl2_enabled: true, available: false });
+    const { findByTestId } = renderPage();
+    expect(await findByTestId('vdl2-unavailable')).toBeTruthy();
+  });
+
+  it('shows an error state when settings fail to load', async () => {
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : (input as Request).url ?? String(input);
+      if (url.includes('/api/settings')) return new Response('boom', { status: 500 });
+      return new Response(JSON.stringify({}), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }) as unknown as typeof fetch;
+    const { findByText } = renderPage();
+    expect(await findByText(/Failed to load runtime settings/)).toBeTruthy();
+  });
+
   it('shows the empty state when enabled with no messages', async () => {
     stubFetch({ vdl2_enabled: true, messages: [] });
     const { findByTestId } = renderPage();
     expect(await findByTestId('vdl2-empty')).toBeTruthy();
+  });
+});
+
+describe('Vdl2StatsCard self-gating', () => {
+  it('makes no /api/vdl2/stats call when disabled', () => {
+    const fetchSpy = vi.fn(async () =>
+      new Response(JSON.stringify({}), { status: 200, headers: { 'Content-Type': 'application/json' } }),
+    );
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+    render(
+      <QueryClientProvider client={newClient()}>
+        <TooltipProvider>
+          <Vdl2StatsCard enabled={false} />
+        </TooltipProvider>
+      </QueryClientProvider>,
+    );
+    const calls = fetchSpy.mock.calls as unknown as unknown[][];
+    const calledStats = calls.some((c) => String(c[0] ?? '').includes('vdl2/stats'));
+    expect(calledStats).toBe(false);
   });
 });
 

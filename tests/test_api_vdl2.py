@@ -1,6 +1,8 @@
 """Tests for the VDL2 read-only API + the optional-router gating in web.py."""
 from __future__ import annotations
 
+import sqlite3
+import threading
 import time
 
 import pytest
@@ -9,8 +11,18 @@ from fastapi.testclient import TestClient
 
 from readsbstats import config, web
 from readsbstats.api import _deps
+from readsbstats.api import vdl2 as vdl2_api
 from readsbstats.vdl2 import db as vdl2_db
 from tests._helpers import make_db, make_vdl2_db
+
+
+@pytest.fixture(autouse=True)
+def _clear_cache():
+    # /api/vdl2/stats is cached module-globally; clear between tests so cached
+    # values (or a cached 200 hiding a 503 path) don't leak across tests.
+    from readsbstats import cache
+    cache._cache.clear()
+    yield
 
 
 def _seed(conn):
@@ -73,6 +85,15 @@ class TestMessagesFeed:
         data = client.get("/api/vdl2/messages?q=krakow").json()
         assert len(data["messages"]) == 1
         assert "krakow" in data["messages"][0]["body"]
+
+    def test_fts_search_multi_term_is_and(self, client):
+        # "position report krakow" message exists; "clearance request" + "depart
+        # EPWA gate 12" do not contain both terms.
+        both = client.get("/api/vdl2/messages?q=report%20krakow").json()
+        assert len(both["messages"]) == 1
+        # AND across terms: no single message contains both 'gate' and 'krakow'.
+        neither = client.get("/api/vdl2/messages?q=gate%20krakow").json()
+        assert neither["messages"] == []
 
     def test_fts_search_special_chars_no_500(self, client):
         # Punctuation must not raise an FTS5 MATCH syntax error.
@@ -149,6 +170,66 @@ class TestStats:
         assert data["total"] == 3
         assert data["aircraft"] == 2
         assert data["last_hour"] == 3
+
+
+class TestFailureModes:
+    def test_endpoints_503_when_db_unavailable(self, monkeypatch):
+        monkeypatch.setattr(config, "VDL2_ENABLED", True)
+
+        def boom(*a, **k):
+            raise sqlite3.OperationalError("unable to open database file")
+
+        monkeypatch.setattr(vdl2_db, "web_conn", boom)
+        app = FastAPI()
+        web._include_optional_routers(app)
+        with TestClient(app) as c:
+            assert c.get("/api/vdl2/messages").status_code == 503
+            assert c.get("/api/vdl2/messages/48e95d").status_code == 503
+            assert c.get("/api/vdl2/stats").status_code == 503
+
+    def test_until_le_since_400(self, monkeypatch):
+        monkeypatch.setattr(config, "VDL2_ENABLED", True)
+        conn = make_vdl2_db()
+        monkeypatch.setattr(vdl2_db, "_conn", conn)
+        app = FastAPI()
+        web._include_optional_routers(app)
+        with TestClient(app) as c:
+            assert c.get("/api/vdl2/messages?since=100&until=100").status_code == 400
+            assert c.get("/api/vdl2/messages/48e95d?since=200&until=100").status_code == 400
+        conn.close()
+
+
+class TestConnRegistry:
+    def test_close_all_web_conns(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "VDL2_ENABLED", True)
+        monkeypatch.setattr(config, "VDL2_DB_PATH", str(tmp_path / "vdl2.db"))
+        monkeypatch.setattr(vdl2_db, "_conn", None)
+        monkeypatch.setattr(vdl2_db, "_thread_local", threading.local())
+        with vdl2_db._web_conns_lock:
+            vdl2_db._web_conns.clear()
+        c = vdl2_db.web_conn()
+        c.execute("SELECT 1")  # usable
+        vdl2_db.close_all_web_conns()
+        with pytest.raises(sqlite3.ProgrammingError):
+            c.execute("SELECT 1")  # closed
+
+
+class TestHealth:
+    def test_disabled(self, monkeypatch):
+        monkeypatch.setattr(config, "VDL2_ENABLED", False)
+        assert vdl2_api.vdl2_health() == {"enabled": False, "available": False}
+
+    def test_available(self, monkeypatch):
+        monkeypatch.setattr(config, "VDL2_ENABLED", True)
+        conn = make_vdl2_db()
+        vdl2_db.insert_messages(conn, [{"ts": 123, "icao_hex": "48e95d", "body": "x"}])
+        conn.commit()
+        monkeypatch.setattr(vdl2_db, "_conn", conn)
+        monkeypatch.setattr(_deps, "_db", make_db())
+        h = vdl2_api.vdl2_health()
+        assert h["enabled"] is True and h["available"] is True
+        assert h["messages"] == 1 and h["newest_ts"] == 123
+        conn.close()
 
 
 class TestGating:

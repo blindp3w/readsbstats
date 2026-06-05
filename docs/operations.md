@@ -80,20 +80,30 @@ Opt-in feature (default off). Decodes VHF Data Link Mode 2 / ACARS from a
 `history.db` is never touched. readsbstats is **consume-only**: you run the
 decoder; readsbstats runs only the UDP ingest listener and the web tab.
 
-**Two switches** (both needed for the full feature):
+**Turning it on** — one flag, one enable:
 
-1. `RSBS_VDL2_ENABLED=true` on **both** services — `readsbstats-web` (so the
-   Messages tab and `/api/vdl2` appear) and `readsbstats-vdl2` (so ingest runs;
-   already set inside the unit file).
+1. Set `RSBS_VDL2_ENABLED=true` in `/etc/readsbstats/vdl2.env` (the single shared
+   file, read by both `readsbstats-web` and `readsbstats-vdl2`). `install.sh`
+   seeds it from the example with the flag `false`.
 2. `systemctl enable --now readsbstats-vdl2.service` — start the listener.
 
 ```bash
-# 1. Let the web process show the tab + API:
-sudo systemctl edit readsbstats-web        # add: [Service]\nEnvironment=RSBS_VDL2_ENABLED=true
-sudo systemctl restart readsbstats-web
-# 2. Start the ingest listener (unit already carries the flag):
-sudo systemctl enable --now readsbstats-vdl2.service
+sudo sed -i 's/RSBS_VDL2_ENABLED=false/RSBS_VDL2_ENABLED=true/' /etc/readsbstats/vdl2.env
+sudo systemctl restart readsbstats-web          # web picks up the shared flag
+sudo systemctl enable --now readsbstats-vdl2    # start the ingest listener
 ```
+
+The web surfaces gate on **runtime availability** (`/api/health` → `vdl2.available`),
+so the Messages tab / History "Has ACARS" filter appear only once `vdl2.db` is
+actually reachable — a missing/corrupt DB shows an explicit "unavailable" state
+and `/api/vdl2/*` return `503`, never a broken page or a silent no-op.
+
+**Integrity:** the ingest service writes a `.vdl2_dirty_shutdown` sentinel next to
+`vdl2.db` and clears it on a clean stop; if it's present at startup (unclean
+shutdown) it runs `PRAGMA quick_check` before writing and refuses to write on
+failure. Retention prune runs in batches so the first big cleanup can't starve
+inserts. Watch ingest health via the periodic summary line:
+`journalctl -u readsbstats-vdl2 | grep 'vdl2 ingest:'`.
 
 **Decoder (run separately, owns the SDR).** Feed line-delimited JSON over UDP
 to the listener (default `127.0.0.1:5555`):

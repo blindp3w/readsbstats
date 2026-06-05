@@ -2,7 +2,7 @@ import { Suspense, useEffect } from 'react';
 import { Outlet } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { apiJson } from '@/lib/api';
-import type { Settings } from '@/lib/types';
+import type { HealthResponse, Settings } from '@/lib/types';
 import { Nav } from '@/components/Nav';
 import { PageSkeleton } from '@/components/PageSkeleton';
 import { TooltipProvider } from '@/components/ui/Tooltip';
@@ -27,6 +27,15 @@ export default function App() {
     queryKey: ['settings'],
     queryFn: () => apiJson<Settings>('settings'),
     staleTime: 60_000,
+  });
+  // Seed the ['health'] query on boot so the VDL2 runtime-availability bits
+  // (useVdl2Health) are usually warm before a gated surface (Vdl2 page, History
+  // "Has ACARS" filter, Stats VDL2 section) mounts — avoids an "unavailable"
+  // flash. Shares the query key with useVdl2Health(), so this is the only fetch.
+  useQuery({
+    queryKey: ['health'],
+    queryFn: () => apiJson<HealthResponse>('health'),
+    staleTime: 30_000,
   });
   useEffect(() => {
     const fmt = settingsQ.data?.time_format;

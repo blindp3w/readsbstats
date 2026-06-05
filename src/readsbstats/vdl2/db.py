@@ -54,10 +54,18 @@ CREATE TABLE IF NOT EXISTS vdl2_messages (
     raw          TEXT,                      -- full decoder JSON, verbatim (fidelity / re-parse)
     decoder      TEXT                       -- which decoder produced it
 );
-CREATE INDEX IF NOT EXISTS idx_vdl2_ts     ON vdl2_messages(ts DESC);
-CREATE INDEX IF NOT EXISTS idx_vdl2_icao   ON vdl2_messages(icao_hex, ts DESC);
-CREATE INDEX IF NOT EXISTS idx_vdl2_label  ON vdl2_messages(label, ts DESC);
-CREATE INDEX IF NOT EXISTS idx_vdl2_reg    ON vdl2_messages(registration, ts DESC);
+"""
+
+# Indexes are created by migrate() (idempotent, run on every open) so additions
+# reach already-created DBs without a user_version bump. The feed orders by
+# `id DESC` with label/hex/reg filters → `(col, id DESC)` indexes; the
+# flight-panel per-aircraft query filters icao + ts window → `(icao_hex, ts)`.
+_DDL_INDEXES = """
+CREATE INDEX IF NOT EXISTS idx_vdl2_ts       ON vdl2_messages(ts DESC);
+CREATE INDEX IF NOT EXISTS idx_vdl2_icao     ON vdl2_messages(icao_hex, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_vdl2_label_id ON vdl2_messages(label, id DESC);
+CREATE INDEX IF NOT EXISTS idx_vdl2_icao_id  ON vdl2_messages(icao_hex, id DESC);
+CREATE INDEX IF NOT EXISTS idx_vdl2_reg_id   ON vdl2_messages(registration COLLATE NOCASE, id DESC);
 """
 
 # External-content FTS5 over body. Triggers keep it in sync; the delete/update
@@ -86,6 +94,10 @@ def connect(path: str | None = None) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.executescript(
         "PRAGMA journal_mode = WAL;"
+        # synchronous=NORMAL (not core's FULL): VDL2 is lossy best-effort SDR data
+        # — on power loss WAL+NORMAL can drop only the last few committed messages
+        # (never corruption), an acceptable trade for avoiding an fsync per commit
+        # on the Pi. Core history.db keeps FULL (see docs/configuration.md).
         "PRAGMA synchronous  = NORMAL;"
         "PRAGMA busy_timeout = 30000;"
         "PRAGMA cache_size   = -16384;"
@@ -112,20 +124,37 @@ def has_fts(conn: sqlite3.Connection) -> bool:
     return row is not None
 
 
-def ensure_schema(conn: sqlite3.Connection) -> None:
-    """Create the VDL2 schema if absent and stamp ``user_version``.
-
-    Idempotent and safe to call concurrently from the web process and the
-    ingest collector (CREATE ... IF NOT EXISTS + a version guard). Cheap —
-    no slow scans — so unlike the core schema it may run in the web path.
-    """
+def ensure_schema(conn: sqlite3.Connection, *, build_fts: bool = True) -> None:
+    """Create the VDL2 base table (version-gated) then run the idempotent
+    `migrate()`. Safe to call concurrently from web + ingest (IF NOT EXISTS +
+    a version guard). ``build_fts=False`` (web path) skips the only potentially
+    slow step — a populated FTS rebuild — leaving that to the collector."""
     ver = conn.execute("PRAGMA user_version").fetchone()[0]
-    if ver >= VDL2_SCHEMA_VERSION:
-        return
-    conn.executescript(_DDL_MESSAGES)
-    if fts5_available(conn):
-        conn.executescript(_DDL_FTS)
-    conn.execute(f"PRAGMA user_version = {VDL2_SCHEMA_VERSION}")
+    if ver < VDL2_SCHEMA_VERSION:
+        conn.executescript(_DDL_MESSAGES)
+        conn.execute(f"PRAGMA user_version = {VDL2_SCHEMA_VERSION}")
+        conn.commit()
+    migrate(conn, build_fts=build_fts)
+
+
+def migrate(conn: sqlite3.Connection, *, build_fts: bool = True) -> None:
+    """Idempotent upgrades NOT gated by user_version, so they reach already-created
+    DBs: create any missing indexes, and create FTS if FTS5 is available but the
+    index is absent.
+
+    The only slow case is the FTS *rebuild* that populates the index from existing
+    rows (the "DB created on a no-FTS build, reopened with FTS5" skew). That scan
+    takes a write lock, so it's gated on ``build_fts`` — the collector (writer)
+    runs it; the web path passes ``build_fts=False`` and, when rows already exist,
+    leaves FTS absent so search falls back to LIKE instead of MATCHing a
+    half-populated index (which would silently miss old rows)."""
+    conn.executescript(_DDL_INDEXES)
+    if fts5_available(conn) and not has_fts(conn):
+        has_rows = conn.execute("SELECT 1 FROM vdl2_messages LIMIT 1").fetchone() is not None
+        if build_fts or not has_rows:
+            conn.executescript(_DDL_FTS)
+            if has_rows:
+                conn.execute("INSERT INTO vdl2_fts(vdl2_fts) VALUES('rebuild')")
     conn.commit()
 
 
@@ -139,15 +168,31 @@ def insert_messages(conn: sqlite3.Connection, records: list[dict]) -> int:
     return len(records)
 
 
-def prune(conn: sqlite3.Connection, retention_days: int, *, now: int | None = None) -> int:
-    """Delete messages older than ``retention_days``. 0 = keep forever.
-    Returns the number of rows removed. FTS stays in sync via the triggers."""
+def prune(
+    conn: sqlite3.Connection, retention_days: int, *, now: int | None = None, batch: int = 5000
+) -> int:
+    """Delete messages older than ``retention_days`` in bounded batches. 0 = keep
+    forever. Returns the total rows removed. FTS stays in sync via the triggers.
+
+    Batched (commit per batch) so the first big retention run on a large DB can't
+    hold the write lock long enough to starve the ingest writer — the per-row FTS
+    delete trigger amplifies the work, so one unbounded DELETE could block for
+    seconds. (`DELETE ... LIMIT` isn't available on stock SQLite, hence the
+    `id IN (SELECT ... LIMIT)` form.)"""
     if retention_days <= 0:
         return 0
     cutoff = (now if now is not None else int(time.time())) - retention_days * 86400
-    cur = conn.execute("DELETE FROM vdl2_messages WHERE ts < ?", (cutoff,))
-    conn.commit()
-    return cur.rowcount
+    total = 0
+    while True:
+        cur = conn.execute(
+            "DELETE FROM vdl2_messages WHERE id IN "
+            "(SELECT id FROM vdl2_messages WHERE ts < ? ORDER BY ts LIMIT ?)",
+            (cutoff, batch),
+        )
+        conn.commit()
+        total += cur.rowcount
+        if cur.rowcount < batch:
+            return total
 
 
 # ---------------------------------------------------------------------------
@@ -157,6 +202,11 @@ def prune(conn: sqlite3.Connection, retention_days: int, *, now: int | None = No
 # ---------------------------------------------------------------------------
 _conn: sqlite3.Connection | None = None   # test override; None in production
 _thread_local = threading.local()
+# Registry of per-thread web connections so the web lifespan can close them all
+# on shutdown (a thread can't reach another thread's thread-local). Guarded by a
+# lock since connections are created on uvicorn threadpool threads.
+_web_conns: list[sqlite3.Connection] = []
+_web_conns_lock = threading.Lock()
 
 
 def web_conn() -> sqlite3.Connection:
@@ -165,6 +215,21 @@ def web_conn() -> sqlite3.Connection:
     c = getattr(_thread_local, "conn", None)
     if c is None:
         c = connect()
-        ensure_schema(c)
+        ensure_schema(c, build_fts=False)   # never run a slow FTS rebuild on a web thread
         _thread_local.conn = c
+        with _web_conns_lock:
+            _web_conns.append(c)
     return c
+
+
+def close_all_web_conns() -> None:
+    """Close every web reader connection (called from the web lifespan shutdown)
+    so connections are released cleanly and attach state can't persist stale
+    across a runtime DB change. Best-effort; ignores already-closed conns."""
+    with _web_conns_lock:
+        conns, _web_conns[:] = list(_web_conns), []
+    for c in conns:
+        try:
+            c.close()
+        except sqlite3.Error:
+            pass

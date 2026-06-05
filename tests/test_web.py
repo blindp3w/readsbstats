@@ -929,7 +929,7 @@ class TestDbConnection:
         database.init_db(db_path)
         original_connect = database.connect
         monkeypatch.setattr(web.database, "connect",
-                            lambda path=db_path: original_connect(db_path))
+                            lambda path=db_path, **kw: original_connect(db_path, **kw))
         seen: list[object] = []
         lock = _t.Lock()
         def fetch():
@@ -951,7 +951,7 @@ class TestDbConnection:
         database.init_db(db_path)
         original_connect = database.connect
         monkeypatch.setattr(web.database, "connect",
-                            lambda path=db_path: original_connect(db_path))
+                            lambda path=db_path, **kw: original_connect(db_path, **kw))
         first = _deps.db()
         second = _deps.db()
         assert first is second
@@ -4482,8 +4482,8 @@ class TestFetchTypePhoto:
 
         opened: list[sqlite3.Connection] = []
 
-        def spy_connect(path=db_path):
-            conn = original_connect(db_path)
+        def spy_connect(path=db_path, **kw):
+            conn = original_connect(db_path, **kw)
             opened.append(conn)
             return conn
 

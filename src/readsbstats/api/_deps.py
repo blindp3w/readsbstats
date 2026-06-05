@@ -17,6 +17,7 @@ import os
 import re
 import sqlite3
 import threading
+import urllib.parse
 from datetime import datetime, timezone
 
 from fastapi import Header, HTTPException
@@ -43,7 +44,8 @@ def db() -> sqlite3.Connection:
         return _db
     conn = getattr(_thread_local, "conn", None)
     if conn is None:
-        conn = database.connect()
+        # uri=True so _maybe_attach_vdl2 can attach vdl2.db read-only (file:?mode=ro).
+        conn = database.connect(uri=True)
         _maybe_attach_vdl2(conn)
         _thread_local.conn = conn
     return conn
@@ -51,22 +53,31 @@ def db() -> sqlite3.Connection:
 
 # ---------------------------------------------------------------------------
 # Optional VDL2 read-time join. When RSBS_VDL2_ENABLED, the separate vdl2.db is
-# ATTACHed (read-only in practice — the web never writes it) so the flights
-# query can compute a `has_acars` flag and filter on it. Best-effort: a missing
-# or table-less vdl2.db leaves `_vdl2_attached = False`, and callers gate on
-# `vdl2_attached(conn)` so the core query degrades to "no badge" instead of
-# erroring. Never touches history.db; no-op when the feature is disabled.
+# ATTACHed READ-ONLY (file:...?mode=ro — enforced, not by convention) so the
+# flights query can compute a `has_acars` flag and filter on it. Best-effort: a
+# missing/table-less/unattachable vdl2.db leaves it not-attached, and callers
+# gate on `vdl2_attached(conn)` so the core query degrades to "no badge" instead
+# of erroring. Never touches history.db; no-op when the feature is disabled.
+#
+# mode=ro on a WAL DB works on SQLite >= 3.22 when the -shm/-wal exist or the
+# directory is writable (both true here — the collector is the live writer and
+# /mnt/ext is writable). On a read-only mount the attach fails and the feature
+# degrades, surfaced honestly via the `vdl2.attach_available` bit in /api/health.
 # ---------------------------------------------------------------------------
+def _vdl2_ro_uri() -> str:
+    return f"file:{urllib.parse.quote(os.path.abspath(config.VDL2_DB_PATH))}?mode=ro"
+
+
 def _maybe_attach_vdl2(conn: sqlite3.Connection) -> None:
-    # sqlite3.Connection has no __dict__ (can't stash a flag attr), so attach
-    # state is read back via PRAGMA database_list rather than memoised.
+    # Attach state is read back via PRAGMA database_list (sqlite3.Connection has
+    # no __dict__ to memoise a flag on).
     if not config.VDL2_ENABLED or vdl2_attached(conn):
         return
-    # Don't let a plain ATTACH create an empty vdl2.db when the file is absent.
+    # mode=ro won't create a missing file, but skip early to avoid a noisy error.
     if not os.path.exists(config.VDL2_DB_PATH):
         return
     try:
-        conn.execute("ATTACH DATABASE ? AS vdl2db", (config.VDL2_DB_PATH,))
+        conn.execute("ATTACH DATABASE ? AS vdl2db", (_vdl2_ro_uri(),))
         has_table = conn.execute(
             "SELECT 1 FROM vdl2db.sqlite_master WHERE type='table' AND name='vdl2_messages'"
         ).fetchone()
