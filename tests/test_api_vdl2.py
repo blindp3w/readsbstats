@@ -172,74 +172,6 @@ class TestStats:
         assert data["last_hour"] == 3
 
 
-class TestReception:
-    def _make(self, monkeypatch):
-        monkeypatch.setattr(config, "VDL2_ENABLED", True)
-        vconn = make_vdl2_db()
-        now = int(time.time())
-        vdl2_db.insert_messages(vconn, [
-            {"ts": now - 10,  "icao_hex": "48e95d", "flight": "LO1", "freq": 136.725, "body": "a"},
-            {"ts": now - 30,  "icao_hex": "48af11", "flight": "LO2", "freq": 136.725, "body": "b"},
-            {"ts": now - 120, "icao_hex": "48af11", "flight": "LO2", "freq": 136.975, "body": "c"},
-            {"ts": now - 4000, "icao_hex": "48cc00", "flight": "LO3", "freq": 136.975, "body": "d"},  # >1h
-        ])
-        vconn.commit()
-        monkeypatch.setattr(vdl2_db, "_conn", vconn)
-        monkeypatch.setattr(_deps, "_db", make_db())
-        app = FastAPI()
-        web._include_optional_routers(app)
-        return vconn, now, app
-
-    def test_reception_aggregates(self, monkeypatch):
-        vconn, now, app = self._make(monkeypatch)
-        with TestClient(app) as c:
-            data = c.get("/api/vdl2/reception").json()
-        assert data["msgs_24h"] == 4
-        assert data["msgs_last_hour"] == 3        # now-10, now-30, now-120
-        assert data["msgs_last_min"] == 2         # now-10, now-30
-        assert data["aircraft_last_hour"] == 2    # 48e95d, 48af11
-        assert data["newest_ts"] == now - 10
-        assert data["newest_age_sec"] is not None and data["newest_age_sec"] >= 10
-        vconn.close()
-
-    def test_reception_per_freq_rounds(self, monkeypatch):
-        vconn, now, app = self._make(monkeypatch)
-        with TestClient(app) as c:
-            data = c.get("/api/vdl2/reception").json()
-        freqs = {round(f["freq_mhz"], 3): f for f in data["per_freq"]}
-        assert freqs[136.725]["messages"] == 2
-        assert freqs[136.725]["aircraft"] == 2
-        assert freqs[136.975]["messages"] == 2          # now-120, now-4000
-        assert freqs[136.975]["aircraft"] == 2          # 48af11, 48cc00
-        vconn.close()
-
-    def test_reception_sparkline_zero_filled_newest_last(self, monkeypatch):
-        vconn, now, app = self._make(monkeypatch)
-        with TestClient(app) as c:
-            data = c.get("/api/vdl2/reception").json()
-        spark = data["rate_sparkline"]
-        assert len(spark) == 60
-        assert spark[59] == 2     # current minute (now-10, now-30)
-        assert spark[57] == 1     # ~2 min ago (now-120)
-        assert sum(spark) == 3    # now-4000 (~66 min) is outside the 60-min window
-        vconn.close()
-
-    def test_reception_empty_store(self, monkeypatch):
-        monkeypatch.setattr(config, "VDL2_ENABLED", True)
-        vconn = make_vdl2_db()
-        monkeypatch.setattr(vdl2_db, "_conn", vconn)
-        monkeypatch.setattr(_deps, "_db", make_db())
-        app = FastAPI()
-        web._include_optional_routers(app)
-        with TestClient(app) as c:
-            data = c.get("/api/vdl2/reception").json()
-        assert data["msgs_24h"] == 0
-        assert data["per_freq"] == []
-        assert data["newest_ts"] is None
-        assert data["newest_age_sec"] is None
-        assert len(data["rate_sparkline"]) == 60 and sum(data["rate_sparkline"]) == 0
-        vconn.close()
-
 
 class TestStatsOverlap:
     """The flights-overlap KPI runs on the CORE history.db connection with
@@ -570,7 +502,6 @@ class TestFailureModes:
             assert c.get("/api/vdl2/messages").status_code == 503
             assert c.get("/api/vdl2/messages/48e95d").status_code == 503
             assert c.get("/api/vdl2/stats").status_code == 503
-            assert c.get("/api/vdl2/reception").status_code == 503
             assert c.get("/api/vdl2/active").status_code == 503
             assert c.get("/api/vdl2/positions").status_code == 503
             assert c.get("/api/vdl2/oooi/48e95d").status_code == 503

@@ -91,25 +91,6 @@ export interface Vdl2StatsResponse {
   flights_overlap_pct?: number | null;
 }
 
-export interface Vdl2FreqStat {
-  freq_mhz: number | null;
-  messages: number;
-  aircraft: number;
-}
-
-// Receiver-health card for the Metrics page (vdlm2dec-only — no signal level).
-// `newest_age_sec` is the freshness signal that answers "is the VDL2 SDR alive?".
-export interface Vdl2ReceptionResponse {
-  msgs_last_min: number;
-  msgs_last_hour: number;
-  msgs_24h: number;
-  aircraft_last_hour: number;
-  newest_ts: number | null;
-  newest_age_sec: number | null;
-  per_freq: Vdl2FreqStat[];
-  rate_sparkline: number[];
-}
-
 // Bucketed VDL2 reception series for the Metrics page's two charts. Extends the
 // columnar /api/metrics shape (MetricsResp) so buildPanelOption /
 // buildSignalSmallMultiplesOption consume it directly.
