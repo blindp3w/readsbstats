@@ -1,6 +1,10 @@
 [Unit]
 Description=readsbstats monthly DB integrity_check
 OnFailure=notify-telegram@%n.service
+# Never run the heavy integrity_check concurrently with the weekly quick_check
+# (they collide on the 1st Sunday). Conflicts is symmetric: starting this stops
+# a still-running quick check — full supersedes it, so no coverage is lost.
+Conflicts=readsbstats-dbcheck.service
 
 [Service]
 Type=oneshot

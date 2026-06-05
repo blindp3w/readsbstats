@@ -61,11 +61,19 @@ CREATE TABLE IF NOT EXISTS vdl2_messages (
 # `id DESC` with label/hex/reg filters → `(col, id DESC)` indexes; the
 # flight-panel per-aircraft query filters icao + ts window → `(icao_hex, ts)`.
 _DDL_INDEXES = """
+-- Drop the superseded positions index (replaced by idx_vdl2_pos_ts_id below) so
+-- a DB that already built it doesn't keep a dead, write-amplifying index.
+DROP INDEX IF EXISTS idx_vdl2_pos;
 CREATE INDEX IF NOT EXISTS idx_vdl2_ts       ON vdl2_messages(ts DESC);
 CREATE INDEX IF NOT EXISTS idx_vdl2_icao     ON vdl2_messages(icao_hex, ts DESC);
 CREATE INDEX IF NOT EXISTS idx_vdl2_label_id ON vdl2_messages(label, id DESC);
 CREATE INDEX IF NOT EXISTS idx_vdl2_icao_id  ON vdl2_messages(icao_hex, id DESC);
 CREATE INDEX IF NOT EXISTS idx_vdl2_reg_id   ON vdl2_messages(registration COLLATE NOCASE, id DESC);
+-- Map positions overlay (/api/vdl2/positions) runs two index-served candidate
+-- queries (precise Label-16 bodies + coarse lat/lon columns), each ordered by
+-- (ts DESC, id DESC). These cover them; a single OR query would full-scan.
+CREATE INDEX IF NOT EXISTS idx_vdl2_label_ts_id ON vdl2_messages(label, ts DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_vdl2_pos_ts_id   ON vdl2_messages(ts DESC, id DESC) WHERE lat IS NOT NULL AND lon IS NOT NULL;
 """
 
 # External-content FTS5 over body. Triggers keep it in sync; the delete/update

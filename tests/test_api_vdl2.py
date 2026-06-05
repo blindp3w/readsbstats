@@ -172,6 +172,333 @@ class TestStats:
         assert data["last_hour"] == 3
 
 
+
+class TestStatsOverlap:
+    """The flights-overlap KPI runs on the CORE history.db connection with
+    vdl2.db ATTACHed read-only (not the vdl2.db connection the rest of stats
+    uses). File-based DBs: in-memory can't be cross-attached."""
+
+    def _core_db(self, path):
+        from readsbstats import database
+        conn = database.connect(path, uri=True)
+        conn.executescript(database.DDL)
+        database._migrate(conn)
+        return conn
+
+    def _flight(self, conn, icao, first_seen, last_seen):
+        conn.execute(
+            "INSERT INTO flights (icao_hex, callsign, first_seen, last_seen) VALUES (?,?,?,?)",
+            (icao, "LO1", first_seen, last_seen),
+        )
+        conn.commit()
+
+    def test_overlap_pct_when_attached(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "VDL2_ENABLED", True)
+        vdl2_path = str(tmp_path / "vdl2.db")
+        monkeypatch.setattr(config, "VDL2_DB_PATH", vdl2_path)
+        now = int(time.time())
+        vconn = vdl2_db.connect(vdl2_path)
+        vdl2_db.ensure_schema(vconn)
+        vdl2_db.insert_messages(vconn, [{"ts": now - 100, "icao_hex": "48e95d", "body": "x"}])
+        vconn.commit()
+        monkeypatch.setattr(vdl2_db, "_conn", vconn)   # stats web_conn uses the file
+        core = self._core_db(str(tmp_path / "history.db"))
+        self._flight(core, "48e95d", now - 200, now - 50)   # has ACARS in window
+        self._flight(core, "aabbcc", now - 200, now - 50)   # none
+        _deps._maybe_attach_vdl2(core)
+        assert _deps.vdl2_attached(core) is True
+        monkeypatch.setattr(_deps, "_db", core)
+        app = FastAPI()
+        web._include_optional_routers(app)
+        with TestClient(app) as c:
+            data = c.get("/api/vdl2/stats").json()
+        assert data["flights_overlap_pct"] == 50.0
+        vconn.close()
+        core.close()
+
+    def test_overlap_pct_null_when_not_attached(self, monkeypatch):
+        # The default in-memory client fixture path: core conn has no vdl2db
+        # attached → the KPI degrades to null rather than failing the card.
+        monkeypatch.setattr(config, "VDL2_ENABLED", True)
+        vconn = make_vdl2_db()
+        monkeypatch.setattr(vdl2_db, "_conn", vconn)
+        monkeypatch.setattr(_deps, "_db", make_db())   # no ATTACH
+        app = FastAPI()
+        web._include_optional_routers(app)
+        with TestClient(app) as c:
+            data = c.get("/api/vdl2/stats").json()
+        assert data["flights_overlap_pct"] is None
+        vconn.close()
+
+
+class TestMapOverlay:
+    def _make(self, monkeypatch, rows):
+        monkeypatch.setattr(config, "VDL2_ENABLED", True)
+        vconn = make_vdl2_db()
+        vdl2_db.insert_messages(vconn, rows)
+        vconn.commit()
+        monkeypatch.setattr(vdl2_db, "_conn", vconn)
+        monkeypatch.setattr(_deps, "_db", make_db())
+        app = FastAPI()
+        web._include_optional_routers(app)
+        return vconn, app
+
+    def test_active_distinct_within_window(self, monkeypatch):
+        now = int(time.time())
+        vconn, app = self._make(monkeypatch, [
+            {"ts": now - 30,   "icao_hex": "48e95d", "body": "a"},
+            {"ts": now - 40,   "icao_hex": "48e95d", "body": "a2"},   # dup airframe
+            {"ts": now - 300,  "icao_hex": "48af11", "body": "b"},    # 5 min ago
+            {"ts": now - 1200, "icao_hex": "48cc00", "body": "c"},    # 20 min ago
+        ])
+        with TestClient(app) as c:
+            data = c.get("/api/vdl2/active?minutes=10").json()
+        assert set(data["icao_hex"]) == {"48e95d", "48af11"}   # distinct, 48cc00 excluded
+        assert data["count"] == 2
+        vconn.close()
+
+    def test_positions_only_with_coords_in_window(self, monkeypatch):
+        now = int(time.time())
+        vconn, app = self._make(monkeypatch, [
+            {"ts": now - 30,   "icao_hex": "48e95d", "lat": 52.1, "lon": 20.9, "label": "16", "body": "p1"},
+            {"ts": now - 100,  "icao_hex": "48af11", "body": "no-pos"},               # no lat/lon
+            {"ts": now - 200,  "icao_hex": "48cc00", "lat": 50.0, "lon": 19.9, "body": "p2"},
+            {"ts": now - 7200, "icao_hex": "48dd00", "lat": 51.0, "lon": 21.0, "body": "old"},  # 2h ago
+        ])
+        with TestClient(app) as c:
+            data = c.get("/api/vdl2/positions?minutes=60").json()
+        assert data["count"] == 2
+        hexes = {p["icao_hex"] for p in data["points"]}
+        assert hexes == {"48e95d", "48cc00"}
+        p = next(p for p in data["points"] if p["icao_hex"] == "48e95d")
+        assert p["lat"] == 52.1 and p["lon"] == 20.9 and p["label"] == "16"
+        vconn.close()
+
+    def test_positions_parses_precise_label16_body(self, monkeypatch):
+        now = int(time.time())
+        vconn, app = self._make(monkeypatch, [
+            # Label-16 AUTPOS: precise fix in the BODY, no lat/lon column.
+            {"ts": now - 20, "icao_hex": "48e95d", "label": "16",
+             "body": "WA921  ,N 52.166,E 020.772,4406, 251,2054, 72"},
+            # Coarse XID column fix, no precise body.
+            {"ts": now - 40, "icao_hex": "48af11", "lat": 52.1, "lon": 20.4, "body": "xid"},
+        ])
+        with TestClient(app) as c:
+            data = c.get("/api/vdl2/positions?minutes=60").json()
+        by = {p["icao_hex"]: p for p in data["points"]}
+        assert data["count"] == 2
+        # precise body fix, parsed from the AUTPOS text
+        assert abs(by["48e95d"]["lat"] - 52.166) < 1e-6
+        assert abs(by["48e95d"]["lon"] - 20.772) < 1e-6
+        assert by["48e95d"]["precise"] is True
+        # coarse XID column fix, flagged not-precise
+        assert by["48af11"]["lat"] == 52.1 and by["48af11"]["precise"] is False
+        vconn.close()
+
+    def test_positions_non_label16_body_not_precise(self, monkeypatch):
+        # BE-006: a coarse XID row (has lat/lon columns, label != 16) whose body
+        # happens to contain coordinate-looking text must NOT be marked precise,
+        # and must return the trusted column fix — not the body text.
+        now = int(time.time())
+        vconn, app = self._make(monkeypatch, [
+            {"ts": now - 20, "icao_hex": "48e95d", "label": "H1",
+             "lat": 52.1, "lon": 20.4, "body": "free text N 52.166,E 020.772"},
+        ])
+        with TestClient(app) as c:
+            data = c.get("/api/vdl2/positions?minutes=60").json()
+        assert data["count"] == 1
+        p = data["points"][0]
+        assert p["lat"] == 52.1 and p["lon"] == 20.4
+        assert p["precise"] is False
+
+    def test_positions_nofix_label16_does_not_starve_coarse(self, monkeypatch):
+        # BE-007: a burst of no-fix Label-16 rows (newest) must not consume the cap
+        # and starve an older valid coarse point. Two independent capped queries fix this.
+        now = int(time.time())
+        monkeypatch.setattr(vdl2_api, "_POSITIONS_CAP", 2)
+        # Coarse row inserted FIRST (lowest id); the no-fix Label-16 burst has
+        # higher ids, so under the old `ORDER BY id DESC LIMIT 2` it would crowd
+        # the coarse row out entirely.
+        vconn, app = self._make(monkeypatch, [
+            {"ts": now - 100, "icao_hex": "48cc00", "lat": 50.0, "lon": 19.9, "body": "xid"},
+            {"ts": now - 5, "icao_hex": "48aa01", "label": "16", "body": "N   .    MMMM.MMM"},
+            {"ts": now - 4, "icao_hex": "48aa02", "label": "16", "body": "no fix here"},
+            {"ts": now - 3, "icao_hex": "48aa03", "label": "16", "body": "still no fix"},
+        ])
+        with TestClient(app) as c:
+            data = c.get("/api/vdl2/positions?minutes=60").json()
+        hexes = {p["icao_hex"] for p in data["points"]}
+        assert "48cc00" in hexes   # the valid coarse point survived the no-fix burst
+
+    def test_positions_nofix_label16_does_not_starve_precise(self, monkeypatch):
+        # BE-007-partial: newer no-fix Label-16 rows must not consume the cap and
+        # starve an OLDER valid precise Label-16 fix. The label-16 candidate scan
+        # over-fetches beyond _POSITIONS_CAP so parseable rows survive.
+        now = int(time.time())
+        monkeypatch.setattr(vdl2_api, "_POSITIONS_CAP", 2)
+        vconn, app = self._make(monkeypatch, [
+            {"ts": now - 100, "icao_hex": "48ok01", "label": "16", "body": "N 52.166,E 020.772"},
+            {"ts": now - 5, "icao_hex": "48bad1", "label": "16", "body": "no fix"},
+            {"ts": now - 4, "icao_hex": "48bad2", "label": "16", "body": "N   .    MMMM.MMM"},
+        ])
+        with TestClient(app) as c:
+            data = c.get("/api/vdl2/positions?minutes=60").json()
+        assert any(p["icao_hex"] == "48ok01" and p["precise"] is True for p in data["points"])
+        vconn.close()
+
+    def test_positions_sorted_newest_first(self, monkeypatch):
+        now = int(time.time())
+        vconn, app = self._make(monkeypatch, [
+            {"ts": now - 300, "icao_hex": "48aa01", "lat": 52.0, "lon": 20.0, "body": "x"},
+            {"ts": now - 10, "icao_hex": "48aa02", "label": "16",
+             "body": "N 52.166,E 020.772"},
+            {"ts": now - 120, "icao_hex": "48aa03", "lat": 51.0, "lon": 19.0, "body": "y"},
+        ])
+        with TestClient(app) as c:
+            data = c.get("/api/vdl2/positions?minutes=60").json()
+        tss = [p["ts"] for p in data["points"]]
+        assert tss == sorted(tss, reverse=True)
+        assert "id" not in data["points"][0]   # internal id not leaked
+
+    def test_overlay_empty(self, monkeypatch):
+        vconn, app = self._make(monkeypatch, [])
+        with TestClient(app) as c:
+            assert c.get("/api/vdl2/active").json() == {"icao_hex": [], "count": 0}
+            assert c.get("/api/vdl2/positions").json() == {"points": [], "count": 0}
+        vconn.close()
+
+
+class TestOooi:
+    def _make(self, monkeypatch, rows):
+        monkeypatch.setattr(config, "VDL2_ENABLED", True)
+        vconn = make_vdl2_db()
+        vdl2_db.insert_messages(vconn, rows)
+        vconn.commit()
+        monkeypatch.setattr(vdl2_db, "_conn", vconn)
+        monkeypatch.setattr(_deps, "_db", make_db())
+        app = FastAPI()
+        web._include_optional_routers(app)
+        return vconn, app
+
+    def test_parses_latest_dep_and_arr(self, monkeypatch):
+        now = int(time.time())
+        vconn, app = self._make(monkeypatch, [
+            {"ts": now - 500, "icao_hex": "48e95d", "label": "H1",
+             "body": "DEP / FI LO6550/AN SP-LYF/DA EPWA/DS EGLL/OT 0030"},
+            {"ts": now - 100, "icao_hex": "48e95d", "label": "H1",
+             "body": "ARR / FI LO6550/AN SP-LYF/DA EPWA/AD EGLL/ON 0210/IN 0218"},
+            {"ts": now - 80, "icao_hex": "48e95d", "label": "H1", "body": "crew chat, no oooi"},
+        ])
+        with TestClient(app) as c:
+            data = c.get("/api/vdl2/oooi/48e95d").json()
+        assert data["has_oooi"] is True
+        assert data["dep"]["dep_icao"] == "EPWA" and data["dep"]["t_out"] == "0030"
+        assert data["arr"]["dest_icao"] == "EGLL" and data["arr"]["t_in"] == "0218"
+        vconn.close()
+
+    def test_dsta_fallback_when_no_oooi(self, monkeypatch):
+        now = int(time.time())
+        vconn, app = self._make(monkeypatch, [
+            {"ts": now - 60, "icao_hex": "48af11", "label": "H1", "dsta": "EPWA",
+             "body": "#DFB free text, not oooi"},
+        ])
+        with TestClient(app) as c:
+            data = c.get("/api/vdl2/oooi/48af11").json()
+        assert data["has_oooi"] is False
+        assert data["dsta"] == "EPWA"
+        assert data["dep"] is None and data["arr"] is None
+        vconn.close()
+
+    def test_window_scopes_messages(self, monkeypatch):
+        now = int(time.time())
+        vconn, app = self._make(monkeypatch, [
+            {"ts": now - 5000, "icao_hex": "48e95d", "body": "DEP / DA EPWA/OT 0030"},
+        ])
+        with TestClient(app) as c:
+            data = c.get(f"/api/vdl2/oooi/48e95d?since={now - 100}").json()
+        assert data["has_oooi"] is False   # the only DEP is outside the window
+        vconn.close()
+
+    def test_bad_icao_404(self, monkeypatch):
+        vconn, app = self._make(monkeypatch, [])
+        with TestClient(app) as c:
+            assert c.get("/api/vdl2/oooi/zzz").status_code == 404
+        vconn.close()
+
+
+class TestTimeseries:
+    def _make(self, monkeypatch, rows):
+        monkeypatch.setattr(config, "VDL2_ENABLED", True)
+        vconn = make_vdl2_db()
+        vdl2_db.insert_messages(vconn, rows)
+        vconn.commit()
+        monkeypatch.setattr(vdl2_db, "_conn", vconn)
+        monkeypatch.setattr(_deps, "_db", make_db())
+        app = FastAPI()
+        web._include_optional_routers(app)
+        return vconn, app
+
+    def test_buckets_normalize_and_zero_fill(self, monkeypatch):
+        now = int(time.time())
+        vconn, app = self._make(monkeypatch, [
+            {"ts": now - 90, "icao_hex": "48e95d", "freq": 136.725, "body": "a"},
+            {"ts": now - 80, "icao_hex": "48af11", "freq": 136.725, "body": "b"},
+        ])
+        with TestClient(app) as c:
+            data = c.get(f"/api/vdl2/timeseries?from={now - 180}&to={now}").json()
+        assert data["bucket_seconds"] == 60
+        assert data["metrics"][0] == "rate"
+        assert data["total"] == 2
+        ts_col, rate_col = data["data"][0], data["data"][1]
+        assert len(ts_col) == 3
+        assert max(rate_col) == 2.0
+        assert min(rate_col) == 0.0
+
+    def test_top_freqs_capped_and_rate_counts_all(self, monkeypatch):
+        now = int(time.time())
+        rows = []
+        for i, f in enumerate([136.700, 136.725, 136.775, 136.825, 136.875, 136.925, 136.975]):
+            for _ in range(7 - i):
+                rows.append({"ts": now - 100, "icao_hex": f"48{i:04x}", "freq": f, "body": "x"})
+        vconn, app = self._make(monkeypatch, rows)
+        with TestClient(app) as c:
+            data = c.get(f"/api/vdl2/timeseries?from={now - 600}&to={now}").json()
+        assert len(data["freqs"]) == 6
+        assert data["freqs"][0] == 136.7
+        assert 136.975 not in data["freqs"]
+        assert data["total"] == sum(range(1, 8))
+
+    def test_window_validation_and_503(self, monkeypatch):
+        now = int(time.time())
+        vconn, app = self._make(monkeypatch, [])
+        with TestClient(app) as c:
+            assert c.get(f"/api/vdl2/timeseries?from={now}&to={now}").status_code == 400
+        vconn.close()
+
+    def test_span_capped(self, monkeypatch):
+        # An over-wide window must be rejected, not allocate a huge bucket grid.
+        now = int(time.time())
+        vconn, app = self._make(monkeypatch, [])
+        with TestClient(app) as c:
+            assert c.get(f"/api/vdl2/timeseries?from=0&to={now}").status_code == 400
+            # A 1-year window is within the cap.
+            ok = c.get(f"/api/vdl2/timeseries?from={now - 366 * 86400 + 100}&to={now}")
+            assert ok.status_code == 200
+        vconn.close()
+
+    def test_503_when_db_unavailable(self, monkeypatch):
+        monkeypatch.setattr(config, "VDL2_ENABLED", True)
+
+        def boom(*a, **k):
+            raise sqlite3.OperationalError("unable to open database file")
+
+        monkeypatch.setattr(vdl2_db, "web_conn", boom)
+        app = FastAPI()
+        web._include_optional_routers(app)
+        with TestClient(app) as c:
+            assert c.get("/api/vdl2/timeseries").status_code == 503
+
+
 class TestFailureModes:
     def test_endpoints_503_when_db_unavailable(self, monkeypatch):
         monkeypatch.setattr(config, "VDL2_ENABLED", True)
@@ -186,6 +513,9 @@ class TestFailureModes:
             assert c.get("/api/vdl2/messages").status_code == 503
             assert c.get("/api/vdl2/messages/48e95d").status_code == 503
             assert c.get("/api/vdl2/stats").status_code == 503
+            assert c.get("/api/vdl2/active").status_code == 503
+            assert c.get("/api/vdl2/positions").status_code == 503
+            assert c.get("/api/vdl2/oooi/48e95d").status_code == 503
 
     def test_until_le_since_400(self, monkeypatch):
         monkeypatch.setattr(config, "VDL2_ENABLED", True)

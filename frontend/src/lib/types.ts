@@ -86,6 +86,63 @@ export interface Vdl2StatsResponse {
   top_labels: Vdl2TopLabel[];
   top_airlines: Vdl2TopAirline[];
   hourly: number[];
+  // % of last-24h flights also seen on VDL2. Null when the cross-DB join is
+  // unavailable — the tile is hidden in that case.
+  flights_overlap_pct?: number | null;
+}
+
+// Bucketed VDL2 reception series for the Metrics page's two charts. Extends the
+// columnar /api/metrics shape (MetricsResp) so buildPanelOption /
+// buildSignalSmallMultiplesOption consume it directly.
+export interface Vdl2TimeseriesResp {
+  bucket_seconds: number;
+  metrics: string[];
+  data: number[][];
+  freqs: number[];
+  total: number;
+  newest_ts: number | null;
+  newest_age_sec: number | null;
+}
+
+// Map overlay: airframes that transmitted ACARS recently ("transmitting now").
+export interface Vdl2ActiveResponse {
+  icao_hex: string[];
+  count: number;
+}
+
+export interface Vdl2Position {
+  lat: number;
+  lon: number;
+  icao_hex: string | null;
+  ts: number | null;
+  label: string | null;
+  // true = precise (~0.001°) Label-16 AUTPOS body fix; false = coarse (~0.1°) XID fix.
+  precise?: boolean | null;
+}
+
+export interface Vdl2PositionsResponse {
+  points: Vdl2Position[];
+  count: number;
+}
+
+export interface Vdl2OooiEvent {
+  type: 'DEP' | 'ARR' | null;
+  registration: string | null;
+  flight: string | null;
+  dep_icao: string | null;
+  dest_icao: string | null;
+  t_out: string | null;
+  t_off: string | null;
+  t_on: string | null;
+  t_in: string | null;
+  ts: number | null;
+}
+
+export interface Vdl2OooiSummary {
+  dep: Vdl2OooiEvent | null;
+  arr: Vdl2OooiEvent | null;
+  dsta: string | null;
+  has_oooi: boolean;
 }
 
 // Subset of /api/settings the SPA reads. Shared so the ['settings'] query has a

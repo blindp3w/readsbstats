@@ -19,6 +19,8 @@ import { FlagBadge, SourceBadge } from '@/components/FlagBadge';
 import { useFormat } from '@/hooks/useFormat';
 import { cn } from '@/lib/cn';
 import { MapCommandBar, type MapWindow } from '@/components/map/MapCommandBar';
+import { useVdl2Available } from '@/hooks/useVdl2Enabled';
+import type { Vdl2ActiveResponse, Vdl2PositionsResponse } from '@/lib/types';
 import { type Mode } from '@/components/map/MapModeControl';
 import { type PlaybackSpeed } from '@/components/map/MapRewindControls';
 
@@ -92,6 +94,9 @@ export default function MapPage() {
   // ── overlays ──────────────────────────────────────────────────────────
   const [showHeatmap, setShowHeatmap] = useState(false);
   const [showCoverage, setShowCoverage] = useState(false);
+  const [showVdl2, setShowVdl2] = useState(false);
+  // VDL2 overlay is offered only when the feature is on AND vdl2.db is queryable.
+  const vdl2Available = useVdl2Available();
   // 24h is the safe default: fast, small result set, server-side cache TTL
   // 5 min. Larger windows (7d/30d/all) scan millions of positions and can
   // cost > 384 MB peak on a Pi 4 — see CLAUDE.md "heatmap memory" note.
@@ -167,6 +172,37 @@ export default function MapPage() {
     enabled: showCoverage,
     staleTime: 60_000,
   });
+
+  // VDL2 overlay data — only fetched while the toggle is on. Kept entirely
+  // separate from the live snapshot query so the hot 10s map poll is untouched.
+  const vdl2ActiveQ = useQuery<Vdl2ActiveResponse>({
+    queryKey: ['map-vdl2-active'],
+    queryFn: () => apiJson<Vdl2ActiveResponse>('vdl2/active'),
+    enabled: showVdl2 && vdl2Available,
+    refetchInterval: 30_000,
+    staleTime: 30_000,
+  });
+
+  const vdl2PositionsQ = useQuery<Vdl2PositionsResponse>({
+    queryKey: ['map-vdl2-positions'],
+    queryFn: () => apiJson<Vdl2PositionsResponse>('vdl2/positions'),
+    enabled: showVdl2 && vdl2Available,
+    refetchInterval: 30_000,
+    staleTime: 30_000,
+  });
+
+  // Set of recently-transmitting airframes, for the LiveMap "talking now" ring.
+  const acarsActive = showVdl2 && vdl2ActiveQ.data ? new Set(vdl2ActiveQ.data.icao_hex) : undefined;
+
+  // If the feature goes unavailable while the overlay is on, drop it — otherwise
+  // the toggle pill (gated on availability) disappears and strands a stale layer
+  // the user can no longer turn off. React's render-phase "adjust state on prop
+  // change" pattern (no effect — matches MapCommandBar's prevMode idiom).
+  const [prevVdl2Available, setPrevVdl2Available] = useState(vdl2Available);
+  if (vdl2Available !== prevVdl2Available) {
+    setPrevVdl2Available(vdl2Available);
+    if (!vdl2Available && showVdl2) setShowVdl2(false);
+  }
 
   // ── playback tick — advance scrub forward per real second ──────────────
   useEffect(() => {
@@ -340,6 +376,8 @@ export default function MapPage() {
             initialCenter={initialCenter}
             heatmapPoints={showHeatmap ? heatmapQ.data?.points : undefined}
             coveragePolygon={showCoverage ? coverageQ.data?.polygon : undefined}
+            vdl2Positions={showVdl2 ? vdl2PositionsQ.data?.points : undefined}
+            acarsActive={acarsActive}
           />
         </Suspense>
       </div>
@@ -364,6 +402,17 @@ export default function MapPage() {
         </div>
       )}
 
+      {/* VDL2 overlay fetch failed while the toggle is on — surface it instead of
+          leaving the toggle on with silently-missing data. */}
+      {showVdl2 && (vdl2ActiveQ.isError || vdl2PositionsQ.isError) && (
+        <div
+          className="pointer-events-auto absolute inset-x-3 top-3 z-[10]"
+          data-testid="map-vdl2-error"
+        >
+          <Alert variant="warn">VDL2 overlay unavailable — couldn’t load ACARS positions.</Alert>
+        </div>
+      )}
+
       {/* Bottom command bar */}
       <MapCommandBar
         mode={mode}
@@ -376,6 +425,9 @@ export default function MapPage() {
         showCoverage={showCoverage}
         onToggleCoverage={() => setShowCoverage((v) => !v)}
         coverageLoading={showCoverage && coverageQ.isLoading}
+        showVdl2={showVdl2}
+        onToggleVdl2={vdl2Available ? () => setShowVdl2((v) => !v) : undefined}
+        vdl2Loading={showVdl2 && (vdl2ActiveQ.isLoading || vdl2PositionsQ.isLoading)}
         sidebarOpen={sidebarOpen}
         onToggleSidebar={() => setSidebarOpen((v) => !v)}
         snapshotAt={snapshot.data?.at ?? null}

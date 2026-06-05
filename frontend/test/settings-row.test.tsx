@@ -67,6 +67,9 @@ const SAMPLE_PAYLOAD = {
   telegram_summary_time: '21:00',
   telegram_units: 'metric',
   base_url: 'http://homepi.local/stats',
+  vdl2_enabled: 1,
+  vdl2_db_path: 'vdl2.db',
+  vdl2_retention: 90,
   _metadata: {
     // Customized: max_range was set to 450 (default), so customized=false
     // → "(default)" suffix should appear next to the value.
@@ -80,6 +83,8 @@ const SAMPLE_PAYLOAD = {
     db_path: { env_var: 'RSBS_DB_PATH', default: null, customized: false },
     // Display value "not set" implies default; suffix should be suppressed.
     telegram_token: { env_var: 'RSBS_TELEGRAM_TOKEN', default: '', customized: false },
+    vdl2_enabled: { env_var: 'RSBS_VDL2_ENABLED', default: false, customized: true },
+    vdl2_retention: { env_var: 'RSBS_VDL2_RETENTION_DAYS', default: 90, customized: false },
   },
 };
 
@@ -172,6 +177,18 @@ describe('Settings page — _metadata-driven rendering', () => {
       expect(toastSpy).toHaveBeenCalledWith('Copied RSBS_MAX_RANGE');
     });
     expect(document.execCommand).toHaveBeenCalledWith('copy');
+  });
+
+  it('renders the VDL2 / ACARS section with enabled, db file, and retention rows', async () => {
+    setupFetch();
+    renderSettings();
+    const section = await waitFor(() => screen.getByTestId('settings-section-vdl2'));
+    expect(section.textContent).toContain('VDL2 / ACARS');
+    expect(section.textContent).toContain('vdl2.db');
+    expect(section.textContent).toContain('90');
+    // enabled flag renders the success badge ("enabled"), and its env var is copyable.
+    expect(screen.getByLabelText('Copy RSBS_VDL2_ENABLED')).toBeInTheDocument();
+    expect(section.textContent).toContain('enabled');
   });
 
   it('renders without crashing when _metadata is missing from response', async () => {

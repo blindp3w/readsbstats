@@ -18,6 +18,8 @@ from fastapi import APIRouter, HTTPException, Query
 
 from .. import cache, config, schemas
 from ..vdl2 import db as vdl2_db
+from ..vdl2 import oooi
+from ..vdl2 import positions as vdl2_positions
 from . import _deps
 
 log = logging.getLogger("vdl2.api")
@@ -292,19 +294,7 @@ def _compute_stats() -> dict:
     ]
 
     # Last-24h message rate, zero-filled to 24 hourly buckets oldest→newest.
-    # `ago` = whole hours before now (0 = current partial hour); index 23 is the
-    # newest. Bucketing by (ts-since) would push the current hour into a 25th
-    # bucket and drop it — the most relevant data — so key off (now - ts).
-    since = now - 24 * 3600
-    counts = {
-        r["ago"]: r["c"]
-        for r in conn.execute(
-            "SELECT CAST((? - ts) / 3600 AS INT) AS ago, COUNT(*) AS c "
-            "FROM vdl2_messages WHERE ts >= ? GROUP BY ago",
-            (now, since),
-        ).fetchall()
-    }
-    hourly = [counts.get(23 - i, 0) for i in range(24)]
+    hourly = _rate_buckets(conn, now, 3600, 24)
 
     return {
         "total": row["total"],
@@ -313,4 +303,343 @@ def _compute_stats() -> dict:
         "top_labels": top_labels,
         "top_airlines": top_airlines,
         "hourly": hourly,
+        "flights_overlap_pct": _flights_overlap_pct(),
     }
+
+
+def _rate_buckets(conn, now: int, unit_sec: int, n: int) -> list[int]:
+    """Message count per `unit_sec`-wide bucket for the last `n` buckets,
+    zero-filled oldest→newest (index `n-1` is the current partial bucket).
+
+    Keys off ``(now - ts)`` so the current partial bucket lands in the newest
+    slot rather than spilling into an (n+1)th bucket that callers would drop.
+    Shared by the Stats 24h hourly trend and the reception 60-min sparkline."""
+    since = now - unit_sec * n
+    counts = {
+        r["ago"]: r["c"]
+        for r in conn.execute(
+            "SELECT CAST((? - ts) / ? AS INT) AS ago, COUNT(*) AS c "
+            "FROM vdl2_messages WHERE ts >= ? GROUP BY ago",
+            (now, unit_sec, since),
+        ).fetchall()
+    }
+    return [counts.get(n - 1 - i, 0) for i in range(n)]
+
+
+def _flights_overlap_pct() -> float | None:
+    """% of flights in the last 24h whose airframe also transmitted ACARS during
+    the flight's window. Runs on the CORE history.db connection with vdl2.db
+    ATTACHed read-only (the rest of stats reads the vdl2.db connection). Returns
+    None when the ATTACH is unavailable or on any error — must never fail the
+    stats card, and must never turn the cached stats payload into a 503.
+
+    Heaviest query in the VDL2 surface (flights scan + correlated EXISTS); it
+    rides inside the ~30 s stats cache. The 24h window filters on **first_seen**
+    (index-served by idx_flights_first) rather than last_seen (which has no
+    index → a full flights scan); the per-row EXISTS is served by idx_vdl2_icao."""
+    try:
+        core = _deps.db()
+        # Re-attempt the attach per request (idempotent) so a vdl2.db created
+        # after this thread's core connection opened still attaches.
+        _deps._maybe_attach_vdl2(core)
+        if not _deps.vdl2_attached(core):
+            return None
+        since = int(time.time()) - 24 * 3600
+        row = core.execute(
+            """
+            SELECT COUNT(*) AS flights,
+                   SUM(CASE WHEN EXISTS(
+                       SELECT 1 FROM vdl2db.vdl2_messages v
+                       WHERE v.icao_hex = f.icao_hex
+                         AND v.ts >= f.first_seen AND v.ts <= f.last_seen
+                   ) THEN 1 ELSE 0 END) AS with_acars
+            FROM flights f
+            WHERE f.first_seen >= ?
+            """,
+            (since,),
+        ).fetchone()
+    except sqlite3.Error:
+        return None
+    flights = row["flights"] or 0
+    if not flights:
+        return None
+    return round(100.0 * (row["with_acars"] or 0) / flights, 1)
+
+
+
+@router.get("/api/vdl2/oooi/{icao_hex}", response_model=schemas.Vdl2OooiSummary,
+            response_model_exclude_unset=True)
+def api_vdl2_oooi(
+    icao_hex: str,
+    since: int | None = Query(None, ge=0),
+    until: int | None = Query(None, ge=0),
+) -> dict:
+    """OOOI block-time summary for one airframe over a flight window. Scans the
+    airframe's ACARS bodies (OOOI is in the free-text body, NOT the label) and
+    returns the latest DEP + latest ARR, plus a `dsta` destination fallback.
+    EXPERIMENTAL — commonly empty on an H1-dominated feed; the SPA hides the card
+    when `has_oooi` is false and no `dsta`."""
+    hexv = _deps._parse_icao_path(icao_hex)
+    _check_window(since, until)
+    with _vdl2_guard():
+        return _compute_oooi(hexv, since, until)
+
+
+# Bound the OOOI body scan per flight window — generous, but caps a pathological
+# airframe with tens of thousands of messages in one window.
+_OOOI_SCAN_LIMIT = 1000
+
+
+def _compute_oooi(icao_hex: str, since: int | None, until: int | None) -> dict:
+    conn = vdl2_db.web_conn()
+    where = ["icao_hex = ?"]
+    params: list = [icao_hex]
+    if since is not None:
+        where.append("ts >= ?")
+        params.append(since)
+    if until is not None:
+        where.append("ts < ?")
+        params.append(until)
+    params.append(_OOOI_SCAN_LIMIT)
+    rows = conn.execute(
+        f"SELECT body, dsta, ts FROM vdl2_messages WHERE {' AND '.join(where)} "
+        "ORDER BY id DESC LIMIT ?",
+        params,
+    ).fetchall()
+
+    dep = arr = None
+    dsta = None
+    # Rows are newest-first, so the first DEP/ARR we parse is the most recent.
+    for r in rows:
+        if dsta is None and r["dsta"]:
+            dsta = r["dsta"]
+        parsed = oooi.parse_oooi(r["body"])
+        if parsed is None:
+            continue
+        if parsed["type"] == "DEP" and dep is None:
+            dep = {**parsed, "ts": r["ts"]}
+        elif parsed["type"] == "ARR" and arr is None:
+            arr = {**parsed, "ts": r["ts"]}
+        if dep is not None and arr is not None and dsta is not None:
+            break
+    return {"dep": dep, "arr": arr, "dsta": dsta, "has_oooi": dep is not None or arr is not None}
+
+
+_TIMESERIES_TOP_FREQS = 6
+
+
+def _timeseries_bucket(span: int) -> int:
+    """Bucket width (seconds) for a window span. Mirrors /api/metrics, but with a
+    60 s minimum — vdl2_messages are individual rows, so there is no raw mode."""
+    if span <= 86_400:
+        return 60
+    if span <= 604_800:
+        return 300
+    if span <= 2_592_000:
+        return 900
+    if span <= 7_776_000:
+        return 3600
+    return 14400
+
+
+def _fmt_freq(f: float) -> str:
+    return f"{f:g}"
+
+
+# Largest window the timeseries endpoint will aggregate. The Metrics range picker
+# only offers up to 90 d; cap a little above a year so a crafted/buggy request
+# (e.g. from=0) can't allocate a multi-million-entry bucket grid on the Pi.
+_TIMESERIES_MAX_SPAN = 366 * 86_400
+
+
+@router.get("/api/vdl2/timeseries", response_model=schemas.Vdl2TimeseriesResponse,
+            response_model_exclude_unset=True)
+def api_vdl2_timeseries(
+    from_ts: int | None = Query(None, alias="from", ge=0, le=10_000_000_000),
+    to_ts: int | None = Query(None, alias="to", ge=0, le=10_000_000_000),
+) -> dict:
+    """Bucketed reception time-series (msgs/min total + per top-frequency) for the
+    Metrics page's two VDL2 charts, over the picker's [from, to] window. Columnar
+    like /api/metrics so the frontend reuses its chart builders. Not cached — from/to
+    are stable per page mount and the SPA holds a 30 s staleTime. The window is
+    capped (`_TIMESERIES_MAX_SPAN`) so an over-wide request can't blow up memory."""
+    now = int(time.time())
+    if to_ts is None:
+        to_ts = now
+    if from_ts is None:
+        from_ts = to_ts - 86_400
+    if to_ts <= from_ts:
+        raise HTTPException(400, "to must be greater than from")
+    if to_ts - from_ts > _TIMESERIES_MAX_SPAN:
+        raise HTTPException(400, "window too large")
+    with _vdl2_guard():
+        t0 = time.perf_counter()
+        result = _compute_timeseries(from_ts, to_ts)
+        elapsed_ms = (time.perf_counter() - t0) * 1000
+        if elapsed_ms > 250:
+            log.warning("vdl2 timeseries query slow: %.0f ms", elapsed_ms)
+        return result
+
+
+def _compute_timeseries(from_ts: int, to_ts: int) -> dict:
+    conn = vdl2_db.web_conn()
+    bucket = _timeseries_bucket(to_ts - from_ts)
+
+    total = conn.execute(
+        "SELECT COUNT(*) AS n FROM vdl2_messages WHERE ts >= ? AND ts < ?",
+        (from_ts, to_ts),
+    ).fetchone()["n"]
+    newest = conn.execute("SELECT MAX(ts) AS newest FROM vdl2_messages").fetchone()["newest"]
+
+    top = [
+        r["f"] for r in conn.execute(
+            "SELECT ROUND(freq, 3) AS f, COUNT(*) AS c FROM vdl2_messages "
+            "WHERE freq IS NOT NULL AND ts >= ? AND ts < ? "
+            "GROUP BY f ORDER BY c DESC, f LIMIT ?",
+            (from_ts, to_ts, _TIMESERIES_TOP_FREQS),
+        ).fetchall()
+    ]
+
+    n = max(1, (to_ts - from_ts + bucket - 1) // bucket)
+    buckets = [from_ts + i * bucket for i in range(n)]
+    n = len(buckets)
+
+    rate = [0] * n
+    for r in conn.execute(
+        "SELECT CAST((ts - ?) / ? AS INT) AS bi, COUNT(*) AS c FROM vdl2_messages "
+        "WHERE ts >= ? AND ts < ? GROUP BY bi",
+        (from_ts, bucket, from_ts, to_ts),
+    ).fetchall():
+        i = r["bi"]
+        if 0 <= i < n:
+            rate[i] = r["c"]
+
+    cols = {f: [0] * n for f in top}
+    if top:
+        topset = set(top)
+        for r in conn.execute(
+            "SELECT CAST((ts - ?) / ? AS INT) AS bi, ROUND(freq, 3) AS f, COUNT(*) AS c "
+            "FROM vdl2_messages "
+            "WHERE freq IS NOT NULL AND ts >= ? AND ts < ? GROUP BY bi, f",
+            (from_ts, bucket, from_ts, to_ts),
+        ).fetchall():
+            if r["f"] in topset:
+                i = r["bi"]
+                if 0 <= i < n:
+                    cols[r["f"]][i] = r["c"]
+
+    per_min = 60.0 / bucket
+
+    def norm(counts: list[int]) -> list[float]:
+        return [round(c * per_min, 2) for c in counts]
+
+    data = [[float(b) for b in buckets], norm(rate)] + [norm(cols[f]) for f in top]
+    return {
+        "bucket_seconds": bucket,
+        "metrics": ["rate"] + [_fmt_freq(f) for f in top],
+        "freqs": top,
+        "total": total,
+        "newest_ts": newest,
+        "newest_age_sec": (int(time.time()) - newest) if newest is not None else None,
+        "data": data,
+    }
+
+
+# Map-overlay caps. Positions are sampled to avoid shipping a huge GeoJSON to the
+# map when a chatty position-reporting fleet is in range.
+_POSITIONS_CAP = 2000
+# Label-16 candidates are over-fetched (then parsed + discarded) so a burst of
+# newer no-fix AUTPOS rows can't crowd parseable older precise fixes out of the
+# scan before the final cap. Bounded so the scan still terminates.
+_POSITIONS_LABEL16_SCAN_CAP = 8000
+
+
+@router.get("/api/vdl2/active", response_model=schemas.Vdl2ActiveResponse,
+            response_model_exclude_unset=True)
+def api_vdl2_active(minutes: int = Query(10, ge=1, le=120)) -> dict:
+    """ICAO hexes that transmitted ACARS in the last `minutes` minutes. Drives
+    the map's optional 'transmitting ACARS now' marker badge — fetched only when
+    the overlay toggle is on; the live snapshot path is never touched. Cached ~30 s."""
+    cached = cache._get_cache(f"vdl2-active-{minutes}")
+    if cached is not None:
+        return cached
+    with _vdl2_guard():
+        conn = vdl2_db.web_conn()
+        cutoff = int(time.time()) - minutes * 60
+        rows = conn.execute(
+            "SELECT DISTINCT icao_hex FROM vdl2_messages "
+            "WHERE ts >= ? AND icao_hex IS NOT NULL",
+            (cutoff,),
+        ).fetchall()
+        hexes = [r["icao_hex"] for r in rows]
+        out = {"icao_hex": hexes, "count": len(hexes)}
+        cache._set_cache(f"vdl2-active-{minutes}", out)
+        return out
+
+
+@router.get("/api/vdl2/positions", response_model=schemas.Vdl2PositionsResponse,
+            response_model_exclude_unset=True)
+def api_vdl2_positions(minutes: int = Query(60, ge=1, le=1440)) -> dict:
+    """VDL2-derived positions from the last `minutes` minutes, for the optional
+    map overlay. Two sources, precise preferred (validated against a real feed):
+    Label-16 AUTPOS bodies carry **precise** (~0.001°) coordinates parsed here;
+    the lat/lon columns hold only **coarse** (~0.1°) VDL2 XID link-frame fixes
+    used as a fallback. Each point carries `precise`. Sparse on an H1-dominated
+    feed. Capped + cached ~30 s."""
+    cached = cache._get_cache(f"vdl2-positions-{minutes}")
+    if cached is not None:
+        return cached
+    with _vdl2_guard():
+        out = _compute_positions(minutes)
+        cache._set_cache(f"vdl2-positions-{minutes}", out)
+        return out
+
+
+def _compute_positions(minutes: int) -> dict:
+    """Two index-served candidate queries merged in Python (a single OR query
+    full-scans; see idx_vdl2_label_ts_id / idx_vdl2_pos_ts_id). Precise fixes are
+    parsed ONLY from Label-16 AUTPOS bodies (so a coordinate-looking body on a
+    non-16 row can't masquerade as precise); coarse XID column fixes are the
+    fallback. Independent caps + an over-fetched label-16 scan + a final merge/cap
+    so a burst of no-fix Label-16 rows can't starve valid coarse OR older precise
+    points."""
+    conn = vdl2_db.web_conn()
+    cutoff = int(time.time()) - minutes * 60
+
+    label_rows = conn.execute(
+        "SELECT id, icao_hex, ts, label, body FROM vdl2_messages "
+        "WHERE label = '16' AND ts >= ? ORDER BY ts DESC, id DESC LIMIT ?",
+        (cutoff, _POSITIONS_LABEL16_SCAN_CAP),
+    ).fetchall()
+    coarse_rows = conn.execute(
+        "SELECT id, lat, lon, icao_hex, ts, label FROM vdl2_messages "
+        "WHERE lat IS NOT NULL AND lon IS NOT NULL AND ts >= ? "
+        "ORDER BY ts DESC, id DESC LIMIT ?",
+        (cutoff, _POSITIONS_CAP),
+    ).fetchall()
+
+    def _point(r, lat, lon, precise) -> dict:
+        # `_id` is an internal merge/sort key, stripped before the response.
+        return {
+            "_id": r["id"], "lat": lat, "lon": lon, "icao_hex": r["icao_hex"],
+            "ts": r["ts"], "label": r["label"], "precise": precise,
+        }
+
+    points: list[dict] = []
+    seen: set[int] = set()
+    for r in label_rows:
+        parsed = vdl2_positions.parse_position(r["body"])
+        if parsed is None:
+            continue   # no-fix Label-16 body — discarded (does not consume the final cap)
+        seen.add(r["id"])
+        points.append(_point(r, parsed["lat"], parsed["lon"], True))
+    for r in coarse_rows:
+        if r["id"] in seen:
+            continue   # same row already emitted as a precise fix
+        points.append(_point(r, r["lat"], r["lon"], False))
+
+    points.sort(key=lambda p: (p["ts"] or 0, p["_id"]), reverse=True)
+    points = points[:_POSITIONS_CAP]
+    for p in points:
+        del p["_id"]   # internal merge key — not part of the public Vdl2Position contract
+    return {"points": points, "count": len(points)}

@@ -110,6 +110,18 @@ export const SMALL_MULT_HEIGHT = 280; // px — chart canvas total
 const SMALL_MULT_GRID_H = 50;
 const SMALL_MULT_TITLE_H = 14; // small label row above each grid
 
+// Total canvas height for an `n`-row small-multiples chart. The existing
+// SMALL_MULT_HEIGHT (280) is exactly smallMultHeight(4) — the signal panel.
+export function smallMultHeight(n: number): number {
+  const rows = Math.max(n, 1);
+  return (
+    SMALL_MULT_TITLE_H +
+    (rows - 1) * (SMALL_MULT_TITLE_H + SMALL_MULT_GRID_H) +
+    SMALL_MULT_GRID_H +
+    24
+  );
+}
+
 function smallMultGridTop(i: number): number {
   // Row stride = title + grid; bottom (i=3) has axis label band below.
   return SMALL_MULT_TITLE_H + i * (SMALL_MULT_TITLE_H + SMALL_MULT_GRID_H);
