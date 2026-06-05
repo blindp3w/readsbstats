@@ -10,7 +10,9 @@
   - **Reception charts (Metrics page)** — `GET /api/vdl2/timeseries`: two
     range-driven ECharts sharing the page's range picker — a message-rate line and
     a per-frequency small-multiples panel (dBFS-panel style), msgs/min, dynamic
-    top-6 frequencies — plus a freshness/total header ("is the VDL2 SDR alive?").
+    top-6 frequencies — rendered as two side-by-side panels in the Metrics grid
+    (matching the other cards), with a freshness/total header ("is the VDL2 SDR
+    alive?").
     **vdlm2dec-only — no signal level** (that field exists only in dumpvdl2's JSON).
   - **Map overlay** — `GET /api/vdl2/active` ("transmitting ACARS now" ring on
     live aircraft) + `GET /api/vdl2/positions` (structured ACARS positions, sparse
@@ -60,7 +62,10 @@
   bodies can't starve older *precise* fixes (not just coarse ones).
 - **`Vdl2ReceptionCard`** is now truly self-gating — renders nothing (not an empty shell) when
   `enabled` is false, matching the detail panels.
-- Tests: **1745 Python**, **358 Vitest** (all green).
+- **ACARS panel height capped** — the flight/aircraft-detail ACARS log is wrapped in the same
+  `max-h-[480px]` scroll container as the position log, so a chatty flight scrolls internally
+  instead of pushing the rest of the page down.
+- Tests: **1745 Python**, **359 Vitest** (all green).
 
 ## 2.14.0 — 2026-06-05
 
