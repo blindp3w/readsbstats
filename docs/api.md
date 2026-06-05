@@ -61,7 +61,11 @@ exposed at `/api/health` → `vdl2.available` (the SPA gates surfaces on it).
 |---|---|---|
 | GET | `/api/vdl2/messages` | Newest-first feed. Query: `limit` (≤100), `before_id` (keyset pagination), `label`, `hex` (prefix), `reg` (prefix), `since`/`until` (epoch), `q` (FTS5 full-text, `LIKE` fallback). Returns `{messages, next_before_id}`. |
 | GET | `/api/vdl2/messages/{icao_hex}` | All messages from one airframe (6-hex ICAO), newest-first. Accepts `since`/`until` (epoch) to scope to a flight window (used by the flight-detail ACARS panel), plus `limit`/`before_id`/`q`. |
-| GET | `/api/vdl2/stats` | `{total, last_hour, aircraft, top_labels[], top_airlines[], hourly[24]}`. `top_airlines` codes are name-resolved via the core `airlines` table (degrades to codes); `hourly` is last-24h message counts, zero-filled. |
+| GET | `/api/vdl2/stats` | `{total, last_hour, aircraft, top_labels[], top_airlines[], hourly[24], flights_overlap_pct}`. `top_airlines` codes are name-resolved via the core `airlines` table (degrades to codes); `hourly` is last-24h message counts, zero-filled. `flights_overlap_pct` = % of last-24h flights also seen on VDL2 (computed on the core conn with `vdl2.db` ATTACHed read-only; `null` when the ATTACH is unavailable). |
+| GET | `/api/vdl2/reception` | Receiver-health card (Metrics page). `{msgs_last_min, msgs_last_hour, msgs_24h, aircraft_last_hour, newest_ts, newest_age_sec, per_freq[], rate_sparkline[60]}`. `per_freq` groups by `ROUND(freq,3)` MHz; `rate_sparkline` is messages/min for the last 60 min (zero-filled, newest last). vdlm2dec-only — **no signal level** (that field exists only in dumpvdl2). |
+| GET | `/api/vdl2/active` | `{icao_hex[], count}` — airframes that transmitted ACARS in the last `minutes` (default 10, 1–120). Map "transmitting now" badge. |
+| GET | `/api/vdl2/positions` | `{points[], count}` of `{lat, lon, icao_hex, ts, label}` from the last `minutes` (default 60, 1–1440). Only structured-position messages carry coordinates, so sparse on an H1-dominated feed. Capped at 2000. |
+| GET | `/api/vdl2/oooi/{icao_hex}` | OOOI block-time summary for a flight window (`since`/`until`). `{dep, arr, dsta, has_oooi}` — latest DEP + ARR parsed from ACARS **bodies** (OOOI is not a label), plus a `dsta` destination fallback. EXPERIMENTAL; commonly empty on an H1-dominated feed. |
 
 ## Enrichment
 

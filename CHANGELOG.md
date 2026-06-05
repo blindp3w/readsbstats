@@ -1,5 +1,32 @@
 # Changelog
 
+## 2.15.0 — 2026-06-05
+
+### Added
+
+- **VDL2 phases 5/7/8 + read-time integration wins** — all opt-in behind
+  `RSBS_VDL2_ENABLED`, all read-only over the existing `vdl2.db` (no schema
+  changes), all self-gating so a disabled/unavailable feature is fully absent:
+  - **Reception card (Metrics page)** — `GET /api/vdl2/reception`: message rate,
+    per-frequency activity (`ROUND(freq,3)` MHz), distinct aircraft, 60-min
+    rate sparkline, and feed freshness ("is the VDL2 SDR alive?"). **vdlm2dec-only
+    — no signal level** (that field exists only in dumpvdl2's JSON).
+  - **Map overlay** — `GET /api/vdl2/active` ("transmitting ACARS now" ring on
+    live aircraft) + `GET /api/vdl2/positions` (structured ACARS positions, sparse
+    on an H1-dominated feed). Toggle-gated; the hot live-snapshot path is untouched.
+  - **Settings surface** — the VDL2 / ACARS section now renders on the Settings
+    page (enabled, db file, retention) from the already-exposed payload.
+  - **Aircraft-detail ACARS panel** — the flight-detail ACARS panel now also
+    appears on the aircraft page, scoped to the airframe's whole tracked history.
+  - **Stats overlap KPI** — `/api/vdl2/stats` gains `flights_overlap_pct` (% of
+    last-24h flights also seen on VDL2; computed via the read-only cross-DB ATTACH,
+    `null` when unavailable).
+  - **Flight-detail OOOI card** *(experimental)* — `GET /api/vdl2/oooi/{icao_hex}`
+    parses Out/Off/On/In block times from ACARS **bodies** (OOOI is not a label),
+    with a ✓/✗ route-confirmation chip vs the scheduled origin/dest and a `dsta`
+    destination fallback. Carrier-variant; commonly empty on an H1-dominated feed.
+- Tests: **1727 Python**, **357 Vitest** (all green).
+
 ## 2.14.0 — 2026-06-05
 
 ### Changed

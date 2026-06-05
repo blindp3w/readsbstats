@@ -16,9 +16,13 @@ export function Vdl2StatsCard({ enabled = true }: { enabled?: boolean }) {
     staleTime: 120_000,
   });
 
+  // With the optional overlap tile there are 4 KPIs (balance 2×2 / 1×4);
+  // without it, 3 (1×3). Avoids a lone 4th tile wrapping under a 3-col grid.
+  const hasOverlap = data?.flights_overlap_pct != null;
+
   return (
     <div className="space-y-4" data-testid="stats-vdl2">
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
+      <div className={`grid grid-cols-2 gap-3 ${hasOverlap ? 'lg:grid-cols-4' : 'md:grid-cols-3'}`}>
         <KpiCard
           label="ACARS messages (24h trend)"
           value={data ? data.total : '—'}
@@ -27,6 +31,13 @@ export function Vdl2StatsCard({ enabled = true }: { enabled?: boolean }) {
         />
         <KpiCard label="Last hour" value={data ? data.last_hour : '—'} />
         <KpiCard label="Aircraft (VDL2)" value={data ? data.aircraft : '—'} />
+        {hasOverlap && (
+          <KpiCard
+            label="Flights also on ACARS (24h)"
+            value={`${data.flights_overlap_pct}%`}
+            testid="vdl2-kpi-overlap"
+          />
+        )}
       </div>
       <div className="grid gap-3 md:grid-cols-2">
         <Card data-testid="vdl2-top-labels">
