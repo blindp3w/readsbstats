@@ -69,6 +69,24 @@ describe('AcarsPanel', () => {
     expect(getByTestId('flight-acars-card')).toBeTruthy();
   });
 
+  it('caps the message list height with vertical scroll (matches the position log)', async () => {
+    stubFetch({
+      vdl2_enabled: true,
+      messages: [
+        { id: 1, ts: 1_749_065_117, icao_hex: '48e95d', label: 'H1',
+          freq: 136.725, body: 'one', decoder: 'vdlm2dec' },
+      ],
+    });
+    const { findByTestId } = wrap(
+      <AcarsPanel icao="48e95d" firstSeen={1_749_060_000} lastSeen={1_749_070_000} />,
+    );
+    const scroll = await findByTestId('flight-acars-scroll');
+    expect(scroll.className).toContain('overflow-y-auto');
+    expect(scroll.className).toContain('max-h-[480px]');
+    // The list lives inside the scroll container, not as a sibling.
+    expect(scroll.querySelector('[data-testid="vdl2-list"]')).toBeTruthy();
+  });
+
   it('shows empty state when no ACARS for the flight', async () => {
     stubFetch({ vdl2_enabled: true, messages: [] });
     const { findByTestId } = wrap(

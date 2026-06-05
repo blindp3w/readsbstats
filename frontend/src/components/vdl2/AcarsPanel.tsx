@@ -65,7 +65,13 @@ export function AcarsPanel({ icao, firstSeen, lastSeen, context = 'flight' }: Pr
             {emptyText}
           </p>
         )}
-        {messages.length > 0 && <MessageList messages={messages} />}
+        {messages.length > 0 && (
+          // Cap the height and scroll, matching the position log, so a chatty
+          // flight's ACARS log doesn't push the rest of the page far down.
+          <div className="max-h-[480px] overflow-y-auto" data-testid={`${context}-acars-scroll`}>
+            <MessageList messages={messages} />
+          </div>
+        )}
       </CardContent>
     </Card>
   );
