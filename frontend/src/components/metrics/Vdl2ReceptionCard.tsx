@@ -20,8 +20,8 @@ function fmtFreshness(ts: number | null, ageSec: number | null): string {
 // VDL2 reception / receiver-health card for the Metrics page. vdlm2dec-only:
 // shows message rate, per-frequency activity, distinct aircraft, and feed
 // freshness — NO signal level (that field exists only in dumpvdl2). Self-gating
-// via the `enabled` prop so an accidental render outside the availability gate
-// makes no /api/vdl2/reception call.
+// via the `enabled` prop: when false it makes no /api/vdl2/reception call AND
+// renders nothing (the parent still gates mounting on availability).
 export function Vdl2ReceptionCard({ enabled = true }: { enabled?: boolean }) {
   const { data } = useQuery({
     queryKey: ['vdl2-reception'],
@@ -30,6 +30,8 @@ export function Vdl2ReceptionCard({ enabled = true }: { enabled?: boolean }) {
     refetchInterval: 15_000,
     staleTime: 15_000,
   });
+
+  if (!enabled) return null;
 
   const stale = data != null && (data.newest_age_sec == null || data.newest_age_sec > STALE_SEC);
 

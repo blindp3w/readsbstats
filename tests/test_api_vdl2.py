@@ -398,6 +398,22 @@ class TestMapOverlay:
         hexes = {p["icao_hex"] for p in data["points"]}
         assert "48cc00" in hexes   # the valid coarse point survived the no-fix burst
 
+    def test_positions_nofix_label16_does_not_starve_precise(self, monkeypatch):
+        # BE-007-partial: newer no-fix Label-16 rows must not consume the cap and
+        # starve an OLDER valid precise Label-16 fix. The label-16 candidate scan
+        # over-fetches beyond _POSITIONS_CAP so parseable rows survive.
+        now = int(time.time())
+        monkeypatch.setattr(vdl2_api, "_POSITIONS_CAP", 2)
+        vconn, app = self._make(monkeypatch, [
+            {"ts": now - 100, "icao_hex": "48ok01", "label": "16", "body": "N 52.166,E 020.772"},
+            {"ts": now - 5, "icao_hex": "48bad1", "label": "16", "body": "no fix"},
+            {"ts": now - 4, "icao_hex": "48bad2", "label": "16", "body": "N   .    MMMM.MMM"},
+        ])
+        with TestClient(app) as c:
+            data = c.get("/api/vdl2/positions?minutes=60").json()
+        assert any(p["icao_hex"] == "48ok01" and p["precise"] is True for p in data["points"])
+        vconn.close()
+
     def test_positions_sorted_newest_first(self, monkeypatch):
         now = int(time.time())
         vconn, app = self._make(monkeypatch, [

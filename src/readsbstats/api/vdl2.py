@@ -495,6 +495,10 @@ def _compute_oooi(icao_hex: str, since: int | None, until: int | None) -> dict:
 # Map-overlay caps. Positions are sampled to avoid shipping a huge GeoJSON to the
 # map when a chatty position-reporting fleet is in range.
 _POSITIONS_CAP = 2000
+# Label-16 candidates are over-fetched (then parsed + discarded) so a burst of
+# newer no-fix AUTPOS rows can't crowd parseable older precise fixes out of the
+# scan before the final cap. Bounded so the scan still terminates.
+_POSITIONS_LABEL16_SCAN_CAP = 8000
 
 
 @router.get("/api/vdl2/active", response_model=schemas.Vdl2ActiveResponse,
@@ -543,15 +547,16 @@ def _compute_positions(minutes: int) -> dict:
     full-scans; see idx_vdl2_label_ts_id / idx_vdl2_pos_ts_id). Precise fixes are
     parsed ONLY from Label-16 AUTPOS bodies (so a coordinate-looking body on a
     non-16 row can't masquerade as precise); coarse XID column fixes are the
-    fallback. Independent caps + a final merge/cap so a burst of no-fix Label-16
-    rows can't starve valid coarse points."""
+    fallback. Independent caps + an over-fetched label-16 scan + a final merge/cap
+    so a burst of no-fix Label-16 rows can't starve valid coarse OR older precise
+    points."""
     conn = vdl2_db.web_conn()
     cutoff = int(time.time()) - minutes * 60
 
     label_rows = conn.execute(
         "SELECT id, icao_hex, ts, label, body FROM vdl2_messages "
         "WHERE label = '16' AND ts >= ? ORDER BY ts DESC, id DESC LIMIT ?",
-        (cutoff, _POSITIONS_CAP),
+        (cutoff, _POSITIONS_LABEL16_SCAN_CAP),
     ).fetchall()
     coarse_rows = conn.execute(
         "SELECT id, lat, lon, icao_hex, ts, label FROM vdl2_messages "
