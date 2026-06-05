@@ -523,6 +523,19 @@ class TestSafeHttpxGet:
         assert client.last_kwargs["headers"] == {"Host": "example.com"}
         assert client.last_kwargs["extensions"] == {"sni_hostname": "example.com"}
 
+    def test_json_readable_after_streamed_response(self, monkeypatch):
+        """Audit 17: safe_httpx_get consumes the body via iter_bytes() (to abort
+        mid-stream at max_bytes) and patches resp._content so callers — the
+        route/adsbx enrichers — can still call .json()/.content afterward. Pin
+        that contract; it guards a future httpx bump that might rename _content."""
+        _patch_validate(monkeypatch)
+        resp = httpx.Response(200, content=b'{"hello": "world"}',
+                              request=httpx.Request("GET", "https://example.com/"))
+        out = http_safe.safe_httpx_get(_FakeHttpxClient(resp),
+                                       "https://example.com/", max_bytes=1024)
+        assert out.json() == {"hello": "world"}
+        assert out.content == b'{"hello": "world"}'
+
     def test_302_raises(self, monkeypatch):
         _patch_validate(monkeypatch)
         resp = httpx.Response(302, headers={"Location": "https://attacker.example/"},
