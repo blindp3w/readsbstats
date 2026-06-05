@@ -18,7 +18,12 @@ PrivateTmp=yes
 PrivateDevices=yes
 ProtectHome=yes
 ProtectSystem=strict
-RestrictAddressFamilies=AF_INET AF_INET6
+# AF_INET/AF_INET6 for the curl to Telegram; AF_UNIX so the script's
+# `systemctl status <unit>` can reach the system D-Bus socket. Without AF_UNIX
+# that call fails with "Failed to connect to bus: Address family not supported
+# by protocol", and the alert body carries that error instead of the real
+# failed-unit status — exactly when you need the diagnostics most.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 # Audit-13 A13-046: kernel/namespace hardening — curl needs no kernel
 # tunables, no module load, no namespace tricks.
 ProtectKernelTunables=yes

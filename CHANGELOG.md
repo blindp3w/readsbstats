@@ -51,6 +51,20 @@
   badge" if it's missing; `history.db` is never modified and `/api/flights` is
   unchanged when the feature is off.
 
+### Fixed
+
+- **DB-check timers no longer false-fail on a large DB** — `quick_check` on a
+  1.2 GB `history.db` with a fat WAL reads every page off the USB disk and now
+  takes ~60 s standalone (and >120 s during a deploy/reboot I/O storm), so the
+  weekly `readsbstats-dbcheck.service` was timing out (`TimeoutStartSec=120`) and
+  firing spurious Telegram failure alerts even though the DB was healthy. Raised
+  the quick check to 600 s and the monthly `integrity_check` to 1800 s.
+- **Telegram failure alerts now include the real status** — `notify-telegram@`
+  ran `systemctl status <unit>` to build the alert, but its sandbox lacked
+  `AF_UNIX`, so the call failed with "Failed to connect to bus: Address family
+  not supported by protocol" and that error landed in the alert instead of the
+  unit's actual failure output. Added `AF_UNIX` to its `RestrictAddressFamilies`.
+
 ## 2.13.1 — 2026-06-01
 
 Repository audit 2026-06-01 follow-ups — correctness sweep across
