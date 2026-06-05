@@ -2157,6 +2157,22 @@ class TestClampCaption:
         lt = body.rfind("<")
         assert lt == -1 or ">" in body[lt:], f"dangling tag: {body[-8:]!r}"
 
+    def test_truncation_does_not_leave_unclosed_tag(self):
+        """Audit 17 review: a real (multi-line) caption truncated mid-way must
+        not leave an opened-but-unclosed tag — e.g. a `<b>` line whose `</b>`
+        was cut. Telegram 400s on that. Cutting at a line boundary (our builders
+        keep each tag within one line) keeps every tag balanced."""
+        lines = [f"<b>Row {i:03d}</b> detail text padding xyzzy" for i in range(60)]
+        s = "\n".join(lines)
+        assert len(s) > 1024
+        out = notifier._clamp_caption(s, limit=1024)
+        assert len(out) <= 1024
+        # Every opened <b> is closed — no dangling open tag.
+        assert out.count("<b>") == out.count("</b>")
+        body = out[:-1]
+        lt = body.rfind("<")
+        assert lt == -1 or ">" in body[lt:]
+
 
 class TestDispatchTruncates:
     @pytest.fixture(autouse=True)

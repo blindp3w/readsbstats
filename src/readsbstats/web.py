@@ -117,7 +117,11 @@ async def _lifespan(app_: FastAPI) -> AsyncIterator[None]:
             log.info("starting map-cache prewarmer (8 targets, half-TTL refresh)")
             cache._start_prewarmer()
     yield
-    cache._stop_prewarmer()
+    # Audit 17 review: _stop_prewarmer now join()s the worker (up to 15 s if a
+    # scan is in flight), so run it off-loop — a synchronous call here would
+    # freeze the event loop during a mid-scan shutdown, stalling in-flight
+    # responses. Mirrors the to_thread(_startup_migrate) pattern above.
+    await asyncio.to_thread(cache._stop_prewarmer)
     analytics.close()
     if config.VDL2_ENABLED:
         from .vdl2 import db as vdl2_db

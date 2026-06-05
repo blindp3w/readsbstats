@@ -19,7 +19,8 @@ Full findings in `internal_docs/security/audit-17-2026-06-06.md`.
 - **Telegram oversized captions** — the text-only dispatch path could send an
   unclamped caption (>4096) and have Telegram 400 it, silently dropping the
   alert; clamping now happens at the single `_send` chokepoint. `_clamp_caption`
-  also no longer truncates through an HTML entity/tag.
+  also no longer produces malformed HTML when truncating — it cuts at a line
+  boundary (entity-, tag-, and unclosed-tag-safe).
 - **Route enricher request leak** — a persistent non-404 4xx for a callsign is
   now treated as permanent (TTL-bounded negative cache) instead of being
   refetched every batch forever. 429/5xx stay transient.
@@ -36,7 +37,8 @@ Full findings in `internal_docs/security/audit-17-2026-06-06.md`.
 ### Changed (internal hardening)
 
 - Map-cache prewarmer `stop()` now joins the worker before restart (no orphaned
-  full-`positions` scan threads); caller-controlled cache keys (`stats:*`,
+  full-`positions` scan threads) and runs off the event loop on shutdown so the
+  join can't stall in-flight responses; caller-controlled cache keys (`stats:*`,
   `flagged:*`) can no longer evict the expensive prewarmed map entries.
 - CSV export streams from a dedicated short-lived connection (no WAL snapshot
   pinned on the request connection during a slow download).

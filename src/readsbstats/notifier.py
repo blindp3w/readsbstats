@@ -410,16 +410,27 @@ def _clamp_caption(caption: str, limit: int = _PHOTO_CAPTION_MAX) -> str:
     stripped = _TRAILING_LINK_LINE_RE.sub("", stripped)
     if len(stripped) <= limit:
         return stripped
-    # Audit 17: plain-truncate, but don't slice through an HTML entity
-    # (`&amp;`) or a tag (`<i>`) — Telegram 400s on malformed HTML and drops
-    # the whole alert. Trim back to before any trailing unterminated `&`/`<`.
-    cut = stripped[: limit - 1]
-    amp = cut.rfind("&")
-    if amp != -1 and ";" not in cut[amp:]:
-        cut = cut[:amp]
+    # Audit 17: plain-truncate without producing malformed HTML — Telegram 400s
+    # (and drops the whole alert) on a split entity, a half-open tag, OR an
+    # unclosed tag (`<b>…` whose `</b>` got cut). Our builders keep every tag
+    # and entity within a single line, so cutting at the last newline before the
+    # limit yields balanced HTML for free. This is the path real (multi-line)
+    # captions take.
+    hard = stripped[: limit - 1]
+    nl = hard.rfind("\n")
+    if nl > 0:
+        return hard[:nl] + "\n…"
+    # No newline to cut on (a single oversized line — our builders don't emit
+    # these). Strip complete tags (keep their text) so a cut can't leave a
+    # half-open or unclosed tag, then trim a trailing unterminated tag/entity.
+    # Loses formatting but keeps text and never produces invalid HTML.
+    cut = re.sub(r"<[^>]*>", "", hard)
     lt = cut.rfind("<")
     if lt != -1 and ">" not in cut[lt:]:
         cut = cut[:lt]
+    amp = cut.rfind("&")
+    if amp != -1 and ";" not in cut[amp:]:
+        cut = cut[:amp]
     return cut + "…"
 
 
