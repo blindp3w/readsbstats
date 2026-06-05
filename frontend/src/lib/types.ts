@@ -110,6 +110,19 @@ export interface Vdl2ReceptionResponse {
   rate_sparkline: number[];
 }
 
+// Bucketed VDL2 reception series for the Metrics page's two charts. Extends the
+// columnar /api/metrics shape (MetricsResp) so buildPanelOption /
+// buildSignalSmallMultiplesOption consume it directly.
+export interface Vdl2TimeseriesResp {
+  bucket_seconds: number;
+  metrics: string[];
+  data: number[][];
+  freqs: number[];
+  total: number;
+  newest_ts: number | null;
+  newest_age_sec: number | null;
+}
+
 // Map overlay: airframes that transmitted ACARS recently ("transmitting now").
 export interface Vdl2ActiveResponse {
   icao_hex: string[];

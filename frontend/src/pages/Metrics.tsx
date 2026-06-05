@@ -188,7 +188,7 @@ export default function MetricsPage() {
 
       <HealthStripe q={healthQ} />
 
-      {vdl2Available && <Vdl2ReceptionCard enabled={vdl2Available} />}
+      {vdl2Available && <Vdl2ReceptionCard enabled={vdl2Available} from={from} to={to} />}
 
       {metricsQ.isError && (
         <Alert variant="error">Failed to load metrics: {(metricsQ.error as Error).message}</Alert>
