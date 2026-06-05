@@ -122,6 +122,8 @@ export interface Vdl2Position {
   icao_hex: string | null;
   ts: number | null;
   label: string | null;
+  // true = precise (~0.001°) Label-16 AUTPOS body fix; false = coarse (~0.1°) XID fix.
+  precise?: boolean | null;
 }
 
 export interface Vdl2PositionsResponse {
