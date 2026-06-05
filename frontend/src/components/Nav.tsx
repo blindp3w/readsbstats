@@ -1,9 +1,8 @@
 import { useState } from 'react';
 import { NavLink, Link, useLocation } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
 import { HamburgerMenuIcon, CaretDownIcon } from '@radix-ui/react-icons';
 import { cn } from '@/lib/cn';
-import { apiJson } from '@/lib/api';
+import { useVdl2Enabled } from '@/hooks/useVdl2Enabled';
 import { useUnitsStore, type UnitSystem } from '@/store/units';
 import {
   Select,
@@ -68,12 +67,7 @@ const VDL2_LINK: NavItem = { to: '/vdl2', label: 'VDL2' };
 // the same key on boot, so this adds no extra request) and returns the link
 // arrays to render. When VDL2 is disabled the lists are identical to before.
 function useNavLinks(): { inlineLinks: NavItem[]; overflowLinks: NavItem[] } {
-  const settingsQ = useQuery({
-    queryKey: ['settings'],
-    queryFn: () => apiJson<{ vdl2_enabled?: boolean }>('settings'),
-    staleTime: 60_000,
-  });
-  const vdl2Enabled = settingsQ.data?.vdl2_enabled === true;
+  const vdl2Enabled = useVdl2Enabled();
   const overflowLinks = vdl2Enabled
     ? [...OVERFLOW_LINKS.slice(0, 3), VDL2_LINK, OVERFLOW_LINKS[3]]
     : OVERFLOW_LINKS;

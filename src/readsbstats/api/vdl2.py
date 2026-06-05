@@ -1,7 +1,8 @@
 """VDL2 / ACARS read-only API (opt-in; included only when RSBS_VDL2_ENABLED).
 
-Queries the SEPARATE ``vdl2.db`` via ``vdl2.db.web_conn()`` — never the core
-``history.db``. All handlers are ``def`` (FastAPI runs them in the threadpool;
+Message data is read from the SEPARATE ``vdl2.db`` via ``vdl2.db.web_conn()``;
+the only core ``history.db`` read is `_airline_names` resolving airline names for
+the stats card. All handlers are ``def`` (FastAPI runs them in the threadpool;
 they only SELECT). Full-text search uses FTS5 when available and falls back to
 ``LIKE`` otherwise (Pi SQLite-version skew).
 """
@@ -130,29 +131,96 @@ def api_vdl2_aircraft(
     limit: int = Query(100, ge=1, le=100),
     before_id: int | None = Query(None, ge=1),
     q: str | None = Query(None, max_length=200),
+    since: int | None = Query(None, ge=0),
+    until: int | None = Query(None, ge=0),
 ) -> dict:
-    """All messages from one airframe (by ICAO hex), newest-first."""
+    """All messages from one airframe (by ICAO hex), newest-first. ``since``/
+    ``until`` (epoch) scope it to a flight window for the flight-detail panel."""
     hexv = _deps._parse_icao_path(icao_hex)
     return _query_messages(
         limit=limit, before_id=before_id, label=None, hex_=None, reg=None,
-        since=None, until=None, q=q, icao_eq=hexv,
+        since=since, until=until, q=q, icao_eq=hexv,
     )
+
+
+def _airline_names(codes: list[str]) -> dict[str, str]:
+    """Resolve 2-char IATA airline codes → names via the core history.db
+    `airlines` table (airlines live there, not in vdl2.db). ACARS `flight` ids
+    are IATA-format (e.g. 'LO6550'), so we key on `iata_code`, not `icao_code`.
+    Degrades to {} on any error so the stats card still shows codes."""
+    codes = [c for c in codes if c]
+    if not codes:
+        return {}
+    try:
+        core = _deps.db()
+        ph = ",".join("?" * len(codes))
+        rows = core.execute(
+            f"SELECT iata_code, name FROM airlines WHERE iata_code IN ({ph})", codes
+        ).fetchall()
+        return {r["iata_code"]: r["name"] for r in rows if r["iata_code"] and r["name"]}
+    except sqlite3.Error:
+        return {}
 
 
 @router.get("/api/vdl2/stats")
 def api_vdl2_stats() -> dict:
-    """Header counts: total stored, last hour, distinct aircraft."""
+    """Counts + top labels/airlines + 24h hourly trend for the Stats card."""
     conn = vdl2_db.web_conn()
     now = int(time.time())
-    # Single table pass for all three counts (polled every 15 s by the UI;
-    # FILTER + COUNT(DISTINCT) keep it one scan instead of three).
+    # Single table pass for the three headline counts.
     row = conn.execute(
         """
-        SELECT COUNT(*)                                              AS total,
-               COUNT(*) FILTER (WHERE ts >= ?)                       AS last_hour,
-               COUNT(DISTINCT icao_hex)                              AS aircraft
+        SELECT COUNT(*)                        AS total,
+               COUNT(*) FILTER (WHERE ts >= ?) AS last_hour,
+               COUNT(DISTINCT icao_hex)        AS aircraft
         FROM vdl2_messages
         """,
         (now - 3600,),
     ).fetchone()
-    return {"total": row["total"], "last_hour": row["last_hour"], "aircraft": row["aircraft"]}
+
+    top_labels = [
+        {"label": r["label"], "messages": r["messages"], "aircraft": r["aircraft"]}
+        for r in conn.execute(
+            "SELECT label, COUNT(*) AS messages, COUNT(DISTINCT icao_hex) AS aircraft "
+            "FROM vdl2_messages WHERE label IS NOT NULL "
+            "GROUP BY label ORDER BY messages DESC LIMIT 10"
+        ).fetchall()
+    ]
+
+    # ACARS flight ids are IATA-format (e.g. 'LO6550'); group on the 2-char
+    # operator prefix (NOT substr(,1,3), which would split 'LO6550' and 'LO0304'
+    # into different keys) and resolve names via airlines.iata_code.
+    airline_rows = conn.execute(
+        "SELECT substr(flight, 1, 2) AS code, COUNT(*) AS messages "
+        "FROM vdl2_messages WHERE flight IS NOT NULL AND length(flight) >= 3 "
+        "GROUP BY code ORDER BY messages DESC LIMIT 10"
+    ).fetchall()
+    names = _airline_names([r["code"] for r in airline_rows])
+    top_airlines = [
+        {"code": r["code"], "messages": r["messages"], "name": names.get(r["code"])}
+        for r in airline_rows
+    ]
+
+    # Last-24h message rate, zero-filled to 24 hourly buckets oldest→newest.
+    # `ago` = whole hours before now (0 = current partial hour); index 23 is the
+    # newest. Bucketing by (ts-since) would push the current hour into a 25th
+    # bucket and drop it — the most relevant data — so key off (now - ts).
+    since = now - 24 * 3600
+    counts = {
+        r["ago"]: r["c"]
+        for r in conn.execute(
+            "SELECT CAST((? - ts) / 3600 AS INT) AS ago, COUNT(*) AS c "
+            "FROM vdl2_messages WHERE ts >= ? GROUP BY ago",
+            (now, since),
+        ).fetchall()
+    }
+    hourly = [counts.get(23 - i, 0) for i in range(24)]
+
+    return {
+        "total": row["total"],
+        "last_hour": row["last_hour"],
+        "aircraft": row["aircraft"],
+        "top_labels": top_labels,
+        "top_airlines": top_airlines,
+        "hourly": hourly,
+    }

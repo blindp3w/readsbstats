@@ -6,7 +6,7 @@ The web server exposes a JSON API at `http://YOUR_PI_IP/stats/api/`.
 
 | Method | Path | Description |
 |---|---|---|
-| GET | `/api/flights` | Flight list. Filters: `from`/`to` (Unix epoch, preferred — browser-local midnight), `date`, `date_from`/`date_to` (YYYY-MM-DD receiver local time, backward compat), `icao`, `callsign`, `reg`, `type`, `source`, `flags`, `squawk`. Sortable, paginated. |
+| GET | `/api/flights` | Flight list. Filters: `from`/`to` (Unix epoch, preferred — browser-local midnight), `date`, `date_from`/`date_to` (YYYY-MM-DD receiver local time, backward compat), `icao`, `callsign`, `reg`, `type`, `source`, `flags`, `squawk`. Sortable, paginated. **When `RSBS_VDL2_ENABLED` (and `vdl2.db` is attachable), each row gains `has_acars` (0/1) and `has_acars=true` filters to flights with ACARS in their window; absent/ignored otherwise.** |
 | GET | `/api/flights/export.csv` | CSV export of flight list (same filters as above, no pagination) |
 | GET | `/api/flights/{id}` | Flight detail (metadata + other flights by the same aircraft). The raw position timeline is **not** embedded by default — `positions` is an empty list. Pass `?include_positions=true` to embed the full list (the SPA instead uses the two endpoints below). |
 | GET | `/api/flights/{id}/positions` | Paginated raw positions for the inspection table. `limit` (default 1000, max 2000), `offset`. Returns `{total, limit, offset, positions}`. |
@@ -56,8 +56,8 @@ Registered only when `RSBS_VDL2_ENABLED` is set. Read-only; queries the separate
 | Method | Path | Description |
 |---|---|---|
 | GET | `/api/vdl2/messages` | Newest-first feed. Query: `limit` (≤100), `before_id` (keyset pagination), `label`, `hex` (prefix), `reg` (prefix), `since`/`until` (epoch), `q` (FTS5 full-text, `LIKE` fallback). Returns `{messages, next_before_id}`. |
-| GET | `/api/vdl2/messages/{icao_hex}` | All messages from one airframe (6-hex ICAO), newest-first. |
-| GET | `/api/vdl2/stats` | `{total, last_hour, aircraft}` counts. |
+| GET | `/api/vdl2/messages/{icao_hex}` | All messages from one airframe (6-hex ICAO), newest-first. Accepts `since`/`until` (epoch) to scope to a flight window (used by the flight-detail ACARS panel), plus `limit`/`before_id`/`q`. |
+| GET | `/api/vdl2/stats` | `{total, last_hour, aircraft, top_labels[], top_airlines[], hourly[24]}`. `top_airlines` codes are name-resolved via the core `airlines` table (degrades to codes); `hourly` is last-24h message counts, zero-filled. |
 
 ## Enrichment
 

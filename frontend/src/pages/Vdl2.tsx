@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import { apiJson } from '@/lib/api';
-import { fmtTs } from '@/lib/format';
 import { useSearchParam, useSearchParamBatch } from '@/hooks/useSearchParam';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Input } from '@/components/ui/Input';
@@ -10,29 +9,13 @@ import { Button } from '@/components/ui/Button';
 import { Badge } from '@/components/ui/Badge';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { Alert } from '@/components/ui/Alert';
+import { MessageList } from '@/components/vdl2/MessageList';
+import type { Settings, Vdl2MessagesResponse } from '@/lib/types';
 
 // VDL2 / ACARS message feed (opt-in feature; the nav item + this page only
 // appear when RSBS_VDL2_ENABLED). Data comes from the SEPARATE vdl2.db via
 // /api/vdl2/*. Message bodies are untrusted upstream text — always rendered as
 // plain React text children, which React escapes automatically (no raw HTML).
-
-interface Vdl2Message {
-  id: number;
-  ts: number;
-  icao_hex: string | null;
-  registration: string | null;
-  flight: string | null;
-  label: string | null;
-  freq: number | null;
-  dsta: string | null;
-  body: string | null;
-  decoder: string | null;
-}
-
-interface Vdl2MessagesResponse {
-  messages: Vdl2Message[];
-  next_before_id: number | null;
-}
 
 interface Vdl2Stats {
   total: number;
@@ -45,7 +28,7 @@ const PAGE = 100;
 export default function Vdl2Page() {
   const settingsQ = useQuery({
     queryKey: ['settings'],
-    queryFn: () => apiJson<{ vdl2_enabled?: boolean }>('settings'),
+    queryFn: () => apiJson<Settings>('settings'),
     staleTime: 60_000,
   });
   const enabled = settingsQ.data?.vdl2_enabled === true;
@@ -224,42 +207,7 @@ export default function Vdl2Page() {
             </p>
           )}
           {messages.length > 0 && (
-            <ul className="divide-y divide-[var(--color-border-default)]" data-testid="vdl2-list">
-              {messages.map((m) => (
-                <li key={m.id} className="py-2" data-testid="vdl2-message-row">
-                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
-                    <span className="tabnum text-[var(--color-text-dim)]">{fmtTs(m.ts)}</span>
-                    {m.icao_hex && (
-                      <button
-                        type="button"
-                        className="font-mono text-[var(--color-accent)] hover:underline"
-                        onClick={() => setHex(m.icao_hex!)}
-                        data-testid="vdl2-row-hex"
-                      >
-                        {m.icao_hex}
-                      </button>
-                    )}
-                    {m.registration && (
-                      <button
-                        type="button"
-                        className="font-mono hover:underline"
-                        onClick={() => setReg(m.registration!)}
-                      >
-                        {m.registration}
-                      </button>
-                    )}
-                    {m.flight && <span className="font-mono">{m.flight}</span>}
-                    {m.label && <Badge variant="muted">{m.label}</Badge>}
-                    {m.dsta && <span className="text-[var(--color-text-dim)]">→ {m.dsta}</span>}
-                  </div>
-                  {m.body && (
-                    <pre className="mt-1 whitespace-pre-wrap break-all font-mono text-xs text-[var(--color-text)]">
-                      {m.body}
-                    </pre>
-                  )}
-                </li>
-              ))}
-            </ul>
+            <MessageList messages={messages} onHexClick={setHex} onRegClick={setReg} />
           )}
           {feed.hasNextPage && (
             <div className="mt-3 text-center">

@@ -2,6 +2,7 @@ import { Suspense, useEffect } from 'react';
 import { Outlet } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { apiJson } from '@/lib/api';
+import type { Settings } from '@/lib/types';
 import { Nav } from '@/components/Nav';
 import { PageSkeleton } from '@/components/PageSkeleton';
 import { TooltipProvider } from '@/components/ui/Tooltip';
@@ -24,7 +25,7 @@ export default function App() {
   // than expected and make caching behaviour harder to reason about.
   const settingsQ = useQuery({
     queryKey: ['settings'],
-    queryFn: () => apiJson<{ time_format?: string }>('settings'),
+    queryFn: () => apiJson<Settings>('settings'),
     staleTime: 60_000,
   });
   useEffect(() => {

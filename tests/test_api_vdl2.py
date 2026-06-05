@@ -8,8 +8,9 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from readsbstats import config, web
+from readsbstats.api import _deps
 from readsbstats.vdl2 import db as vdl2_db
-from tests._helpers import make_vdl2_db
+from tests._helpers import make_db, make_vdl2_db
 
 
 def _seed(conn):
@@ -91,6 +92,55 @@ class TestPerAircraft:
 
     def test_bad_icao_404(self, client):
         assert client.get("/api/vdl2/messages/zzz").status_code == 404
+
+    def test_since_until_window(self, client):
+        # _seed inserts 48e95d messages at base-30 and base-10 (base≈now).
+        now = int(time.time())
+        data = client.get(f"/api/vdl2/messages/48e95d?since={now - 15}").json()
+        assert len(data["messages"]) == 1  # only the base-10 message is within window
+        none = client.get(f"/api/vdl2/messages/48e95d?until={now - 3600}").json()
+        assert none["messages"] == []
+
+
+class TestStatsExtended:
+    def test_top_labels_airlines_hourly(self, monkeypatch):
+        monkeypatch.setattr(config, "VDL2_ENABLED", True)
+        vconn = make_vdl2_db()
+        now = int(time.time())
+        # IATA-format flight ids (LO6550, LO0304) — must group on the 2-char
+        # operator prefix, NOT substr(,1,3) which would split LO6/LO0.
+        vdl2_db.insert_messages(vconn, [
+            {"ts": now - 100, "icao_hex": "48e95d", "flight": "LO6550", "label": "H1", "body": "a"},
+            {"ts": now - 200, "icao_hex": "48af11", "flight": "LO0304", "label": "H1", "body": "b"},
+            {"ts": now - 300, "icao_hex": "48af11", "flight": "FR99X", "label": "Q0", "body": "c"},
+            {"ts": now - 5 * 3600, "icao_hex": "48af11", "flight": "LO9999", "label": "H1", "body": "d"},
+        ])
+        vconn.commit()
+        monkeypatch.setattr(vdl2_db, "_conn", vconn)
+        core = make_db()
+        core.execute(
+            "INSERT INTO airlines (icao_code, name, iata_code, country, active) "
+            "VALUES ('LOT', 'LOT Polish Airlines', 'LO', 'Poland', 1)"
+        )
+        core.commit()
+        monkeypatch.setattr(_deps, "_db", core)
+
+        app = FastAPI()
+        web._include_optional_routers(app)
+        with TestClient(app) as c:
+            data = c.get("/api/vdl2/stats").json()
+
+        labels = {l["label"]: l["messages"] for l in data["top_labels"]}
+        assert labels["H1"] == 3 and labels["Q0"] == 1
+        airlines = {a["code"]: a for a in data["top_airlines"]}
+        assert airlines["LO"]["messages"] == 3                  # LO6550+LO0304+LO9999, NOT fragmented
+        assert airlines["LO"]["name"] == "LOT Polish Airlines"  # resolved via iata_code
+        assert airlines["FR"]["name"] is None                   # unknown code → degrade
+        assert len(data["hourly"]) == 24
+        assert data["hourly"][23] == 3   # current hour (newest bucket) — must not be dropped
+        assert data["hourly"][18] == 1   # ~5h ago bucket
+        vconn.close()
+        core.close()
 
 
 class TestStats:

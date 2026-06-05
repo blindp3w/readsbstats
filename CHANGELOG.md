@@ -16,6 +16,13 @@
   `dumpvdl2` a config flip. New env vars: `RSBS_VDL2_ENABLED`,
   `RSBS_VDL2_DB_PATH`, `RSBS_VDL2_RETENTION_DAYS`, `RSBS_VDL2_UDP_HOST/PORT`,
   `RSBS_VDL2_DECODER`. See `docs/operations.md` for the decoder runbook.
+- **VDL2 surfaced across core pages (opt-in)** — when `RSBS_VDL2_ENABLED`:
+  an **ACARS panel** on the flight-detail page (messages during that flight),
+  a **"has ACARS" badge + filter** on the history list, and a **VDL2 card** on
+  the Stats page (counts, top labels, top airlines, 24h trend). All read-time
+  joins: the history list ATTACHes `vdl2.db` read-only and degrades to "no
+  badge" if it's missing; `history.db` is never modified and `/api/flights` is
+  unchanged when the feature is off.
 
 ## 2.13.1 — 2026-06-01
 

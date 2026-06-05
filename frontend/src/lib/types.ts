@@ -32,3 +32,31 @@ export interface WatchlistEntry {
 export interface WatchlistResponse {
   entries: WatchlistEntry[];
 }
+
+// VDL2 / ACARS message as returned by /api/vdl2/messages* (the `raw` column is
+// intentionally omitted from list responses). Shared by the Vdl2 page and the
+// flight-detail ACARS panel via components/vdl2/MessageList.tsx.
+export interface Vdl2Message {
+  id: number;
+  ts: number;
+  icao_hex: string | null;
+  registration: string | null;
+  flight: string | null;
+  label: string | null;
+  freq: number | null;
+  dsta: string | null;
+  body: string | null;
+  decoder: string | null;
+}
+
+export interface Vdl2MessagesResponse {
+  messages: Vdl2Message[];
+  next_before_id: number | null;
+}
+
+// Subset of /api/settings the SPA reads. Shared so the ['settings'] query has a
+// single type across App/Nav/useVdl2Enabled (they previously diverged).
+export interface Settings {
+  time_format?: string;
+  vdl2_enabled?: boolean;
+}
