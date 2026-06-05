@@ -1,6 +1,9 @@
 [Unit]
+# Do NOT add `Requires=readsbstats-dbcheck-full.service`. A `Requires=` on a
+# timer's [Unit] makes `systemctl start <timer>` (e.g. update.sh's `enable --now`)
+# launch the service immediately — running the integrity check on every deploy.
+# The timer triggers the service on schedule via its implicit Unit= (same basename).
 Description=Monthly readsbstats DB integrity_check (1st Sun 04:00)
-Requires=readsbstats-dbcheck-full.service
 
 [Timer]
 OnCalendar=Sun *-*-01..07 04:00:00

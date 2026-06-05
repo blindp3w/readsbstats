@@ -38,6 +38,11 @@
   are the XID `dsta` destination and Label-16 body positions (now parsed).
 ### Fixed (follow-up review)
 
+- **DB-check timers no longer run on every deploy** — the `readsbstats-dbcheck{,-full}.timer`
+  units had `Requires=<service>` in `[Unit]`, so `update.sh`'s `systemctl enable --now …timer`
+  launched a full + quick `check_db.py` (concurrently) on each deploy regardless of the Sunday
+  schedule. Removed the `Requires=`; added `Conflicts=` so the heavy integrity check can never run
+  alongside the quick check.
 - **OOOI parser** now captures the 3-letter `OFF` TEI (was 2-letter-only) + a TEI whitelist.
 - **`/api/vdl2/positions`** replaced the single OR query (full table scan) with two index-served
   candidate queries (`idx_vdl2_label_ts_id`, `idx_vdl2_pos_ts_id`) merged in Python: precise body
