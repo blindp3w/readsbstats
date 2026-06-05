@@ -475,6 +475,17 @@ class TestTimeseries:
             assert c.get(f"/api/vdl2/timeseries?from={now}&to={now}").status_code == 400
         vconn.close()
 
+    def test_span_capped(self, monkeypatch):
+        # An over-wide window must be rejected, not allocate a huge bucket grid.
+        now = int(time.time())
+        vconn, app = self._make(monkeypatch, [])
+        with TestClient(app) as c:
+            assert c.get(f"/api/vdl2/timeseries?from=0&to={now}").status_code == 400
+            # A 1-year window is within the cap.
+            ok = c.get(f"/api/vdl2/timeseries?from={now - 366 * 86400 + 100}&to={now}")
+            assert ok.status_code == 200
+        vconn.close()
+
     def test_503_when_db_unavailable(self, monkeypatch):
         monkeypatch.setattr(config, "VDL2_ENABLED", True)
 

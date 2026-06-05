@@ -55,7 +55,7 @@
   bodies can't starve older *precise* fixes (not just coarse ones).
 - **`Vdl2ReceptionCard`** is now truly self-gating — renders nothing (not an empty shell) when
   `enabled` is false, matching the detail panels.
-- Tests: **1744 Python**, **358 Vitest** (all green).
+- Tests: **1745 Python**, **358 Vitest** (all green).
 
 ## 2.14.0 — 2026-06-05
 
