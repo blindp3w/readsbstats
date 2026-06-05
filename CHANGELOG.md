@@ -54,7 +54,11 @@
   bodies can't starve older *precise* fixes (not just coarse ones).
 - **`Vdl2ReceptionCard`** is now truly self-gating — renders nothing (not an empty shell) when
   `enabled` is false, matching the detail panels.
-- Tests: **1744 Python**, **359 Vitest** (all green).
+- **VDL2 reception redesign** — the Metrics card is now two range-driven ECharts (message rate +
+  per-frequency small multiples, dBFS-panel style) sharing the page's range picker, fed by a new
+  `GET /api/vdl2/timeseries` (columnar like `/api/metrics`, msgs/min, dynamic top-6 frequencies).
+  Replaces the KPI-tile card + `/api/vdl2/reception`.
+- Tests: **1744 Python**, **358 Vitest** (all green).
 
 ## 2.14.0 — 2026-06-05
 
