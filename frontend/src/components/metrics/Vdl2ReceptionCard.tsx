@@ -34,10 +34,12 @@ function fmtFreshness(ts: number | null, ageSec: number | null): string {
   return fmtAgo(ts, ts + ageSec);
 }
 
-// VDL2 reception card: two range-driven ECharts — total message rate (msgs/min)
-// and per-frequency small multiples (signal-panel style) — over the Metrics
-// page's [from, to] window. vdlm2dec-only; NO signal level. Self-gating: renders
-// nothing and makes no request when `enabled` is false.
+// VDL2 reception: two range-driven ECharts — total message rate (msgs/min) and
+// per-frequency small multiples (signal-panel style) — over the Metrics page's
+// [from, to] window. Rendered as two side-by-side panels matching the rest of the
+// Metrics grid. vdlm2dec-only; NO signal level. Self-gating: renders nothing and
+// makes no request when `enabled` is false (the page only mounts it when the
+// VDL2 feature is on AND vdl2.db is available — see useVdl2Available).
 export function Vdl2ReceptionCard({
   enabled = true,
   from,
@@ -90,39 +92,36 @@ export function Vdl2ReceptionCard({
   const stale = resp != null && (ageSec == null || ageSec > STALE_SEC);
 
   return (
-    <Card data-testid="metrics-vdl2-reception">
-      <CardHeader className="flex flex-row items-center justify-between gap-2">
-        <CardTitle>VDL2 / ACARS reception</CardTitle>
-        <span
-          data-testid="vdl2-reception-freshness"
-          className={
-            stale
-              ? 'text-xs font-medium text-[var(--color-danger)]'
-              : 'text-xs text-[var(--color-text-dim)]'
-          }
-        >
-          {resp
-            ? `${resp.total.toLocaleString()} msgs · ${stale ? '⚠ ' : ''}last ${fmtFreshness(
+    <div className="grid gap-4 xl:grid-cols-2" data-testid="metrics-vdl2-reception">
+      {resp && (
+        <Card data-testid="vdl2-rate-chart">
+          <CardHeader className="flex flex-row items-center justify-between gap-2">
+            <CardTitle>VDL2 / ACARS message rate</CardTitle>
+            <span
+              data-testid="vdl2-reception-freshness"
+              className={
+                stale
+                  ? 'text-xs font-medium text-[var(--color-danger)]'
+                  : 'text-xs text-[var(--color-text-dim)]'
+              }
+            >
+              {`${resp.total.toLocaleString()} msgs · ${stale ? '⚠ ' : ''}last ${fmtFreshness(
                 resp.newest_ts,
                 ageSec,
-              )}`
-            : '—'}
-        </span>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        {resp && (
-          <div data-testid="vdl2-rate-chart">
-            <div className="mb-1 text-xs font-medium uppercase tracking-wide text-[var(--color-text-dim)]">
-              Message rate — msgs/min
-            </div>
-            <EChart option={rateOption} group="metrics" height={180} />
-          </div>
-        )}
-        {resp && (
-          <div data-testid="vdl2-freq-charts">
-            <div className="mb-1 text-xs font-medium uppercase tracking-wide text-[var(--color-text-dim)]">
-              Per-frequency — msgs/min
-            </div>
+              )}`}
+            </span>
+          </CardHeader>
+          <CardContent>
+            <EChart option={rateOption} group="metrics" height={220} />
+          </CardContent>
+        </Card>
+      )}
+      {resp && (
+        <Card data-testid="vdl2-freq-charts">
+          <CardHeader>
+            <CardTitle>VDL2 per-frequency</CardTitle>
+          </CardHeader>
+          <CardContent>
             {freqKeys.length > 0 ? (
               <EChart
                 option={freqOption}
@@ -134,9 +133,9 @@ export function Vdl2ReceptionCard({
                 No per-frequency data in this window.
               </p>
             )}
-          </div>
-        )}
-      </CardContent>
-    </Card>
+          </CardContent>
+        </Card>
+      )}
+    </div>
   );
 }

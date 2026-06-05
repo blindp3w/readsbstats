@@ -1,8 +1,8 @@
 /**
- * VDL2 reception card — two range-driven charts (message rate + per-frequency
- * small multiples) with a slim freshness/total header. ECharts is globally
- * mocked to null (jsdom has no canvas), so we assert the chart wrappers + header,
- * not chart internals.
+ * VDL2 reception card — two side-by-side panels (message rate + per-frequency
+ * small multiples) matching the rest of the Metrics grid; the rate panel header
+ * carries the freshness/total badge. ECharts is globally mocked to null (jsdom
+ * has no canvas), so we assert the panel wrappers + header, not chart internals.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, waitFor, screen } from '@testing-library/react';
