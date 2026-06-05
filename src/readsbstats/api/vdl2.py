@@ -560,6 +560,13 @@ def _compute_positions(minutes: int) -> dict:
         (cutoff, _POSITIONS_CAP),
     ).fetchall()
 
+    def _point(r, lat, lon, precise) -> dict:
+        # `_id` is an internal merge/sort key, stripped before the response.
+        return {
+            "_id": r["id"], "lat": lat, "lon": lon, "icao_hex": r["icao_hex"],
+            "ts": r["ts"], "label": r["label"], "precise": precise,
+        }
+
     points: list[dict] = []
     seen: set[int] = set()
     for r in label_rows:
@@ -567,17 +574,11 @@ def _compute_positions(minutes: int) -> dict:
         if parsed is None:
             continue   # no-fix Label-16 body — discarded (does not consume the final cap)
         seen.add(r["id"])
-        points.append({
-            "_id": r["id"], "lat": parsed["lat"], "lon": parsed["lon"],
-            "icao_hex": r["icao_hex"], "ts": r["ts"], "label": r["label"], "precise": True,
-        })
+        points.append(_point(r, parsed["lat"], parsed["lon"], True))
     for r in coarse_rows:
         if r["id"] in seen:
             continue   # same row already emitted as a precise fix
-        points.append({
-            "_id": r["id"], "lat": r["lat"], "lon": r["lon"],
-            "icao_hex": r["icao_hex"], "ts": r["ts"], "label": r["label"], "precise": False,
-        })
+        points.append(_point(r, r["lat"], r["lon"], False))
 
     points.sort(key=lambda p: (p["ts"] or 0, p["_id"]), reverse=True)
     points = points[:_POSITIONS_CAP]
