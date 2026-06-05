@@ -346,25 +346,6 @@ class Vdl2StatsResponse(ApiModel):
     flights_overlap_pct: Optional[float] = None
 
 
-class Vdl2FreqStat(ApiModel):
-    freq_mhz: Optional[float] = None
-    messages: int = 0
-    aircraft: int = 0
-
-
-class Vdl2ReceptionResponse(ApiModel):
-    """Receiver-health card data for the Metrics page. vdlm2dec-only — carries no
-    signal level (that field exists only in dumpvdl2's JSON). Freshness
-    (`newest_age_sec`) is the key 'is the VDL2 SDR alive?' signal."""
-    msgs_last_min: int = 0
-    msgs_last_hour: int = 0
-    msgs_24h: int = 0
-    aircraft_last_hour: int = 0
-    newest_ts: Optional[int] = None
-    newest_age_sec: Optional[int] = None
-    per_freq: list[Vdl2FreqStat] = []
-    rate_sparkline: list[int] = []
-
 
 class Vdl2ActiveResponse(ApiModel):
     """ICAO hexes that transmitted ACARS in the last N minutes — for the map's
