@@ -54,3 +54,22 @@ export function useVdl2Available(): boolean {
 export function useVdl2AttachAvailable(): boolean {
   return useVdl2Health().attachAvailable;
 }
+
+// Widen a flight's [first_seen, last_seen] window by this much on each side so
+// the detail-page panels catch OOOI/gate traffic just before pushback and after
+// landing.
+const VDL2_WINDOW_SLACK_SEC = 1800;
+
+// Shared gate + scoped time window for the flight/aircraft detail VDL2 panels
+// (AcarsPanel, OooiCard): runtime availability plus the slack-widened window.
+// Keeps the SLACK + windowing in one place so the two panels can't drift.
+export function useVdl2FlightWindow(
+  firstSeen: number,
+  lastSeen: number,
+): { available: boolean; since: number; until: number } {
+  return {
+    available: useVdl2Available(),
+    since: firstSeen - VDL2_WINDOW_SLACK_SEC,
+    until: lastSeen + VDL2_WINDOW_SLACK_SEC,
+  };
+}

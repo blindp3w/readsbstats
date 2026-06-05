@@ -32,6 +32,10 @@ interface Props {
   showCoverage: boolean;
   onToggleCoverage: () => void;
   coverageLoading?: boolean;
+  // Optional VDL2 overlay toggle — only passed when the feature is available.
+  showVdl2?: boolean;
+  onToggleVdl2?: () => void;
+  vdl2Loading?: boolean;
   sidebarOpen: boolean;
   onToggleSidebar: () => void;
 
@@ -87,6 +91,9 @@ export function MapCommandBar(props: Props) {
     showCoverage,
     onToggleCoverage,
     coverageLoading,
+    showVdl2,
+    onToggleVdl2,
+    vdl2Loading,
     sidebarOpen,
     onToggleSidebar,
     snapshotAt,
@@ -150,6 +157,24 @@ export function MapCommandBar(props: Props) {
   const showRow2 = mode !== 'live';
 
   // Pieces that appear in multiple variants — define once.
+  // Single source of truth for the layer-toggle props, spread into all three
+  // MapLayersControl call sites (inline-lg / popover-md-sm / mobile-expanded).
+  // Built once so a new toggle can't be added to some sites and forgotten on
+  // others (which is exactly how the mobile VDL2 toggle went missing).
+  const layersProps = {
+    showHeatmap,
+    onToggleHeatmap,
+    heatmapLoading,
+    showCoverage,
+    onToggleCoverage,
+    coverageLoading,
+    showVdl2,
+    onToggleVdl2,
+    vdl2Loading,
+    sidebarOpen,
+    onToggleSidebar,
+  };
+
   const rangePills = (
     <ToggleGroupRoot
       type="single"
@@ -242,30 +267,10 @@ export function MapCommandBar(props: Props) {
         {rangePills}
         {/* Layers: inline pills at lg+, popover at md/sm */}
         <div className="hidden lg:flex">
-          <MapLayersControl
-            variant="inline"
-            showHeatmap={showHeatmap}
-            onToggleHeatmap={onToggleHeatmap}
-            heatmapLoading={heatmapLoading}
-            showCoverage={showCoverage}
-            onToggleCoverage={onToggleCoverage}
-            coverageLoading={coverageLoading}
-            sidebarOpen={sidebarOpen}
-            onToggleSidebar={onToggleSidebar}
-          />
+          <MapLayersControl variant="inline" {...layersProps} />
         </div>
         <div className="flex lg:hidden">
-          <MapLayersControl
-            variant="popover"
-            showHeatmap={showHeatmap}
-            onToggleHeatmap={onToggleHeatmap}
-            heatmapLoading={heatmapLoading}
-            showCoverage={showCoverage}
-            onToggleCoverage={onToggleCoverage}
-            coverageLoading={coverageLoading}
-            sidebarOpen={sidebarOpen}
-            onToggleSidebar={onToggleSidebar}
-          />
+          <MapLayersControl variant="popover" {...layersProps} />
         </div>
         {histChip}
         <div className="ml-auto">{snapshotBlock}</div>
@@ -303,17 +308,7 @@ export function MapCommandBar(props: Props) {
               are visible without scrolling on iPhone landscape. */}
           {rewindRow}
           <div className="flex flex-wrap items-center gap-2">
-            <MapLayersControl
-              variant="popover"
-              showHeatmap={showHeatmap}
-              onToggleHeatmap={onToggleHeatmap}
-              heatmapLoading={heatmapLoading}
-              showCoverage={showCoverage}
-              onToggleCoverage={onToggleCoverage}
-              coverageLoading={coverageLoading}
-              sidebarOpen={sidebarOpen}
-              onToggleSidebar={onToggleSidebar}
-            />
+            <MapLayersControl variant="popover" {...layersProps} />
             {rangePills}
           </div>
           {histChip}

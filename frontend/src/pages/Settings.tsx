@@ -83,6 +83,10 @@ interface SettingsPayload {
   telegram_summary_time: string;
   telegram_units: string;
   base_url: string;
+  // VDL2 / ACARS (opt-in). db_path is masked to a basename server-side.
+  vdl2_enabled: boolean | number;
+  vdl2_db_path: string;
+  vdl2_retention: number;
   // Backend ships env-var name, parsed default, and customized flag per
   // payload key so frontend never maintains its own table of env-var
   // names (drift defence). May be absent during the server-cache
@@ -207,6 +211,15 @@ function buildSections(s: SettingsPayload): Section[] {
         ['Summary time (local)', s.telegram_summary_time, 'telegram_summary_time'],
         ['Units', s.telegram_units, 'telegram_units'],
         ['Base URL', s.base_url, 'base_url'],
+      ],
+    },
+    {
+      title: 'VDL2 / ACARS',
+      testid: 'settings-section-vdl2',
+      rows: [
+        ['Enabled', toggle(s.vdl2_enabled), 'vdl2_enabled'],
+        ['Database file', s.vdl2_db_path, 'vdl2_db_path'],
+        ['Retention (days)', fmt(s.vdl2_retention), 'vdl2_retention'],
       ],
     },
   ];

@@ -20,6 +20,9 @@ function stubFetch(s: Stub) {
     const url = typeof input === 'string' ? input : (input as Request).url ?? String(input);
     let body: unknown = {};
     if (url.includes('/api/settings')) body = { vdl2_enabled: s.vdl2_enabled ?? false };
+    else if (url.includes('/api/health'))
+      // AcarsPanel now gates on runtime availability (/api/health), not config.
+      body = { vdl2: { enabled: s.vdl2_enabled ?? false, available: s.vdl2_enabled ?? false } };
     else if (url.includes('/api/vdl2/messages')) body = { messages: s.messages ?? [], next_before_id: null };
     else if (url.includes('/api/vdl2/stats'))
       body = { total: 0, last_hour: 0, aircraft: 0, top_labels: [], top_airlines: [], hourly: [] };
@@ -64,6 +67,24 @@ describe('AcarsPanel', () => {
     );
     expect(await findByText('depart EPWA gate 12')).toBeTruthy();
     expect(getByTestId('flight-acars-card')).toBeTruthy();
+  });
+
+  it('caps the message list height with vertical scroll (matches the position log)', async () => {
+    stubFetch({
+      vdl2_enabled: true,
+      messages: [
+        { id: 1, ts: 1_749_065_117, icao_hex: '48e95d', label: 'H1',
+          freq: 136.725, body: 'one', decoder: 'vdlm2dec' },
+      ],
+    });
+    const { findByTestId } = wrap(
+      <AcarsPanel icao="48e95d" firstSeen={1_749_060_000} lastSeen={1_749_070_000} />,
+    );
+    const scroll = await findByTestId('flight-acars-scroll');
+    expect(scroll.className).toContain('overflow-y-auto');
+    expect(scroll.className).toContain('max-h-[480px]');
+    // The list lives inside the scroll container, not as a sibling.
+    expect(scroll.querySelector('[data-testid="vdl2-list"]')).toBeTruthy();
   });
 
   it('shows empty state when no ACARS for the flight', async () => {

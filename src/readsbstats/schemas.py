@@ -340,3 +340,73 @@ class Vdl2StatsResponse(ApiModel):
     top_labels: list[Vdl2TopLabel] = []
     top_airlines: list[Vdl2TopAirline] = []
     hourly: list[int] = []
+    # % of flights in the last 24h whose airframe also transmitted ACARS in the
+    # flight window. Null when the cross-DB ATTACH is unavailable (don't fail the
+    # card) — computed on the core history.db connection, not the vdl2.db one.
+    flights_overlap_pct: Optional[float] = None
+
+
+
+class Vdl2ActiveResponse(ApiModel):
+    """ICAO hexes that transmitted ACARS in the last N minutes — for the map's
+    'transmitting now' marker badge (client-side merge with the live snapshot)."""
+    icao_hex: list[str] = []
+    count: int = 0
+
+
+class Vdl2Position(ApiModel):
+    lat: Optional[float] = None
+    lon: Optional[float] = None
+    icao_hex: Optional[str] = None
+    ts: Optional[int] = None
+    label: Optional[str] = None
+    # True = precise (~0.001°) position parsed from a Label-16 AUTPOS body;
+    # False = coarse (~0.1°) VDL2 XID link-frame fix from the lat/lon column.
+    precise: Optional[bool] = None
+
+
+class Vdl2PositionsResponse(ApiModel):
+    """VDL2-derived positions for the optional map overlay. Sparse on an
+    H1-dominated feed — only messages whose decoder emitted structured lat/lon."""
+    points: list[Vdl2Position] = []
+    count: int = 0
+
+
+class Vdl2TimeseriesResponse(ApiModel):
+    """Bucketed VDL2 reception time-series for the Metrics page, in the same
+    columnar shape as /api/metrics so the frontend chart builders are reused.
+    Series values are normalized to msgs/min; `total` is the raw count in the
+    window (the series must NOT be summed to get a count)."""
+    bucket_seconds: int = 0
+    metrics: list[str] = []           # ["rate", "<freq>", ...]
+    freqs: list[float] = []           # the top frequencies, same order as metrics[1:]
+    total: int = 0
+    newest_ts: Optional[int] = None
+    newest_age_sec: Optional[int] = None
+    data: list[list[float]] = []      # [[ts...], [rate...], [freq1...], ...]
+
+
+class Vdl2OooiEvent(ApiModel):
+    """One parsed OOOI (Out/Off/On/In) block-time report. Times are raw HHMM
+    strings as transmitted; the frontend formats/compares them."""
+    type: Optional[str] = None
+    registration: Optional[str] = None
+    flight: Optional[str] = None
+    dep_icao: Optional[str] = None
+    dest_icao: Optional[str] = None
+    t_out: Optional[str] = None
+    t_off: Optional[str] = None
+    t_on: Optional[str] = None
+    t_in: Optional[str] = None
+    ts: Optional[int] = None
+
+
+class Vdl2OooiSummary(ApiModel):
+    """Flight-detail OOOI summary: the latest DEP + latest ARR parsed from the
+    airframe's ACARS bodies in the flight window, plus a cheap `dsta`
+    destination-airport fallback (from XID frames) when no OOOI body parses.
+    EXPERIMENTAL — carrier-variant; commonly empty on an H1-dominated feed."""
+    dep: Optional[Vdl2OooiEvent] = None
+    arr: Optional[Vdl2OooiEvent] = None
+    dsta: Optional[str] = None
+    has_oooi: bool = False

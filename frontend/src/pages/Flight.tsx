@@ -19,6 +19,7 @@ import { IsolationPills } from '@/components/charts/IsolationPills';
 import { KpiSparkline } from '@/components/stats/KpiSparkline';
 import { MetricCell } from '@/components/flight/MetricCell';
 import { AcarsPanel } from '@/components/vdl2/AcarsPanel';
+import { OooiCard } from '@/components/vdl2/OooiCard';
 import { RssiCell } from '@/components/flight/RssiCell';
 import { haversineNm, bearingFromReceiver } from '@/lib/geo';
 import { useIsMobile } from '@/hooks/useIsMobile';
@@ -217,6 +218,13 @@ export default function FlightPage() {
               />
             </CardContent>
           </Card>
+          <OooiCard
+            icao={detailQ.data.flight.icao_hex}
+            firstSeen={detailQ.data.flight.first_seen}
+            lastSeen={detailQ.data.flight.last_seen}
+            scheduledOrigin={detailQ.data.flight.origin_icao}
+            scheduledDest={detailQ.data.flight.dest_icao}
+          />
           <AcarsPanel
             icao={detailQ.data.flight.icao_hex}
             firstSeen={detailQ.data.flight.first_seen}

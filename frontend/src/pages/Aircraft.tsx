@@ -15,6 +15,7 @@ import { FlagBadge } from '@/components/FlagBadge';
 import { PhotoLightbox } from '@/components/PhotoLightbox';
 import { FlightsTable, type Flight, type SortKey, type SortDir } from '@/components/FlightsTable';
 import { Pagination } from '@/components/Pagination';
+import { AcarsPanel } from '@/components/vdl2/AcarsPanel';
 import { fmtDur } from '@/lib/format';
 import { useFormat } from '@/hooks/useFormat';
 
@@ -165,6 +166,17 @@ export default function AircraftPage() {
           )}
         </CardContent>
       </Card>
+
+      {/* ACARS across the airframe's whole tracked history. Self-gates on
+          RSBS_VDL2_ENABLED; only mounts once the first/last-seen window loads. */}
+      {icao && info.first_seen != null && info.last_seen != null && (
+        <AcarsPanel
+          icao={icao}
+          firstSeen={info.first_seen}
+          lastSeen={info.last_seen}
+          context="aircraft"
+        />
+      )}
     </div>
   );
 }

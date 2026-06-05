@@ -1,5 +1,72 @@
 # Changelog
 
+## 2.15.0 — 2026-06-05
+
+### Added
+
+- **VDL2 phases 5/7/8 + read-time integration wins** — all opt-in behind
+  `RSBS_VDL2_ENABLED`, all read-only over the existing `vdl2.db` (no schema
+  changes), all self-gating so a disabled/unavailable feature is fully absent:
+  - **Reception charts (Metrics page)** — `GET /api/vdl2/timeseries`: two
+    range-driven ECharts sharing the page's range picker — a message-rate line and
+    a per-frequency small-multiples panel (dBFS-panel style), msgs/min, dynamic
+    top-6 frequencies — rendered as two side-by-side panels in the Metrics grid
+    (matching the other cards), with a freshness/total header ("is the VDL2 SDR
+    alive?").
+    **vdlm2dec-only — no signal level** (that field exists only in dumpvdl2's JSON).
+  - **Map overlay** — `GET /api/vdl2/active` ("transmitting ACARS now" ring on
+    live aircraft) + `GET /api/vdl2/positions` (structured ACARS positions, sparse
+    on an H1-dominated feed). Toggle-gated; the hot live-snapshot path is untouched.
+  - **Settings surface** — the VDL2 / ACARS section now renders on the Settings
+    page (enabled, db file, retention) from the already-exposed payload.
+  - **Aircraft-detail ACARS panel** — the flight-detail ACARS panel now also
+    appears on the aircraft page, scoped to the airframe's whole tracked history.
+  - **Stats overlap KPI** — `/api/vdl2/stats` gains `flights_overlap_pct` (% of
+    last-24h flights also seen on VDL2; computed via the read-only cross-DB ATTACH,
+    `null` when unavailable).
+  - **Flight-detail OOOI card** *(experimental)* — `GET /api/vdl2/oooi/{icao_hex}`
+    parses Out/Off/On/In block times from ACARS **bodies** (OOOI is not a label),
+    with a ✓/✗ route-confirmation chip vs the scheduled origin/dest and a `dsta`
+    destination fallback. Carrier-variant; commonly empty on an H1-dominated feed.
+  - **Precise map positions (Label-16 AUTPOS)** — `/api/vdl2/positions` now parses
+    precise (~0.001°) coordinates from Label-16 AUTPOS message **bodies**
+    (`vdl2/positions.py`), preferring them over the coarse (~0.1°) VDL2 XID
+    link-frame fixes in the lat/lon columns; each point carries a `precise` flag.
+    Validated against a real LOT feed (8 precise + 10 coarse where the columns
+    alone gave 10 coarse).
+- **VDL2 real-feed validation** — on a 413-message live LOT dump the OOOI
+  SMT/TEI parser matched 0 messages (air-side downlinks are proprietary Teledyne
+  ACMS, not ground-side SMT); documented in `vdl2/oooi.py`. The practical signals
+  are the XID `dsta` destination and Label-16 body positions (now parsed).
+### Fixed (follow-up review)
+
+- **DB-check timers no longer run on every deploy** — the `readsbstats-dbcheck{,-full}.timer`
+  units had `Requires=<service>` in `[Unit]`, so `update.sh`'s `systemctl enable --now …timer`
+  launched a full + quick `check_db.py` (concurrently) on each deploy regardless of the Sunday
+  schedule. Removed the `Requires=`; added `Conflicts=` so the heavy integrity check can never run
+  alongside the quick check.
+- **OOOI parser** now captures the 3-letter `OFF` TEI (was 2-letter-only) + a TEI whitelist.
+- **`/api/vdl2/positions`** replaced the single OR query (full table scan) with two index-served
+  candidate queries (`idx_vdl2_label_ts_id`, `idx_vdl2_pos_ts_id`) merged in Python: precise body
+  parsing is now gated to Label-16 rows only (no false `precise` from non-AUTPOS bodies), and
+  independent caps + a final merge stop no-fix Label-16 bursts from starving valid coarse points.
+- **`vdl2.db` re-attach** per request in `/api/flights` + `flights_overlap_pct`, so a vdl2.db that
+  appears after a web thread's connection opened still surfaces `has_acars`/overlap without a restart.
+- **Mobile map** now shows the ACARS overlay toggle (the sub-`sm` `MapLayersControl` was missing the
+  VDL2 props; the three call sites now spread a shared prop object so they can't drift).
+- **AcarsPanel + OooiCard** gate on runtime `vdl2.available` (not just config-enabled), so a
+  flag-on-but-db-unavailable state hides cleanly instead of erroring — making "fully absent" accurate.
+- Map overlay surfaces a fetch error; reception endpoint logs slow queries; OooiCard copy reflects
+  that `dsta` (not block times) is the common signal on air-side feeds.
+- **`/api/vdl2/positions`** over-fetches Label-16 candidates (bounded) so a burst of no-fix AUTPOS
+  bodies can't starve older *precise* fixes (not just coarse ones).
+- **`Vdl2ReceptionCard`** is now truly self-gating — renders nothing (not an empty shell) when
+  `enabled` is false, matching the detail panels.
+- **ACARS panel height capped** — the flight/aircraft-detail ACARS log is wrapped in the same
+  `max-h-[480px]` scroll container as the position log, so a chatty flight scrolls internally
+  instead of pushing the rest of the page down.
+- Tests: **1745 Python**, **359 Vitest** (all green).
+
 ## 2.14.0 — 2026-06-05
 
 ### Changed
