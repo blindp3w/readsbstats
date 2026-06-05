@@ -507,6 +507,13 @@ def resolve_photo(
     The result dict has keys ``thumbnail_url``, ``large_url``, ``link_url``,
     ``photographer``.  ``is_type_photo`` is True iff the photo represents the
     aircraft type rather than the specific airframe.
+
+    Transaction contract (Audit 17): this function OWNS its writes and commits
+    them internally (``_write_specific`` / ``_write_type`` each call
+    ``conn.commit()``). Do NOT compose it inside an outer ``with conn:``
+    transaction — its internal commit would prematurely end that transaction
+    and partially persist the caller's work. Current callers pass a connection
+    they don't wrap; keep it that way.
     """
     # Resolve fetcher at call-time so monkeypatched ``fetch_photo`` is honoured.
     # When no fetcher is injected AND ``fetch_photo`` has not been
