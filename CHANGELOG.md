@@ -7,10 +7,11 @@
 - **VDL2 phases 5/7/8 + read-time integration wins** — all opt-in behind
   `RSBS_VDL2_ENABLED`, all read-only over the existing `vdl2.db` (no schema
   changes), all self-gating so a disabled/unavailable feature is fully absent:
-  - **Reception card (Metrics page)** — `GET /api/vdl2/reception`: message rate,
-    per-frequency activity (`ROUND(freq,3)` MHz), distinct aircraft, 60-min
-    rate sparkline, and feed freshness ("is the VDL2 SDR alive?"). **vdlm2dec-only
-    — no signal level** (that field exists only in dumpvdl2's JSON).
+  - **Reception charts (Metrics page)** — `GET /api/vdl2/timeseries`: two
+    range-driven ECharts sharing the page's range picker — a message-rate line and
+    a per-frequency small-multiples panel (dBFS-panel style), msgs/min, dynamic
+    top-6 frequencies — plus a freshness/total header ("is the VDL2 SDR alive?").
+    **vdlm2dec-only — no signal level** (that field exists only in dumpvdl2's JSON).
   - **Map overlay** — `GET /api/vdl2/active` ("transmitting ACARS now" ring on
     live aircraft) + `GET /api/vdl2/positions` (structured ACARS positions, sparse
     on an H1-dominated feed). Toggle-gated; the hot live-snapshot path is untouched.
@@ -54,10 +55,6 @@
   bodies can't starve older *precise* fixes (not just coarse ones).
 - **`Vdl2ReceptionCard`** is now truly self-gating — renders nothing (not an empty shell) when
   `enabled` is false, matching the detail panels.
-- **VDL2 reception redesign** — the Metrics card is now two range-driven ECharts (message rate +
-  per-frequency small multiples, dBFS-panel style) sharing the page's range picker, fed by a new
-  `GET /api/vdl2/timeseries` (columnar like `/api/metrics`, msgs/min, dynamic top-6 frequencies).
-  Replaces the KPI-tile card + `/api/vdl2/reception`.
 - Tests: **1744 Python**, **358 Vitest** (all green).
 
 ## 2.14.0 — 2026-06-05
