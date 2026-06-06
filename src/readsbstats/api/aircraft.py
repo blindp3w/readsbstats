@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Query
 
-from .. import config, icao_ranges, photo_sources, schemas
+from .. import cache, config, icao_ranges, photo_sources, schemas
 from . import _deps, _photos
 
 
@@ -68,6 +68,15 @@ def api_aircraft_flagged(
     sort_by: str | None = Query(None),
     sort_dir: str | None = Query(None, description="asc | desc"),
 ) -> dict:
+    # Audit 17: this is the heaviest read handler (an index-unfriendly flag
+    # bitmask over two LEFT JOINs). Cache by the full query shape so a gallery
+    # view/sort doesn't re-scan on every request. Short TTL keeps it fresh as
+    # new flights/photos/override flags land.
+    cache_key = f"flagged:{flags}:{sort_by}:{sort_dir}:{limit}:{offset}"
+    cached = cache._get_cache(cache_key)
+    if cached is not None:
+        return cached
+
     conn = _deps.db()
 
     flag_expr = _deps._FLAGS_EXPR_F
@@ -95,40 +104,47 @@ def api_aircraft_flagged(
         LEFT JOIN adsbx_overrides axo ON axo.icao_hex = f.icao_hex
     """
 
-    total = conn.execute(
-        f"SELECT COUNT(DISTINCT f.icao_hex) AS cnt {base_joins} WHERE {flag_filter}"
-    ).fetchone()["cnt"]
-
     # BE-15 (Audit 2026-05-31): `base` picks one deterministic representative
     # flight per ICAO (latest by last_seen, id as tiebreak) via a window
-    # function; `agg` carries the COUNT/MIN/MAX aggregates.  This replaces the
-    # old GROUP BY whose bare reg/type columns came from an arbitrary grouped
-    # row.  The window runs only over the flag-filtered (small) set, so the
-    # extra sort is bounded on the Pi-4.
+    # function; `agg` carries the COUNT/MIN/MAX aggregates.
+    #
+    # Audit 17: the index-unfriendly flag predicate used to be evaluated THREE
+    # times (a COUNT query plus the `base` and `agg` CTEs each re-running it).
+    # A single `filtered` CTE applies it ONCE; base + agg both read it, and
+    # `COUNT(*) OVER ()` carries the pre-LIMIT total in the same statement. The
+    # only path that still needs a separate count is a beyond-end page (no rows
+    # → no window value), which is rare and cheap.
     rows = conn.execute(
         f"""
-        WITH base AS (
+        WITH filtered AS (
             SELECT
                 f.icao_hex,
+                f.id,
+                f.first_seen,
+                f.last_seen,
                 COALESCE(f.registration, adb.registration, axo.registration)  AS registration,
                 COALESCE(f.aircraft_type, adb.type_code, axo.type_code)       AS aircraft_type,
                 COALESCE(adb.type_desc, axo.type_desc, '')                    AS type_desc,
                 COALESCE(adb.type_code, axo.type_code, f.aircraft_type)       AS tp_type,
-                {flag_expr}                                                   AS flags,
-                ROW_NUMBER() OVER (
-                    PARTITION BY f.icao_hex ORDER BY f.last_seen DESC, f.id DESC
-                )                                                             AS rn
+                {flag_expr}                                                   AS flags
             {base_joins}
             WHERE {flag_filter}
         ),
+        base AS (
+            SELECT
+                icao_hex, registration, aircraft_type, type_desc, tp_type, flags,
+                ROW_NUMBER() OVER (
+                    PARTITION BY icao_hex ORDER BY last_seen DESC, id DESC
+                ) AS rn
+            FROM filtered
+        ),
         agg AS (
-            SELECT f.icao_hex,
+            SELECT icao_hex,
                    COUNT(*)          AS flight_count,
-                   MIN(f.first_seen) AS first_seen,
-                   MAX(f.last_seen)  AS last_seen
-            {base_joins}
-            WHERE {flag_filter}
-            GROUP BY f.icao_hex
+                   MIN(first_seen)   AS first_seen,
+                   MAX(last_seen)    AS last_seen
+            FROM filtered
+            GROUP BY icao_hex
         )
         SELECT
             b.icao_hex,
@@ -139,6 +155,7 @@ def api_aircraft_flagged(
             a.flight_count,
             a.first_seen,
             a.last_seen,
+            COUNT(*) OVER ()                                                AS total_count,
             COALESCE(p.thumbnail_url, tp.thumbnail_url)                     AS thumbnail_url,
             COALESCE(p.large_url,     tp.large_url)                         AS large_url,
             COALESCE(p.link_url,      tp.link_url)                          AS link_url,
@@ -156,9 +173,21 @@ def api_aircraft_flagged(
         (limit, offset),
     ).fetchall()
 
+    if rows:
+        total = rows[0]["total_count"]
+    elif offset == 0:
+        total = 0
+    else:
+        # Beyond-end page: the window total is unavailable (no rows). Fall back
+        # to a single cheap count so pagination still reports the real total.
+        total = conn.execute(
+            f"SELECT COUNT(DISTINCT f.icao_hex) AS cnt {base_joins} WHERE {flag_filter}"
+        ).fetchone()["cnt"]
+
     aircraft = []
     for r in rows:
         d = dict(r)
+        d.pop("total_count", None)
         d["is_type_photo"] = bool(d["is_type_photo"])
         d["country"] = icao_ranges.icao_to_country(d["icao_hex"])
         # PY-6 (Audit 2026-05-31): the photo columns come straight from
@@ -181,7 +210,9 @@ def api_aircraft_flagged(
                 d["link_url"] = None
         aircraft.append(d)
 
-    return {"total": total, "aircraft": aircraft}
+    result = {"total": total, "aircraft": aircraft}
+    cache._set_cache(cache_key, result)
+    return result
 
 
 @router.get("/api/aircraft/{icao_hex}/photo",

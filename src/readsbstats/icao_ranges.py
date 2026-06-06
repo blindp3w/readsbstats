@@ -202,7 +202,7 @@ _RANGES: list[tuple[int, int, str, str]] = sorted(
 )
 
 
-@lru_cache(maxsize=None)
+@lru_cache(maxsize=200_000)
 def icao_to_country(icao_hex: str) -> str:
     """Return country name for a 6-digit lowercase ICAO hex address."""
     try:
@@ -235,7 +235,7 @@ def country_sql_case(col: str = "icao_hex") -> str:
 COUNTRY_SQL_CASE = country_sql_case()
 
 
-@lru_cache(maxsize=None)
+@lru_cache(maxsize=200_000)
 def is_anonymous_icao(icao_hex: str | None) -> bool:
     """True if *icao_hex* falls outside every ICAO state-allocated block.
 

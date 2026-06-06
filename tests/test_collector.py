@@ -1394,6 +1394,32 @@ class TestMlatGsAccelFilter:
         self._poll(self.conn)
         assert self._gs_at("aabbcc") == pytest.approx(210.0)
 
+    def test_mlat_accel_window_matches_last_valid_gs(self):
+        """Audit 17: acceleration must be measured over the time since the last
+        *valid* GS, not the last *sample*. After a nulled middle sample, the
+        gs-delta spans two intervals; dividing it by a one-interval dt (the old
+        bug) inflates the computed accel and over-nulls a legitimate change."""
+        self.conn.execute(
+            "INSERT INTO aircraft_db (icao_hex, registration, type_code, flags)"
+            " VALUES ('aabbcc', 'SP-ABC', 'A319', 0)"
+        )
+        self.conn.commit()
+        # Position 1 (t0): gs=400 — valid baseline, last_gs=400 at t0.
+        self._write([{"hex": "aabbcc", "lat": 52.0, "lon": 21.0,
+                       "seen_pos": 0, "gs": 400.0, "type": "mlat"}], self.now)
+        self._poll(self.conn)
+        # Position 2 (t+5): gs=800 nulled by the hard limit; last_gs stays 400 @ t0.
+        self._write([{"hex": "aabbcc", "lat": 52.001, "lon": 21.001,
+                       "seen_pos": 0, "gs": 800.0, "type": "mlat"}], self.now + 5)
+        self._poll(self.conn)
+        # Position 3 (t+10): gs=460. Real accel since the last valid gs (t0):
+        # 60/10 = 6 kts/s < 8 → keep. The old mismatched window 60/5 = 12 > 8
+        # would have wrongly nulled it.
+        self._write([{"hex": "aabbcc", "lat": 52.002, "lon": 21.002,
+                       "seen_pos": 0, "gs": 460.0, "type": "mlat"}], self.now + 10)
+        self._poll(self.conn)
+        assert self._gs_at("aabbcc") == pytest.approx(460.0)
+
 
 # ---------------------------------------------------------------------------
 # _update_flight_agg — aggregate column correctness
@@ -1641,6 +1667,52 @@ class TestPurge:
             (flight_id, ts),
         )
         self.conn.commit()
+
+    def _insert_pos_full(self, flight_id, ts, *, lat, lon, gs, st):
+        self.conn.execute(
+            "INSERT INTO positions (flight_id, ts, lat, lon, gs, source_type) "
+            "VALUES (?,?,?,?,?,?)",
+            (flight_id, ts, lat, lon, gs, st),
+        )
+        self.conn.commit()
+
+    def test_crossing_flight_aggregates_recomputed(self, monkeypatch):
+        """Audit 17: a flight straddling the retention cutoff keeps some
+        positions and loses others, so every position-derived aggregate must be
+        recomputed from the SURVIVORS — not left at the pre-purge stale value.
+        This is the only Python-side aggregate-correction path."""
+        from readsbstats import config as _config, geo
+        monkeypatch.setattr("readsbstats.config.RETENTION_DAYS", 1)
+        monkeypatch.setattr("readsbstats.config.MIN_POSITIONS_KEEP", 2)
+        cutoff = int(time.time()) - 86400
+        rlat, rlon = _config.RECEIVER_LAT, _config.RECEIVER_LON
+        fid = self._insert_flight(cutoff - 100, cutoff + 500, total_pos=3)
+        # Seed STALE aggregates reflecting the soon-to-be-deleted far/fast pos.
+        self.conn.execute(
+            "UPDATE flights SET max_gs=999, max_distance_nm=9999, "
+            "max_distance_bearing=123, primary_source='mlat' WHERE id=?", (fid,))
+        self.conn.commit()
+        # Deleted (before cutoff): far + very fast + MLAT.
+        self._insert_pos_full(fid, cutoff - 50, lat=rlat + 5.0, lon=rlon + 5.0,
+                              gs=999, st="mlat")
+        # Survivors (>= cutoff): nearer + slower + ADS-B.
+        self._insert_pos_full(fid, cutoff + 100, lat=rlat + 0.5, lon=rlon,
+                              gs=400, st="adsb_icao")
+        self._insert_pos_full(fid, cutoff + 200, lat=rlat + 1.0, lon=rlon,
+                              gs=450, st="adsb_icao")
+        from readsbstats.collector import _purge
+        _purge(self.conn)
+        row = self.conn.execute(
+            "SELECT total_positions, max_gs, max_distance_nm, primary_source "
+            "FROM flights WHERE id=?", (fid,)).fetchone()
+        assert row["total_positions"] == 2
+        assert row["max_gs"] == 450
+        # Survivors are all ADS-B → no longer 'mlat'.
+        assert row["primary_source"] != "mlat"
+        # Distance reflects the farther SURVIVING point, not the deleted one.
+        expected = geo.haversine_nm(rlat, rlon, rlat + 1.0, rlon)
+        assert row["max_distance_nm"] == pytest.approx(expected, rel=1e-6)
+        assert row["max_distance_nm"] < 9999
 
     def test_retention_zero_skips_purge(self, monkeypatch):
         monkeypatch.setattr("readsbstats.config.RETENTION_DAYS", 0)

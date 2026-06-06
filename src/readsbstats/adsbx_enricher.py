@@ -271,6 +271,9 @@ def _poll_area(conn: sqlite3.Connection, client: httpx.Client | None = None) -> 
     Fetch aircraft in range from airplanes.live, parse, and upsert overrides.
     Returns the number of overrides upserted.
     """
+    # Audit 17: the explicit None-branch is kept (not collapsed to
+    # `_fetch_area(client)`) — direct-call tests monkeypatch `_fetch_area` with
+    # a zero-arg stub, so the no-arg call form is part of the contract.
     data = _fetch_area() if client is None else _fetch_area(client)
     entries = _parse_area_response(data)
 

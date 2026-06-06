@@ -608,6 +608,9 @@ function AircraftListTable({
 }
 
 function fmtAgoCompact(sec: number): string {
+  // Audit 17: seconds_ago comes from untrusted backend JSON; guard against a
+  // null/missing value rendering as "NaNs" (mirrors lib/format.ts).
+  if (!Number.isFinite(sec)) return '—';
   if (sec < 60) return `${sec}s`;
   if (sec < 3600) return `${Math.floor(sec / 60)}m`;
   return `${Math.floor(sec / 3600)}h`;
@@ -650,7 +653,9 @@ function AircraftDetail({ ac }: { ac: Aircraft }) {
           <SourceBadge source={ac.source_type} />
         </dd>
         <dt className="text-[var(--color-text-dim)]">Updated</dt>
-        <dd className="tabnum">{ac.seconds_ago}s ago</dd>
+        <dd className="tabnum">
+          {Number.isFinite(ac.seconds_ago) ? `${ac.seconds_ago}s ago` : '—'}
+        </dd>
         {(ac.origin_icao || ac.dest_icao) && (
           <>
             <dt className="text-[var(--color-text-dim)]">Route</dt>

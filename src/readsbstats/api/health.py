@@ -38,6 +38,15 @@ def api_metrics(
     if to_ts is None:
         to_ts = now
 
+    # Audit 17: reject an inverted range. from == to is a valid zero-width
+    # window (returns no rows); from > to is malformed — a negative span would
+    # otherwise fall through the downsample ladder and silently return empty.
+    if to_ts < from_ts:
+        return JSONResponse(
+            status_code=422,
+            content={"error": "'from' must be <= 'to'"},
+        )
+
     # Validate requested columns against allowlist
     requested = [c.strip() for c in metrics.split(",") if c.strip()]
     invalid = [c for c in requested if c not in _deps._METRICS_COLS]

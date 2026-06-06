@@ -142,12 +142,17 @@ def scan_orphan_max_gs(conn: sqlite3.Connection) -> dict[int, float | None]:
     Returns {flight_id: correct_max_gs}.
     """
     # Threshold > 1 kts to avoid floating-point noise from matching values.
+    # Audit 17: LEFT JOIN (was INNER) so a flight whose GS samples were ALL
+    # nulled (e.g. by a prior purge) but still carries a stale max_gs is caught
+    # too — `max_stored_gs IS NULL` means the correct value is NULL. The old
+    # INNER JOIN dropped those flights, leaving the phantom max_gs forever.
     rows = conn.execute(
         "SELECT f.id, f.max_gs, MAX(p.gs) AS max_stored_gs "
         "FROM flights f "
-        "JOIN positions p ON p.flight_id = f.id AND p.gs IS NOT NULL "
+        "LEFT JOIN positions p ON p.flight_id = f.id AND p.gs IS NOT NULL "
+        "WHERE f.max_gs IS NOT NULL "
         "GROUP BY f.id "
-        "HAVING f.max_gs - MAX(p.gs) > 1"
+        "HAVING max_stored_gs IS NULL OR f.max_gs - max_stored_gs > 1"
     ).fetchall()
     return {r["id"]: r["max_stored_gs"] for r in rows}
 

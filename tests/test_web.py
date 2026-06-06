@@ -803,6 +803,18 @@ class TestApiMetricsQueryValidation:
         r = client.get("/api/metrics?from=1000000&to=1000100&metrics=not_a_real_col")
         assert r.status_code == 400
 
+    def test_from_after_to_returns_422(self, client):
+        """Audit 17: an inverted range (from > to) is a malformed request —
+        reject with 422 rather than silently returning an empty series."""
+        r = client.get("/api/metrics?from=1000100&to=1000000&metrics=signal")
+        assert r.status_code == 422
+
+    def test_from_equals_to_is_allowed(self, client):
+        """from == to is a degenerate-but-valid zero-width window (returns no
+        rows), not an error — must stay 200."""
+        r = client.get("/api/metrics?from=1000000&to=1000000&metrics=signal")
+        assert r.status_code == 200
+
 
 # ---------------------------------------------------------------------------
 # Helper: _fmt_ts
@@ -852,6 +864,20 @@ class TestCache:
         # The earliest keys should have been evicted; the most recent kept.
         assert cache._get_cache(f"stats:0:{cap + 49}") == cap + 49
         assert cache._get_cache("stats:0:0") is None
+
+    def test_caller_keys_do_not_evict_named_entries(self, clear_web_cache):
+        """Audit 17: a flood of caller-controlled keys (stats:{from}:{to},
+        flagged:*) must not evict the bounded set of named, expensive-to-
+        recompute entries (heatmap:all etc.). Eviction prefers keys absent from
+        _CACHE_TTLS before falling back to the protected ones."""
+        cache._set_cache("heatmap:all", {"big": "expensive"})
+        cache._set_cache("coverage:all", {"big": "expensive"})
+        for i in range(cache._CACHE_MAX_ENTRIES + 50):
+            cache._set_cache(f"flagged:None:None:None:50:{i}", i)
+        assert len(cache._cache) <= cache._CACHE_MAX_ENTRIES
+        # The expensive prewarmed map entries survived the flood.
+        assert cache._get_cache("heatmap:all") == {"big": "expensive"}
+        assert cache._get_cache("coverage:all") == {"big": "expensive"}
 
     def test_get_cache_drops_expired_entries(self, clear_web_cache, monkeypatch):
         """Expired entries should be removed lazily on lookup so the cap is
@@ -2654,10 +2680,17 @@ class TestApiFlightPhoto:
         assert data["thumbnail_url"] == "https://plnspttrs.net/thumb.jpg"
         assert data["photographer"] == "Alice"
         assert data["icao_hex"] == "aabbcc"
+        # Audit 17: assert every column lands in its named column (guards the
+        # positive INSERT against a future schema reorder — it must name columns
+        # explicitly, not rely on positional VALUES order).
         row = db_conn.execute(
-            "SELECT thumbnail_url FROM photos WHERE icao_hex = 'aabbcc'"
+            "SELECT thumbnail_url, large_url, link_url, photographer "
+            "FROM photos WHERE icao_hex = 'aabbcc'"
         ).fetchone()
         assert row["thumbnail_url"] == "https://plnspttrs.net/thumb.jpg"
+        assert row["large_url"] == "https://plnspttrs.net/large.jpg"
+        assert row["link_url"] == "https://plnspttrs.net/photo"
+        assert row["photographer"] == "Alice"
 
     def test_cached_photo_served_from_db(self, client, db_conn):
         # PY-6: use an allowlisted host.
@@ -3506,6 +3539,21 @@ class TestApiFlaggedAircraft:
         assert data["total"] == 5
         assert len(data["aircraft"]) == 2
 
+    def test_result_is_cached_per_query_shape(self, client, db_conn):
+        """Audit 17: the flagged gallery caches its (heavy) result keyed by the
+        full query shape. Within the TTL a repeat of the same query is served
+        from cache; a different query shape computes fresh."""
+        _insert_aircraft_db(db_conn, "aabbcc", flags=1)
+        insert_flight(db_conn, icao="aabbcc")
+        assert client.get("/api/aircraft/flagged").json()["total"] == 1
+        # Add a second flagged aircraft AFTER the first response is cached.
+        _insert_aircraft_db(db_conn, "112233", flags=1)
+        insert_flight(db_conn, icao="112233")
+        # Same query shape → served from cache → still sees only the first.
+        assert client.get("/api/aircraft/flagged").json()["total"] == 1
+        # Different query shape (distinct cache key) → fresh → sees both.
+        assert client.get("/api/aircraft/flagged?flags=military").json()["total"] == 2
+
     def test_sort_by_last_seen_desc_default(self, client, db_conn):
         _insert_aircraft_db(db_conn, "aabbcc", flags=1)
         _insert_aircraft_db(db_conn, "112233", flags=1)
@@ -3785,6 +3833,23 @@ class TestApiMapCoverage:
         self._insert_position_at(db_conn, bearing_deg=5.0, dist_nm=100.0)
         self._insert_position_at(db_conn, bearing_deg=95.0, dist_nm=200.0)
         assert client.get("/api/map/coverage?window=all").json()["max_range_nm"] == pytest.approx(200.0)
+
+    def test_null_distance_bucket_does_not_crash(self, monkeypatch):
+        """Audit 17: a bucket whose max distance is None (e.g. a DuckDB result
+        with a NULL-producing distance expr) must collapse to the receiver
+        location, not raise TypeError comparing None > 0 / max(None,...)."""
+        from readsbstats.api import map as map_mod
+        cache._cache.clear()
+        # analytics.coverage is the DuckDB path; return a None bucket value.
+        monkeypatch.setattr(map_mod.analytics, "coverage",
+                            lambda *a, **k: {0: None, 1: 100.0})
+        result = map_mod._compute_coverage_sync("all")
+        assert len(result["polygon"]) == 36
+        # bucket 0 (None) collapses to the receiver location
+        assert result["polygon"][0][0] == pytest.approx(config.RECEIVER_LAT, abs=1e-6)
+        assert result["polygon"][0][1] == pytest.approx(config.RECEIVER_LON, abs=1e-6)
+        # max_range ignores the None and reflects the real bucket
+        assert result["max_range_nm"] == pytest.approx(100.0)
 
     def test_bucket_uses_max_distance(self, client, db_conn):
         """Two positions both in bucket 0 — polygon uses the farther one."""
@@ -4174,6 +4239,43 @@ class TestMapPrewarmer:
         early = ranked[: len(ranked) // 2]
         assert ("heatmap", "24h") in early
         assert ("coverage", "24h") in early
+
+    def test_stop_prewarmer_joins_running_thread(self, monkeypatch):
+        """Audit 17: _stop_prewarmer must JOIN the running thread before nil-ing
+        the handle. Otherwise a stop→start cycle (reload/tests) leaves the old
+        thread running full-`positions` scans alongside the new one, because
+        _start_prewarmer clears the stop event the orphan was waiting on."""
+        import threading
+        started = threading.Event()
+        release = threading.Event()
+
+        def blocking_prewarm(kind, window):
+            started.set()
+            release.wait(5)  # simulate a long-running positions scan
+
+        monkeypatch.setattr(cache, "_prewarm_one", blocking_prewarm)
+        monkeypatch.setattr(cache, "_initial_prewarm_schedule",
+                            lambda targets, now: {t: now for t in targets})
+        # make every wait() honour the event state but never block the test
+        monkeypatch.setattr(cache._prewarmer_stop, "wait",
+                            lambda timeout=None: cache._prewarmer_stop.is_set())
+
+        cache._prewarmer_stop.clear()
+        cache._start_prewarmer()
+        try:
+            assert started.wait(2), "prewarm thread did not start"
+            t = cache._prewarmer_thread
+            assert t is not None and t.is_alive()
+            # Release the blocking query a moment after stop is requested, so
+            # _stop_prewarmer's join has something real to wait on.
+            threading.Timer(0.1, release.set).start()
+            cache._stop_prewarmer()
+            # After _stop_prewarmer returns, the old thread must be fully gone.
+            assert not t.is_alive()
+            assert cache._prewarmer_thread is None
+        finally:
+            release.set()
+            cache._prewarmer_stop.clear()
 
 
 class TestParseIcaoPath:

@@ -1,5 +1,61 @@
 # Changelog
 
+## 2.15.1 — 2026-06-06
+
+Audit 17 remediation — a fresh full-codebase sweep (0 Critical / 0 High
+security; no non-negotiable violations). Bug fixes, one perf win, and hardening.
+Full findings in `internal_docs/security/audit-17-2026-06-06.md`.
+
+### Fixed
+
+- **`/api/aircraft/flagged` performance** — the index-unfriendly flag predicate
+  was evaluated three times per (uncached) request. Collapsed to a single
+  `filtered` CTE feeding count + representative + aggregates, and the endpoint is
+  now cached (short 60 s TTL). Repeated gallery views/sorts no longer re-scan.
+- **`/api/metrics` inverted range** — `from > to` now returns HTTP 422 instead of
+  silently returning an empty series. `from == to` stays valid (zero-width).
+- **`/api/map/coverage` NULL-distance crash** — a bearing bucket whose max
+  distance is NULL no longer raises (collapses to the receiver location).
+- **Telegram oversized captions** — the text-only dispatch path could send an
+  unclamped caption (>4096) and have Telegram 400 it, silently dropping the
+  alert; clamping now happens at the single `_send` chokepoint. `_clamp_caption`
+  also no longer produces malformed HTML when truncating — it cuts at a line
+  boundary (entity-, tag-, and unclosed-tag-safe).
+- **Route enricher request leak** — a persistent non-404 4xx for a callsign is
+  now treated as permanent (TTL-bounded negative cache) instead of being
+  refetched every batch forever. 429/5xx stay transient.
+- **`photos` cache write** — the positive write now names its columns (was
+  positional `VALUES`), removing a silent-corruption risk across schema reorders
+  and SQLite version skew.
+- **Collector MLAT acceleration filter** — acceleration is now measured over the
+  interval since the last *valid* GS (not the last sample), so a legitimate
+  acceleration following a nulled sample is no longer over-nulled. Restored
+  ghost-filter state also handles an epoch-`0` position timestamp correctly.
+- **Map sidebar** — `seconds_ago` from the backend is finite-guarded (no more
+  `NaNs ago` on a missing value).
+
+### Changed (internal hardening)
+
+- Map-cache prewarmer `stop()` now joins the worker before restart (no orphaned
+  full-`positions` scan threads) and runs off the event loop on shutdown so the
+  join can't stall in-flight responses; caller-controlled cache keys (`stats:*`,
+  `flagged:*`) can no longer evict the expensive prewarmed map entries.
+- CSV export streams from a dedicated short-lived connection (no WAL snapshot
+  pinned on the request connection during a slow download).
+- `backfill_bearing` routes through the canonical `geo.*_sql` helpers; the
+  `recover_*_swap` functions share one helper; `enrichment._LRUDict` composes an
+  `OrderedDict` so unsynchronized writes are structurally impossible.
+- CodeQL workflow actions are SHA-pinned (matching `test.yml`/`shellcheck.yml`).
+
+### Tests
+
+- Backend 1751 → 1765 (+14: route 4xx classification, photos named-INSERT,
+  notifier clamp paths + HTML-safety, MLAT accel window, coverage NULL bucket,
+  metrics 422, prewarmer join, cache-eviction partition, flagged cache,
+  `check_db` corruption/error exits, `_purge` crossing-flight aggregate,
+  `safe_httpx_get` `.json()`-after-stream, purge orphan all-nulled-GS).
+- Frontend 359 → 361 (+2: MessageList XSS-safe body, Watchlist ICAO validation).
+
 ## 2.15.0 — 2026-06-05
 
 ### Added

@@ -162,6 +162,12 @@ def _send(text: str) -> bool:
     if not telegram_enabled():
         return False
     try:
+        # Audit 17: clamp at the single transport chokepoint so NO caller can
+        # over-run Telegram's 4096-char sendMessage limit (an over-limit body
+        # makes Telegram 400 and the alert is silently dropped). This covers
+        # both the text-only dispatch path and the sendPhoto text fallback;
+        # the photo path's own 1024 clamp makes this a no-op there.
+        text = _clamp_caption(text, _MESSAGE_MAX)
         payload = json.dumps({
             "chat_id":                  config.TELEGRAM_CHAT_ID,
             "text":                     text,
@@ -244,6 +250,7 @@ def _get_photo_result(
 
 _MAX_PHOTO_BYTES = 10 * 1024 * 1024  # Telegram's sendPhoto limit
 _PHOTO_CAPTION_MAX = 1024            # Telegram's caption limit on sendPhoto
+_MESSAGE_MAX = 4096                  # Telegram's text limit on sendMessage
 
 _MIME_TO_FILENAME: dict[str, str] = {
     "image/jpeg": "photo.jpg",
@@ -403,7 +410,28 @@ def _clamp_caption(caption: str, limit: int = _PHOTO_CAPTION_MAX) -> str:
     stripped = _TRAILING_LINK_LINE_RE.sub("", stripped)
     if len(stripped) <= limit:
         return stripped
-    return stripped[: limit - 1] + "…"
+    # Audit 17: plain-truncate without producing malformed HTML — Telegram 400s
+    # (and drops the whole alert) on a split entity, a half-open tag, OR an
+    # unclosed tag (`<b>…` whose `</b>` got cut). Our builders keep every tag
+    # and entity within a single line, so cutting at the last newline before the
+    # limit yields balanced HTML for free. This is the path real (multi-line)
+    # captions take.
+    hard = stripped[: limit - 1]
+    nl = hard.rfind("\n")
+    if nl > 0:
+        return hard[:nl] + "\n…"
+    # No newline to cut on (a single oversized line — our builders don't emit
+    # these). Strip complete tags (keep their text) so a cut can't leave a
+    # half-open or unclosed tag, then trim a trailing unterminated tag/entity.
+    # Loses formatting but keeps text and never produces invalid HTML.
+    cut = re.sub(r"<[^>]*>", "", hard)
+    lt = cut.rfind("<")
+    if lt != -1 and ">" not in cut[lt:]:
+        cut = cut[:lt]
+    amp = cut.rfind("&")
+    if amp != -1 and ";" not in cut[amp:]:
+        cut = cut[:amp]
+    return cut + "…"
 
 
 def _dispatch_with_photo(

@@ -20,38 +20,56 @@ _MAX_AIRLINE  = 2_000   # ~5k airlines; 2k covers heavy traffic
 _MAX_ADSBX   = 10_000
 
 
-class _LRUDict(OrderedDict):
-    """Thread-safe OrderedDict that evicts the oldest entry when maxsize is exceeded."""
+class _LRUDict:
+    """Thread-safe LRU cache that evicts the oldest entry when maxsize is exceeded.
+
+    Audit 17: composes an internal ``OrderedDict`` instead of subclassing it.
+    The only WRITE paths are the locked ``put`` / ``invalidate`` /
+    ``clear_locked`` — there is deliberately no ``__setitem__``, so a bare
+    ``cache[k] = v`` (an unsynchronized write that would race the collector
+    threads) is structurally impossible, not merely discouraged. Read-only
+    dunders (``len`` / ``in`` / ``[]``) are provided for diagnostics and tests.
+    """
 
     def __init__(self, maxsize: int):
-        super().__init__()
+        self._d: "OrderedDict[str, dict[str, Any] | None]" = OrderedDict()
         self._maxsize = maxsize
         self._lock = threading.Lock()
 
     def get_cached(self, key: str) -> tuple[bool, dict[str, Any] | None]:
         """Return (True, value) if key is cached, else (False, None)."""
         with self._lock:
-            if key in self:
-                self.move_to_end(key)
-                return True, self[key]
+            if key in self._d:
+                self._d.move_to_end(key)
+                return True, self._d[key]
         return False, None
 
     def put(self, key: str, value: dict[str, Any] | None) -> None:
         with self._lock:
-            self[key] = value
-            self.move_to_end(key)
-            if len(self) > self._maxsize:
-                self.popitem(last=False)
+            self._d[key] = value
+            self._d.move_to_end(key)
+            if len(self._d) > self._maxsize:
+                self._d.popitem(last=False)
 
     def invalidate(self, key: str) -> None:
         """Remove `key` from the cache if present (no-op otherwise)."""
         with self._lock:
-            self.pop(key, None)
+            self._d.pop(key, None)
 
     def clear_locked(self) -> None:
         """Atomic bulk-clear. Use this rather than reaching into ._lock / .clear()."""
         with self._lock:
-            self.clear()
+            self._d.clear()
+
+    # Read-only views for diagnostics/tests — no write dunder by design.
+    def __len__(self) -> int:
+        return len(self._d)
+
+    def __contains__(self, key: object) -> bool:
+        return key in self._d
+
+    def __getitem__(self, key: str) -> dict[str, Any] | None:
+        return self._d[key]
 
 
 _aircraft_cache = _LRUDict(_MAX_AIRCRAFT)

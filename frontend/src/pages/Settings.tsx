@@ -7,6 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { Alert } from '@/components/ui/Alert';
 import { Badge } from '@/components/ui/Badge';
+import type { Settings } from '@/lib/types';
 
 // Mirrors the v1 Jinja /settings page. Data comes from GET /api/settings —
 // the single source of truth (see web.py::_settings_payload). All sensitive
@@ -21,7 +22,12 @@ interface SettingMeta {
   customized: boolean;
 }
 
-interface SettingsPayload {
+// Audit 17: extend the shared `Settings` type so the keys both the Settings
+// page and the lightweight ['settings'] consumers (App/Nav/useVdl2Enabled)
+// read are single-sourced — a rename of `time_format` in one now fails the
+// other's compile. `vdl2_enabled` is Omitted because this page accepts the raw
+// API value (`boolean | number`) whereas the shared type narrows it to boolean.
+interface SettingsPayload extends Omit<Settings, 'vdl2_enabled'> {
   // Receiver
   lat: number;
   lon: number;

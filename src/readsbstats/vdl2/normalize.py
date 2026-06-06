@@ -140,7 +140,7 @@ def _normalize_dumpvdl2(raw: dict) -> dict | None:
         "block_id":     clean_short_text(acars.get("blk_id"), _SHORT),
         "ack":          clean_short_text(acars.get("ack"), _SHORT),
         "msgno":        clean_short_text(acars.get("msg_num"), _SHORT),
-        "freq":         freq_hz / 1e6 if freq_hz is not None else None,   # Hz → MHz
+        "freq":         freq_hz / 1e6 if freq_hz else None,   # Hz → MHz (0/None → None)
         "station_id":   clean_short_text(raw.get("station"), _SHORT),
         "toaddr":       clean_short_text((avlc.get("dst") or {}).get("addr") if isinstance(avlc.get("dst"), dict) else None, _SHORT),
         "dsta":         None,

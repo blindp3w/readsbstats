@@ -156,11 +156,6 @@ def _settings_payload() -> dict:
     }
 
 
-# Falsy bool strings — kept in sync with `config._BOOL_FALSY`. Duplicated
-# rather than imported to avoid widening config.py's public API surface.
-_SETTINGS_BOOL_FALSY = frozenset({"", "0", "false", "no", "off"})
-
-
 def _settings_default_as_parsed(default, current):
     """Cast `default` (as recorded in `_META_REGISTRY`) to the type of
     `current` (the parsed config attribute). Mirrors what the
@@ -168,7 +163,10 @@ def _settings_default_as_parsed(default, current):
     if isinstance(current, bool):
         if isinstance(default, bool):
             return default
-        return str(default).strip().lower() not in _SETTINGS_BOOL_FALSY
+        # Audit 17: single-source the falsy set from config rather than
+        # duplicating it (the two drifting silently would skew the settings
+        # "customized" badge for bool settings).
+        return str(default).strip().lower() not in config._BOOL_FALSY
     if isinstance(current, int):
         return int(default)
     if isinstance(current, float):

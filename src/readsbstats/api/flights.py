@@ -8,7 +8,7 @@ import io
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import Response, StreamingResponse
 
-from .. import config, downsample, enrichment, schemas
+from .. import config, database, downsample, enrichment, schemas
 from . import _deps, _photos
 
 
@@ -120,33 +120,48 @@ def api_flights_export(
         LIMIT ?
         """
     bind = params + [config.MAX_EXPORT_ROWS]
-    conn = _deps.db()
 
     def _iter_csv():
-        buf = io.StringIO()
-        writer = csv.writer(buf)
-        writer.writerow(_deps._CSV_COLS)
-        yield buf.getvalue()
-        buf.seek(0); buf.truncate(0)
-
-        cursor = conn.execute(sql, bind)
-        while True:
-            chunk = cursor.fetchmany(1000)
-            if not chunk:
-                break
-            for r in chunk:
-                writer.writerow([
-                    _deps._fmt_ts(r["first_seen"]), _deps._fmt_ts(r["last_seen"]), r["duration_sec"],
-                    r["icao_hex"], r["callsign"] or "", r["registration"] or "",
-                    r["aircraft_type"] or "", r["type_desc"] or "",
-                    r["squawk"] or "", r["category"] or "", r["primary_source"] or "",
-                    r["max_alt_baro"], r["max_gs"],
-                    round(r["max_distance_nm"], 1) if r["max_distance_nm"] is not None else "",
-                    r["total_positions"], r["adsb_positions"], r["mlat_positions"],
-                    r["origin_icao"] or "", r["dest_icao"] or "",
-                ])
+        # Audit 17: a streamed CSV download can be slow or abandoned. Iterating
+        # the cursor on the per-thread request connection would pin its WAL read
+        # snapshot for the entire transfer and defer checkpointing. Use a
+        # dedicated short-lived connection that we close when the generator
+        # finishes. In tests `_deps._db` is an injected (in-memory) connection
+        # with no file to reopen — reuse it and don't close it.
+        own_conn = None
+        if _deps._db is not None:
+            export_conn = _deps._db
+        else:
+            own_conn = database.connect(uri=True)
+            export_conn = own_conn
+        try:
+            buf = io.StringIO()
+            writer = csv.writer(buf)
+            writer.writerow(_deps._CSV_COLS)
             yield buf.getvalue()
             buf.seek(0); buf.truncate(0)
+
+            cursor = export_conn.execute(sql, bind)
+            while True:
+                chunk = cursor.fetchmany(1000)
+                if not chunk:
+                    break
+                for r in chunk:
+                    writer.writerow([
+                        _deps._fmt_ts(r["first_seen"]), _deps._fmt_ts(r["last_seen"]), r["duration_sec"],
+                        r["icao_hex"], r["callsign"] or "", r["registration"] or "",
+                        r["aircraft_type"] or "", r["type_desc"] or "",
+                        r["squawk"] or "", r["category"] or "", r["primary_source"] or "",
+                        r["max_alt_baro"], r["max_gs"],
+                        round(r["max_distance_nm"], 1) if r["max_distance_nm"] is not None else "",
+                        r["total_positions"], r["adsb_positions"], r["mlat_positions"],
+                        r["origin_icao"] or "", r["dest_icao"] or "",
+                    ])
+                yield buf.getvalue()
+                buf.seek(0); buf.truncate(0)
+        finally:
+            if own_conn is not None:
+                own_conn.close()
 
     filename = f"flights_{date}.csv" if date else "flights.csv"
     return StreamingResponse(

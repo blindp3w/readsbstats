@@ -2137,6 +2137,42 @@ class TestClampCaption:
     def test_default_limit_is_1024(self):
         assert notifier._PHOTO_CAPTION_MAX == 1024
 
+    def test_truncation_does_not_split_html_entity(self):
+        """Audit 17: the final-fallback truncation must not cut through an HTML
+        entity (`&amp;`) — Telegram 400s on malformed HTML and drops the alert."""
+        s = "&amp;" * 300  # 1500 chars, no trailing note/link line to strip
+        out = notifier._clamp_caption(s, limit=1024)
+        assert len(out) <= 1024
+        assert out.endswith("…")
+        body = out[:-1]  # drop the ellipsis
+        amp = body.rfind("&")
+        assert amp == -1 or ";" in body[amp:], f"dangling entity: {body[-8:]!r}"
+
+    def test_truncation_does_not_split_html_tag(self):
+        """The final-fallback truncation must not leave a half-open `<tag`."""
+        s = "<i>x</i>" * 200  # 1600 chars of balanced tags
+        out = notifier._clamp_caption(s, limit=1024)
+        assert len(out) <= 1024
+        body = out[:-1]
+        lt = body.rfind("<")
+        assert lt == -1 or ">" in body[lt:], f"dangling tag: {body[-8:]!r}"
+
+    def test_truncation_does_not_leave_unclosed_tag(self):
+        """Audit 17 review: a real (multi-line) caption truncated mid-way must
+        not leave an opened-but-unclosed tag — e.g. a `<b>` line whose `</b>`
+        was cut. Telegram 400s on that. Cutting at a line boundary (our builders
+        keep each tag within one line) keeps every tag balanced."""
+        lines = [f"<b>Row {i:03d}</b> detail text padding xyzzy" for i in range(60)]
+        s = "\n".join(lines)
+        assert len(s) > 1024
+        out = notifier._clamp_caption(s, limit=1024)
+        assert len(out) <= 1024
+        # Every opened <b> is closed — no dangling open tag.
+        assert out.count("<b>") == out.count("</b>")
+        body = out[:-1]
+        lt = body.rfind("<")
+        assert lt == -1 or ">" in body[lt:]
+
 
 class TestDispatchTruncates:
     @pytest.fixture(autouse=True)
@@ -2166,3 +2202,36 @@ class TestDispatchTruncates:
         notifier._dispatch_with_photo(long_caption, "abc123", None, None)
         assert len(seen) == 1
         assert len(seen[0]) <= notifier._PHOTO_CAPTION_MAX
+
+
+class TestSendClampsToMessageLimit:
+    """Audit 17: the text-only dispatch path (TELEGRAM_PHOTOS on but no photo
+    resolved, or photos off) routed through _send with an UNCLAMPED caption. An
+    oversized message (>4096) makes Telegram return 400 and silently drops the
+    alert. _send must clamp to the sendMessage limit so no path can over-run."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self, monkeypatch):
+        monkeypatch.setattr(config, "TELEGRAM_TOKEN", "123456:ABC")
+        monkeypatch.setattr(config, "TELEGRAM_CHAT_ID", "99887766")
+        yield
+
+    def test_send_clamps_oversized_text(self, monkeypatch):
+        from readsbstats import http_safe
+        calls = []
+        monkeypatch.setattr(http_safe, "safe_urlopen", _make_safe_urlopen(calls=calls))
+        assert notifier._send("Z" * 5000) is True
+        assert len(calls) == 1
+        sent = json.loads(calls[0]["data"].decode())["text"]
+        assert len(sent) <= notifier._MESSAGE_MAX
+
+    def test_dispatch_text_only_path_clamps(self, monkeypatch):
+        from readsbstats import http_safe
+        monkeypatch.setattr(config, "TELEGRAM_PHOTOS", 1)
+        monkeypatch.setattr(notifier, "_get_photo_result", lambda icao, ac: (None, False))
+        calls = []
+        monkeypatch.setattr(http_safe, "safe_urlopen", _make_safe_urlopen(calls=calls))
+        notifier._dispatch_with_photo("Q" * 5000, "abc123", None, None)
+        assert len(calls) == 1
+        sent = json.loads(calls[0]["data"].decode())["text"]
+        assert len(sent) <= notifier._MESSAGE_MAX

@@ -54,6 +54,7 @@ _CACHE_TTLS: dict[str, int] = {
     "coverage:30d": 7200,
     "coverage:all": 21600,
     "feeders":       10,   # BE-18 — feeder checks fan out subprocesses; short TTL
+    "flagged":       60,   # Audit 17 — flagged gallery; heavy uncached scan before
 }
 _DEFAULT_TTL  = 30    # seconds
 _AIRSPACE_TTL = 3600  # seconds — airspace data rarely changes
@@ -99,8 +100,17 @@ def _set_cache(key: str, value: object) -> None:
                     del _cache[k]
                 if len(_cache) <= _CACHE_MAX_ENTRIES:
                     break
+            # Audit 17: evict caller-controlled keys (stats:{from}:{to},
+            # flagged:*) before the bounded set of named keys — the prewarmed
+            # map entries (heatmap:all, coverage:all, …) are the costliest to
+            # recompute, so a flood of cheap filtered keys must not push them
+            # out. Named keys have an exact entry in _CACHE_TTLS; everything
+            # else is fair game first, oldest-first within each group.
             while len(_cache) > _CACHE_MAX_ENTRIES:
-                _cache.popitem(last=False)
+                victim = next((k for k in _cache if k not in _CACHE_TTLS), None)
+                if victim is None:
+                    victim = next(iter(_cache))  # all protected → evict oldest
+                del _cache[victim]
 
 
 # ---------------------------------------------------------------------------
@@ -258,5 +268,14 @@ def _start_prewarmer() -> None:
 
 def _stop_prewarmer() -> None:
     global _prewarmer_thread
+    # Audit 17: join the running thread BEFORE nil-ing the handle. The loop
+    # only checks _prewarmer_stop between passes / inside its wait()s, so an
+    # in-flight _prewarm_one keeps running after .set(). If we nil the handle
+    # without joining, a subsequent _start_prewarmer() clears the stop event
+    # and spawns a second thread while the orphaned first one is still doing
+    # full-`positions` scans. Joining drains it deterministically.
+    t = _prewarmer_thread
     _prewarmer_stop.set()
+    if t is not None and t.is_alive():
+        t.join(timeout=15)
     _prewarmer_thread = None
