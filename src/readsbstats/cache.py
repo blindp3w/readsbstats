@@ -37,9 +37,20 @@ log = logging.getLogger("web")
 # ---------------------------------------------------------------------------
 _cache: "_OrderedDict[str, tuple[float, object]]" = _OrderedDict()
 _CACHE_LOCK = threading.RLock()
+# Serializes computation of the expensive all-time /api/stats payload so a
+# cold-cache thundering herd ("All time" clicked by several users at once) and
+# the hourly prewarmer don't all run the ~15-query scan in parallel. Filtered
+# stats keys are cheap (index-scoped) and quantized by the SPA, so they stay
+# lock-free.
+_stats_compute_lock = threading.Lock()
 _CACHE_MAX_ENTRIES = 256
 _CACHE_TTLS: dict[str, int] = {
-    "stats":        120,   # seconds — aggregate data, no need to recompute often
+    "stats":        7200,  # 2 h — all-time payload is prewarmed & very stable. Filtered
+                           # stats:{from}:{to} keys inherit this via the prefix fallback,
+                           # but the SPA quantizes the window to 5-min buckets so their
+                           # effective freshness stays ~5 min (new bucket → new key).
+    "stats:all":    7200,  # cadence key the prewarm loop reads via f"{kind}:{window}";
+                           # nothing is stored here — the payload lives under bare "stats".
     "polar":        300,   # seconds — max range rarely shifts
     "records":      300,   # seconds — all-time bests, very stable
     "health":        60,   # seconds — matches metrics_collector poll cycle
@@ -158,11 +169,12 @@ def _feeder_lock() -> asyncio.Lock:
 _PREWARM_TARGETS: list[tuple[str, str]] = [
     ("heatmap", "24h"), ("heatmap", "7d"),  ("heatmap", "30d"),  ("heatmap", "all"),
     ("coverage", "24h"), ("coverage", "7d"), ("coverage", "30d"), ("coverage", "all"),
+    ("stats", "all"),   # all-time /api/stats payload (stored under the bare "stats" key)
 ]
 
-# Stagger gap between the first refresh of consecutive targets. With 8
-# targets and a 15s gap, the initial burst is spread across ~105s instead
-# of all 8 contending immediately at process startup (audit-12 #185).
+# Stagger gap between the first refresh of consecutive targets. With 9
+# targets and a 15s gap, the initial burst is spread across ~120s instead
+# of all of them contending immediately at process startup (audit-12 #185).
 _PREWARM_INITIAL_STAGGER_S = 15
 
 # TTL-priority order for the initial schedule: shortest-TTL windows are
@@ -179,16 +191,24 @@ def _initial_prewarm_schedule(
 ) -> dict[tuple[str, str], float]:
     """Return ``{(kind, window): epoch_seconds}`` mapping each target to its
     desired *first* refresh time. Earliest first is ``now``; subsequent
-    targets are spaced by ``_PREWARM_INITIAL_STAGGER_S``. Targets are
-    ordered by TTL ascending (shortest-window = most-user-hit = first),
-    with kind as a tiebreaker so heatmap runs before coverage at each TTL.
+    targets are spaced by ``_PREWARM_INITIAL_STAGGER_S``.
+
+    Ordering: the all-time stats payload goes first — it's the only stats
+    target, and a cold "All time" click otherwise pays the full ~15-query scan
+    for ~120 s after a restart on DuckDB hosts (where it would sort last among
+    9 targets). Map targets follow, by TTL ascending (shortest-window =
+    most-user-hit = first), heatmap before coverage at each TTL.
 
     Pulled out so we can unit-test the ordering without spinning up the
     thread or sleeping for real time.
     """
     ordered = sorted(
         targets,
-        key=lambda kw: (_PREWARM_TTL_PRIORITY.get(kw[1], 99), 0 if kw[0] == "heatmap" else 1),
+        key=lambda kw: (
+            0 if kw[0] == "stats" else 1,
+            _PREWARM_TTL_PRIORITY.get(kw[1], 99),
+            0 if kw[0] == "heatmap" else 1,
+        ),
     )
     return {kw: now + i * _PREWARM_INITIAL_STAGGER_S for i, kw in enumerate(ordered)}
 
@@ -203,10 +223,19 @@ def _prewarm_one(kind: str, window: str) -> None:
     connections via ``api._deps.db()`` and the cache dict is set-only (no
     race risk beyond a last-writer-wins value swap).
 
-    The compute functions live in ``api/map.py``; we import them lazily
-    here to break the ``cache → api.map → cache`` cycle that would
+    The compute functions live in ``api/map.py`` and ``api/stats.py``; we
+    import them lazily to break the ``cache → api.* → cache`` cycle that would
     otherwise form at module load time.
     """
+    if kind == "stats":
+        # All-time /api/stats payload. Stored under the BARE "stats" key (not
+        # "stats:all") to match the unfiltered handler's cache_key. Hold
+        # _stats_compute_lock so a concurrent on-demand "All time" request
+        # doesn't run the same scan in parallel — it waits, then reuses ours.
+        from .api import stats as _api_stats  # noqa: PLC0415 — deferred for anti-cycle
+        with _stats_compute_lock:
+            _set_cache("stats", _api_stats._compute_stats_sync(None, None))
+        return
     from .api import map as _api_map  # noqa: PLC0415 — deferred for anti-cycle
     if kind == "heatmap":
         result = _api_map._compute_heatmap_sync(window)
@@ -215,24 +244,26 @@ def _prewarm_one(kind: str, window: str) -> None:
     _set_cache(f"{kind}:{window}", result)
 
 
-def _prewarm_loop() -> None:
+def _prewarm_loop(targets: list[tuple[str, str]] | None = None) -> None:
     """Refresh one target per pass with a cool-off between heavy queries.
 
-    The cool-off prevents 8 back-to-back full-table scans from saturating
+    The cool-off prevents back-to-back full-table scans from saturating
     the web service for 60+ s on startup — the collector and incoming user
     requests both need a slice of CPU. Steady-state refreshes are sparse
     (half-TTL: 150 s for 24h, 10800 s for `all`) so the thread spends most
     of its life sleeping.
     """
+    if targets is None:
+        targets = _PREWARM_TARGETS
     # Staggered initial schedule — see _initial_prewarm_schedule().
     next_at: dict[tuple[str, str], float] = _initial_prewarm_schedule(
-        _PREWARM_TARGETS, now=time.time(),
+        targets, now=time.time(),
     )
     if _prewarmer_stop.wait(5):
         return
 
     while not _prewarmer_stop.is_set():
-        target = min(_PREWARM_TARGETS, key=lambda kw: next_at[kw])
+        target = min(targets, key=lambda kw: next_at[kw])
         kind, window = target
         wait_for = next_at[target] - time.time()
         if wait_for > 0:
@@ -255,13 +286,23 @@ def _prewarm_loop() -> None:
             return
 
 
-def _start_prewarmer() -> None:
+def _start_prewarmer(include_map: bool = True) -> None:
+    """Start the cache prewarmer daemon.
+
+    ``include_map=False`` warms only the all-time stats payload (pure SQLite)
+    and skips heatmap/coverage — used when DuckDB is unavailable so a bare Pi
+    doesn't run scheduled full-``positions`` scans through the SQLite fallback.
+    """
     global _prewarmer_thread
     if _prewarmer_thread is not None and _prewarmer_thread.is_alive():
         return
+    targets = (
+        _PREWARM_TARGETS if include_map
+        else [t for t in _PREWARM_TARGETS if t[0] == "stats"]
+    )
     _prewarmer_stop.clear()
     _prewarmer_thread = threading.Thread(
-        target=_prewarm_loop, name="map-prewarm", daemon=True
+        target=_prewarm_loop, args=(targets,), name="cache-prewarm", daemon=True
     )
     _prewarmer_thread.start()
 

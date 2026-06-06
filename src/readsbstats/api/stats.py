@@ -25,7 +25,39 @@ def api_stats(
     cached = cache._get_cache(cache_key)
     if cached is not None:
         return cached
+    if filtered:
+        # Filtered windows are cheap (index-scoped) and quantized by the SPA —
+        # compute lock-free.
+        result = _compute_stats_sync(from_ts, to_ts)
+        cache._set_cache(cache_key, result)
+        return result
+    # All-time is the expensive path. Serialize it under _stats_compute_lock so
+    # a burst of concurrent "All time" requests (or an overlap with the hourly
+    # prewarmer) computes once; the rest wait and reuse the freshly cached result.
+    with cache._stats_compute_lock:
+        cached = cache._get_cache(cache_key)
+        if cached is not None:
+            return cached
+        result = _compute_stats_sync(from_ts, to_ts)
+        cache._set_cache(cache_key, result)
+        return result
 
+
+def _compute_stats_sync(from_ts: int | None, to_ts: int | None) -> dict:
+    """Build the full ``/api/stats`` payload (every sub-query).
+
+    Extracted from ``api_stats`` so the cache prewarmer can warm the all-time
+    payload (``from_ts=to_ts=None``) on a background thread. Pure reads plus
+    ``os.path.getsize`` — never writes ``history.db``; only the caller mutates
+    the in-memory response cache.
+
+    The unfiltered (all-time) payload embeds ``now``-relative fields
+    (``flights_last_24h``, ``trends``, the 24 h new-aircraft cutoff) computed at
+    call time; when served from the prewarmed cache they reflect warm time
+    (up to ~1 h stale at the prewarm cadence). Acceptable — all-time is an
+    opt-in lifetime view and the page defaults to 7d.
+    """
+    filtered = from_ts is not None or to_ts is not None
     conn = _deps.db()
     now = int(time.time())
     cutoff_24h      = now - 86400
@@ -558,7 +590,6 @@ def api_stats(
         "top_airports": [dict(r) for r in top_airports],
         "range":  {"from": from_ts, "to": to_ts} if filtered else None,
     }
-    cache._set_cache(cache_key, result)
     return result
 
 

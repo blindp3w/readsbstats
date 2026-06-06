@@ -83,7 +83,13 @@ export function useRange(defaultValue: RangeValue = '24h'): {
 
 function presetWindow(range: RangeValue): { from?: number; to?: number } {
   if (range === 'all' || range === 'custom') return {};
-  const now = Math.floor(Date.now() / 1000);
+  // Quantize the window end to 5-min buckets so the resolved from/to (and thus
+  // the /api/stats cache key) stay stable across reloads within a bucket.
+  // Otherwise `to = now` changes every second and every page load misses the
+  // backend response cache. Effective freshness becomes ~5 min (a new bucket =
+  // a new key = a fresh compute).
+  const BUCKET_S = 300;
+  const now = Math.floor(Date.now() / 1000 / BUCKET_S) * BUCKET_S;
   const sec =
     range === '24h'
       ? 86400
