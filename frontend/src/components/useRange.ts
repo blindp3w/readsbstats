@@ -39,8 +39,11 @@ export function useRange(defaultValue: RangeValue = '24h'): {
   // URL falls back to the default preset — mirrors CustomRangeForm.apply's
   // `a >= b` guard (BUG-14). Without this, `?from=…&to=…` with from >= to maps
   // to a zero/negative-length window and silently returns nothing.
-  const customFrom = fromRaw != null ? Number(fromRaw) : NaN;
-  const customTo = toRaw != null ? Number(toRaw) : NaN;
+  // Treat an empty/blank param as absent: Number('') === 0 (finite), which would
+  // otherwise sail through the isFinite + from<to guard and resolve to a hidden
+  // 1970-epoch window (same "from 1970" class History.tsx guards). (code-review)
+  const customFrom = fromRaw && fromRaw.trim() !== '' ? Number(fromRaw) : NaN;
+  const customTo = toRaw && toRaw.trim() !== '' ? Number(toRaw) : NaN;
   const hasCustom =
     Number.isFinite(customFrom) && Number.isFinite(customTo) && customFrom < customTo;
 

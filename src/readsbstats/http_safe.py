@@ -402,7 +402,10 @@ def _build_pinned_httpx_request(url: str) -> tuple[str, dict, dict]:
     # netloc carries any `user:pass@` userinfo, which must never leak into
     # the Host header. (Credentialed URLs are also rejected upstream in
     # _resolve_and_validate; this is defence in depth.)
-    host_header = hostname + (f":{parsed.port}" if parsed.port else "")
+    # Bracket an IPv6 literal so the Host header stays well-formed — parsed.hostname
+    # strips the brackets that parsed.netloc kept (code-review follow-up to SEC-3).
+    host_for_header = f"[{hostname}]" if ":" in hostname else hostname
+    host_header = host_for_header + (f":{parsed.port}" if parsed.port else "")
     headers = {"Host": host_header}
     # sni_hostname overrides the SNI extension AND the cert hostname
     # verification target in httpx 0.24+.

@@ -76,4 +76,15 @@ describe('useRange', () => {
     expect(result.current.state.value).toBe('7d');
     expect(result.current.state.to! - result.current.state.from!).toBe(7 * 86400);
   });
+
+  // code-review: an empty/blank `from` (a form that cleared the field, or a
+  // hand-edited URL) must not coerce via Number('')===0 into a hidden 1970
+  // window — it falls back to the default preset.
+  it('falls back to the default preset when from is empty (Number("")===0 trap)', () => {
+    const { result } = renderHook(() => useRange('7d'), {
+      wrapper: wrap('/?from=&to=1700000456'),
+    });
+    expect(result.current.state.value).toBe('7d');
+    expect(result.current.state.to! - result.current.state.from!).toBe(7 * 86400);
+  });
 });

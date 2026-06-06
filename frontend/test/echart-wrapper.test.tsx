@@ -73,15 +73,17 @@ describe('<EChart>', () => {
     expect(connect).not.toHaveBeenCalled();
   });
 
-  // BUG-18: the group effect must clean up on unmount — otherwise a disposed
-  // chart lingers in echarts' connected-group registry.
-  it('disconnects the group and clears chart.group on unmount', () => {
+  // BUG-18 (code-review fix): on unmount the group effect must detach THIS chart
+  // without tearing down the whole shared group. echarts.disconnect(group) is
+  // group-wide — calling it here un-syncs every sibling chart still mounted in the
+  // same group (the Metrics page mounts several group="metrics" charts at once).
+  // Single-instance removal is just clearing chart.group; dispose() also drops the
+  // instance from echarts' connected-group registry.
+  it('clears chart.group on unmount without disconnecting the whole group', () => {
     const { unmount } = render(<EChart option={{ series: [] }} group="metrics" />);
     expect(fakeInstance.group).toBe('metrics');
-    expect(disconnect).not.toHaveBeenCalled();
     unmount();
-    expect(disconnect).toHaveBeenCalledWith('metrics');
-    // chart.group reset so a re-used instance doesn't stay bound to the group.
+    expect(disconnect).not.toHaveBeenCalled();
     expect(fakeInstance.group).not.toBe('metrics');
   });
 

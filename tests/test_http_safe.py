@@ -387,6 +387,16 @@ class TestHttpxPinnedRequestBuilder:
         )
         assert headers == {"Host": "example.com"}
 
+    def test_host_header_brackets_ipv6_literal_url(self, monkeypatch):
+        """Code-review follow-up to SEC-3: for a URL whose host is an IPv6
+        literal, parsed.hostname strips the brackets, so the Host header must
+        re-add them to stay well-formed (a bare ``2606:..`` Host is malformed)."""
+        _patch_validate(monkeypatch, ip="2606:4700:4700::1111")
+        _url, headers, _ext = http_safe._build_pinned_httpx_request(
+            "https://[2606:4700:4700::1111]/path"
+        )
+        assert headers == {"Host": "[2606:4700:4700::1111]"}
+
     def test_concurrent_calls_do_not_share_global_state(self, monkeypatch):
         """The old `_RESOLVER_LOCK` design serialised every call. The new
         builder must be re-entrant: two threads on different hosts get
