@@ -1,6 +1,6 @@
 # Changelog
 
-## 2.16.0 — 2026-06-06
+## 2.15.3 — 2026-06-06
 
 Faster Statistics page: default to a 7-day window and background-warm the
 all-time aggregates.
