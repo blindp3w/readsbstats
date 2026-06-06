@@ -6,6 +6,8 @@ import json
 import os
 import sys
 
+from . import cleaners
+
 
 def _min_or_default_int(name: str, value: int, minimum: int, default: int) -> int:
     """Return *value* unchanged when >= *minimum*; else warn and return *default*.
@@ -448,6 +450,21 @@ HEALTH_GAIN_STRONG_PCT      = _min_or_default_float("RSBS_HEALTH_GAIN_STRONG_PCT
 HEALTH_RANGE_SHORT_DAYS     = _min_or_default_int("RSBS_HEALTH_RANGE_SHORT_DAYS",    HEALTH_RANGE_SHORT_DAYS,  1, 7)
 HEALTH_RANGE_LONG_DAYS      = _min_or_default_int("RSBS_HEALTH_RANGE_LONG_DAYS",     HEALTH_RANGE_LONG_DAYS,   1, 30)
 HEALTH_RANGE_RATIO          = _min_or_default_float("RSBS_HEALTH_RANGE_RATIO",       HEALTH_RANGE_RATIO,       0.1, 0.85)
+
+# BUG-6: receiver coordinates must be in-range — an out-of-range RSBS_LAT/LON
+# (e.g. a swapped/garbled value) skews every distance/bearing computation and
+# the polar range plot. valid_lat/valid_lon reject NaN/inf/out-of-range; fall
+# back to the documented Warsaw-area defaults and warn.
+_RECEIVER_LAT_DEFAULT = 52.24199
+_RECEIVER_LON_DEFAULT = 21.02872
+if cleaners.valid_lat(RECEIVER_LAT) is None:
+    print(f"ERROR: RSBS_LAT={RECEIVER_LAT} is out of range [-90, 90], "
+          f"using default {_RECEIVER_LAT_DEFAULT}", file=sys.stderr)
+    RECEIVER_LAT = _RECEIVER_LAT_DEFAULT
+if cleaners.valid_lon(RECEIVER_LON) is None:
+    print(f"ERROR: RSBS_LON={RECEIVER_LON} is out of range [-180, 180], "
+          f"using default {_RECEIVER_LON_DEFAULT}", file=sys.stderr)
+    RECEIVER_LON = _RECEIVER_LON_DEFAULT
 
 # Thresholds — zero would reject all positions or delete valid flights
 MIN_POSITIONS_KEEP   = _min_or_default_int("RSBS_MIN_POSITIONS",  MIN_POSITIONS_KEEP,   1, 2)

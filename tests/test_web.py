@@ -3332,6 +3332,42 @@ class TestApiWatchlist:
                         json={"match_type": "registration", "value": "x" * 100})
         assert r.status_code == 422
 
+    # F07: per-type backend validation of the watchlist value. The frontend
+    # validates too, but the API must reject malformed values independently.
+
+    def test_add_icao_non_hex_returns_422(self, client):
+        r = client.post("/api/watchlist",
+                        json={"match_type": "icao", "value": "nothex"})
+        assert r.status_code == 422
+
+    def test_add_icao_valid_hex_succeeds(self, client):
+        r = client.post("/api/watchlist",
+                        json={"match_type": "icao", "value": "48e95d"})
+        assert r.status_code == 201
+        assert r.json()["value"] == "48e95d"
+
+    def test_add_registration_valid_succeeds(self, client):
+        r = client.post("/api/watchlist",
+                        json={"match_type": "registration", "value": "SP-LRF"})
+        assert r.status_code == 201
+        assert r.json()["value"] == "sp-lrf"
+
+    def test_add_registration_invalid_chars_returns_422(self, client):
+        r = client.post("/api/watchlist",
+                        json={"match_type": "registration", "value": "SP/LRF!"})
+        assert r.status_code == 422
+
+    def test_add_callsign_prefix_valid_succeeds(self, client):
+        r = client.post("/api/watchlist",
+                        json={"match_type": "callsign_prefix", "value": "LOT"})
+        assert r.status_code == 201
+        assert r.json()["value"] == "lot"
+
+    def test_add_callsign_prefix_invalid_returns_422(self, client):
+        r = client.post("/api/watchlist",
+                        json={"match_type": "callsign_prefix", "value": "LOT-1"})
+        assert r.status_code == 422
+
 
 # ---------------------------------------------------------------------------
 # SH-1 (Audit 2026-05-31): optional RSBS_API_TOKEN bearer auth on mutating

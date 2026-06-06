@@ -9,7 +9,9 @@ Every normalizer returns a dict keyed by :data:`db.COLUMNS` (missing keys
 default to ``None`` at insert time), or ``None`` to drop the datagram. Short
 identifier fields go through :func:`cleaners.clean_short_text` (the project's
 untrusted-input coercion) so a malformed field can never reach a TEXT binding
-as a non-string.
+as a non-string. The Mode-S address goes through :func:`cleaners.valid_icao_hex`
+(6-hex or ``None``) and coordinates through :func:`cleaners.valid_lat` /
+:func:`cleaners.valid_lon` (range-checked or ``None``) — F05.
 """
 from __future__ import annotations
 
@@ -17,7 +19,13 @@ import json
 import time
 
 from .. import config
-from ..cleaners import clean_short_text, coerce_metric_scalar
+from ..cleaners import (
+    clean_short_text,
+    coerce_metric_scalar,
+    valid_icao_hex,
+    valid_lat,
+    valid_lon,
+)
 
 _SHORT = 64        # identifier-field cap (reg/flight/label/etc.)
 
@@ -83,7 +91,6 @@ def _has_content(rec: dict) -> bool:
 
 
 def _normalize_vdlm2dec(raw: dict) -> dict | None:
-    hex_ = clean_short_text(raw.get("hex") or raw.get("icao"), _SHORT)
     app = raw.get("app")
     app_name = app_ver = None
     if isinstance(app, dict):
@@ -91,7 +98,9 @@ def _normalize_vdlm2dec(raw: dict) -> dict | None:
         app_ver = clean_short_text(app.get("ver") or app.get("version"), _SHORT)
     rec = {
         "ts":           _ts(raw.get("timestamp")),
-        "icao_hex":     hex_.lower() if hex_ else None,   # match core flights.icao_hex casing
+        # valid_icao_hex enforces 6-hex + lowercases to match core
+        # flights.icao_hex casing; rejects malformed identifiers outright.
+        "icao_hex":     valid_icao_hex(raw.get("hex") or raw.get("icao")),
         "registration": clean_short_text(raw.get("tail"), _SHORT),
         "flight":       clean_short_text(raw.get("flight"), _SHORT),
         "label":        _label(raw.get("label")),
@@ -103,8 +112,8 @@ def _normalize_vdlm2dec(raw: dict) -> dict | None:
         "station_id":   clean_short_text(raw.get("station_id"), _SHORT),
         "toaddr":       clean_short_text(raw.get("toaddr"), _SHORT),
         "dsta":         clean_short_text(raw.get("dsta"), _SHORT),
-        "lat":          _float_or_none(raw.get("lat")),
-        "lon":          _float_or_none(raw.get("lon")),
+        "lat":          valid_lat(raw.get("lat")),
+        "lon":          valid_lon(raw.get("lon")),
         "alt":          _int_or_none(raw.get("alt")),
         "epu":          _float_or_none(raw.get("epu")),
         "app_name":     app_name,
@@ -128,11 +137,11 @@ def _normalize_dumpvdl2(raw: dict) -> dict | None:
     avlc = vdl2.get("avlc") if isinstance(vdl2.get("avlc"), dict) else {}
     src = avlc.get("src") if isinstance(avlc.get("src"), dict) else {}
     acars = avlc.get("acars") if isinstance(avlc.get("acars"), dict) else {}
-    hex_ = clean_short_text(src.get("addr"), _SHORT)
     freq_hz = _float_or_none(vdl2.get("freq"))
     rec = {
         "ts":           _ts((vdl2.get("t") or {}).get("sec") if isinstance(vdl2.get("t"), dict) else raw.get("timestamp")),
-        "icao_hex":     hex_.lower() if hex_ else None,
+        # valid_icao_hex enforces 6-hex + lowercases; rejects malformed addrs.
+        "icao_hex":     valid_icao_hex(src.get("addr")),
         "registration": clean_short_text(acars.get("reg"), _SHORT),
         "flight":       clean_short_text(acars.get("flight"), _SHORT),
         "label":        _label(acars.get("label")),

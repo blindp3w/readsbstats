@@ -54,20 +54,20 @@ class TestParseResponse:
         data = {"response": {"flightroute": {
             "callsign": "LOT123",
             "origin": {
-                "icao_code": "WAW", "iata_code": "WAW",
+                "icao_code": "EPWA", "iata_code": "WAW",
                 "name": "Warsaw Chopin Airport", "country": "Poland",
                 "latitude": 52.1657, "longitude": 20.9671,
             },
             "destination": {
-                "icao_code": "LHR", "iata_code": "LHR",
+                "icao_code": "EGLL", "iata_code": "LHR",
                 "name": "London Heathrow Airport", "country": "United Kingdom",
                 "latitude": 51.4775, "longitude": -0.4614,
             },
         }}}
         result = self.parse(data)
         assert result is not None
-        assert result["origin_icao"] == "WAW"
-        assert result["dest_icao"] == "LHR"
+        assert result["origin_icao"] == "EPWA"
+        assert result["dest_icao"] == "EGLL"
         assert result["origin_name"] == "Warsaw Chopin Airport"
         assert result["dest_name"] == "London Heathrow Airport"
         assert result["origin_lat"] == pytest.approx(52.1657)
@@ -83,18 +83,74 @@ class TestParseResponse:
 
     def test_origin_only_still_parsed(self):
         data = {"response": {"flightroute": {
-            "origin": {"icao_code": "WAW", "name": "Warsaw", "country": "Poland",
+            "origin": {"icao_code": "EPWA", "name": "Warsaw", "country": "Poland",
                        "iata_code": "WAW", "latitude": 52.1, "longitude": 20.9},
         }}}
         result = self.parse(data)
         assert result is not None
-        assert result["origin_icao"] == "WAW"
+        assert result["origin_icao"] == "EPWA"
         assert result["dest_icao"] is None
 
     def test_malformed_json_returns_none(self):
         assert self.parse("not a dict") is None
         assert self.parse(None) is None
         assert self.parse({"response": "wrong"}) is None
+
+    # F04: adsbdb airport fields are validated at the trust boundary.
+
+    def test_bad_icao_code_rejected(self):
+        # An over-length / non-4-char ICAO code must be dropped, not stored.
+        data = {"response": {"flightroute": {
+            "origin": {"icao_code": "INVALID8", "iata_code": "WAW",
+                       "name": "Warsaw", "country": "Poland",
+                       "latitude": 52.1, "longitude": 20.9},
+        }}}
+        result = self.parse(data)
+        assert result is not None
+        assert result["origin_icao"] is None
+        # The rest of the (valid) origin fields survive.
+        assert result["origin_iata"] == "WAW"
+        assert result["origin_name"] == "Warsaw"
+
+    def test_out_of_range_latitude_rejected(self):
+        data = {"response": {"flightroute": {
+            "origin": {"icao_code": "EPWA", "iata_code": "WAW",
+                       "name": "Warsaw", "country": "Poland",
+                       "latitude": 95, "longitude": 20.9},
+        }}}
+        result = self.parse(data)
+        assert result is not None
+        assert result["origin_lat"] is None
+        assert result["origin_lon"] == pytest.approx(20.9)
+        assert result["origin_icao"] == "EPWA"
+
+    def test_well_formed_payload_preserved_exactly(self):
+        data = {"response": {"flightroute": {
+            "origin": {
+                "icao_code": "EPWA", "iata_code": "WAW",
+                "name": "Warsaw Chopin Airport", "country": "Poland",
+                "latitude": 52.1657, "longitude": 20.9671,
+            },
+            "destination": {
+                "icao_code": "EGLL", "iata_code": "LHR",
+                "name": "London Heathrow Airport", "country": "United Kingdom",
+                "latitude": 51.4775, "longitude": -0.4614,
+            },
+        }}}
+        result = self.parse(data)
+        assert result is not None
+        assert result["origin_icao"] == "EPWA"
+        assert result["origin_iata"] == "WAW"
+        assert result["origin_name"] == "Warsaw Chopin Airport"
+        assert result["origin_country"] == "Poland"
+        assert result["origin_lat"] == pytest.approx(52.1657)
+        assert result["origin_lon"] == pytest.approx(20.9671)
+        assert result["dest_icao"] == "EGLL"
+        assert result["dest_iata"] == "LHR"
+        assert result["dest_name"] == "London Heathrow Airport"
+        assert result["dest_country"] == "United Kingdom"
+        assert result["dest_lat"] == pytest.approx(51.4775)
+        assert result["dest_lon"] == pytest.approx(-0.4614)
 
 
 # ---------------------------------------------------------------------------
@@ -868,8 +924,8 @@ class TestFetchRoute:
             def raise_for_status(self): pass
             def json(self):
                 return {"response": {"flightroute": {
-                    "origin": {"icao_code": "WAW", "iata_code": "WAW", "name": "Warsaw"},
-                    "destination": {"icao_code": "LHR", "iata_code": "LHR", "name": "Heathrow"},
+                    "origin": {"icao_code": "EPWA", "iata_code": "WAW", "name": "Warsaw"},
+                    "destination": {"icao_code": "EGLL", "iata_code": "LHR", "name": "Heathrow"},
                 }}}
 
         class FakeClient:
@@ -879,8 +935,8 @@ class TestFetchRoute:
 
         monkeypatch.setattr(httpx, "Client", lambda **kw: FakeClient())
         result = self.mod._fetch_route("LOT281")
-        assert result["origin_icao"] == "WAW"
-        assert result["dest_icao"] == "LHR"
+        assert result["origin_icao"] == "EPWA"
+        assert result["dest_icao"] == "EGLL"
 
     def test_returns_none_on_404(self, monkeypatch):
         import httpx

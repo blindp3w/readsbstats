@@ -318,6 +318,32 @@ class TestConfigValidation:
         assert readsbstats.config.ROUTE_BATCH_SIZE >= 1
 
 
+class TestReceiverLocationValidation:
+    """BUG-6: RECEIVER_LAT/RECEIVER_LON range-checked via cleaners.valid_lat/
+    valid_lon. Out-of-range values fall back to the documented Warsaw defaults
+    with a stderr warning; valid values pass through."""
+
+    def test_lat_out_of_range_falls_back_to_default(self, monkeypatch, capsys):
+        monkeypatch.setenv("RSBS_LAT", "100")
+        import readsbstats.config
+        importlib.reload(readsbstats.config)
+        assert readsbstats.config.RECEIVER_LAT == 52.24199
+        assert "RSBS_LAT" in capsys.readouterr().err
+
+    def test_lon_out_of_range_falls_back_to_default(self, monkeypatch, capsys):
+        monkeypatch.setenv("RSBS_LON", "-200")
+        import readsbstats.config
+        importlib.reload(readsbstats.config)
+        assert readsbstats.config.RECEIVER_LON == 21.02872
+        assert "RSBS_LON" in capsys.readouterr().err
+
+    def test_valid_lat_passes_through(self, monkeypatch):
+        monkeypatch.setenv("RSBS_LAT", "51.5")
+        import readsbstats.config
+        importlib.reload(readsbstats.config)
+        assert readsbstats.config.RECEIVER_LAT == 51.5
+
+
 class TestStringNormalization:
     """Trailing slashes stripped, empty DB_PATH rejected."""
 

@@ -18,7 +18,7 @@ import urllib.parse
 
 import httpx
 
-from . import config, database, http_safe
+from . import cleaners, config, database, http_safe
 
 log = logging.getLogger("route_enricher")
 
@@ -63,19 +63,22 @@ def _parse_response(data) -> dict | None:
     if not origin and not dest:
         return None
 
+    # F04: validate adsbdb fields at the trust boundary — a schema-drifted or
+    # compromised upstream must not persist malformed codes / out-of-range
+    # coords. Invalid fields are nulled (COALESCE-safe in _store_route).
     return {
-        "origin_icao":    origin.get("icao_code"),
-        "origin_iata":    origin.get("iata_code"),
-        "origin_name":    origin.get("name"),
-        "origin_country": origin.get("country"),
-        "origin_lat":     origin.get("latitude"),
-        "origin_lon":     origin.get("longitude"),
-        "dest_icao":      dest.get("icao_code"),
-        "dest_iata":      dest.get("iata_code"),
-        "dest_name":      dest.get("name"),
-        "dest_country":   dest.get("country"),
-        "dest_lat":       dest.get("latitude"),
-        "dest_lon":       dest.get("longitude"),
+        "origin_icao":    cleaners.valid_icao_code(origin.get("icao_code"), 4),
+        "origin_iata":    cleaners.valid_icao_code(origin.get("iata_code"), 3),
+        "origin_name":    cleaners.clean_short_text(origin.get("name"), 128),
+        "origin_country": cleaners.clean_short_text(origin.get("country"), 128),
+        "origin_lat":     cleaners.valid_lat(origin.get("latitude")),
+        "origin_lon":     cleaners.valid_lon(origin.get("longitude")),
+        "dest_icao":      cleaners.valid_icao_code(dest.get("icao_code"), 4),
+        "dest_iata":      cleaners.valid_icao_code(dest.get("iata_code"), 3),
+        "dest_name":      cleaners.clean_short_text(dest.get("name"), 128),
+        "dest_country":   cleaners.clean_short_text(dest.get("country"), 128),
+        "dest_lat":       cleaners.valid_lat(dest.get("latitude")),
+        "dest_lon":       cleaners.valid_lon(dest.get("longitude")),
     }
 
 
