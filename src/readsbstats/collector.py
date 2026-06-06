@@ -106,7 +106,16 @@ _running = True
 # can take ~20 s per alert in the worst case; doing this inline in `_poll()`
 # would block the poll loop, and spawning a thread per poll would let threads
 # accumulate.  The consumer reads alerts serially.
-_notification_queue: "queue.Queue[tuple | None]" = queue.Queue()
+# Bounded so a slow Telegram / photo-CDN during a burst can't grow the queue
+# without limit (the consumer does a DB lookup + up to a ~10 MB photo download
+# per item — an unbounded backlog is a slow memory leak). 500 is generous:
+# normal bursts never approach it. On overflow the hot-path producer
+# (`_enqueue_alert`, called from `_poll`) sheds load rather than blocking — a
+# blocking put in `_poll` would stall the systemd watchdog (PERF-3).
+_NOTIFICATION_QUEUE_MAXSIZE = 500
+_notification_queue: "queue.Queue[tuple | None]" = queue.Queue(
+    maxsize=_NOTIFICATION_QUEUE_MAXSIZE
+)
 _consumer_thread: threading.Thread | None = None
 # Back-compat alias for tests that want to assert the dispatch thread is
 # daemon / non-main.
@@ -643,6 +652,23 @@ def _drain_notifications(timeout: float = 1.0) -> None:
         time.sleep(0.01)
 
 
+def _enqueue_alert(item: tuple) -> None:
+    """Enqueue one alert for the dispatch consumer from the poll hot path.
+
+    Non-blocking by contract: this runs inside ``_poll()`` and a blocking
+    ``put`` on a full queue could stall for as long as the consumer takes to
+    drain one item (a DB lookup + up to a ~10 MB photo download) — long enough
+    to miss the systemd watchdog and get the service killed. When the bounded
+    queue is full we shed load: drop the alert and log a warning (PERF-3). The
+    shutdown sentinel uses a blocking ``put`` instead — it runs outside
+    ``_poll`` while the consumer is actively draining.
+    """
+    try:
+        _notification_queue.put_nowait(item)
+    except queue.Full:
+        log.warning("notification queue full; dropping %s alert", item[0])
+
+
 def stop_notification_consumer(timeout: float = 5.0) -> None:
     """Drain the notification queue, post the sentinel, and join the
     consumer thread. Audit-12 #145 — the consumer is a daemon thread the
@@ -1000,7 +1026,7 @@ def _poll(conn: sqlite3.Connection) -> None:
         if _consumer_thread is None or not _consumer_thread.is_alive():
             start_notification_consumer()
         for item in _pending:
-            _notification_queue.put(item)
+            _enqueue_alert(item)
 
 
 # ---------------------------------------------------------------------------

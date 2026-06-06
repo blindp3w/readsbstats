@@ -32,6 +32,12 @@ _SEVERITY_RANK = {"info": 0, "ok": 1, "warn": 2, "critical": 3}
 # a baseline metric.
 _BASELINE_ALLOWED_COLS = frozenset({"messages", "signal", "ac_with_pos"})
 
+# readsb's demod-CPU figure is milliseconds per `last1min` stats window, which
+# upstream aggregates over a fixed 60-second window (independent of the
+# collector poll cadence). Used by `_check_cpu_saturation` to convert ms → % of
+# one core. Hoisted to module scope (STY-3) — it was a per-call function local.
+_READSB_STATS_WINDOW_MS = 60_000
+
 
 @dataclass
 class Check:
@@ -176,7 +182,6 @@ def _check_cpu_saturation(conn: sqlite3.Connection, now: int) -> Check:
     window length here.
     """
     window = 300
-    _READSB_STATS_WINDOW_MS = 60_000  # fixed by readsb's last1min aggregation
     row = conn.execute(
         "SELECT AVG(cpu_demod) AS avg_cpu FROM receiver_stats WHERE ts >= ?",
         (now - window,),
