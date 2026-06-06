@@ -3248,6 +3248,45 @@ class TestNotificationConsumer:
         assert len(boom_called) == 1
         assert len(ok_called) == 1
 
+    def test_consumer_logs_dispatch_exception_and_keeps_draining(self, monkeypatch, caplog):
+        """A raising notify_* dispatch must be LOGGED (collector.py ~:618
+        `log.exception("Notification dispatch error")`), not swallowed
+        silently — the log line is the only thing that surfaces a dropped
+        Telegram alert in journalctl. The sibling
+        test_consumer_survives_dispatch_exception proves the thread keeps
+        draining; this one asserts the error is actually observable AND that
+        the second item is still processed (thread stayed alive)."""
+        import logging
+        from readsbstats import collector, notifier
+
+        def boom(*a):
+            raise RuntimeError("simulated dispatch error")
+        monkeypatch.setattr(notifier, "notify_military", boom)
+        ok_called = []
+        monkeypatch.setattr(notifier, "notify_squawk",
+                            lambda *a: ok_called.append(a))
+
+        with caplog.at_level(logging.ERROR, logger="readsbstats.collector"):
+            collector.start_notification_consumer()
+            collector._notification_queue.put(
+                ("mil", "aabbcc", "REG1", None, "T", "T1", 100.0),
+            )
+            collector._notification_queue.put(
+                ("sqk", "ddeeff", "REG2", None, "7700", 50.0),
+            )
+            collector._drain_notifications(timeout=1.0)
+
+        # The raising dispatch was logged (visible in journalctl, not dropped).
+        err_records = [
+            rec for rec in caplog.records
+            if "Notification dispatch error" in rec.message
+        ]
+        assert err_records, "raising dispatch must be logged"
+        # log.exception → record carries the traceback for the original error.
+        assert err_records[0].exc_info is not None
+        # …and the consumer kept draining: the second item was still processed.
+        assert len(ok_called) == 1
+
     def test_start_notification_consumer_is_idempotent(self):
         from readsbstats import collector
         t1 = collector.start_notification_consumer()
