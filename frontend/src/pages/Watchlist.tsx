@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react';
+import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { apiFetch, apiJson, ApiError } from '@/lib/api';
@@ -123,7 +123,7 @@ export default function WatchlistPage() {
     },
   });
 
-  function onSubmit(e: FormEvent) {
+  function onSubmit(e: React.SyntheticEvent<HTMLFormElement>) {
     e.preventDefault();
     const trimmedValue = value.trim();
     const trimmedLabel = label.trim();
