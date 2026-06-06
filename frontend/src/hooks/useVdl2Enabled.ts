@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { apiJson } from '@/lib/api';
-import type { HealthResponse, Settings } from '@/lib/types';
+import type { HealthResponse, Settings, Vdl2Message, Vdl2MessagesResponse } from '@/lib/types';
 
 // Reads the VDL2 capability flag from /api/settings. Shares the ['settings']
 // query key with App.tsx (seeded on boot) so this adds no extra request, and
@@ -71,5 +71,48 @@ export function useVdl2FlightWindow(
     available: useVdl2Available(),
     since: firstSeen - VDL2_WINDOW_SLACK_SEC,
     until: lastSeen + VDL2_WINDOW_SLACK_SEC,
+  };
+}
+
+// Shared ACARS-messages query for one flight's (slack-widened) window. Both the
+// detail-page AcarsPanel (the message list) and the flight header (the "ACARS"
+// badge) call this; TanStack Query dedups the identical key into ONE request,
+// so the badge and the panel can never disagree about whether a flight has
+// ACARS. Returns `available` false (and empty messages) while VDL2 is off/loading.
+export function useVdl2FlightMessages(
+  icao: string,
+  firstSeen: number,
+  lastSeen: number,
+): {
+  available: boolean;
+  isLoading: boolean;
+  isSuccess: boolean;
+  isError: boolean;
+  error: unknown;
+  messages: Vdl2Message[];
+  hasMore: boolean;
+} {
+  const { available, since, until } = useVdl2FlightWindow(firstSeen, lastSeen);
+  const q = useQuery({
+    queryKey: ['vdl2-flight', icao, since, until],
+    enabled: available && !!icao,
+    queryFn: () => {
+      const p = new URLSearchParams({
+        since: String(since),
+        until: String(until),
+        limit: '100',
+      });
+      return apiJson<Vdl2MessagesResponse>(`vdl2/messages/${icao}?${p.toString()}`);
+    },
+    staleTime: 30_000,
+  });
+  return {
+    available,
+    isLoading: q.isLoading,
+    isSuccess: q.isSuccess,
+    isError: q.isError,
+    error: q.error,
+    messages: q.data?.messages ?? [],
+    hasMore: q.data?.next_before_id != null,
   };
 }

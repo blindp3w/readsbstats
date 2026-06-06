@@ -81,11 +81,17 @@ describe('Aircraft page ACARS panel', () => {
     expect(await screen.findByText('maintenance report')).toBeTruthy();
   });
 
-  it('shows the aircraft-scoped empty state when there are no messages', async () => {
+  it('hides the ACARS block when the airframe has no messages', async () => {
+    // UX (2026-06-06): the empty "ACARS (0)" block is omitted on the aircraft
+    // page too — the block only appears when messages exist.
     stubFetch({ vdl2_enabled: true, messages: [] });
     renderAircraft();
-    const empty = await screen.findByTestId('aircraft-acars-empty');
-    expect(empty.textContent).toContain('for this aircraft');
+    // The page settles (info card present), then assert no ACARS card/empty.
+    await screen.findByTestId('aircraft-info-card');
+    await waitFor(() => {
+      expect(screen.queryByTestId('aircraft-acars-card')).toBeNull();
+    });
+    expect(screen.queryByTestId('aircraft-acars-empty')).toBeNull();
   });
 
   it('renders no ACARS card when the feature is disabled', async () => {

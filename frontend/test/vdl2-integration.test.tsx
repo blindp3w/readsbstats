@@ -87,12 +87,17 @@ describe('AcarsPanel', () => {
     expect(scroll.querySelector('[data-testid="vdl2-list"]')).toBeTruthy();
   });
 
-  it('shows empty state when no ACARS for the flight', async () => {
+  it('hides the block entirely when the flight has no ACARS', async () => {
+    // UX (2026-06-06): no empty "ACARS (0)" card — the whole block is omitted
+    // when the flight has zero ACARS messages.
     stubFetch({ vdl2_enabled: true, messages: [] });
-    const { findByTestId } = wrap(
+    const { container } = wrap(
       <AcarsPanel icao="48e95d" firstSeen={1} lastSeen={2} />,
     );
-    expect(await findByTestId('flight-acars-empty')).toBeTruthy();
+    await waitFor(() => {
+      expect(container.querySelector('[data-testid="flight-acars-card"]')).toBeNull();
+    });
+    expect(container.querySelector('[data-testid="flight-acars-empty"]')).toBeNull();
   });
 
   it('renders nothing when the feature is disabled', async () => {
