@@ -3,7 +3,7 @@ readsbstats — aircraft/airline database updater.
 
 Downloads and imports:
   1. tar1090-db aircraft CSV  (https://github.com/wiedehopf/tar1090-db, csv branch)
-     → aircraft_db table: icao_hex, registration, type_code, type_desc, flags
+     → aircraft_db table from CSV columns: icao_hex, registration, type_code, flags, type_desc
   2. OpenFlights airlines.dat
      → airlines table: icao_code, name, iata_code, country
 
@@ -172,7 +172,10 @@ def update_aircraft_db(conn: sqlite3.Connection) -> int:
         )
 
         gz = gzip.GzipFile(fileobj=io.BytesIO(raw))
-        text_stream = io.TextIOWrapper(gz, encoding="utf-8", errors="replace")
+        # BUG-17 (Audit 2026-06-06): utf-8-sig strips a leading UTF-8 BOM so a
+        # BOM-prefixed first row's ICAO doesn't fail the 6-char hex check and
+        # get silently dropped. Harmless when no BOM is present.
+        text_stream = io.TextIOWrapper(gz, encoding="utf-8-sig", errors="replace")
         chunk: list[tuple] = []
         for parts in csv.reader(text_stream, delimiter=";"):
             row = _parse_aircraft_csv_row(parts)
@@ -203,6 +206,21 @@ def update_aircraft_db(conn: sqlite3.Connection) -> int:
         conn.execute("ALTER TABLE aircraft_db RENAME TO aircraft_db_old")
         conn.execute("ALTER TABLE aircraft_db_new RENAME TO aircraft_db")
         conn.execute("DROP TABLE aircraft_db_old")
+        # F02 (Audit 2026-06-06): aircraft_db_new is created with the PK only,
+        # so the type_code index that database._migrate() built on the old
+        # table is gone after the swap — and photo_sources.py JOINs
+        # aircraft_db.type_code. Recreate it here, inside the same
+        # BEGIN IMMEDIATE txn, so readers never see an unindexed table.
+        #
+        # Placement is load-bearing: SQLite index names are schema-global and
+        # the old index keeps its name attached to aircraft_db_old until that
+        # table is dropped. CREATE must therefore run AFTER the DROP (the name
+        # is now free) and a plain CREATE is required — `CREATE IF NOT EXISTS`
+        # before the DROP is silently skipped (ships no index) and a plain
+        # CREATE before the DROP errors and rolls the whole swap back.
+        conn.execute(
+            "CREATE INDEX idx_aircraft_db_type_code ON aircraft_db(type_code)"
+        )
         conn.commit()
     except Exception:
         # Roll the whole staging build + swap back: aircraft_db is never absent
@@ -276,10 +294,15 @@ def update_airlines_db(conn: sqlite3.Connection) -> int:
         # an in-process update.
         conn.execute("DROP TABLE IF EXISTS airlines_old")
         conn.execute("DROP TABLE IF EXISTS airlines_new")
+        # F03 (Audit 2026-06-06): match the canonical `airlines` DDL in
+        # database.py (name NOT NULL, active DEFAULT 1). After the swap this
+        # staging schema becomes canonical, so a looser DDL would silently
+        # relax those constraints. Inlined deliberately — WS-3 stays
+        # self-contained, no shared database.py constant.
         conn.execute(
             "CREATE TABLE airlines_new ("
-            "icao_code TEXT PRIMARY KEY, name TEXT, iata_code TEXT, "
-            "country TEXT, active INTEGER)"
+            "icao_code TEXT PRIMARY KEY, name TEXT NOT NULL, iata_code TEXT, "
+            "country TEXT, active INTEGER DEFAULT 1)"
         )
         if rows:
             conn.executemany(

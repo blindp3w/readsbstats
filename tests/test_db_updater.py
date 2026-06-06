@@ -389,6 +389,26 @@ class TestUpdateAircraftDb:
         assert db_updater.update_aircraft_db(conn) == 1
         assert conn.execute("SELECT COUNT(*) FROM aircraft_db").fetchone()[0] == 1
 
+    def test_utf8_bom_stripped_from_first_row(self, monkeypatch):
+        """BUG-17 (Audit 2026-06-06): if tar1090-db ever emits a UTF-8 BOM,
+        the gzip text stream must strip it (encoding='utf-8-sig'). Otherwise
+        the first row's ICAO is prefixed with U+FEFF, fails the 6-char hex
+        check, and is silently dropped."""
+        conn = self.conn
+        # Build a gzip whose decompressed bytes start with the UTF-8 BOM.
+        text = "488001;SP-ABC;B738;0;BOEING 737-800"
+        buf = io.BytesIO()
+        with gzip.open(buf, "wb") as gz:
+            gz.write(b"\xef\xbb\xbf" + text.encode("utf-8"))
+        monkeypatch.setattr(db_updater, "_fetch", lambda url: buf.getvalue())
+
+        assert db_updater.update_aircraft_db(conn) == 1
+        row = conn.execute(
+            "SELECT icao_hex, registration FROM aircraft_db"
+        ).fetchone()
+        assert row["icao_hex"] == "488001"
+        assert row["registration"] == "SP-ABC"
+
     def test_cache_cleared_immediately_after_write(self, monkeypatch):
         # Audit-13 A13-018: enrichment cache used to be cleared only at
         # the end of main() — a stale-cache window opened between the
@@ -558,6 +578,28 @@ class TestUpdateAirlinesDb:
         assert conn.execute(
             "SELECT COUNT(*) FROM airlines WHERE icao_code IN ('ON1','ON2','ON3')"
         ).fetchone()[0] == 0
+
+    def test_swapped_airlines_keeps_canonical_constraints(self, monkeypatch):
+        """F03 (Audit 2026-06-06): the airlines_new staging DDL must match
+        the canonical airlines schema (name TEXT NOT NULL, active INTEGER
+        DEFAULT 1). After the swap the staging schema becomes canonical, so a
+        looser DDL silently relaxes the NOT NULL / DEFAULT constraints."""
+        conn = self.conn
+        monkeypatch.setattr(db_updater, "_fetch", lambda url: _airlines_csv(
+            ["1", "LOT Polish Airlines", r"\N", "LO", "LOT", "LOT", "Poland", "Y"],
+        ))
+        db_updater.update_airlines_db(conn)
+
+        info = {
+            r["name"]: r for r in conn.execute("PRAGMA table_info('airlines')")
+        }
+        assert info["name"]["notnull"] == 1, (
+            "airlines.name must remain NOT NULL after the swap"
+        )
+        assert str(info["active"]["dflt_value"]) == "1", (
+            "airlines.active must keep DEFAULT 1 after the swap; "
+            f"got {info['active']['dflt_value']!r}"
+        )
 
     def test_first_ever_airlines_import_skips_ratio_check(self, monkeypatch):
         """When the airlines table is empty (prev_count == 0), import
@@ -861,6 +903,48 @@ class TestAtomicSwap:
         ).fetchone()[0] == "NEW0"
         writer.close()
         reader.close()
+
+    def test_type_code_index_survives_swap(self, monkeypatch, tmp_path):
+        """F02 (Audit 2026-06-06): the idx_aircraft_db_type_code index
+        (created in database._migrate) is dropped along with aircraft_db_old
+        during the staging swap. It must be recreated after the swap so
+        photo_sources.py's `photos JOIN aircraft_db ON type_code` JOIN stays
+        indexed without waiting for a process restart.
+
+        File-backed DB via _file_db (which runs _migrate, so the index is
+        present going in) — matches the atomic-swap suite's semantics.
+        """
+        db_path = str(tmp_path / "swap.db")
+        conn = self._file_db(db_path, 50)
+
+        # Sanity: the index exists before the refresh (built by _migrate).
+        idx_before = [
+            r[1] for r in conn.execute("PRAGMA index_list('aircraft_db')")
+        ]
+        assert "idx_aircraft_db_type_code" in idx_before, (
+            "precondition: _file_db should have built the type_code index"
+        )
+
+        monkeypatch.setattr(db_updater, "_fetch", lambda url: _aircraft_gz(
+            *[[f"48{i:04x}", f"NEW{i}", "B738", "0", ""] for i in range(50)]
+        ))
+        assert db_updater.update_aircraft_db(conn) == 50
+
+        idx_after = [
+            r[1] for r in conn.execute("PRAGMA index_list('aircraft_db')")
+        ]
+        assert "idx_aircraft_db_type_code" in idx_after, (
+            "idx_aircraft_db_type_code must be recreated after the swap; "
+            f"got {idx_after}"
+        )
+
+        # And a type_code lookup still resolves against the new data.
+        row = conn.execute(
+            "SELECT icao_hex FROM aircraft_db WHERE type_code='B738' "
+            "ORDER BY icao_hex LIMIT 1"
+        ).fetchone()
+        assert row is not None and row[0] == "480000"
+        conn.close()
 
     def test_multi_chunk_build_swaps_all_rows(self, monkeypatch, tmp_path):
         """Exercise the in-loop chunked INSERT branch on a real file DB.
