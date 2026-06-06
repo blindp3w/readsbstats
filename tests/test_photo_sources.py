@@ -1093,6 +1093,78 @@ class TestResolvePhoto:
             "SELECT COUNT(*) FROM photos WHERE icao_hex=''"
         ).fetchone()[0] == 0
 
+    # ----- F01: specific-negative must not suppress the type fallback -------
+
+    def test_specific_negative_falls_through_to_type_cache(self):
+        """F01 (Audit 18): a fresh *negative* specific row (thumbnail NULL)
+        must NOT suppress an available type photo. Pre-fix step 1 early-returned
+        ``(None, False)`` on any fresh specific row, so the type photo a cold
+        call served got hidden for the whole PHOTO_CACHE_DAYS TTL."""
+        now = self._now()
+        # Fresh negative specific row (confirmed-miss for this airframe).
+        self.conn.execute(
+            "INSERT INTO photos VALUES ('abc123', NULL, NULL, NULL, NULL, ?)",
+            (now,),
+        )
+        # …but the type DOES have a cached photo.
+        self.conn.execute(
+            "INSERT INTO type_photos VALUES "
+            "('B738', 'https://ps.com/b738.jpg', NULL, NULL, NULL, ?)",
+            (now,),
+        )
+        self.conn.commit()
+        called = []
+        result, is_type = photo_sources.resolve_photo(
+            self.conn, "abc123", "B738",
+            fetcher=lambda h: called.append(h) or None,
+        )
+        # Type photo is served instead of the specific-negative None.
+        assert result is not None
+        assert result["thumbnail_url"] == "https://ps.com/b738.jpg"
+        assert is_type is True
+        # And the known-missing specific icao is NOT re-fetched (step-4 skip).
+        assert called == []
+
+    def test_specific_negative_skips_specific_refetch(self):
+        """The step-4 specific fetch must be skipped when a fresh specific
+        negative already exists — re-fetching a known-missing airframe on every
+        call is wasteful. The type ladder still runs (here it also misses, so
+        the call returns the same specific-negative (None, False) as before)."""
+        now = self._now()
+        self.conn.execute(
+            "INSERT INTO photos VALUES ('abc123', NULL, NULL, NULL, NULL, ?)",
+            (now,),
+        )
+        self.conn.commit()
+        called = []
+        result, is_type = photo_sources.resolve_photo(
+            self.conn, "abc123", "B738",
+            fetcher=lambda h: called.append(h) or None,
+        )
+        assert result is None and is_type is False
+        # The specific icao must not be re-fetched…
+        assert "abc123" not in called
+        # …and with no aircraft_db row there is no probe, so nothing is fetched.
+        assert called == []
+
+    def test_specific_negative_no_type_code_still_returns_none(self):
+        """Guard: the negative-specific-with-NO-type-code path is unchanged —
+        a confirmed miss with no possible type fallback still returns
+        ``(None, False)`` without invoking the fetcher."""
+        now = self._now()
+        self.conn.execute(
+            "INSERT INTO photos VALUES ('abc123', NULL, NULL, NULL, NULL, ?)",
+            (now,),
+        )
+        self.conn.commit()
+        called = []
+        result, is_type = photo_sources.resolve_photo(
+            self.conn, "abc123", None,
+            fetcher=lambda h: called.append(h) or None,
+        )
+        assert result is None and is_type is False
+        assert called == []
+
 
 # ---------------------------------------------------------------------------
 # _fetch_photo_with_status — chain status reporting

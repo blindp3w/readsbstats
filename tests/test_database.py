@@ -822,6 +822,115 @@ class TestRecoverAircraftDbSwap:
         conn.close()
 
 
+class TestRecoverAircraftDbSwapIndexIntegrity:
+    """F02 follow-up (Audit 18): after recover_aircraft_db_swap, the recovered
+    aircraft_db must still carry idx_aircraft_db_type_code — photo_sources.py
+    JOINs aircraft_db.type_code on every type-fallback lookup, so a missing
+    index turns those into full-table scans of ~620k rows.
+
+    SQLite index names are schema-global and follow a table RENAME. update_
+    aircraft_db builds the new staging table with the PK only and (re)creates
+    the type_code index AFTER the swap completes. If the swap is interrupted in
+    the 'canonical present + _old leftover' state, the index still lives on the
+    old table; dropping that old table removes it, leaving the new canonical
+    aircraft_db unindexed.
+    """
+
+    @staticmethod
+    def _has_type_code_index(conn) -> bool:
+        row = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='index' "
+            "AND name='idx_aircraft_db_type_code' AND tbl_name='aircraft_db'"
+        ).fetchone()
+        return row is not None
+
+    def test_index_present_after_restoring_old_back(self, tmp_path):
+        # Branch: canonical gone, _old survives (first RENAME done, second not).
+        # The original aircraft_db carried the index built by _migrate(); after
+        # `RENAME aircraft_db -> aircraft_db_old` the index followed to _old.
+        db_path = str(tmp_path / "test.db")
+        conn = database.connect(db_path)
+        conn.execute(
+            "CREATE TABLE aircraft_db_old ("
+            "icao_hex TEXT PRIMARY KEY, registration TEXT, type_code TEXT, "
+            "type_desc TEXT, flags INTEGER DEFAULT 0)"
+        )
+        conn.execute(
+            "CREATE INDEX idx_aircraft_db_type_code ON aircraft_db_old(type_code)"
+        )
+        conn.commit()
+
+        database.recover_aircraft_db_swap(conn)
+
+        # Rename-back carries the index to the restored canonical table.
+        assert self._has_type_code_index(conn)
+        conn.close()
+
+    def test_index_present_after_dropping_orphan_new(self, tmp_path):
+        # Branch: canonical present (with its index) + orphan _new staging.
+        db_path = str(tmp_path / "test.db")
+        conn = database.connect(db_path)
+        conn.execute(
+            "CREATE TABLE aircraft_db ("
+            "icao_hex TEXT PRIMARY KEY, registration TEXT, type_code TEXT, "
+            "type_desc TEXT, flags INTEGER DEFAULT 0)"
+        )
+        conn.execute(
+            "CREATE INDEX idx_aircraft_db_type_code ON aircraft_db(type_code)"
+        )
+        conn.execute(
+            "CREATE TABLE aircraft_db_new ("
+            "icao_hex TEXT PRIMARY KEY, registration TEXT, type_code TEXT, "
+            "type_desc TEXT, flags INTEGER DEFAULT 0)"
+        )
+        conn.commit()
+
+        database.recover_aircraft_db_swap(conn)
+
+        # Canonical never touched → index intact.
+        assert self._has_type_code_index(conn)
+        conn.close()
+
+    def test_index_present_after_dropping_leftover_old(self, tmp_path):
+        # Branch: canonical present (the NEW table, PK-only, NO type_code index)
+        # + _old leftover (carries the index that followed the first RENAME).
+        # Recovery drops _old; without the fix that also drops the index and
+        # leaves the new aircraft_db unindexed.
+        db_path = str(tmp_path / "test.db")
+        conn = database.connect(db_path)
+        # New canonical table as update_aircraft_db creates it: PK only.
+        conn.execute(
+            "CREATE TABLE aircraft_db ("
+            "icao_hex TEXT PRIMARY KEY, registration TEXT, type_code TEXT, "
+            "type_desc TEXT, flags INTEGER DEFAULT 0)"
+        )
+        conn.execute("INSERT INTO aircraft_db VALUES ('newnew', 'NEW', 'B738', '', 0)")
+        # Old table still carries the type_code index (followed the rename).
+        conn.execute(
+            "CREATE TABLE aircraft_db_old ("
+            "icao_hex TEXT PRIMARY KEY, registration TEXT, type_code TEXT, "
+            "type_desc TEXT, flags INTEGER DEFAULT 0)"
+        )
+        conn.execute(
+            "CREATE INDEX idx_aircraft_db_type_code ON aircraft_db_old(type_code)"
+        )
+        conn.commit()
+
+        # Sanity: pre-recovery the index belongs to _old, not canonical.
+        assert not self._has_type_code_index(conn)
+
+        database.recover_aircraft_db_swap(conn)
+
+        # Leftover _old dropped, but the new canonical aircraft_db must end up
+        # with the type_code index regardless.
+        assert self._has_type_code_index(conn)
+        # And the recovered data is the NEW table's row (old was dropped).
+        assert conn.execute(
+            "SELECT registration FROM aircraft_db WHERE icao_hex='newnew'"
+        ).fetchone()[0] == "NEW"
+        conn.close()
+
+
 class TestEnsureBaseSchema:
     """BE-3 (Audit 2026-05-31): explicit base-schema bootstrap for the web
     server. Creates base tables only when missing (never building slow

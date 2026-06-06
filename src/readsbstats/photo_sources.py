@@ -539,6 +539,17 @@ def resolve_photo(
         return photo, ("hit" if photo else "miss")
 
     # 1. specific aircraft cache (type-only callers pass icao_hex="" and skip here)
+    #
+    # F01 (Audit 18): a *negative* specific row (thumbnail_url IS NULL) must NOT
+    # short-circuit the type fallback. The old code early-returned on ANY fresh
+    # row, so once a specific miss was negatively cached (step 4's
+    # `_write_specific(..., None, ...)`), the type photo a cold call had served
+    # was suppressed for the whole PHOTO_CACHE_DAYS TTL. When the specific row
+    # is negative AND a type_code is present, fall through to the type ladder
+    # (steps 2/3/5/6) and return the specific-negative (None, False) only if the
+    # type ladder also misses. The step-4 specific re-fetch is skipped in that
+    # case (the airframe is known-missing — re-fetching every call is wasteful).
+    specific_negative = False
     if icao_hex:
         row = conn.execute(
             "SELECT thumbnail_url, large_url, link_url, photographer, fetched_at "
@@ -546,7 +557,11 @@ def resolve_photo(
             (icao_hex, cutoff),
         ).fetchone()
         if row is not None:
-            return (_row_to_result(row) if row["thumbnail_url"] else None, False)
+            if row["thumbnail_url"]:
+                return (_row_to_result(row), False)   # positive specific hit
+            if not type_code:
+                return (None, False)                  # confirmed miss, no type fallback
+            specific_negative = True                  # negative + type_code → run type ladder
 
     # 2. type cache
     if type_code:
@@ -581,8 +596,12 @@ def resolve_photo(
     # poison the type cache for `PHOTO_CACHE_DAYS`.
     chain_errored = False
 
-    # 4. fetch for specific ICAO (skip in type-only mode, icao_hex="")
-    if icao_hex:
+    # 4. fetch for specific ICAO (skip in type-only mode, icao_hex="").
+    # F01: also skip when a fresh specific-negative already exists — the
+    # airframe is known-missing this TTL, so re-fetching it on every call is
+    # wasteful. We still ran the type ladder above; if it missed we fall through
+    # to the end-of-function (None, False), the same result as the old code.
+    if icao_hex and not specific_negative:
         photo, status = _call_fetcher(icao_hex)
         if photo:
             result = {
