@@ -25,7 +25,7 @@ consume a columnar response shape from `/api/metrics`:
 ## Decision
 
 Add a new read-only `GET /api/vdl2/timeseries?from=&to=` (plain `def`,
-`_vdl2_guard()`-wrapped, per `src/CLAUDE.md`) that aggregates
+`_vdl2_guard()`-wrapped, like the other VDL2 read endpoints) that aggregates
 `vdl2_messages` into time buckets and returns the **same columnar shape as
 `/api/metrics`**. The frontend then drives both VDL2 charts with the
 existing `buildPanelOption` / `buildSignalSmallMultiplesOption` builders —

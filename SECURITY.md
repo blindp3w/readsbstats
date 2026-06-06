@@ -37,12 +37,13 @@ Please report:
 - **Path traversal** through any env var, query parameter, or
   third-party-sourced data (callsigns, ICAO hex, registrations, type
   descriptions).
-- **Reflected or stored XSS** in the web UI (any `innerHTML` path that
-  doesn't go through `escHtml()` / `safeHttpUrl()`).
+- **Reflected or stored XSS** in the web UI (an unsanitised
+  `dangerouslySetInnerHTML`, or a third-party URL/href that doesn't go
+  through `frontend/src/lib/safeUrl.ts`).
 - **Secret leakage**: bot tokens, paths, IPs, or coordinates appearing in
   HTTP responses, logs, or error messages where they shouldn't.
 - **Dependency CVEs** in the production dependency set (FastAPI, uvicorn,
-  Jinja2, httpx, aiofiles) when there is a realistic exploit path
+  httpx, DuckDB) when there is a realistic exploit path
   reachable from the running services.
 - **CSRF or origin-confusion** affecting mutating endpoints (`POST` /
   `DELETE` on `/api/watchlist*`) — the `X-Requested-With` check is the
@@ -69,8 +70,7 @@ vulnerabilities. Reports about them will be acknowledged and closed.
   *is* in scope (e.g. "if upstream returns a redirect, we follow it
   blindly").
 - **Cosmetic CSP relaxations** that don't enable a concrete attack —
-  `'unsafe-inline'` is documented as a known trade-off (see audit
-  tracker item #74).
+  `'unsafe-inline'` is documented as a known trade-off.
 
 ## Supported versions
 

@@ -12,15 +12,14 @@ accumulated against this stack by v2.3.5:
 
 - The royal-blue `leaflet.heat` overlay flooded the basemap once density
   exceeded ~0.2, making roads, place names, and terrain unreadable.
-  Explicitly flagged in `internal_docs/uiux/CLAUDE_DESIGN_BRIEF.md`
-  Milestone 4.2.
+  Flagged during the v2 design review as a heatmap-legibility blocker.
 - `leaflet.heat` has no TypeScript surface, forcing a
-  `(L as any).heatLayer` cast in `LiveMap.tsx` (audit-13 A13-089,
-  deliberately deferred).
+  `(L as any).heatLayer` cast in `LiveMap.tsx` — a known type-safety
+  gap, deliberately deferred at the time.
 - `aircraftIcon.ts` rotated planes via a CSS `transform:rotate(${deg}deg)`
-  string interpolation. Audit-12 #176 fixed the immediate XSS edge by
-  hard-coercing `track` to a number, but the string-template surface
-  remained as a defence-in-depth concern.
+  string interpolation. A prior security review fixed the immediate XSS
+  edge by hard-coercing `track` to a number, but the string-template
+  surface remained as a defence-in-depth concern.
 - Pan/zoom on iPad Safari was choppy when both heatmap and aircraft
   markers were active — Leaflet's CPU/SVG renderer was the bottleneck.
 
@@ -44,7 +43,7 @@ binding (`react-map-gl/maplibre` endpoint).
 - Aircraft markers stay as HTML elements via react-map-gl `<Marker>`
   with a JSX `<svg>` child. Rotation moves from the SVG inline style
   to the typed `Marker.rotation` prop with `rotationAlignment="map"` —
-  the string-template surface from audit-12 #176 is eliminated by
+  the prior string-template XSS surface is eliminated by
   construction.
 - Heatmap is a native MapLibre `heatmap` style layer with a 6-stop
   **inferno-derived ramp** (perceptually uniform, monotonically
@@ -78,19 +77,19 @@ What becomes easier:
 
 - **Heatmap is finally legible.** The native MapLibre `heatmap` layer
   with the inferno ramp shows density across the full luminance range
-  without obscuring the basemap. Closes
-  `CLAUDE_DESIGN_BRIEF.md` Milestone 4.2.
+  without obscuring the basemap. Closes the heatmap-legibility blocker
+  from the v2 design review.
 - **Aircraft rotation is typed.** No string interpolation anywhere in
   the call chain; `Marker.rotation` accepts a number, and
-  `aircraftIcon.tsx` returns a JSX element. The audit-12 #176 surface
-  is structurally gone.
+  `aircraftIcon.tsx` returns a JSX element. The string-template XSS
+  surface is structurally gone.
 - **Receiver marker pulse animates smoothly on the WebGL canvas**
   via `setPaintProperty` on a GeoJSON-backed circle layer. Implements
-  `CLAUDE_DESIGN_BRIEF.md` Milestone 4.3.
+  the animated receiver-marker goal from the v2 design review.
 - **Pan/zoom is GPU-accelerated.** Touch feel on iPad Safari is
   noticeably smoother with both heatmap and aircraft markers active.
-- **`leaflet.heat`'s `(L as any).heatLayer` cast is gone.** Closes
-  audit-13 A13-089.
+- **`leaflet.heat`'s `(L as any).heatLayer` cast is gone.** Closes the
+  deferred type-safety gap.
 - **`FirstFitOnce` and `HeatmapLayer` useEffect-driven wrappers go
   away** — they're replaced by declarative `<Map initialViewState>` +
   `<Source><Layer/></Source>` pairs.

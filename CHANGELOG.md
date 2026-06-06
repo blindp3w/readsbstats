@@ -1,8 +1,13 @@
 # Changelog
 
+All notable changes to this project are documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
 ## [Unreleased]
 
-Hardening and correctness fixes from a full codebase security/quality audit.
+Hardening and correctness fixes from a full codebase security/quality audit, plus a public-docs audit.
 
 ### Security
 
@@ -45,6 +50,9 @@ Hardening and correctness fixes from a full codebase security/quality audit.
 - **Concurrent identical filtered-Statistics requests are coalesced** (compute once,
   serve the rest from cache). The offline bad-ground-speed purge no longer loads the
   entire aircraft database into memory.
+### Documentation
+
+- Public-docs audit: add a `docs/` landing index, an ADR decision log, and a README table of contents; adopt the Keep a Changelog + SemVer format; fix stale references and remove internal tracker IDs.
 
 ## 2.15.3 — 2026-06-06
 
@@ -117,7 +125,7 @@ them into a single request and the two can never disagree.
 
 Audit 17 remediation — a fresh full-codebase sweep (0 Critical / 0 High
 security; no non-negotiable violations). Bug fixes, one perf win, and hardening.
-Full findings in `internal_docs/security/audit-17-2026-06-06.md`.
+Full findings in internal notes.
 
 ### Fixed
 
@@ -240,7 +248,7 @@ Full findings in `internal_docs/security/audit-17-2026-06-06.md`.
 
 ### Changed
 
-- **VDL2 deep-review remediation** (`internal_docs/vdl2_deep_review_2026-06-05.md`).
+- **VDL2 deep-review remediation** (internal notes).
   Reliability/correctness hardening of the opt-in VDL2 feature, all behind the
   same flag and still degrading cleanly when `vdl2.db` is absent:
   - **Fail-open + honest availability** — a corrupt/missing `vdl2.db` no longer
@@ -307,7 +315,7 @@ Repository audit 2026-06-01 follow-ups — correctness sweep across
 warnings and small `suggestion`-level items. No `critical` findings
 were raised by the audit. 1573 → 1641 backend tests (+68 new);
 323 → 326 frontend tests. See
-`internal_docs/repository_audit_2026-06-01.md` for the audit source
+internal notes for the audit source
 and per-finding rationale.
 
 ### Security
@@ -386,12 +394,12 @@ Repository-wide audit follow-up (15 fixes across security, reliability,
 correctness, performance, and chores) plus 9 code-review follow-ups
 on the same branch. 1560 → 1617 backend tests (+57 new); frontend
 323/323 unchanged. See
-`internal_docs/repository_audit_2026-05-31_current.md` for the audit
+internal notes for the audit
 source.
 
 ### Code-review follow-ups (post-audit, same release)
 
-- **api/map.py** — PY-11's trail-window bound now only applies to the
+- **api/map.py** — the trail-window bound now only applies to the
   live view (`is_live=True`). Historical replay returns the full pre-`at`
   trail (still capped by `trail_count`), so a 4-hour transatlantic
   flight reviewed at `at = now − 12 h` no longer shows only its last
@@ -425,7 +433,7 @@ source.
   build ORDER BY inside a query that joins `adsbx_overrides`
   (via `_FLIGHT_JOIN` or `_ENRICH_JOIN`). Latent runtime-crash gap
   for hypothetical future handlers.
-- **collector.py** — comment notes the PY-3 behaviour change for
+- **collector.py** — comment notes the behaviour change for
   numeric `type` values (now stored as NULL instead of aborting
   the entry); points future devs to where a numeric→tag mapping
   would go.
@@ -434,42 +442,42 @@ New env var: `RSBS_ADSBX_OVERRIDES_TTL_DAYS` (default 365, 0 disables).
 
 ### Security
 
-- **PY-1 (critical)** — SSRF IP filter switched from a list of
+- **SSRF IP filter (critical).** Switched from a list of
   exclusions to `is_global AND NOT is_multicast`. Closes a hole for
   CGNAT shared address space (100.64.0.0/10) which Python's `ipaddress`
   module doesn't flag as `is_private`/`is_reserved`. Also handles the
   IPv4/IPv6 multicast quirk where Python's `is_global` returns True
   for multicast (IANA-correct, but wrong for unicast-only HTTPS egress).
-- **PY-6** — Off-allowlist photo URLs are now suppressed at the API
+- Off-allowlist photo URLs are now suppressed at the API
   response boundary in addition to the fetch-time gate. A stale cached
-  off-allowlist URL (written before BE-17, or returned by a compromised
+  off-allowlist URL (written before the host-allowlist change, or returned by a compromised
   provider) is filtered out of API responses regardless of
   `RSBS_PHOTO_HOST_ENFORCE`. Cache rows stay for operator diagnostics.
-- **PY-10** — `adsbx_overrides.registration` / `type_code` / `type_desc`
+- `adsbx_overrides.registration` / `type_code` / `type_desc`
   capped at 32/16/128 chars before persistence. Prevents one oversized
   upstream field from bloating the table or downstream UI/Telegram
   surfaces.
-- **SH-1** — Optional `RSBS_API_TOKEN` bearer-token gate on the two
+- Optional `RSBS_API_TOKEN` bearer-token gate on the two
   mutating watchlist endpoints. No-op when unset (default trusted-LAN
   posture unchanged); when set, requires `Authorization: Bearer <token>`.
   Read endpoints stay open.
 
 ### Reliability
 
-- **PY-3** — Collector `source_type` is coerced via `clean_short_text`
+- Collector `source_type` is coerced via `clean_short_text`
   before SQLite binding. A non-string `type` field (dict/list/number)
   from a malformed `aircraft.json` no longer raises
   `sqlite3.ProgrammingError` and rolls back the whole poll.
-- **PY-4** — `metrics_collector._parse_stats` pipes every leaf through
+- `metrics_collector._parse_stats` pipes every leaf through
   `coerce_metric_scalar`. Malformed scalar values (dict, list, bool,
   non-finite float, oversized int) become NULL instead of dropping the
   entire metrics sample for the cycle.
-- **PY-5** — Web-specific photo endpoint uses the new public
+- Web-specific photo endpoint uses the new public
   `photo_sources.fetch_photo_with_status` so a transient outage (every
   source raises for a new ICAO) no longer poisons the cache with a
   30-day negative row. Existing tests that monkey-patch `fetch_photo`
   keep working via the `_DEFAULT_FETCH_PHOTO` escape hatch.
-- **PY-7** — `update_airlines_db` now uses the same staging-table +
+- `update_airlines_db` now uses the same staging-table +
   min-ratio guard as `update_aircraft_db`. New
   `RSBS_AIRLINES_DB_MIN_RATIO` (default 0.8). A truncated OpenFlights
   response that parses to far fewer rows than the existing table is
@@ -477,7 +485,7 @@ New env var: `RSBS_ADSBX_OVERRIDES_TTL_DAYS` (default 365, 0 disables).
 
 ### Correctness
 
-- **PY-2** — Aircraft-metadata enrichment parity. `_SORT_COLS`,
+- Aircraft-metadata enrichment parity. `_SORT_COLS`,
   `_build_flight_filter`, the `/api/types/{aircraft_type}/flights`
   COUNT+list query, and the top-aircraft-types stats panel all now use
   the shared `_ENRICH_REG`/`_ENRICH_TYPE`/`_ENRICH_DESC` constants. A
@@ -485,21 +493,21 @@ New env var: `RSBS_ADSBX_OVERRIDES_TTL_DAYS` (default 365, 0 disables).
   now correctly findable via filters, sortable, counted in the type
   drilldown, and listed in stats. Previously such flights *displayed*
   the adsbx value but were invisible to those query surfaces.
-- **PY-8** — Route enricher distinguishes `_PermanentError` (mapped
+- Route enricher distinguishes `_PermanentError` (mapped
   from `http_safe.UnsafeURLError` — policy violations like redirect,
   size-cap, non-HTTPS, private-IP) from `_TransientError`. The loop
   writes a negative `callsign_routes` row on permanent failure so the
   existing TTL exclusion suppresses retries for `ROUTE_CACHE_DAYS`.
   Mirrors the ADSBx enricher pattern. Transient cooldown stays
   in-memory for network blips.
-- **PY-9** — Route callsign SQL filter adds `NOT GLOB '*[^A-Z0-9]*'`.
+- Route callsign SQL filter adds `NOT GLOB '*[^A-Z0-9]*'`.
   Previously the first-character-only GLOB let `LOT/123`, `AB-CD`,
   `AB CD`, `AB?CD` through (filtering only the leading char) — those
   wasted upstream calls and polluted the route cache with garbage misses.
 
 ### Performance
 
-- **PY-11** — Map trail CTE bounded by `RSBS_MAP_TRAIL_WINDOW_SECONDS`
+- Map trail CTE bounded by `RSBS_MAP_TRAIL_WINDOW_SECONDS`
   (default 3600s, min 60s). A long flight with 10k+ historical
   positions no longer forces SQLite to rank the whole partition for a
   50-point trail. The default 1h window is 6× the 600s live-view
@@ -507,13 +515,13 @@ New env var: `RSBS_ADSBX_OVERRIDES_TTL_DAYS` (default 365, 0 disables).
 
 ### Chores
 
-- **FE-1** — Removed unused `tailwindcss` direct devDependency from
+- Removed unused `tailwindcss` direct devDependency from
   `frontend/package.json`. `@tailwindcss/vite` carries it transitively.
 - **CFG-1** — Trimmed audit-trail narrative comments in four production
   modules (`api/_deps.py`, `collector.py`, `photo_sources.py`,
   `db_updater.py`) to keep only the active invariants. Removed unused
   `Response` import in `api/aircraft.py`. Historical narrative moved
-  to `internal_docs/security/audit-history.md`.
+  to internal notes.
 
 ### Infrastructure (used by multiple fixes)
 
@@ -528,18 +536,17 @@ New env var: `RSBS_ADSBX_OVERRIDES_TTL_DAYS` (default 365, 0 disables).
 
 ### Dropped (false positive)
 
-- **PY-12** — The audit claimed the duplicate-timestamp comments in
+- The audit claimed the duplicate-timestamp comments in
   `collector.py` contradicted the code. Re-validation found them
   consistent; no change.
 
 ### New env vars
 
-- `RSBS_API_TOKEN` — optional bearer-token gate for mutating endpoints
-  (SH-1).
+- `RSBS_API_TOKEN` — optional bearer-token gate for mutating endpoints.
 - `RSBS_AIRLINES_DB_MIN_RATIO` (default `0.8`) — airlines updater
-  truncation guard (PY-7).
+  truncation guard.
 - `RSBS_MAP_TRAIL_WINDOW_SECONDS` (default `3600`, min `60`) — map
-  trail time-window bound (PY-11).
+  trail time-window bound.
 
 ## 2.12.2 — 2026-05-31
 
@@ -549,7 +556,7 @@ The weekly `readsbstats-updater.timer` on the Pi fired at 2026-05-31 23:20
 CEST and produced cascading `database is locked` errors that ended with
 systemd killing the updater mid-`BEGIN IMMEDIATE` at the 5-minute
 `TimeoutStartSec`. The `aircraft_db` swap rolled back wholesale (so the
-canonical table was never corrupt — BE-2 worked as designed), but the
+canonical table was never corrupt — the swap worked as designed), but the
 weekly refresh did not happen, the collector hit a hard error during
 `_insert_position`, and the operator saw stack traces in the journal.
 
@@ -584,12 +591,12 @@ unchanged. `scripts/update.sh --full` keeps its own
 two orchestration paths now converge on the same invariant (no
 concurrent writer during the IMMEDIATE window).
 
-### ADR-0010 + improvements.md
+### ADR-0010 + internal follow-ups
 
 - `docs/decisions/0010-aircraft-db-atomic-swap.md` gains a new
   "Revision — 2026-05-31, v2.12.2" section documenting the gap and
   the unit-level fix.
-- **A26-FU-2** added to `internal_docs/features/improvements.md`:
+- A follow-up item added to internal notes:
   a concurrent-writer regression test for `update_aircraft_db()`.
   Deferred because reproducing the timing reliably needs Pi-class
   slow storage; CI SSD won't trigger it.
@@ -648,11 +655,11 @@ Patch follow-up to v2.12.0. No production code or behaviour changes.
   unaffected (no path overlap); only OpenAPI consumers that key off
   operation order will see a change.
 - **Internal docs** — Audit 2026-05-31 entry appended to
-  `internal_docs/security/audit-history.md` covering the full v2.11.0
+  internal notes covering the full v2.11.0
   → v2.12.1 cycle (Phases 0–7 + the SQLite 3.45.x fix + Phase 6 split
   + this cleanup). Phase 6 marked complete in
-  `internal_docs/features/improvements.md`, with the audit's
-  watchlist-normalizer follow-up tracked as A26-FU-1.
+  internal notes, with the audit's
+  watchlist-normalizer follow-up tracked internally.
 
 ## 2.12.0 — 2026-05-31
 
@@ -738,14 +745,14 @@ Frontend tests, lint, and build clean (323 passed; bundle budgets intact).
 The audit's Phase 6 spec also called for a shared watchlist match-type /
 value normalizer used by API + Telegram bot + collector matching — that
 consolidation touches `collector.py` and `notifier.py` simultaneously and is
-genuinely behaviour-touching, so it stays in `internal_docs/features/improvements.md`
+genuinely behaviour-touching, so it stays in internal notes
 for a later pass.
 
 ## 2.11.8 — 2026-05-31
 
 ### Fix — aircraft DB refresh crashed on SQLite 3.45.x
 
-The atomic `aircraft_db` staging swap (v2.11.0, BE-2/BE-9) built the staging
+The atomic `aircraft_db` staging swap (v2.11.0) built the staging
 table in one transaction and inserted the streamed CSV rows in *separate*
 transactions. On SQLite 3.45.x (the version on the Pi's Ubuntu 24.04) the
 freshly-`CREATE`d `aircraft_db_new` was not visible to the next transaction's
@@ -798,31 +805,31 @@ working tree. No schema changes.
 
 ## 2.11.6 — 2026-05-31
 
-### Audit 2026-05-31 — Phase 7: dependency + bundle hygiene (INF-1, INF-2, FE-3)
+### Audit 2026-05-31 — Phase 7: dependency + bundle hygiene
 
 Internal-only; no runtime behaviour change. Trims unused dependencies and adds a
 build-time bundle-size guard.
 
 ### Dependencies
 
-- **INF-1 — dropped `aiofiles` and `jinja2`.** Neither is imported anywhere: the
+- **Dropped `aiofiles` and `jinja2`.** Neither is imported anywhere: the
   Jinja UI was removed at the v2.0.0 cutover, the SPA is served via Starlette
   `StaticFiles`/`FileResponse` (no `Jinja2Templates`), and `aiofiles` was never a
   FastAPI/Starlette runtime dependency. Removed from `pyproject.toml` and
   `requirements.txt`; full backend suite green without them.
-- **INF-2 — dropped the direct `@radix-ui/react-slot` dependency.** No source
+- **Dropped the direct `@radix-ui/react-slot` dependency.** No source
   file imports it directly; it stays available transitively (pulled by six other
   Radix packages already in use). Removed from `frontend/package.json` and its
   `manualChunks` entry in `vite.config.ts`.
 
 ### Frontend build
 
-- **FE-3 — explicit bundle-size budget for the two heavy lazy chunks.** A small
+- **Explicit bundle-size budget for the two heavy lazy chunks.** A small
   Rollup plugin in `vite.config.ts` fails the build if the gzipped `maps`
   (budget 340 KB) or `charts` (budget 230 KB) chunk exceeds its ceiling, or if
   either chunk disappears entirely — the signal of an accidental eager import
   pulling maplibre/echarts into the first-paint shell.
-- **Fixed a silently-broken `charts` chunk split (surfaced by the FE-3 budget).**
+- **Fixed a silently-broken `charts` chunk split (surfaced by the bundle-size budget).**
   echarts v6 ships `core.js`/`charts.js`/`components.js`/`renderers.js` as
   top-level *files*, so the old `echarts/core`-style matcher never matched and
   echarts was bundling into the importing component chunk instead of a dedicated
@@ -837,7 +844,7 @@ build-time bundle-size guard.
 
 ## 2.11.5 — 2026-05-31
 
-### Audit 2026-05-31 — Phase 5: typed API response contracts (FE-2)
+### Audit 2026-05-31 — Phase 5: typed API response contracts
 
 Behaviour-preserving. Adds Pydantic `response_model=` contracts to the hot
 endpoints so `/openapi.json` publishes a typed schema. **+10 web tests**
@@ -845,7 +852,7 @@ endpoints so `/openapi.json` publishes a typed schema. **+10 web tests**
 
 ### Production code
 
-- **FE-2 — Pydantic response models for the hot endpoints.** New
+- **Pydantic response models for the hot endpoints.** New
   `src/readsbstats/schemas.py` defines response contracts for flight detail,
   `/positions`, `/positions/chart`, the photo endpoints, the watchlist list,
   `/api/stats`, and the map snapshot; each handler now declares
@@ -877,7 +884,7 @@ Two findings fixed, test-first. **+5 tests** (4 web, 1 frontend).
 
 ### Production code
 
-- **BE-10 — `/api/flights/{id}` no longer embeds the raw position
+- **`/api/flights/{id}` no longer embeds the raw position
   timeline by default.** The detail response now returns `positions: []`
   unless `?include_positions=true` is passed. The SPA pulls positions from
   the dedicated `/positions` (paginated) and `/positions/chart`
@@ -886,7 +893,7 @@ Two findings fixed, test-first. **+5 tests** (4 web, 1 frontend).
   change:** any non-frontend consumer that relied on the embedded list must
   now pass `include_positions=true`. The `/positions/chart` response also
   gains `baro_rate` (needed by the header's at-max vert-rate sublabel).
-- **FE-1 — Flight page rewired onto the split endpoints.** The chart, map,
+- **Flight page rewired onto the split endpoints.** The chart, map,
   position-log table, and header at-max sublabels (vert rate / track /
   bearing) all derive from the downsampled and paginated endpoints rather
   than an embedded list; the `positions` field was removed from the page's
@@ -902,7 +909,7 @@ Eight findings fixed, test-first. **+26 tests** (18 web, 7 photo_sources,
 
 ### Production code
 
-- **BE-11 — trust model documented + path-param hardening (no new app auth).**
+- **Trust model documented + path-param hardening (no new app auth).**
   `{icao_hex}` path params on `/api/aircraft/{icao}/flights` and
   `/api/aircraft/{icao}/photo` are now validated against
   `^~?[0-9a-fA-F]{6}$` (`_parse_icao_path`, raises `404` on mismatch) **before**
@@ -911,30 +918,30 @@ Eight findings fixed, test-first. **+26 tests** (18 web, 7 photo_sources,
   New "Deployment security" / "Security model" sections in `docs/operations.md`
   and `README.md` make the loopback-bind-behind-nginx trust model explicit and
   state plainly that the `X-Requested-With` CSRF header is **not** authentication.
-- **BE-12 — global response cache is now lock-guarded.** `_get_cache` /
+- **Global response cache is now lock-guarded.** `_get_cache` /
   `_set_cache` take a module-level `threading.RLock` (`_CACHE_LOCK`); the
   airspace endpoint no longer touches `_cache` directly. Compute stays outside
   the lock.
-- **BE-13 — type-photo resolve uses a per-thread connection.** `_fetch_type_photo`
+- **Type-photo resolve uses a per-thread connection.** `_fetch_type_photo`
   no longer shares the request connection across the thread-pool executor; the
   worker opens (and closes) its own `database.connect()`.
-- **BE-14 — map snapshot picks the latest position by `ts`.** `api_map_snapshot`
+- **Map snapshot picks the latest position by `ts`.** `api_map_snapshot`
   replaces `MAX(id)` with `ROW_NUMBER() OVER (PARTITION BY flight_id ORDER BY ts
   DESC, id DESC)`, so out-of-order ingestion can't surface a stale position.
   Introduces the shared `_ENRICH_*` / `_ENRICH_JOIN` SQL fragment for
   registration/type/desc enrichment.
-- **BE-15 — deterministic grouped aircraft metadata.** Gallery/aircraft grouping
+- **Deterministic grouped aircraft metadata.** Gallery/aircraft grouping
   uses a `latest` CTE (window function over `icao_hex`, `last_seen` + `id`
   tiebreak) joined to a counts aggregate, eliminating non-deterministic
   reg/type when two flights share one ICAO. Query plans verified against
   supporting indexes.
-- **BE-16 — date ranges unified on half-open `[from, to)`.** A shared
+- **Date ranges unified on half-open `[from, to)`.** A shared
   `_build_date_filter()` helper backs history, export, **and** stats, replacing
   the stats `<= to` bound with `< to`. **User-visible:** a flight whose timestamp
   lands exactly on the `to` boundary is now excluded from stats (as it already
   was from history/export); adjacent day windows no longer double-count, which
   slightly shifts stats bucket counts at day boundaries.
-- **BE-17 — provider photo URLs host-allowlisted before cache/render.**
+- **Provider photo URLs host-allowlisted before cache/render.**
   Planespotters / airport-data / hexdb responses are checked against
   per-source CDN host allowlists (`_check_hosts`) before they are persisted or
   surfaced. Default is **log-only** (`RSBS_PHOTO_HOST_ENFORCE=0`) for one release
@@ -942,7 +949,7 @@ Eight findings fixed, test-first. **+26 tests** (18 web, 7 photo_sources,
   to hard-drop off-allowlist hosts. `frontend/src/lib/safeUrl.ts` is an HTTPS-only
   *protocol* guard — its header comment now says so explicitly (host-allowlisting
   is server-side).
-- **BE-18 — `/api/feeders` cached and bounded.** Results carry a 10 s TTL and
+- **`/api/feeders` cached and bounded.** Results carry a 10 s TTL and
   concurrent requests coalesce behind an `asyncio.Lock` (double-checked under
   lock), so a burst of dashboard polls runs at most one feeder-check batch.
   `_parse_feeders` caps the parsed `RSBS_FEEDERS` list at 64 entries.
@@ -956,13 +963,13 @@ plus 1 collector restart-dedupe), 2 ADSBx tests updated for the new contract.
 
 ### Production code
 
-- **BE-4 — ADSBx-only flags now seed the restart dedupe set.** `_load_notified`
+- **ADSBx-only flags now seed the restart dedupe set.** `_load_notified`
   previously read flags only from `aircraft_db`, so an aircraft whose
   military/interesting status comes solely from `adsbx_overrides` (no
   tar1090-db row) would re-alert after every collector restart. The query now
   `LEFT JOIN adsbx_overrides` and OR-merges both flag sources, matching how
   enrichment and the API surface compute flags.
-- **BE-5 — non-destructive ADSBx flag UPSERT + defensive parse.** An
+- **Non-destructive ADSBx flag UPSERT + defensive parse.** An
   airplanes.live poll that omits `dbFlags` (or returns an unparseable/negative
   value) no longer clobbers previously-confirmed flags: the parser yields
   `flags=None` for *absent/unusable* and the UPSERT preserves the stored value
@@ -970,12 +977,12 @@ plus 1 collector restart-dedupe), 2 ADSBx tests updated for the new contract.
   clears) is masked to the four known dbFlags bits, so an out-of-range upstream
   value can't pollute the column. Non-dict `ac` items and a non-list `ac` are
   skipped rather than raising.
-- **BE-6 — top-level feed-shape validation in `_poll`.** A corrupt
+- **Top-level feed-shape validation in `_poll`.** A corrupt
   `aircraft.json` whose top level is not an object, or whose `aircraft` is not a
   list, is now logged and skipped gracefully instead of raising out of `_poll`
   and aborting the whole cycle. A non-numeric `now` falls back to wall-clock
   time; non-dict entries inside `aircraft` are skipped per-entry.
-- **BE-7 — purge keeps flight aggregates consistent.** When a flight *crosses*
+- **Purge keeps flight aggregates consistent.** When a flight *crosses*
   the retention cutoff (started before, still seen after), its early positions
   are deleted but the flight is retained. All position-derived aggregates —
   `total_positions`, `adsb_positions`, `mlat_positions`, `max_gs`,
@@ -984,7 +991,7 @@ plus 1 collector restart-dedupe), 2 ADSBx tests updated for the new contract.
   surviving rows (distance/bearing in Python via `geo`, since `positions` stores
   no per-row distance). The crossing set is tiny in steady state, so the
   recompute is cheap.
-- **BE-8 — feed-string caps + callsign-shape route filter.** Every
+- **Feed-string caps + callsign-shape route filter.** Every
   feed-supplied string is capped at ingestion (callsign ≤16, registration ≤32,
   aircraft_type ≤16, squawk ≤8, category ≤16) so a corrupt feed can't persist
   unbounded values. The route enricher now only fetches callsigns of length
@@ -999,7 +1006,7 @@ One robustness finding fixed, test-first. **+10 tests** (8 database, 2 web).
 
 ### Production code
 
-- **BE-3 — explicit base-schema bootstrap + shared swap recovery.** The
+- **Explicit base-schema bootstrap + shared swap recovery.** The
   aircraft_db interrupted-swap recovery moved from
   `db_updater._recover_aborted_swap` into a shared
   `database.recover_aircraft_db_swap()`, and now runs on **every** startup path
@@ -1026,7 +1033,7 @@ Two critical durability findings fixed, test-first. **+5 tests**
 
 ### Production code
 
-- **BE-1 — fail closed on startup DB corruption.** The collector's
+- **Fail closed on startup DB corruption.** The collector's
   unclean-shutdown integrity check (`PRAGMA quick_check`) previously
   only *logged* corruption and continued into the poll loop, writing
   to a possibly-corrupt database. It now raises `StartupIntegrityError`
@@ -1038,7 +1045,7 @@ Two critical durability findings fixed, test-first. **+5 tests**
   section in `docs/operations.md`). Systemd `StartLimitBurst`/`RestartSec`
   bound the restart loop. Availability tradeoff is deliberate: integrity
   over uptime on an unattended Pi.
-- **BE-2 — atomic `aircraft_db` staging swap.** The rename-rename-drop
+- **Atomic `aircraft_db` staging swap.** The rename-rename-drop
   swap in `db_updater.update_aircraft_db()` ran as three auto-committing
   DDL statements, based on an incorrect comment claiming Python's
   `sqlite3` "commits DDL immediately, so it cannot be wrapped in a
@@ -1048,7 +1055,7 @@ Two critical durability findings fixed, test-first. **+5 tests**
   `BEGIN IMMEDIATE` transaction — an interrupted swap rolls back
   wholesale and concurrent readers (WAL) never see `no such table`. ADR
   0010 revised accordingly.
-- **BE-9 — streamed chunked CSV import.** `update_aircraft_db()` no
+- **Streamed chunked CSV import.** `update_aircraft_db()` no
   longer materialises the full ~620k-row tuple list; it stream-parses
   and inserts in 5000-row chunks, bounding peak RSS by one chunk on the
   Pi's tight `MemoryMax`.
@@ -1057,7 +1064,7 @@ Two critical durability findings fixed, test-first. **+5 tests**
 
 ### Audit-13 round 2 — correctness + Phase 6 round 2 + cleanup
 
-Seven items closed across three audit-13 categories. **+29 tests**
+Seven items closed across three security-audit categories. **+29 tests**
 (+8 Python, +21 Vitest). One small production-code fix
 (`_check_signal_drop` guard), one production-code refactor
 (`Map.tsx` Date.now → queryFn) that eliminates the last
@@ -1067,30 +1074,30 @@ sweeps.
 
 ### Production code
 
-- **`Map.tsx` `Date.now()` in `useMemo`** (A13-033) — moved into
+- **`Map.tsx` `Date.now()` in `useMemo`** — moved into
   `queryFn`. Query key now uses the deterministic inputs
   (mode + rewindOffsetSec + histAt); `Date.now()` runs once per
   actual fetch instead of every render. Last react-hooks/purity
   violation; the original audit-flagged extra-fetch concern is
   eliminated by construction.
-- **`_check_signal_drop` baseline guard** (A13-023) — added a
+- **`_check_signal_drop` baseline guard** — added a
   `baseline >= 0` short-circuit mirroring `_check_message_rate`'s
   `baseline <= 0` branch. Signal in dBFS is normally negative;
   a baseline of 0 or above is physically degenerate and would
   trigger spurious "antenna degraded" warns without the guard.
-- **`_top1()` allowlist hoist** (A13-040) — moved
+- **`_top1()` allowlist hoist** — moved
   `_TOP1_ALLOWLIST` and new `_assert_top1_column()` helper to
   module scope so the SQL-injection-defence guard is
   unit-testable. Behaviour unchanged.
 
 ### Tests added (+29)
 
-- **A13-040 `_top1` allowlist** — 6 tests (immutability, exact
+- **`_top1` allowlist** — 6 tests (immutability, exact
   set, accepts, rejects unknown / SQL-injection payload /
   empty).
-- **A13-023 signal_drop guard** — 1 regression test pinning the
+- **signal_drop guard** — 1 regression test pinning the
   new info-severity branch.
-- **A13-031 SELECT filter** — 1 regression test pinning the
+- **SELECT filter** — 1 regression test pinning the
   `WHERE gs IS NOT NULL` SQL guard (the audit's "advances prev
   on gs=None" concern is moot because the SELECT excludes those
   rows).
@@ -1141,7 +1148,7 @@ explicitly).
 
 - **`/live` redirect endpoint**: 3 tests in `TestRedirectLive`
   pin the 302→`/map` behaviour, `root_path` honouring, and the
-  A13-049 same-origin invariant.
+  the same-origin invariant.
 - **`geo.haversine_nm`**: 6 direct tests — identical points,
   one-degree lat/lon at equator, one-degree lon at 60°N (cos
   shrink), symmetry, antipodal ≈ π·R.
@@ -1166,11 +1173,11 @@ explicitly).
 
 ### Silent triage closures (no new test needed)
 
-- A13-011 `_check_range_degradation` zero-division — covered
+- `_check_range_degradation` zero-division — covered
   by `test_long_max_zero_returns_info` with explicit audit ref.
-- A13-008 `compute_health` exception isolation — covered by
+- `compute_health` exception isolation — covered by
   `TestComputeHealthIsolation` class.
-- A13-003 `route_enricher._apply_to_flights route=None` —
+- `route_enricher._apply_to_flights route=None` —
   covered by `test_apply_none_does_not_overwrite_existing_origin_dest`
   with explicit audit ref.
 
@@ -1195,7 +1202,7 @@ Test totals: **Python 1460 → 1484** (+24), **Vitest 277 → 299**
 ### Audit 13 Low-severity close-out (Phases 1–4)
 
 Drift-prevention release: 11 named Low-severity items from
-`audit-13-2026-05-20.md` either closed or verified-already-closed.
+a prior security audit either closed or verified-already-closed.
 No user-visible behaviour change except for one health-stripe
 semantic correction (next bullet).
 
@@ -1203,50 +1210,46 @@ semantic correction (next bullet).
   `receiver_stats` rows) now reports `info` instead of `warn`.
   The previous `warn` over-claimed — the absence of metrics is
   the operator's deliberate `RSBS_METRICS_ENABLED=0` choice, not
-  a failure. (Audit-13 A13-025.)
+  a failure.
 - **Database hygiene**: a redundant `idx_flights_reg` index on
   `flights(registration)` lived alongside the newer
   `idx_flights_registration` on existing DBs. DDL line renamed to
   match; `_migrate()` drops the old name via `DROP INDEX IF EXISTS`
-  on the next collector start. (Audit-13 A13-063.)
+  on the next collector start.
 - **Collector startup**: `_load_notified` switched from per-row
   `set.add` loop to a single `.update(generator)` call. Saves
   ~50 ms on the production-DB warm-up; existing 6 tests cover the
-  regression. (Audit-13 A13-034.)
+  regression.
 
 ### Code hygiene
 
 - `_BATCH_SIZE = 100` centralised in `scripts/_purge_helpers.py`
-  (`BATCH_SIZE`); three purge scripts import it. (A13-084.)
+  (`BATCH_SIZE`); three purge scripts import it.
 - `make_db()` extracted from 13 test files into
   `tests/_helpers.py::make_db()` with a docstring documenting the
-  production-startup-equivalent path. ~65 LOC removed. (A13-085.)
+  production-startup-equivalent path. ~65 LOC removed.
 - `CountingConn` extracted from three purge test files into
-  `tests/_helpers.py::CountingConn`. (A13-086.)
+  `tests/_helpers.py::CountingConn`.
 - `Stats.tsx::formatLongest` deleted; one call site now uses
-  `fmtDur` from `lib/format.ts`. (A13-087.)
+  `fmtDur` from `lib/format.ts`.
 - `sim.py`: `import os` lifted from inside the main poll loop body
-  to module top. (A13-093.)
+  to module top.
 - Unreferenced `docs/Realistic ADS-B and MLAT Reception Ranges
   for Home Receivers.md` deleted (28 KB, zero inbound links).
-  (A13-094.)
 - `notifier._clamp_caption` docstring corrected: the regex strips
-  exactly one trailing link line, not "line(s)". (A13-029.)
+  exactly one trailing link line, not "line(s)".
 
 ### Tooling
 
 - New `.github/workflows/codeql.yml` — Python + JS/TS matrix,
   push/PR triggers + weekly Sunday scan. Action tags will be
-  SHA-pinned by Dependabot on its first update PR. (A13-054.)
+  SHA-pinned by Dependabot on its first update PR.
 
 ### Silent triage closures
 
 Items found already closed during Phase 0 triage but never
-bookkept anywhere: A13-024, A13-026, A13-027, A13-030, A13-035,
-A13-051, A13-052, A13-053, A13-062, A13-071, A13-072, A13-073,
-A13-088, A13-091, A13-092, A13-095/096/097. A13-074, A13-089
-verified N/A after the LiveMap MapLibre rewrite. Full
-reconciliation in `internal_docs/security/audit-13-lowfix-status.md`.
+bookkept anywhere; a few more were verified N/A after the LiveMap
+MapLibre rewrite. Full reconciliation tracked internally.
 
 ### Internal
 
@@ -1308,7 +1311,7 @@ No functional API changes.
 
 ### M10.2 — responsive sweep at 393 / 834 / 1512 px
 
-Closes the last active item from `internal_docs/uiux/CLAUDE_DESIGN_BRIEF.md`.
+Closes the last active item from the v2 design brief.
 Walked every page through the three reference viewports under
 Playwright; fixed the three pages whose tables overflowed
 horizontally on iPhone (393 px). Stats / Gallery / Map / Metrics /
@@ -1584,7 +1587,7 @@ follow-up that escaped the original sprint.
 User-visible changes:
 
 - **Top nav: `More ▾` overflow at iPad portrait and small laptop.**
-  M10.1 from `CLAUDE_DESIGN_BRIEF`. The 8-item desktop nav wrapped to
+  M10.1 from the v2 design brief. The 8-item desktop nav wrapped to
   two rows at 834 px (iPad portrait) because the hamburger only kicks
   in below md (720 px under the project's 15 px html font-size) and the
   inline 8-item nav needed ~800–920 px against ~928 px of content
@@ -1684,7 +1687,7 @@ User-visible changes:
   (`"not set"`, `"(bundled poland.geojson)"`, etc.) so the page doesn't
   show e.g. `"not set (default)"`.
 - **Env-var names ship from the backend, not hardcoded in the
-  frontend.** The drift bug from `internal_docs/frontend_audit_2026-05-22.md`
+  frontend.** The drift bug from internal notes
   finding #5 is now structurally impossible: if a `config.py`
   registration is removed, the env-var name passed to the parser
   disappears with it and the line stops compiling. Frontend reads the
@@ -1789,7 +1792,7 @@ deployed Pi at iPhone-portrait widths.
 ### Backend audit 2026-05-25 — all 9 findings closed
 
 Patch release. No user-visible features; addresses every finding from
-`internal_docs/backend_audit_2026-05-25.md`. Production-verified on the
+internal notes. Production-verified on the
 Pi — both route and ADSBx fetches now connect via the new pinned-IP
 TLS path and continue to return 200.
 
@@ -1917,7 +1920,7 @@ Internal:
 
 ### Flight detail compact header + chart tone-down + position-log polish
 
-Closes Milestone 3 of `internal_docs/uiux/CLAUDE_DESIGN_BRIEF.md`. Three
+Closes Milestone 3 of the v2 design brief. Three
 sub-items on `/stats/flight/:id`. No backend changes —
 `/api/flights/:id` already returns every field this redesign consumes.
 
@@ -1987,7 +1990,7 @@ Internal:
 
 ### Metrics small-multiples + History stripe + Gallery type-photo stamp
 
-Four small, additive items from `internal_docs/uiux/CLAUDE_DESIGN_BRIEF.md`
+Four small, additive items from the v2 design brief
 (Milestones 2.1, 2.2, 8.2, 8.4). No backend changes — `/api/metrics`,
 `/api/flights`, and `/api/aircraft/flagged` already return the fields
 this UI consumes.
@@ -2051,7 +2054,7 @@ Internal:
 ### Metrics health stripe + paper-cuts
 
 Picks up four small, additive items from
-`internal_docs/uiux/CLAUDE_DESIGN_BRIEF.md` (Milestones 2.3, 2.4, 9, 10.3).
+the v2 design brief (Milestones 2.3, 2.4, 9, 10.3).
 No backend changes — `/api/metrics/health` and its `check.message` strings
 were already in the shape this UI consumes.
 
@@ -2108,7 +2111,7 @@ Internal:
 
 Reworks the Statistics page (`/stats/`) around the **selected time window** instead
 of treating every metric with equal visual weight. Implements Milestone 6 ("Option
-C — time-window narrative") from `internal_docs/uiux/CLAUDE_DESIGN_BRIEF.md` and
+C — time-window narrative") from the v2 design brief and
 lands the M1 paper-cut fixes that were still outstanding. Lighter, more scannable,
 and consistent with the dark blue chrome of the rest of the SPA.
 
@@ -2190,20 +2193,20 @@ Internal:
 
 ### Audit-13 backlog cleanup — Low-severity sweep
 
-Closes the last items from the audit-13 review queue: the `noImplicitAny`
-half of A13-043 plus 8 of the 43 Low-severity findings that were left
+Closes the last items from the security-audit review queue: the `noImplicitAny`
+work plus 8 of the 43 Low-severity findings that were left
 as opportunistic future work. Production verified — all 5 security
 headers including the new `Content-Security-Policy: default-src 'none'`
 land on `/stats/api/*` responses post-deploy.
 
 User-visible changes:
 
-- **Telegram alerts honour mixed-case `RSBS_TELEGRAM_UNITS`** (A13-035).
+- **Telegram alerts honour mixed-case `RSBS_TELEGRAM_UNITS`**.
   Setting `RSBS_TELEGRAM_UNITS=Imperial` (or `IMPERIAL`, or any
   non-lowercase variant) previously fell back to metric silently. Now
   normalised at every comparison site in `notifier.py`.
-- **`is_anonymous_icao()` no longer flags ICAO-reserved sentinels**
-  (A13-024). `0x000000` (null / no-information) and `0xFFFFFF`
+- **`is_anonymous_icao()` no longer flags ICAO-reserved sentinels**.
+  `0x000000` (null / no-information) and `0xFFFFFF`
   (all-call / broadcast) are protocol artifacts, not real aircraft —
   treating them as anonymous aircraft polluted the Telegram channel
   and the FLAG_ANONYMOUS retroactive scoring. Both the Python helper
@@ -2211,23 +2214,23 @@ User-visible changes:
 
 Internal:
 
-- **TypeScript `noImplicitAny: true`** (A13-043 follow-up). The
+- **TypeScript `noImplicitAny: true`** (follow-up). The
   long-deferred second half of the strict-mode adoption — turned out
   the codebase was already clean from incremental annotations across
   v2.3–v2.5, so the flip was a one-line config change with zero tsc
   errors.
-- **systemd-analyze security verified on Pi** (A13-046 verification).
+- **systemd-analyze security verified on Pi** (verification).
   All 6 service units (`readsbstats-collector`, `readsbstats-web`,
   `notify-telegram@`, `readsbstats-updater`, `readsbstats-dbcheck`,
   `readsbstats-dbcheck-full`) score **2.9 OK** — well below the
   audit's <5 target. Remaining ✗ rows are intrinsic to the workload
   (Internet sockets, RTC) or trivial future hardening (UMask,
   SystemCallFilter block).
-- **Metrics parse guard** (A13-026). `int(last1min.end)` could raise
+- **Metrics parse guard**. `int(last1min.end)` could raise
   `ValueError`/`TypeError` on garbage upstream and abort the whole
   metrics row; now wraps the conversion, logs a warning, and returns
   `(None, None)` so the next poll picks up cleanly.
-- **Dispatch unknown-kind observability** (A13-027). `_dispatch_one`
+- **Dispatch unknown-kind observability**. `_dispatch_one`
   silently dropped notifications with an unknown `kind`; now logs a
   warning so the loss is visible in journalctl.
 - **Dead-column drop on existing DBs** (already in v2.5.1, mentioned
@@ -2235,19 +2238,18 @@ Internal:
 - **Hardening / hygiene**:
   - `http_safe._USER_AGENT` wrapped in `MappingProxyType` so the
     `photo_sources.PHOTO_UA` re-export can't be `.pop()`'d by a
-    downstream caller (A13-053).
+    downstream caller.
   - `requirements-dev.txt` `httpx>=0.27.2` removed (was already pinned
     via `-r requirements.txt`; redundant floor created a path for dev
-    to resolve older than prod) (A13-051).
+    to resolve older than prod).
   - nginx `/stats/api/` block now re-states all 5 parent security
     headers including `Content-Security-Policy: default-src 'none'`
     (strictest possible — JSON endpoints load no scripts/images/frames).
-    Immunises the `add_header` inheritance trap permanently (A13-052).
+    Immunises the `add_header` inheritance trap permanently.
 - **Dead code removed**: `collector._dispatch_notifications` (no
   callers anywhere, queue-backed consumer is the only production
-  path) and `notifier._truncate_caption` back-compat alias
-  (A13-091 + A13-092).
-- **Post-commit review fix**: the original A13-052 hardening patch
+  path) and `notifier._truncate_caption` back-compat alias.
+- **Post-commit review fix**: the original hardening patch
   added only 4 of the 5 parent headers to the `/api/*` location and
   inadvertently triggered the very inheritance trap it was meant to
   prevent — for `Content-Security-Policy`. Caught by the project's
@@ -2255,7 +2257,7 @@ Internal:
   `default-src 'none'` strict policy.
 
 Test count: 1374 → 1376. Net +3 regression tests added (5 new, -2
-stale: one alias-enforcement test, one assertion of pre-A13-024
+stale: one alias-enforcement test, one assertion of pre-fix
 buggy behaviour).
 
 ## 2.5.1 — 2026-05-24
@@ -2399,10 +2401,10 @@ Internal:
   `aircraftIconSvg(flags, type): React.ReactElement`. Rotation moved
   from a CSS `transform:rotate(${deg}deg)` string interpolation to the
   typed `Marker.rotation` prop with `rotationAlignment="map"`. The
-  string-template surface flagged by audit-12 #176 is eliminated by
+  string-template surface flagged earlier is eliminated by
   construction (the API can no longer route a string through this
   path).
-- **`(L as any).heatLayer` cast gone.** Closes audit-13 A13-089. The
+- **`(L as any).heatLayer` cast gone.** Closes a prior audit finding. The
   heatmap is now a declarative `<Source><Layer/></Source>` pair with
   typed paint properties throughout.
 - **CSP updated for MapLibre.** `worker-src 'self' blob:` added (tile
@@ -2410,7 +2412,7 @@ Internal:
   `img-src` extended for `*.basemaps.cartocdn.com` (MapLibre fetches
   raster tiles via `fetch()`, not `<img>`). The previously-overlooked
   inline theme bootstrap script in `frontend/index.html` (left
-  unenforced after audit-13 dropped `'unsafe-inline'`) is now allowed
+  unenforced after a prior audit dropped `'unsafe-inline'`) is now allowed
   via a SHA-256 hash in `script-src`.
 
 Bundle delta (gzipped, lazy-loaded by `/stats/map` and
@@ -2511,7 +2513,7 @@ Deploy notes:
 
 - Explicit assertion in `test_purge_ghosts.py` that
   `max_distance_after_purge` takes the no-`IN ()` branch when `ghost_ids=[]`
-  (originally fixed by audit-12 #143; now pinned with a SQL-shape test).
+  (originally fixed in an earlier release; now pinned with a SQL-shape test).
 
 ---
 
@@ -2594,10 +2596,10 @@ Deploy notes:
 
 ## 2.3.0 — 2026-05-20
 
-Coordinated post-audit-13 sweep. 53 items across security, reliability,
+Coordinated post-audit sweep. 53 items across security, reliability,
 performance, and hardening — bundled under one minor bump rather than
 sliced into a chain of patch releases. Full per-item index lives in
-`internal_docs/security/audit-13-2026-05-20.md` (gitignored, local).
+internal notes (gitignored, local).
 
 ### Security
 
@@ -2990,7 +2992,7 @@ commit-on-both-touched contract.
 ### UI/UX polish — audit v2 follow-up
 
 Targeted refinements found by reviewing the v2 SPA screenshots in
-`internal_docs/uiux/audit-v2-2026-05-18.md`:
+internal notes:
 
 - **Flag tiles fully clickable.** Military / Interesting / Anonymous
   cards on the Stats page are now single `<Link>` elements (was a
@@ -3231,7 +3233,7 @@ bypasses ``socket.getaddrinfo`` via ``anyio.getaddrinfo``).
 Phase 9 eliminates the global patch entirely. Two distinct mechanisms
 now close the TOCTOU per code path:
 
-**urllib path — custom HTTPSConnection (audit-12 H1)**
+**urllib path — custom HTTPSConnection**
 
 `safe_urlopen` now builds a one-shot opener per call (via
 `_build_pinned_opener`) whose HTTPS handler issues every connection
@@ -3246,7 +3248,7 @@ through a new `_PinnedHTTPSConnection`. The connection:
 No reliance on `socket.getaddrinfo` at all between resolve+validate and
 the actual fetch. The rebinding window is closed at the protocol layer.
 
-**httpx path — scoped resolver redirect (audit-12 H1 partial)**
+**httpx path — scoped resolver redirect**
 
 `safe_httpx_get` wraps the call in `_pinned_socket_resolver`, a
 `@contextmanager` that temporarily redirects `socket.getaddrinfo` to
@@ -3259,7 +3261,7 @@ inside the `with` block — but unlike Phase 2's permanent patch, tests
 patching `socket.getaddrinfo` outside this narrow window now behave as
 expected. The trade-off is documented at the top of `http_safe.py`.
 
-**Async-httpx guard (audit-12 H2)**
+**Async-httpx guard**
 
 `safe_httpx_get` now raises `RuntimeError` immediately if passed an
 `httpx.AsyncClient`. Async httpx bypasses `socket.getaddrinfo` via
@@ -3455,7 +3457,7 @@ This is the final phase of Audit 12. Across six shipped phases
 audit findings** are closed. Remaining items are three large
 deferred refactors (#193 web.py split, #194 _migrate() split,
 #195 page extractions) plus a handful of Low-severity cosmetic
-items, all tracked in `internal_docs/security/audit-12-2026-05-17-post-v2.md`.
+items, all tracked in internal notes.
 
 ## 2.1.8 — 2026-05-17
 
@@ -3807,7 +3809,7 @@ suites green, frontend builds clean.
 
 ### Audit 12 Phase 1 — invariant violations + latent footguns
 
-Full post-v2 security/quality audit ran today (`internal_docs/security/audit-12-2026-05-17-post-v2.md`).
+Full post-v2 security/quality audit ran today.
 This release ships Phase 1 of the proposed sequence: documented-invariant breaks,
 one user-visible data-loss bug, and latent footguns. Every fix is test-first; no
 functional change for users beyond the `category` data quality improvement.
@@ -4189,9 +4191,7 @@ the slider, etc.). All v1 tests unchanged (1198 Python + 69 vanilla JS +
 feature gaps before cutover. The four `/map` features (heatmap, coverage,
 playback, sidebar) landed in the same session that hit parity.
 
-**Post-cutover follow-ups** (tracked in
-`internal_docs/uiux/v2-implementation-status.md` and
-`internal_docs/internal/duckdb-analytics-plan.md`):
+**Post-cutover follow-ups** (tracked internally):
 - DuckDB sqlite_scanner for analytical endpoints —
   `/api/map/heatmap?window=30d` currently times out at nginx (60 s) on
   busy receivers; DuckDB's vectorised multi-core GROUP BY over the same
@@ -4633,7 +4633,7 @@ five small cleanups. No new features; deploy is in-place.
 ## 1.5.1 — 2026-05-09
 
 Production-readiness sweep (seventh audit pass — see
-`internal_docs/improvements.md` items #86–101).
+internal notes items #86–101).
 
 ### Performance & reliability
 
