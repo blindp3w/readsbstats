@@ -32,6 +32,10 @@ export function safeUrl(input: string | null | undefined): string {
   try {
     const url = new URL(trimmed);
     if (url.protocol !== 'https:') return '';
+    // SEC-4 (audit 18): reject embedded credentials. A
+    // `https://user:pass@host/` URL leaks userinfo and is a host-confusion
+    // vector; mirrors the server-side reject in http_safe.py.
+    if (url.username || url.password) return '';
     return trimmed;
   } catch {
     return '';

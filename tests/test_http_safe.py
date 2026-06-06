@@ -204,6 +204,66 @@ class TestValidateUrl:
         with pytest.raises(ValueError, match="non-public"):
             http_safe.validate_url("https://example.com/")
 
+    # SEC-1 (audit 18): IPv6-transition prefixes that embed/route to
+    # private space. ipaddress.is_global flags these as global (correct
+    # per IANA), but they are an SSRF bypass: a NAT64 / 6to4 / Teredo /
+    # site-local address can carry traffic to an internal v4 destination
+    # such as the cloud metadata service. The policy blanket-rejects the
+    # whole transition prefixes via `_ip_is_public`.
+
+    def test_ip_is_public_rejects_nat64_embedded_metadata(self):
+        # 64:ff9b::/96 well-known NAT64 prefix embedding 169.254.169.254.
+        assert http_safe._ip_is_public("64:ff9b::169.254.169.254") is False
+
+    def test_ip_is_public_rejects_site_local(self):
+        # fec0::/10 deprecated site-local (RFC 3879).
+        assert http_safe._ip_is_public("fec0::1") is False
+
+    def test_ip_is_public_rejects_nat64_local_use(self):
+        # 64:ff9b:1::/48 local-use NAT64 (RFC 8215).
+        assert http_safe._ip_is_public("64:ff9b:1::1") is False
+
+    def test_ip_is_public_rejects_6to4(self):
+        # 2002::/16 6to4 — 2002:a9fe:a9fe:: routes to 169.254.169.254.
+        assert http_safe._ip_is_public("2002:a9fe:a9fe::1") is False
+
+    def test_ip_is_public_rejects_teredo(self):
+        # 2001::/32 Teredo tunnelling.
+        assert http_safe._ip_is_public("2001:0:53aa:64c:0:0:0:1") is False
+
+    def test_ip_is_public_existing_v6_rejects_still_hold(self):
+        # Regression: the new deny-net check must not weaken the existing
+        # private/loopback/link-local/ULA/multicast rejects.
+        for ip in ("::1", "fe80::1", "fc00::1", "ff02::1", "::"):
+            assert http_safe._ip_is_public(ip) is False
+
+    def test_ip_is_public_existing_v4_rejects_still_hold(self):
+        for ip in ("169.254.169.254", "127.0.0.1", "10.0.0.1", "0.0.0.0"):
+            assert http_safe._ip_is_public(ip) is False
+
+    def test_ip_is_public_normal_addresses_still_pass(self):
+        # The transition-prefix deny list must not start rejecting ordinary
+        # public v4/v6 addresses.
+        for ip in ("8.8.8.8", "1.1.1.1", "2606:4700:4700::1111"):
+            assert http_safe._ip_is_public(ip) is True
+
+    # SEC-3 (audit 18): URLs with embedded credentials must be rejected.
+    # A `https://user:pass@host/` URL otherwise (a) leaks the userinfo into
+    # the Host header on the httpx path and (b) is a phishing/confusion
+    # vector. Reject it like any other policy violation.
+
+    def test_credentialed_url_rejected(self, monkeypatch):
+        monkeypatch.setattr(http_safe, "_real_getaddrinfo",
+                            lambda h, p, **kw: _fake_addrinfo("1.1.1.1"))
+        with pytest.raises(http_safe.UnsafeURLError, match="credential"):
+            http_safe.validate_url("https://user:pass@example.com/x")
+
+    def test_username_only_url_rejected(self, monkeypatch):
+        monkeypatch.setattr(http_safe, "_real_getaddrinfo",
+                            lambda h, p, **kw: _fake_addrinfo("1.1.1.1"))
+        with pytest.raises(http_safe.UnsafeURLError, match="credential"):
+            http_safe.validate_url("https://admin@example.com/x")
+
     def test_mixed_addrinfo_one_private_rejects(self, monkeypatch):
         """If getaddrinfo returns multiple records and any is private, the
         whole URL must be rejected — a partially-trusted resolver is the
@@ -310,6 +370,22 @@ class TestHttpxPinnedRequestBuilder:
         )
         assert url == "https://8.8.8.99:8443/x"
         assert headers == {"Host": "example.com:8443"}
+
+    def test_host_header_excludes_userinfo(self, monkeypatch):
+        """SEC-3 (audit 18): the Host header is built from hostname[:port],
+        never ``parsed.netloc`` — so even if a credentialed URL reached the
+        builder, the ``user:pass@`` must not leak into the Host header.
+
+        ``_resolve_and_validate`` now rejects credentialed URLs outright, so
+        we patch it here to return a parsed result that still carries the
+        userinfo, proving the Host-header construction itself strips it."""
+        def fake_resolve(url):
+            return urllib.parse.urlparse(url), _fake_addrinfo("8.8.8.99")
+        monkeypatch.setattr(http_safe, "_resolve_and_validate", fake_resolve)
+        _url, headers, _ext = http_safe._build_pinned_httpx_request(
+            "https://user:pass@example.com/x"
+        )
+        assert headers == {"Host": "example.com"}
 
     def test_concurrent_calls_do_not_share_global_state(self, monkeypatch):
         """The old `_RESOLVER_LOCK` design serialised every call. The new

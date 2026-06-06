@@ -106,6 +106,25 @@ class UnsafeURLError(ValueError):
 _real_getaddrinfo = socket.getaddrinfo
 
 
+# SEC-1 (audit 18): IPv6-transition prefixes that embed or tunnel to
+# private space. ipaddress.is_global reports these as global (correct per
+# IANA), but each can carry traffic to an internal v4 destination such as
+# the cloud metadata service — the 2026 NAT64 / 6to4 / Teredo / site-local
+# SSRF-bypass class. We blanket-reject the whole prefixes (no embedded-v4
+# re-extraction needed) and do NOT rely on is_global alone, whose
+# classification shifts across Python patch versions.
+#   64:ff9b::/96   — well-known NAT64 (RFC 6052)
+#   64:ff9b:1::/48 — local-use NAT64 (RFC 8215)
+#   2002::/16      — 6to4 (RFC 3056)
+#   2001::/32      — Teredo (RFC 4380)
+#   fec0::/10      — deprecated site-local (RFC 3879)
+_SSRF_DENY_NETS = [
+    ipaddress.ip_network(n)
+    for n in ("64:ff9b::/96", "64:ff9b:1::/48", "2002::/16",
+              "2001::/32", "fec0::/10")
+]
+
+
 # ---------------------------------------------------------------------------
 # URL / IP validation
 # ---------------------------------------------------------------------------
@@ -121,6 +140,11 @@ def _ip_is_public(addr: str) -> bool:
     try:
         ip = ipaddress.ip_address(addr)
     except ValueError:
+        return False
+    # SEC-1 (audit 18): reject IPv6-transition prefixes outright. These
+    # are is_global=True but route/tunnel to private space (NAT64, 6to4,
+    # Teredo, site-local) — a v6 SSRF bypass onto internal v4 endpoints.
+    if ip.version == 6 and any(ip in net for net in _SSRF_DENY_NETS):
         return False
     return ip.is_global and not ip.is_multicast
 
@@ -147,6 +171,14 @@ def _resolve_and_validate(
     host = parsed.hostname
     if not host:
         raise UnsafeURLError("URL has no host")
+    # SEC-3 (audit 18): reject embedded credentials. A
+    # `https://user:pass@host/` URL is a policy violation — it leaks the
+    # userinfo into the Host header on the httpx path and is a host-
+    # confusion / phishing vector. Treat it like any other rejection.
+    if parsed.username or parsed.password:
+        raise UnsafeURLError(
+            f"URL with embedded credentials rejected: host {host!r}"
+        )
     port = parsed.port or 443
     try:
         infos = _real_getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
@@ -366,7 +398,12 @@ def _build_pinned_httpx_request(url: str) -> tuple[str, dict, dict]:
     # Host header keeps the original host[:port] so virtual-host upstreams
     # (CloudFront, shared backends) still route the request to the right
     # site, and any Host-aware request signing on the upstream still works.
-    headers = {"Host": parsed.netloc}
+    # SEC-3 (audit 18): build it from hostname[:port], NOT parsed.netloc —
+    # netloc carries any `user:pass@` userinfo, which must never leak into
+    # the Host header. (Credentialed URLs are also rejected upstream in
+    # _resolve_and_validate; this is defence in depth.)
+    host_header = hostname + (f":{parsed.port}" if parsed.port else "")
+    headers = {"Host": host_header}
     # sni_hostname overrides the SNI extension AND the cert hostname
     # verification target in httpx 0.24+.
     extensions = {"sni_hostname": hostname}
