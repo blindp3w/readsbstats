@@ -226,3 +226,60 @@ describe('Flight detail compact header (M3.1)', () => {
     });
   });
 });
+
+describe('Flight header ACARS badge (2026-06-06)', () => {
+  // The badge appears next to the source badge only when VDL2 is available AND
+  // the flight has ACARS messages — driven by the same query the ACARS block
+  // uses, so badge and block always agree.
+  function stubWithVdl2(messages: unknown[]) {
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      const path = url.split('?')[0];
+      let body: unknown = { ok: true };
+      if (path.endsWith('/api/settings')) body = { vdl2_enabled: true };
+      else if (path.endsWith('/api/health')) body = { vdl2: { available: true } };
+      else if (path.includes('/api/vdl2/messages/'))
+        body = { messages, next_before_id: null };
+      else if (path.endsWith('/api/flights/12345/positions/chart'))
+        body = { total: CHART_POSITIONS.length, target: 2000, positions: CHART_POSITIONS };
+      else if (path.endsWith('/api/flights/12345/positions'))
+        body = { total: CHART_POSITIONS.length, limit: 2000, offset: 0, positions: CHART_POSITIONS };
+      else if (path.endsWith('/api/flights/12345/photo')) body = null;
+      else if (path.endsWith('/api/flights/12345')) body = FLIGHT_PAYLOAD;
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }) as unknown as typeof fetch;
+  }
+
+  it('shows the ACARS badge when the flight has ACARS messages', async () => {
+    stubWithVdl2([
+      { id: 1, ts: 1_700_001_000, icao_hex: 'aabbcc', label: 'H1',
+        body: 'gate report', decoder: 'vdlm2dec' },
+    ]);
+    const { container } = renderPage();
+    await waitFor(() => {
+      if (!container.querySelector('[data-testid="flight-acars-badge"]'))
+        throw new Error('ACARS badge not present');
+    });
+    const badge = container.querySelector('[data-testid="flight-acars-badge"]')!;
+    expect(badge.textContent).toBe('ACARS');
+    // It sits inside the identity row, beside the source badge.
+    const identity = container.querySelector('[data-testid="flight-identity"]')!;
+    expect(identity.contains(badge)).toBe(true);
+  });
+
+  it('omits the ACARS badge when the flight has no ACARS messages', async () => {
+    stubWithVdl2([]);
+    const { container } = renderPage();
+    // Wait for the identity row, then assert the badge is absent.
+    await waitFor(() => {
+      if (!container.querySelector('[data-testid="flight-identity"]'))
+        throw new Error('identity not ready');
+    });
+    await waitFor(() => {
+      expect(container.querySelector('[data-testid="flight-acars-badge"]')).toBeNull();
+    });
+  });
+});

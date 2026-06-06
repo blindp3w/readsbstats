@@ -19,6 +19,7 @@ import { IsolationPills } from '@/components/charts/IsolationPills';
 import { KpiSparkline } from '@/components/stats/KpiSparkline';
 import { MetricCell } from '@/components/flight/MetricCell';
 import { AcarsPanel } from '@/components/vdl2/AcarsPanel';
+import { useVdl2FlightMessages } from '@/hooks/useVdl2Enabled';
 import { OooiCard } from '@/components/vdl2/OooiCard';
 import { RssiCell } from '@/components/flight/RssiCell';
 import { haversineNm, bearingFromReceiver } from '@/lib/geo';
@@ -362,6 +363,11 @@ function FlightHeader({
 }) {
   const { fmtAlt, fmtSpd, fmtDist, fmtTs } = useFormat();
   const f = detail.flight;
+  // ACARS badge: same deduped query the AcarsPanel below uses, so the badge and
+  // the block always agree. Shows only when VDL2 is available and this flight
+  // actually has ACARS messages.
+  const acars = useVdl2FlightMessages(f.icao_hex, f.first_seen, f.last_seen);
+  const hasAcars = acars.available && acars.messages.length > 0;
   const photoUrl =
     safeUrl(photoQ.data?.large_url ?? null) || safeUrl(photoQ.data?.thumbnail_url ?? null);
   const atMax = computeAtMax(positions, receiverLat, receiverLon);
@@ -457,6 +463,15 @@ function FlightHeader({
                 {f.squawk ? <Badge variant={squawkVariant}>{f.squawk}</Badge> : null}
                 <FlagBadge flags={f.flags} />
                 <SourceBadge source={f.primary_source} size="sm" />
+                {hasAcars ? (
+                  <Badge
+                    variant="default"
+                    className="px-1.5 py-0 text-[10px]"
+                    data-testid="flight-acars-badge"
+                  >
+                    ACARS
+                  </Badge>
+                ) : null}
               </span>
             </div>
 
