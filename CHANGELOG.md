@@ -1,5 +1,50 @@
 # Changelog
 
+## 2.15.3 — 2026-06-06
+
+Faster Statistics page: default to a 7-day window and background-warm the
+all-time aggregates.
+
+### Changed
+
+- **Statistics defaults to the last 7 days.** The page used to open on the
+  all-time view, whose unfiltered aggregation full-scans `flights` across ~15
+  JOINed sub-queries (onto `aircraft_db` ~620k rows, `airlines`,
+  `callsign_routes`, `airports`) — tens of seconds on a large DB. The 7-day
+  view skips those heavy JOINs. "All time" and custom ranges remain one click
+  away in the range picker.
+- **Preset windows are quantized to 5-minute buckets.** The resolved
+  `from`/`to` (and thus the `/api/stats` response-cache key) are now stable
+  across reloads, so repeat loads within a bucket are served from cache instead
+  of recomputing. Effective freshness stays ~5 minutes.
+
+### Added
+
+- **Background-warmed all-time stats.** The cache prewarmer keeps the all-time
+  `/api/stats` payload hot (refresh ~hourly), so the opt-in "All time" click is
+  instant. The prewarmer now also starts independent of DuckDB — previously it
+  never ran on a default (DuckDB-less) install, so map caches went unwarmed
+  there too. Heatmap/coverage targets stay DuckDB-gated so a bare Pi doesn't run
+  scheduled full-`positions` scans through the SQLite fallback.
+
+### Internal
+
+- `api/stats.py`'s `api_stats` handler is split: the payload build moved to a
+  reusable `_compute_stats_sync()` that the prewarmer calls. No SQL changed.
+- `RSBS_PREWARM_MAP_CACHE` now gates all prewarm targets (stats + map), not just
+  map.
+- The all-time stats compute is serialized under a single lock, so a burst of
+  concurrent "All time" requests (or an overlap with the prewarmer) runs the
+  heavy scan once rather than N×. It is also scheduled first in the prewarm
+  stagger so it warms within seconds of a restart.
+
+### Tests
+
+- Backend +10 (`TestStatsPrewarm`: compute-fn shape, prewarm under the bare
+  `stats` key, handler cache short-circuit, single-flight all-time compute,
+  prewarm-scheduled-first, TTLs, DuckDB-independent gating).
+- Frontend 363 → 367 (new `useRange` default/quantization suite).
+
 ## 2.15.2 — 2026-06-06
 
 VDL2/ACARS flight-detail UX refinements (all viewports).

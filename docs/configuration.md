@@ -97,7 +97,7 @@ Boolean vars accept `1`/`0`, `true`/`false`, `yes`/`no`, `on`/`off`
 | `RSBS_DUCKDB_THREADS` | `2` | DuckDB worker threads (min `1`) |
 | `RSBS_DUCKDB_HOME_DIR` | `/mnt/ext/readsbstats/duckdb-home` | DuckDB home directory (extension cache; required because `readsbstats` is a system user with no `/home`) |
 | `RSBS_DUCKDB_TEMP_DIR` | `/mnt/ext/readsbstats/duckdb-tmp` | DuckDB spill directory |
-| `RSBS_PREWARM_MAP_CACHE` | `1` | Background prewarmer for heatmap/coverage caches (`0` to disable; self-disables when DuckDB is unavailable) |
+| `RSBS_PREWARM_MAP_CACHE` | `1` | Background prewarmer for the all-time stats payload **and** heatmap/coverage caches (`0` to disable). Stats prewarm runs on every install; the heatmap/coverage targets self-disable when DuckDB is unavailable |
 
 ### Receiver health dashboard
 
@@ -207,7 +207,7 @@ Environment="RSBS_AIRSPACE_GEOJSON=/opt/readsbstats/my_airspace.geojson"
 
 ## DuckDB accelerator
 
-`RSBS_USE_DUCKDB=1` enables columnar scans for `/api/map/heatmap` and `/api/map/coverage`. The DuckDB extension binary is pre-fetched by `scripts/update.sh` to avoid a ~5 s download on first hit. SQLite remains the only write path — DuckDB is read-only. Set `RSBS_PREWARM_MAP_CACHE=1` (on by default when DuckDB is available) to keep all 8 cache entries hot at half-TTL.
+`RSBS_USE_DUCKDB=1` enables columnar scans for `/api/map/heatmap` and `/api/map/coverage`. The DuckDB extension binary is pre-fetched by `scripts/update.sh` to avoid a ~5 s download on first hit. SQLite remains the only write path — DuckDB is read-only. Set `RSBS_PREWARM_MAP_CACHE=1` (on by default) to keep the cache hot at half-TTL: the all-time stats payload is warmed on every install, plus the 8 heatmap/coverage entries when DuckDB is available.
 
 ## VDL2 / ACARS (opt-in)
 

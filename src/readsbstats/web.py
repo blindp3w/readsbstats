@@ -109,13 +109,20 @@ async def _lifespan(app_: FastAPI) -> AsyncIterator[None]:
     # owned by the collector so two processes don't fight on the SQLite write
     # lock. Web is read-only (except for the per-request response cache).
     # Eager-init DuckDB so the first user hit doesn't pay extension+ATTACH
-    # cost (~1–2 s). If the engine is up, also kick off the prewarmer so
-    # users land on warm cache instead of triggering the cold-scan path.
+    # cost (~1–2 s).
     if analytics.is_available():
         log.info("analytics: DuckDB engine ready")
-        if config.PREWARM_MAP_CACHE:
-            log.info("starting map-cache prewarmer (8 targets, half-TTL refresh)")
-            cache._start_prewarmer()
+    # Kick off the prewarmer so users land on warm cache instead of the
+    # cold-scan path. Gated on PREWARM_MAP_CACHE but NOT on DuckDB: the
+    # all-time stats payload is pure SQLite and benefits every install. Map
+    # (heatmap/coverage) targets stay DuckDB-gated via include_map so a bare
+    # Pi doesn't run scheduled full-`positions` scans through the SQLite
+    # fallback. (Before 2026-06-06 the prewarmer never started without DuckDB,
+    # so map caches went unwarmed there too.)
+    if config.PREWARM_MAP_CACHE:
+        with_map = analytics.is_available()
+        log.info("starting cache prewarmer (map=%s, half-TTL refresh)", with_map)
+        cache._start_prewarmer(include_map=with_map)
     yield
     # Audit 17 review: _stop_prewarmer now join()s the worker (up to 15 s if a
     # scan is in flight), so run it off-loop — a synchronous call here would

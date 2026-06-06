@@ -18,6 +18,7 @@ from readsbstats.api import _photos
 from readsbstats.api import feeders
 from readsbstats.api import settings as settings_mod
 from readsbstats.api import airspace as airspace_mod
+from readsbstats.api import stats as stats_mod
 from readsbstats.photo_sources import PhotoResult
 
 
@@ -44,6 +45,10 @@ def client(db_conn, monkeypatch):
     CSRF check; tests for missing-header rejection construct their own client.
     """
     monkeypatch.setattr(_deps, "_db", db_conn)
+    # The lifespan starts the cache prewarmer when PREWARM_MAP_CACHE is on
+    # (now independent of DuckDB). Tests don't want a background thread warming
+    # the cache out from under their assertions — disable it here.
+    monkeypatch.setattr(config, "PREWARM_MAP_CACHE", False)
     cache._cache.clear()
     with TestClient(web.app, raise_server_exceptions=True,
                     headers={"X-Requested-With": "XMLHttpRequest"}) as c:
@@ -54,6 +59,7 @@ def client(db_conn, monkeypatch):
 def raw_client(db_conn, monkeypatch):
     """TestClient WITHOUT default X-Requested-With — for CSRF rejection tests."""
     monkeypatch.setattr(_deps, "_db", db_conn)
+    monkeypatch.setattr(config, "PREWARM_MAP_CACHE", False)  # no background prewarmer in tests
     cache._cache.clear()
     with TestClient(web.app, raise_server_exceptions=True) as c:
         yield c
@@ -4275,6 +4281,148 @@ class TestMapPrewarmer:
             assert cache._prewarmer_thread is None
         finally:
             release.set()
+            cache._prewarmer_stop.clear()
+
+
+class TestStatsPrewarm:
+    """7d-default speedup (2026-06-06): _compute_stats_sync extraction +
+    background-warmed all-time stats. The page defaults to 7d (fast filtered
+    path); the all-time payload is prewarmed so the opt-in 'All time' click is
+    instant."""
+
+    def test_compute_stats_sync_unfiltered_shape(self, client, db_conn):
+        insert_flight(db_conn, icao="aabbcc", callsign="LOT123")
+        result = stats_mod._compute_stats_sync(None, None)
+        assert isinstance(result, dict)
+        # All-time payload carries no `range`; the dict must build cleanly.
+        assert result["range"] is None
+        for key in ("total_flights", "unique_aircraft", "lifetime",
+                    "heatmap", "top_airlines", "source_breakdown"):
+            assert key in result
+        assert result["total_flights"] == 1
+
+    def test_compute_stats_sync_filtered_sets_range(self, client, db_conn):
+        insert_flight(db_conn, icao="aabbcc", first_seen=1_000_000)
+        result = stats_mod._compute_stats_sync(0, 2_000_000)
+        assert result["range"] == {"from": 0, "to": 2_000_000}
+
+    def test_prewarm_one_stats_populates_bare_key(self, client, db_conn):
+        insert_flight(db_conn, icao="aabbcc")
+        cache._cache.clear()
+        assert cache._get_cache("stats") is None
+        cache._prewarm_one("stats", "all")
+        warmed = cache._get_cache("stats")
+        assert isinstance(warmed, dict)
+        assert warmed["total_flights"] == 1
+        # Stored under the BARE key so the unfiltered handler finds it; the
+        # "stats:all" key is cadence-only and must never hold the payload.
+        assert "stats:all" not in cache._cache
+
+    def test_handler_serves_prewarmed_value_without_recompute(
+            self, clear_web_cache, monkeypatch):
+        sentinel = {"total_flights": 999, "sentinel": True}
+        cache._set_cache("stats", sentinel)
+
+        def _boom(*a, **k):
+            raise AssertionError("handler recomputed despite a warm cache")
+
+        monkeypatch.setattr(stats_mod, "_compute_stats_sync", _boom)
+        # Call the handler directly to bypass response_model serialization
+        # (the sentinel isn't a full StatsResponse).
+        assert stats_mod.api_stats(from_ts=None, to_ts=None) is sentinel
+
+    def test_concurrent_all_time_requests_compute_once(self, clear_web_cache, monkeypatch):
+        # The all-time path holds _stats_compute_lock so a burst of concurrent
+        # "All time" requests runs the ~15-query scan once, not N×.
+        import threading
+        calls: list = []
+        started = threading.Event()
+        release = threading.Event()
+
+        def slow_compute(from_ts, to_ts):
+            calls.append((from_ts, to_ts))
+            started.set()
+            release.wait(2)
+            return {"total_flights": 1, "range": None}
+
+        monkeypatch.setattr(stats_mod, "_compute_stats_sync", slow_compute)
+        results: list = []
+
+        def hit():
+            results.append(stats_mod.api_stats(from_ts=None, to_ts=None))
+
+        t1 = threading.Thread(target=hit)
+        t2 = threading.Thread(target=hit)
+        t1.start()
+        assert started.wait(2), "first request never entered compute"
+        t2.start()             # blocks on _stats_compute_lock held by t1
+        time.sleep(0.05)       # let t2 reach the lock
+        release.set()
+        t1.join(2)
+        t2.join(2)
+        assert len(calls) == 1                # second request reused the cache
+        assert results == [{"total_flights": 1, "range": None}] * 2
+
+    def test_stats_ttls_registered(self, clear_web_cache):
+        # Long cadence: the heavy all-time scan refreshes ~hourly (half of
+        # 7200s), not every 2 min — gentle on the Pi.
+        assert cache._ttl_for("stats") == 7200
+        assert cache._CACHE_TTLS["stats:all"] == 7200
+        # Filtered keys inherit the prefix TTL; their freshness comes from the
+        # SPA's 5-min window quantization, not a short backend TTL.
+        assert cache._ttl_for("stats:0:100") == 7200
+
+    def test_stats_all_is_a_prewarm_target(self):
+        assert ("stats", "all") in cache._PREWARM_TARGETS
+
+    def test_stats_prewarm_scheduled_first(self):
+        # stats:all must warm first so the opt-in all-time view isn't cold for
+        # ~120s after a restart on DuckDB hosts (9 targets, 15s stagger).
+        schedule = cache._initial_prewarm_schedule(cache._PREWARM_TARGETS, now=1_000_000.0)
+        ranked = sorted(cache._PREWARM_TARGETS, key=lambda t: schedule[t])
+        assert ranked[0] == ("stats", "all")
+
+    def test_start_prewarmer_excludes_map_without_duckdb(self, monkeypatch):
+        import threading
+        captured: dict = {}
+        ran = threading.Event()
+
+        def fake_loop(targets=None):
+            captured["targets"] = targets
+            ran.set()
+
+        monkeypatch.setattr(cache, "_prewarm_loop", fake_loop)
+        cache._stop_prewarmer()  # ensure a clean slate
+        try:
+            cache._start_prewarmer(include_map=False)
+            assert ran.wait(2), "prewarmer did not invoke the loop"
+            # Robust to future stats targets: the point is map targets are excluded.
+            assert captured["targets"]
+            assert all(t[0] == "stats" for t in captured["targets"])
+            assert ("stats", "all") in captured["targets"]
+        finally:
+            cache._stop_prewarmer()
+            cache._prewarmer_stop.clear()
+
+    def test_start_prewarmer_includes_map_with_duckdb(self, monkeypatch):
+        import threading
+        captured: dict = {}
+        ran = threading.Event()
+
+        def fake_loop(targets=None):
+            captured["targets"] = targets
+            ran.set()
+
+        monkeypatch.setattr(cache, "_prewarm_loop", fake_loop)
+        cache._stop_prewarmer()
+        try:
+            cache._start_prewarmer(include_map=True)
+            assert ran.wait(2)
+            assert captured["targets"] == cache._PREWARM_TARGETS
+            assert ("stats", "all") in captured["targets"]
+            assert ("heatmap", "24h") in captured["targets"]
+        finally:
+            cache._stop_prewarmer()
             cache._prewarmer_stop.clear()
 
 

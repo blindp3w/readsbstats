@@ -54,7 +54,7 @@ interface RecordsResponse {
 }
 
 export default function StatsPage() {
-  const { state: range, setPreset, setCustom } = useRange('all');
+  const { state: range, setPreset, setCustom } = useRange('7d');
 
   const filterQs = new URLSearchParams();
   if (range.from) filterQs.set('from', String(range.from));

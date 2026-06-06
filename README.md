@@ -36,6 +36,7 @@ readsb and tar1090 give you a great live view — readsbstats adds the other hal
 - Telegram notifications for military/interesting/anonymous/watchlist/emergency-squawk events; interactive bot commands
 - Aircraft watchlist — track by ICAO hex, registration, or callsign prefix
 - Receiver metrics dashboard with 10 time-series charts (Apache ECharts canvas, cross-panel hover sync, wheel/pinch zoom, LTTB downsampling) and 9 health checks
+- Statistics dashboard — receiver-wide aggregates (top aircraft/airlines/routes/airports, hourly & daily activity, DOW×hour heatmap, polar coverage range). Defaults to the **last 7 days** for fast loads; the all-time view is background-warmed so it stays snappy
 - Optional [DuckDB](https://duckdb.org/) analytical accelerator for heatmap/coverage (`RSBS_USE_DUCKDB=1`)
 - Optional **VDL2 / ACARS** integration — ingest VHF Data Link Mode 2 traffic from a separate SDR via [vdlm2dec](https://github.com/TLeconte/vdlm2dec): a Messages tab (live feed, filters, full-text search) plus an ACARS panel on flight pages, a "has ACARS" badge/filter in history, and a Stats card. Fully pluggable (`RSBS_VDL2_ENABLED`), stored in its own database (see [Operations](docs/operations.md#vdl2--acars-ingest))
 - Unit switching: Aeronautical / Metric / Imperial — persisted in browser
