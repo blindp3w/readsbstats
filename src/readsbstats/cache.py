@@ -120,6 +120,9 @@ def _set_cache(key: str, value: object) -> None:
             while len(_cache) > _CACHE_MAX_ENTRIES:
                 victim = next((k for k in _cache if k not in _CACHE_TTLS), None)
                 if victim is None:
+                    # Unreachable today (_CACHE_MAX_ENTRIES=256 ≫ the ~30 named
+                    # keys), but kept as a guard in case the cap is ever shrunk
+                    # below the named-key count: evict the oldest protected key.
                     victim = next(iter(_cache))  # all protected → evict oldest
                 del _cache[victim]
 
@@ -127,6 +130,10 @@ def _set_cache(key: str, value: object) -> None:
 # ---------------------------------------------------------------------------
 # Per-window async locks for heatmap + coverage handlers
 # ---------------------------------------------------------------------------
+# These assume a single long-lived event loop (the prod Uvicorn loop): a Lock is
+# created once per window and never rebound. Unlike _feeders_lock below (reset to
+# None so it rebinds per loop for multi-loop tests), these are not test-reset —
+# tests exercising them run on one loop.
 _heatmap_locks: dict[str, asyncio.Lock] = {}
 
 

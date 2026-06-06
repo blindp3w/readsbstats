@@ -4,8 +4,10 @@ readsbstats — flight route enrichment via adsbdb.com.
 Looks up origin/destination airports for callsigns using the free
 https://api.adsbdb.com/v0/callsign/{callsign} API (no auth required).
 
-Runs as a background daemon thread inside the web process so the
-collector (Pi-side, possibly offline) is unaffected.  The enricher
+Runs as a background daemon thread inside the *collector* process
+(started from ``collector.py``), preserving the single-writer model —
+the collector owns all SQLite writes (Audit 2026-06-01 W-3; it used to
+start in the web process, making it a second writer).  The enricher
 opens its own SQLite connection; the web process reads the results
 through the shared WAL file.
 """

@@ -73,8 +73,9 @@ def _bearing_to_latlon(lat0: float, lon0: float, bearing_deg: float, dist_nm: fl
 
 def _build_aircraft_list(now: float) -> list:
     result = []
-    for defn, state in zip(AIRCRAFT_DEFS, STATES.values()):
+    for defn in AIRCRAFT_DEFS:
         icao, callsign, reg, atype, cat = defn
+        state = STATES[icao]   # key by this aircraft's own ICAO, not positional zip (BUG-13)
         bearing = (state["bearing0"] + now * state["speed_dps"]) % 360
         lat, lon = _bearing_to_latlon(RX_LAT, RX_LON, bearing, state["radius_nm"])
         track = (bearing + 90) % 360  # rough heading: tangent to orbit

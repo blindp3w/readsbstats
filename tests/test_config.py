@@ -317,6 +317,27 @@ class TestConfigValidation:
         importlib.reload(readsbstats.config)
         assert readsbstats.config.ROUTE_BATCH_SIZE >= 1
 
+    def test_route_rate_limit_negative_falls_back_to_default(self, monkeypatch):
+        # STY-1: a negative rate limit is nonsensical; fall back to the 1.0s default.
+        monkeypatch.setenv("RSBS_ROUTE_RATE_LIMIT", "-1")
+        import readsbstats.config
+        importlib.reload(readsbstats.config)
+        assert readsbstats.config.ROUTE_RATE_LIMIT_SEC == 1.0
+
+    def test_route_rate_limit_zero_passes_through_disabled(self, monkeypatch):
+        # STY-1: 0 means "no inter-call delay" (disabled) — min is 0.0, so it passes.
+        monkeypatch.setenv("RSBS_ROUTE_RATE_LIMIT", "0")
+        import readsbstats.config
+        importlib.reload(readsbstats.config)
+        assert readsbstats.config.ROUTE_RATE_LIMIT_SEC == 0.0
+
+    def test_route_rate_limit_valid_unchanged(self, monkeypatch):
+        # STY-1: no upper clamp — a valid positive value passes through untouched.
+        monkeypatch.setenv("RSBS_ROUTE_RATE_LIMIT", "2.5")
+        import readsbstats.config
+        importlib.reload(readsbstats.config)
+        assert readsbstats.config.ROUTE_RATE_LIMIT_SEC == 2.5
+
 
 class TestReceiverLocationValidation:
     """BUG-6: RECEIVER_LAT/RECEIVER_LON range-checked via cleaners.valid_lat/

@@ -122,6 +122,25 @@ class TestBuildAircraftList:
         )
         assert any_moved
 
+    def test_each_aircraft_uses_its_own_icao_state(self):
+        """BUG-13: state must be looked up by the aircraft's OWN ICAO, not paired
+        positionally. Each entry's state-derived fields (squawk, source) must
+        equal STATES[entry['hex']]'s — true regardless of dict ordering."""
+        for entry in sim._build_aircraft_list(now=0.0):
+            state = sim.STATES[entry["hex"]]
+            assert entry["squawk"] == state["squawk"], entry["hex"]
+            assert entry["type"] == state["source"], entry["hex"]
+
+    def test_reordered_states_still_keyed_by_icao(self, monkeypatch):
+        """A positional zip(AIRCRAFT_DEFS, STATES.values()) breaks the moment the
+        STATES dict order diverges from AIRCRAFT_DEFS order. Reverse the dict and
+        assert each aircraft still gets the state keyed by its own ICAO."""
+        reordered = dict(reversed(list(sim.STATES.items())))
+        monkeypatch.setattr(sim, "STATES", reordered)
+        for entry in sim._build_aircraft_list(now=0.0):
+            assert entry["squawk"] == reordered[entry["hex"]]["squawk"], entry["hex"]
+            assert entry["type"] == reordered[entry["hex"]]["source"], entry["hex"]
+
 
 # ---------------------------------------------------------------------------
 # STATES module-level initialisation

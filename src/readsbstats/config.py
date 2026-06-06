@@ -479,6 +479,9 @@ MLAT_OUTLIER_FACTOR       = _min_or_default_float("RSBS_MLAT_OUTLIER_FACTOR",   
 MLAT_OUTLIER_MIN_READINGS = _min_or_default_int(  "RSBS_MLAT_OUTLIER_MIN",      MLAT_OUTLIER_MIN_READINGS, 3,   50)
 ADSBX_RANGE_NM       = _min_or_default_int("RSBS_ADSBX_RANGE",   ADSBX_RANGE_NM,      1, 250)
 ROUTE_BATCH_SIZE     = _min_or_default_int("RSBS_ROUTE_BATCH",   ROUTE_BATCH_SIZE,     1, 20)
+# STY-1: floor at 0.0 (0 = no inter-call delay / disabled); a negative value is
+# nonsensical and falls back to the 1.0s default. No upper bound.
+ROUTE_RATE_LIMIT_SEC = _min_or_default_float("RSBS_ROUTE_RATE_LIMIT", ROUTE_RATE_LIMIT_SEC, 0.0, 1.0)
 
 # Map history — zero would make the slider useless
 MAP_HISTORY_HOURS    = _min_or_default_int("RSBS_MAP_HISTORY_HOURS", MAP_HISTORY_HOURS, 1, 24)

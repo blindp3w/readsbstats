@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import socket
 
 from readsbstats import config, vdl2_collector
 from readsbstats.vdl2 import db as vdl2_db
@@ -79,3 +80,61 @@ def test_flush_writes_to_db():
     assert n == 1
     assert pending == []
     assert conn.execute("SELECT COUNT(*) FROM vdl2_messages").fetchone()[0] == 1
+
+
+def test_shutdown_drain_counts_toward_run_total(monkeypatch, tmp_path, caplog):
+    """BUG-12: the final ``finally`` drain of a sub-BATCH pending buffer must be
+    added to the run total. One datagram (< _BATCH) stays buffered until the
+    shutdown flush, so the run-total log must report 1, not 0."""
+    monkeypatch.setattr(config, "VDL2_ENABLED", True)
+    # Keep the dirty-shutdown sentinel inside tmp_path (away from the real DB dir).
+    monkeypatch.setattr(config, "VDL2_DB_PATH", str(tmp_path / "vdl2.db"))
+
+    conn = make_vdl2_db()
+    monkeypatch.setattr(vdl2_db, "connect", lambda *a, **k: conn)
+    # Schema already built by make_vdl2_db; don't rebuild on the live connection.
+    monkeypatch.setattr(vdl2_db, "ensure_schema", lambda c: None)
+    # Don't let the prune thread touch our single in-memory connection.
+    monkeypatch.setattr(vdl2_collector, "_prune_loop", lambda: None)
+
+    datagram = json.dumps({"timestamp": 1, "hex": "48e95d", "text": "drain"}).encode()
+
+    class _FakeSock:
+        def __init__(self, *a, **k):
+            self._calls = 0
+
+        def bind(self, addr):
+            pass
+
+        def settimeout(self, t):
+            pass
+
+        def recvfrom(self, n):
+            self._calls += 1
+            if self._calls == 1:
+                return datagram, ("127.0.0.1", 5556)
+            # Second poll: ask the loop to stop, then break out via a non-timeout
+            # OSError so the timeout idle-flush branch is skipped and the single
+            # record survives to the shutdown finally-drain.
+            vdl2_collector._stop.set()
+            raise OSError("test shutdown")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(socket, "socket", lambda *a, **k: _FakeSock())
+
+    committed_before = vdl2_collector._stats.committed
+    try:
+        with caplog.at_level("INFO", logger="vdl2"):
+            rc = vdl2_collector.main()
+    finally:
+        vdl2_collector._stop.clear()  # don't leak the stop flag into other tests
+
+    assert rc == 0
+    # The single buffered record was actually written by the shutdown drain...
+    assert vdl2_collector._stats.committed - committed_before == 1
+    # ...and the run total reflects it (would be 0 if finally discarded _flush()'s return).
+    stored = [r.getMessage() for r in caplog.records if "messages stored this run" in r.getMessage()]
+    assert stored, "expected a run-total shutdown log line"
+    assert "(1 messages stored this run)" in stored[-1]

@@ -29,7 +29,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ApiModel(BaseModel):
@@ -199,7 +199,7 @@ class MapSnapshotAircraft(ApiModel):
     seconds_ago: Optional[int] = None
     # Each trail point is ``[lat, lon, ts]``; kept as a raw list so the int
     # ``ts`` isn't coerced to float.
-    trail: list[Any] = []
+    trail: list[Any] = Field(default_factory=list)
 
 
 class MapSnapshotResponse(ApiModel):
@@ -254,19 +254,19 @@ class StatsResponse(ApiModel):
     flights_last_24h: Optional[int] = None
     flights_last_7d: Optional[int] = None
     source_breakdown: Optional[SourceBreakdown] = None
-    top_airlines: list[dict] = []
-    top_aircraft_types: list[dict] = []
-    hourly_distribution: list[dict] = []
-    daily_unique_aircraft: list[dict] = []
-    altitude_distribution: list[dict] = []
+    top_airlines: list[dict] = Field(default_factory=list)
+    top_aircraft_types: list[dict] = Field(default_factory=list)
+    hourly_distribution: list[dict] = Field(default_factory=list)
+    daily_unique_aircraft: list[dict] = Field(default_factory=list)
+    altitude_distribution: list[dict] = Field(default_factory=list)
     military_flights: Optional[int] = None
     interesting_flights: Optional[int] = None
     anonymous_flights: Optional[int] = None
     # Emergency-squawk counts keyed by "7700"/"7600"/"7500" (non-identifier
     # keys) — passthrough dict.
-    squawk_counts: dict = {}
+    squawk_counts: dict = Field(default_factory=dict)
     # {"total": int, "items": [<flight rows>]} — passthrough.
-    new_aircraft: dict = {}
+    new_aircraft: dict = Field(default_factory=dict)
     # Full enriched flight row with first_seen renamed record_set_at, or null.
     furthest_aircraft: Optional[dict] = None
     receiver_lat: Optional[float] = None
@@ -274,11 +274,11 @@ class StatsResponse(ApiModel):
     trends: Optional[StatsTrends] = None
     previous_window: Optional[StatsPreviousWindow] = None
     lifetime: Optional[StatsLifetime] = None
-    heatmap: list[dict] = []
-    top_countries: list[dict] = []
-    frequent_aircraft: list[dict] = []
-    top_routes: list[dict] = []
-    top_airports: list[dict] = []
+    heatmap: list[dict] = Field(default_factory=list)
+    top_countries: list[dict] = Field(default_factory=list)
+    frequent_aircraft: list[dict] = Field(default_factory=list)
+    top_routes: list[dict] = Field(default_factory=list)
+    top_airports: list[dict] = Field(default_factory=list)
     # {"from": ts, "to": ts} ("from" is a Python keyword) or null — passthrough.
     range: Optional[dict] = None
 
@@ -317,7 +317,7 @@ class Vdl2Message(ApiModel):
 
 
 class Vdl2MessagesResponse(ApiModel):
-    messages: list[Vdl2Message] = []
+    messages: list[Vdl2Message] = Field(default_factory=list)
     next_before_id: Optional[int] = None
 
 
@@ -337,9 +337,9 @@ class Vdl2StatsResponse(ApiModel):
     total: int = 0
     last_hour: int = 0
     aircraft: int = 0
-    top_labels: list[Vdl2TopLabel] = []
-    top_airlines: list[Vdl2TopAirline] = []
-    hourly: list[int] = []
+    top_labels: list[Vdl2TopLabel] = Field(default_factory=list)
+    top_airlines: list[Vdl2TopAirline] = Field(default_factory=list)
+    hourly: list[int] = Field(default_factory=list)
     # % of flights in the last 24h whose airframe also transmitted ACARS in the
     # flight window. Null when the cross-DB ATTACH is unavailable (don't fail the
     # card) — computed on the core history.db connection, not the vdl2.db one.
@@ -350,7 +350,7 @@ class Vdl2StatsResponse(ApiModel):
 class Vdl2ActiveResponse(ApiModel):
     """ICAO hexes that transmitted ACARS in the last N minutes — for the map's
     'transmitting now' marker badge (client-side merge with the live snapshot)."""
-    icao_hex: list[str] = []
+    icao_hex: list[str] = Field(default_factory=list)
     count: int = 0
 
 
@@ -368,7 +368,7 @@ class Vdl2Position(ApiModel):
 class Vdl2PositionsResponse(ApiModel):
     """VDL2-derived positions for the optional map overlay. Sparse on an
     H1-dominated feed — only messages whose decoder emitted structured lat/lon."""
-    points: list[Vdl2Position] = []
+    points: list[Vdl2Position] = Field(default_factory=list)
     count: int = 0
 
 
@@ -378,12 +378,12 @@ class Vdl2TimeseriesResponse(ApiModel):
     Series values are normalized to msgs/min; `total` is the raw count in the
     window (the series must NOT be summed to get a count)."""
     bucket_seconds: int = 0
-    metrics: list[str] = []           # ["rate", "<freq>", ...]
-    freqs: list[float] = []           # the top frequencies, same order as metrics[1:]
+    metrics: list[str] = Field(default_factory=list)    # ["rate", "<freq>", ...]
+    freqs: list[float] = Field(default_factory=list)    # top frequencies, same order as metrics[1:]
     total: int = 0
     newest_ts: Optional[int] = None
     newest_age_sec: Optional[int] = None
-    data: list[list[float]] = []      # [[ts...], [rate...], [freq1...], ...]
+    data: list[list[float]] = Field(default_factory=list)  # [[ts...], [rate...], [freq1...], ...]
 
 
 class Vdl2OooiEvent(ApiModel):
