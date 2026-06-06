@@ -54,4 +54,37 @@ describe('useRange', () => {
     expect(from).toBe(1700000123);
     expect(to).toBe(1700000456);
   });
+
+  // BUG-14: an inverted (from >= to) custom window from the URL must fall back
+  // to the default preset rather than being honoured as a zero/negative-length
+  // window (mirrors CustomRangeForm.apply's guard).
+  it('falls back to the default preset when from >= to (inverted)', () => {
+    const { result } = renderHook(() => useRange('7d'), {
+      wrapper: wrap('/?from=1700000456&to=1700000123'),
+    });
+    const { value, from, to } = result.current.state;
+    expect(value).toBe('7d');
+    // Resolved window is the 7d preset, not the inverted custom one.
+    expect(to! - from!).toBe(7 * 86400);
+    expect(to! % 300).toBe(0);
+  });
+
+  it('falls back to the default preset when from === to (zero-length)', () => {
+    const { result } = renderHook(() => useRange('7d'), {
+      wrapper: wrap('/?from=1700000123&to=1700000123'),
+    });
+    expect(result.current.state.value).toBe('7d');
+    expect(result.current.state.to! - result.current.state.from!).toBe(7 * 86400);
+  });
+
+  // code-review: an empty/blank `from` (a form that cleared the field, or a
+  // hand-edited URL) must not coerce via Number('')===0 into a hidden 1970
+  // window — it falls back to the default preset.
+  it('falls back to the default preset when from is empty (Number("")===0 trap)', () => {
+    const { result } = renderHook(() => useRange('7d'), {
+      wrapper: wrap('/?from=&to=1700000456'),
+    });
+    expect(result.current.state.value).toBe('7d');
+    expect(result.current.state.to! - result.current.state.from!).toBe(7 * 86400);
+  });
 });

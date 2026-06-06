@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import re
 import sqlite3
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
-from .. import database, schemas
+from .. import cleaners, database, schemas
 from . import _deps
 
 
@@ -49,6 +50,18 @@ def api_watchlist_add(body: _WatchlistEntry) -> dict:
     value = body.value.strip().lower()
     if not value:
         raise HTTPException(422, "value is required")
+    # F07: validate the value shape per match_type at the trust boundary.
+    # The SPA validates too, but the API must reject malformed values
+    # independently of any client.
+    if body.match_type == "icao":
+        if cleaners.valid_icao_hex(value) is None:
+            raise HTTPException(422, "icao value must be 6 hex digits")
+    elif body.match_type == "registration":
+        if not re.fullmatch(r"[a-z0-9-]{1,12}", value):
+            raise HTTPException(422, "registration must be 1-12 alphanumerics or hyphens")
+    elif body.match_type == "callsign_prefix":
+        if not re.fullmatch(r"[a-z0-9]{1,8}", value):
+            raise HTTPException(422, "callsign_prefix must be 1-8 alphanumerics")
     label = body.label.strip() if body.label else None
     try:
         with _deps.db():

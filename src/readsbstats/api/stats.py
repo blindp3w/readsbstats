@@ -25,16 +25,18 @@ def api_stats(
     cached = cache._get_cache(cache_key)
     if cached is not None:
         return cached
-    if filtered:
-        # Filtered windows are cheap (index-scoped) and quantized by the SPA —
-        # compute lock-free.
-        result = _compute_stats_sync(from_ts, to_ts)
-        cache._set_cache(cache_key, result)
-        return result
-    # All-time is the expensive path. Serialize it under _stats_compute_lock so
-    # a burst of concurrent "All time" requests (or an overlap with the hourly
-    # prewarmer) computes once; the rest wait and reuse the freshly cached result.
+    # PERF-1: serialize the COLD compute under the same _stats_compute_lock the
+    # all-time path uses — both filtered and all-time. A custom window is still a
+    # ~15-query GROUP-BY pass, so N concurrent viewers of one window (or a burst
+    # on "All time", or an overlap with the hourly prewarmer) would otherwise each
+    # run it in full. The double-checked cache read inside the lock means warm-
+    # cache hits never reach this lock (returned above), so it only serializes
+    # cold computes — fine on a home LAN, and reusing the one lock keeps the path
+    # simple (no per-key lock dict). Filtered and all-time share the lock, so a
+    # cold "All time" briefly blocks a cold custom-window compute and vice versa;
+    # acceptable given both are cache-fronted and rare.
     with cache._stats_compute_lock:
+        # Re-read: another thread may have filled this exact key while we waited.
         cached = cache._get_cache(cache_key)
         if cached is not None:
             return cached

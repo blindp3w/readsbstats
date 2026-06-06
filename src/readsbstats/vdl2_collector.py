@@ -230,7 +230,7 @@ def main() -> int:
             if len(pending) >= _BATCH:
                 total += _flush(conn, pending)
     finally:
-        _flush(conn, pending)
+        total += _flush(conn, pending)   # count the final drain in the run total (BUG-12)
         sock.close()
         conn.close()
         # Clean shutdown: clear the sentinel so the next start skips quick_check.

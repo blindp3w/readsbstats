@@ -36,12 +36,19 @@ export function EChart({ option, height = 220, group, onEvents }: Props) {
     chartRef.current?.setOption(option, { notMerge: true, lazyUpdate: true });
   }, [option]);
 
-  // Group sync for cross-panel tooltip + dataZoom.
+  // Group sync for cross-panel tooltip + dataZoom. On unmount / group change,
+  // detach THIS chart by clearing its group — do NOT call echarts.disconnect(group),
+  // which is group-wide and would un-sync every sibling still mounted in the same
+  // group (the Metrics page mounts several group="metrics" charts). dispose() also
+  // removes the instance from echarts' connected-group registry (BUG-18).
   useEffect(() => {
     const chart = chartRef.current;
     if (!chart || !group) return;
     chart.group = group;
     echarts.connect(group);
+    return () => {
+      chart.group = '';
+    };
   }, [group]);
 
   // Event binding — replace handlers when the map identity changes.

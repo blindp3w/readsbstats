@@ -7,20 +7,23 @@ vi.unmock('@/components/charts/EChart');
 
 // vi.mock hoists to top of file; pull spy creation into vi.hoisted so the
 // factory below can close over the same references the test reads.
-const { init, connect, fakeInstance, setOption, resize, dispose, on, off } = vi.hoisted(() => {
-  const setOption = vi.fn();
-  const resize = vi.fn();
-  const dispose = vi.fn();
-  const on = vi.fn();
-  const off = vi.fn();
-  const fakeInstance: any = { setOption, resize, dispose, on, off, group: '' };
-  const init = vi.fn(() => fakeInstance);
-  const connect = vi.fn();
-  return { init, connect, fakeInstance, setOption, resize, dispose, on, off };
-});
+const { init, connect, disconnect, fakeInstance, setOption, resize, dispose, on, off } = vi.hoisted(
+  () => {
+    const setOption = vi.fn();
+    const resize = vi.fn();
+    const dispose = vi.fn();
+    const on = vi.fn();
+    const off = vi.fn();
+    const fakeInstance: any = { setOption, resize, dispose, on, off, group: '' };
+    const init = vi.fn(() => fakeInstance);
+    const connect = vi.fn();
+    const disconnect = vi.fn();
+    return { init, connect, disconnect, fakeInstance, setOption, resize, dispose, on, off };
+  },
+);
 
 vi.mock('@/components/charts/echarts-setup', () => ({
-  echarts: { init, connect, use: vi.fn() },
+  echarts: { init, connect, disconnect, use: vi.fn() },
 }));
 
 // jsdom doesn't implement ResizeObserver — provide a no-op.
@@ -42,6 +45,7 @@ describe('<EChart>', () => {
     off.mockClear();
     init.mockClear();
     connect.mockClear();
+    disconnect.mockClear();
     fakeInstance.group = '';
   });
 
@@ -67,6 +71,20 @@ describe('<EChart>', () => {
   it('does not call connect when group prop is omitted', () => {
     render(<EChart option={{ series: [] }} />);
     expect(connect).not.toHaveBeenCalled();
+  });
+
+  // BUG-18 (code-review fix): on unmount the group effect must detach THIS chart
+  // without tearing down the whole shared group. echarts.disconnect(group) is
+  // group-wide — calling it here un-syncs every sibling chart still mounted in the
+  // same group (the Metrics page mounts several group="metrics" charts at once).
+  // Single-instance removal is just clearing chart.group; dispose() also drops the
+  // instance from echarts' connected-group registry.
+  it('clears chart.group on unmount without disconnecting the whole group', () => {
+    const { unmount } = render(<EChart option={{ series: [] }} group="metrics" />);
+    expect(fakeInstance.group).toBe('metrics');
+    unmount();
+    expect(disconnect).not.toHaveBeenCalled();
+    expect(fakeInstance.group).not.toBe('metrics');
   });
 
   it('disposes on unmount', () => {

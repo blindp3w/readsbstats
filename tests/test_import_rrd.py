@@ -79,6 +79,26 @@ class TestParseFetchOutput:
         assert len(rows) == 1
         assert rows[0][1] == [5.0, None]
 
+    def test_non_int_timestamp_line_skipped(self):
+        """BUG-7: a colon-bearing line whose prefix is not an integer must be
+        skipped, not raise — matching the value-parse loop's ValueError
+        tolerance. A stray non-numeric line (e.g. a re-emitted header or
+        rrdtool warning carrying a colon) would otherwise abort the whole
+        import mid-run after partial commits."""
+        output = (
+            "              value\n"
+            "\n"
+            "1776979620: -1.12e+01\n"
+            "ds[value].last_ds: 42\n"   # non-int prefix before the colon
+            "1776979680: -1.36e+01\n"
+        )
+        rows = import_rrd.parse_fetch_output(output)
+        # Bad line skipped; the two valid timestamped rows still parse.
+        assert rows == [
+            (1776979620, [-11.2]),
+            (1776979680, [-13.6]),
+        ]
+
 
 # ---------------------------------------------------------------------------
 # merge_tier — DERIVE conversion

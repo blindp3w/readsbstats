@@ -51,11 +51,12 @@ Target: maintain the current ~99% coverage. New features and bug fixes should in
 - Type hints on function signatures
 - Keep imports ordered: stdlib, third-party, local
 
-**JavaScript:**
-- `const` / `let` (no `var`)
-- camelCase for variables and functions, UPPER_SNAKE for constants
-- Use `addEventListener()` for event binding (not inline `onclick` or property assignment)
-- Escape API data with `escHtml()` before inserting into innerHTML
+**TypeScript / React** (`frontend/src/`):
+- React 19 function components with hooks — no class components
+- `const` / `let` (no `var`); camelCase for variables and functions, PascalCase for components, UPPER_SNAKE for constants
+- Type props and API payloads explicitly; avoid `any`
+- Route any third-party URL or `href` through `lib/safeUrl.ts`; avoid `dangerouslySetInnerHTML`
+- `npm run lint` must pass with zero warnings (CI runs `eslint . --max-warnings 0`)
 
 **SQL:**
 - Use parameterized queries (`?` placeholders) — never interpolate user input

@@ -4,6 +4,8 @@
 
 export const FLAG_MILITARY = 1;
 export const FLAG_INTERESTING = 2;
+// FLAG_PIA / FLAG_LADD mirror the backend config.py FLAG_* bitmask and are kept
+// for parity / future use — the SPA doesn't currently render them as pills.
 export const FLAG_PIA = 4;
 export const FLAG_LADD = 8;
 export const FLAG_ANONYMOUS = 16;

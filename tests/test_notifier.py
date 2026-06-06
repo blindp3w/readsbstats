@@ -915,6 +915,29 @@ class TestSendDailySummary:
         assert "SP-LNG" in msg
         assert "2h 00m" in msg
 
+    def test_longest_over_24h_rolls_days_over(self, db_conn, monkeypatch):
+        """BUG-11: a flight tracked for >=24h must render a day component
+        instead of overflowing the hour field (e.g. '26h 30m'). 95400s =
+        1d 02h 30m."""
+        sent = []
+        monkeypatch.setattr(notifier, "_send", lambda txt: sent.append(txt))
+        import datetime as _dt
+        today = _dt.date.today()
+        day_start = int(_dt.datetime.combine(today, _dt.time.min).timestamp())
+        # Anchor first_seen to today's midnight so the flight is counted today
+        # regardless of wall-clock hour; duration = 95400s (1d 02h 30m).
+        first_seen = day_start
+        last_seen = day_start + 95400
+        insert_flight(db_conn, icao="long24", registration="SP-DAY",
+                      first_seen=first_seen, last_seen=last_seen)
+        notifier.send_daily_summary(db_conn)
+        msg = sent[0]
+        assert "Longest" in msg
+        assert "SP-DAY" in msg
+        # Day-aware rollover, not "26h 30m".
+        assert "1d 02h 30m" in msg
+        assert "26h" not in msg
+
     def test_records_omitted_when_none(self, db_conn, monkeypatch):
         """No fastest/highest/longest lines when all flights lack the data."""
         sent = []
@@ -1885,6 +1908,47 @@ class TestSendPhoto:
         assert b"HTML" in body
         assert b'filename="photo.jpg"' in body
         assert b"Content-Type: image/jpeg" in body
+
+    def test_oversized_caption_is_clamped_before_send(self, monkeypatch):
+        """BUG-5: `_send_photo` must clamp the caption to Telegram's 1024-char
+        sendPhoto limit itself — not rely on the caller (`_dispatch_with_photo`)
+        having done so. A direct caller with a >1024-char caption would
+        otherwise hit a Telegram 400 and silently drop the alert."""
+        import re
+        self._patch_safe_open(monkeypatch, b"\xff\xd8jpeg", "image/jpeg")
+        upload_calls = []
+        monkeypatch.setattr(notifier.http_safe, "safe_urlopen",
+                            _make_safe_urlopen(b'{"ok":true}', calls=upload_calls))
+        # Multi-line so the structure-aware clamp has a newline to cut on,
+        # mirroring real captions; well over the 1024 limit.
+        long_caption = "Line one\n" + ("A" * 2000)
+        assert len(long_caption) > 1024
+        assert notifier._send_photo("https://example.com/photo.jpg", long_caption) is True
+        # Extract the value of the multipart `caption` form field that was sent.
+        body = upload_calls[0]["data"]
+        m = re.search(
+            rb'name="caption"\r\n\r\n(.*?)\r\n--', body, re.DOTALL,
+        )
+        assert m is not None, "caption field must be present in the multipart body"
+        sent_caption = m.group(1).decode("utf-8")
+        assert len(sent_caption) <= 1024, (
+            f"caption sent to Telegram must be clamped to <=1024 chars, "
+            f"got {len(sent_caption)}"
+        )
+
+    def test_already_short_caption_unchanged(self, monkeypatch):
+        """The clamp is idempotent — a caption already within the limit is sent
+        byte-for-byte (no truncation marker, no surprises for the common path)."""
+        import re
+        self._patch_safe_open(monkeypatch, b"\xff\xd8jpeg", "image/jpeg")
+        upload_calls = []
+        monkeypatch.setattr(notifier.http_safe, "safe_urlopen",
+                            _make_safe_urlopen(b'{"ok":true}', calls=upload_calls))
+        caption = "Short and sweet"
+        notifier._send_photo("https://example.com/photo.jpg", caption)
+        body = upload_calls[0]["data"]
+        m = re.search(rb'name="caption"\r\n\r\n(.*?)\r\n--', body, re.DOTALL)
+        assert m.group(1).decode("utf-8") == caption
 
     def test_png_url_uses_png_filename_in_multipart(self, monkeypatch):
         self._patch_safe_open(monkeypatch, b"\x89PNG", "image/png")

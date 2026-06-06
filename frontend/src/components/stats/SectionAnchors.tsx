@@ -10,7 +10,10 @@ import { STATS_SECTIONS, type Section } from './sections';
 // Callers may pass a `sections` prop to add/remove entries (e.g. Stats appends a
 // gated "VDL2" section); defaults to the shared STATS_SECTIONS.
 export function SectionAnchors({ sections = STATS_SECTIONS }: { sections?: Section[] }) {
-  const [active, setActive] = useState<string>(sections[0].id);
+  // Optional-chain the initial id: an empty `sections` (e.g. all entries gated
+  // off) must not throw at construction. Mirrors the `?.` fallback in the
+  // activeId derive below (BUG-16).
+  const [active, setActive] = useState<string>(sections[0]?.id ?? '');
   // Re-run the observer when the set of section ids changes (e.g. VDL2 toggles).
   const ids = sections.map((s) => s.id).join(',');
 

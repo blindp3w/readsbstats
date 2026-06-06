@@ -324,6 +324,11 @@ def _send_photo(photo_url: str, caption: str) -> bool:
     URL-payload path has been removed.  On any failure (non-https URL, download
     error, upload error) we fall back to a plain text message.
     """
+    # BUG-5: enforce Telegram's 1024-char sendPhoto caption limit here, not just
+    # in the caller. `_clamp_caption` is idempotent (a no-op when already within
+    # the limit), so callers that pre-clamp pay nothing; a direct caller with an
+    # over-limit caption is saved from a silent Telegram 400 / dropped alert.
+    caption = _clamp_caption(caption)
     if not telegram_enabled():
         return False
     if not photo_url.startswith("https://"):
@@ -693,9 +698,13 @@ def send_daily_summary(conn: sqlite3.Connection) -> None:
     if longest:
         td = f" ({_h(longest['type_desc'])})" if longest["type_desc"] else ""
         ds = longest["duration_s"]
-        h, m = divmod(ds // 60, 60)
+        # BUG-11: roll whole days over so a >=24h flight renders "1d 02h 30m"
+        # instead of overflowing the hour field ("26h 30m").
+        d, rem = divmod(ds, 86400)
+        h, m = divmod(rem // 60, 60)
+        dur = f"{d}d {h:02d}h {m:02d}m" if d else f"{h}h {m:02d}m"
         lines.append(
-            f"Longest: <b>{_h(longest['reg'])}</b>{td} — {h}h {m:02d}m"
+            f"Longest: <b>{_h(longest['reg'])}</b>{td} — {dur}"
         )
 
     if busiest:

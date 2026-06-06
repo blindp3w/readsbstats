@@ -9,7 +9,7 @@ The History page filters use
 `COALESCE(f.registration, adb.registration) LIKE ?` and
 `COALESCE(f.aircraft_type, adb.type_code) = ?` so a search hits both
 the flight row's stored value and a fresh `aircraft_db` lookup when
-the stored value is NULL. The audit on 2026-05-26 flagged this as
+the stored value is NULL. A 2026 performance review flagged this as
 index-unfriendly: the existing single-column indexes
 (`idx_flights_registration`, `idx_flights_type`) cannot satisfy the
 predicate because the expression wraps the column in a function call.
@@ -26,13 +26,14 @@ Ship the backfill **without** dropping the COALESCE. Specifically:
 1. Add `_backfill_flights_enrichment()` to
    `database.run_background_migrations()` — populates
    `flights.registration` / `flights.aircraft_type` from
-   `aircraft_db` via correlated subqueries (the CLAUDE.md "ambiguous
-   column" gotcha forbids `UPDATE … FROM`).
+   `aircraft_db` via correlated subqueries (both `flights` and
+   `aircraft_db` expose a `registration` column, so `UPDATE … FROM`
+   raises "ambiguous column name" — correlated subqueries avoid it).
 2. Run the same UPDATEs in `db_updater.update_aircraft_db()` after
    the atomic swap so newly-known ICAOs back-apply to historical
    NULL-registration flights.
 3. **Keep** the `COALESCE(...)` wrappers in
-   `web.py::_build_flight_filter()` for now. A follow-up PR will
+   `_build_flight_filter()` for now. A follow-up PR will
    drop them once production has confirmed the backfill has
    completed.
 
@@ -45,18 +46,18 @@ filtered searches against not-yet-backfilled rows would return empty.
 The COALESCE provides a real-time fallback that the backfill has
 yet to make redundant.
 
-## Follow-up gate (out of scope for this branch)
+## Follow-up gate (not yet taken)
 
-The next branch drops the COALESCE wrappers in
-`web.py:783-789` and `web.py:2567-2578`. Prerequisites:
+The COALESCE wrappers are still in place — `_build_flight_filter()` now
+lives in `src/readsbstats/api/_deps.py` after the router split — and
+dropping them remains a deferred optimization. Prerequisites before the
+drop:
 
 - Production `journalctl -u readsbstats` confirms
   `_backfill_flights_enrichment` has run to completion.
 - A spot check of
   `SELECT COUNT(*) FROM flights WHERE registration IS NULL AND EXISTS (SELECT 1 FROM aircraft_db WHERE icao_hex = flights.icao_hex)`
   returns 0.
-
-Tracked as a one-liner in `internal_docs/features/improvements.md`.
 
 ## Consequences
 

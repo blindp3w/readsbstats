@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 import time
 
 from fastapi import APIRouter, Query
@@ -107,7 +108,10 @@ def api_health() -> dict:
     try:
         _deps.db().execute("SELECT 1")
         db_ok = True
-    except Exception:
+    except (sqlite3.Error, OSError):
+        # STY-7: fail soft on a genuine DB-liveness failure (locked/corrupt
+        # file, missing path) — but narrow to DB/OS errors so a non-DB
+        # programming error surfaces as a 500 instead of a masked "degraded".
         db_ok = False
     from .vdl2 import vdl2_health
     return {"status": "ok" if db_ok else "degraded", "vdl2": vdl2_health()}

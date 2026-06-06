@@ -56,11 +56,20 @@ function epochToLocalTime(epoch: number): string {
   return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+// Normalize a "HH:MM" string to zero-padded 2-digit hour + minute. Empty
+// input defaults to "00:00". TimePicker always emits a full "HH:MM", so this
+// is a defensive belt-and-braces normalization for any partial value rather
+// than a path the UI currently exercises.
+function normalizeTime(time: string): string {
+  if (!time) return '00:00';
+  const [h = '', m = ''] = time.split(':');
+  const pad = (n: string) => n.padStart(2, '0').slice(0, 2);
+  return `${pad(h)}:${pad(m)}`;
+}
+
 function localDateTimeToEpoch(date: string, time: string): number | null {
   if (!date) return null;
-  // Empty time defaults to 00:00; partial "HH" gets ":00" suffix.
-  const t = time || '00:00';
-  const iso = `${date}T${t.length === 5 ? t : `${t.padEnd(5, '0')}`}`;
+  const iso = `${date}T${normalizeTime(time)}`;
   const ms = new Date(iso).getTime();
   return Number.isFinite(ms) ? Math.floor(ms / 1000) : null;
 }

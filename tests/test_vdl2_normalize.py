@@ -110,6 +110,27 @@ class TestNormalizeVdlm2dec:
         # No identity and no body → nothing worth storing.
         assert normalize.normalize({"timestamp": 123, "freq": 136.9}) is None
 
+    # F05: identity/coordinate fields validated at the trust boundary.
+
+    def test_invalid_icao_hex_rejected(self):
+        # "48ok01" is 6 chars but not all hex — must not pass through.
+        rec = normalize.normalize({"hex": "48ok01", "text": "hi"})
+        assert rec is not None
+        assert rec["icao_hex"] is None
+
+    def test_out_of_range_lat_rejected(self):
+        rec = normalize.normalize({"hex": "abcdef", "text": "x",
+                                   "lat": 95, "lon": 21.0})
+        assert rec["lat"] is None
+        assert rec["lon"] == 21.0
+
+    def test_valid_icao_and_coords_preserved(self):
+        rec = normalize.normalize({"hex": "48E95D", "text": "x",
+                                   "lat": 52.2, "lon": 21.0})
+        assert rec["icao_hex"] == "48e95d"
+        assert rec["lat"] == 52.2
+        assert rec["lon"] == 21.0
+
 
 class TestNormalizeDumpvdl2:
     def test_basic_acars_mapping(self):
@@ -135,3 +156,18 @@ class TestNormalizeDumpvdl2:
 
     def test_empty_dumpvdl2_dropped(self):
         assert normalize.normalize({"vdl2": {"avlc": {}}}, decoder="dumpvdl2") is None
+
+    def test_invalid_icao_hex_rejected(self):
+        # F05: dumpvdl2 src.addr is validated the same way. A non-hex 6-char
+        # value is dropped; the body keeps the record alive.
+        raw = {
+            "vdl2": {
+                "avlc": {
+                    "src": {"addr": "48ok01"},
+                    "acars": {"msg_text": "HELLO"},
+                },
+            }
+        }
+        rec = normalize.normalize(raw, decoder="dumpvdl2")
+        assert rec is not None
+        assert rec["icao_hex"] is None

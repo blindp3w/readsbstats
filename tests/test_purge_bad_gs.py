@@ -369,6 +369,109 @@ class TestScanEdgeCases:
 
 
 # ---------------------------------------------------------------------------
+# PERF-2 — batched aircraft_db flag lookup (no full-table preload)
+# ---------------------------------------------------------------------------
+
+class TestBatchedFlagLookup:
+    """PERF-2: scan_flights must not preload the ENTIRE aircraft_db (~620k
+    rows on the Pi) into a Python dict. It only needs the flags for the
+    handful of ICAOs that actually have flights, looked up in batches.
+    """
+
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        self.conn = make_db()
+        yield
+        self.conn.close()
+
+    def test_resolves_flags_without_loading_unrelated_rows(self):
+        """Flags still resolve correctly even when aircraft_db holds many
+        rows that no flight references — those extra rows must NOT be loaded.
+
+        Correctness proof: the military aircraft (flags=1) keeps gs=1000
+        (under the 1800 military limit) while the civil one (flags=0) is
+        flagged at gs=1000 (over the 750 civil limit). If the batched
+        lookup pulled the wrong flags, these would flip.
+        """
+        # Two aircraft that DO have flights.
+        insert_aircraft_db(self.conn, "aabbcc", flags=1)   # military
+        insert_aircraft_db(self.conn, "ddeeff", flags=0)   # civil
+        # 50 unrelated aircraft_db rows that must never be loaded.
+        for i in range(50):
+            insert_aircraft_db(self.conn, f"c{i:05x}", flags=i % 2)
+
+        fmil = insert_flight(self.conn, icao="aabbcc", max_gs=1000)
+        insert_pos(self.conn, fmil, 1000, 52.0, 21.0, gs=1000)  # 1000 < 1800 → OK
+        fciv = insert_flight(self.conn, icao="ddeeff", max_gs=1000)
+        pciv = insert_pos(self.conn, fciv, 2000, 52.0, 21.0, gs=1000)  # 1000 > 750 → bad
+
+        bad = scan_flights(self.conn, CIVIL_LIMIT, MILITARY_LIMIT, DEVIATION)
+        assert fmil not in bad           # military limit applied
+        assert fciv in bad and pciv in bad[fciv]   # civil limit applied
+
+    def test_missing_icao_falls_back_to_military_limit(self):
+        """An ICAO absent from aircraft_db keeps the same permissive
+        (military/unknown) default as before — gs=1000 stays under 1800."""
+        # aircraft_db has rows, but none for the flight's ICAO.
+        for i in range(10):
+            insert_aircraft_db(self.conn, f"b{i:05x}", flags=0)
+        fid = insert_flight(self.conn, icao="ffffff", max_gs=1000)
+        insert_pos(self.conn, fid, 1000, 52.0, 21.0, gs=1000)
+
+        bad = scan_flights(self.conn, CIVIL_LIMIT, MILITARY_LIMIT, DEVIATION)
+        assert fid not in bad
+
+    def test_does_not_full_scan_aircraft_db(self):
+        """Spy on execute(): aircraft_db must only be queried WITH a WHERE
+        clause (batched IN-list), never as a bare full-table SELECT."""
+        insert_aircraft_db(self.conn, "aabbcc", flags=0)
+        for i in range(20):
+            insert_aircraft_db(self.conn, f"c{i:05x}", flags=0)
+        fid = insert_flight(self.conn, icao="aabbcc", max_gs=800)
+        insert_pos(self.conn, fid, 1000, 52.0, 21.0, gs=800)
+
+        captured: list[str] = []
+
+        class _SpyConn:
+            def __init__(self, inner):
+                self._inner = inner
+
+            def execute(self, sql, *args, **kw):
+                captured.append(sql)
+                return self._inner.execute(sql, *args, **kw)
+
+        scan_flights(_SpyConn(self.conn), CIVIL_LIMIT, MILITARY_LIMIT, DEVIATION)
+
+        aircraft_db_queries = [s for s in captured if "aircraft_db" in s]
+        assert aircraft_db_queries, "expected at least one aircraft_db lookup"
+        for sql in aircraft_db_queries:
+            assert "WHERE" in sql.upper(), (
+                f"aircraft_db queried without a WHERE clause (full-table "
+                f"preload regressed): {sql!r}"
+            )
+
+    def test_more_icaos_than_one_batch(self):
+        """Correctness across the chunk boundary: more distinct flight ICAOs
+        than the batch size still resolve their flags correctly."""
+        from purge_bad_gs import _AIRCRAFT_DB_CHUNK
+
+        n = _AIRCRAFT_DB_CHUNK + 7
+        expect_bad = set()
+        for i in range(n):
+            icao = f"e{i:05x}"
+            # Alternate civil/military so flags must be resolved per-icao.
+            flags = 0 if i % 2 == 0 else 1
+            insert_aircraft_db(self.conn, icao, flags=flags)
+            fid = insert_flight(self.conn, icao=icao, max_gs=1000)
+            insert_pos(self.conn, fid, 1000 + i, 52.0, 21.0, gs=1000)
+            if flags == 0:        # civil → 1000 > 750 → flagged
+                expect_bad.add(fid)
+
+        bad = scan_flights(self.conn, CIVIL_LIMIT, MILITARY_LIMIT, DEVIATION)
+        assert set(bad.keys()) == expect_bad
+
+
+# ---------------------------------------------------------------------------
 # _new_max_gs
 # ---------------------------------------------------------------------------
 

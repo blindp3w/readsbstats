@@ -13,6 +13,10 @@ describe('safeUrl — frontend SSRF / XSS allowlist', () => {
     'vbscript:msgbox',
     'file:///etc/passwd',
     '//evil.com/x.png',
+    // SEC-4 (audit 18): credentialed URLs leak userinfo / are a host-
+    // confusion vector — reject even over https.
+    'https://user:pass@evil.com/p.jpg',
+    'https://user@evil.com/p.jpg',
   ])('rejects %s', (input) => {
     expect(safeUrl(input)).toBe('');
   });

@@ -197,7 +197,7 @@ export default function GalleryPage() {
         <Pagination
           total={q.data.total}
           limit={PAGE_SIZE}
-          offset={Number(offset)}
+          offset={offset}
           onOffsetChange={(o) => update({ offset: o || null })}
         />
       )}

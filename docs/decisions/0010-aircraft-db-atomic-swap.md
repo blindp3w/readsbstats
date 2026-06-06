@@ -1,16 +1,16 @@
 # Atomic aircraft_db swap via staging table
 
 - Status: ACCEPTED
-- Date: 2026-05-26 (revised 2026-05-31, BE-2; revised 2026-05-31, SQLite 3.45.x fix; revised 2026-05-31, v2.12.2 timer-path orchestration)
+- Date: 2026-05-26 (revised 2026-05-31: backend hardening, SQLite 3.45.x fix, v2.12.2 timer-path orchestration)
 
 ## Context
 
 `db_updater.update_aircraft_db()` historically committed
 `DELETE FROM aircraft_db` in its own transaction, then bulk-inserted
-~620 k rows in chunked transactions (Audit-13 A13-061 introduced
+~620 k rows in chunked transactions (a prior review introduced
 the chunking so the writer lock would release between chunks and let
-the collector interleave). The audit on 2026-05-26 flagged this as a
-durability hole: any failure between the DELETE commit and the final
+the collector interleave). A 2026 durability review flagged this as a
+hole: any failure between the DELETE commit and the final
 INSERT chunk left `aircraft_db` empty or partially populated, and
 enrichment/flags/photo fallbacks degraded silently until the next
 weekly run.
@@ -46,7 +46,7 @@ Five-step rename-rename-drop swap inside `update_aircraft_db()`:
    DROP TABLE aircraft_db_old
    COMMIT          -- on any error: ROLLBACK
    ```
-   **Revision (2026-05-31, BE-2):** the original ADR claimed Python's
+   **Revision (2026-05-31, backend hardening):** the original ADR claimed Python's
    `sqlite3` "commits DDL immediately, so the swap cannot be wrapped in a
    transaction." That is **false** for Python ≥ 3.6 (the project requires
    ≥ 3.10): the implicit pre-DDL commit was removed, and SQLite DDL —
@@ -61,7 +61,7 @@ Five-step rename-rename-drop swap inside `update_aircraft_db()`:
    `COMMIT`, so there is **no observable window** where the table is absent;
    an interrupted swap rolls back wholesale and leaves `aircraft_db` intact.
 
-   **Revision (2026-05-31, SQLite 3.45.x fix):** the BE-2 revision kept the
+   **Revision (2026-05-31, SQLite 3.45.x fix):** the backend-hardening revision kept the
    staging *build* (CREATE + chunked INSERT) in its own committed
    transactions, *outside* the swap transaction, to hold the write lock only
    for the three fast renames. That split broke on **SQLite 3.45.x** (the
@@ -73,8 +73,8 @@ Five-step rename-rename-drop swap inside `update_aircraft_db()`:
    count validation, and the rename-rename-drop now all run in **one**
    `BEGIN IMMEDIATE … COMMIT`, which guarantees the staging table is
    self-visible. Holding the write lock for the full ~620 k-row reload is
-   acceptable here for two reasons that did not hold when A13-061 introduced
-   the chunking: (a) `scripts/update.sh` **stops the collector** before
+   acceptable here for two reasons that did not hold when the chunking was
+   first introduced: (a) `scripts/update.sh` **stops the collector** before
    running the updater, so there is no concurrent writer to cooperate with,
    and (b) in WAL mode a long write transaction never blocks readers (the web
    server). The connection still uses legacy `sqlite3` transaction mode, which
@@ -95,10 +95,10 @@ Five-step rename-rename-drop swap inside `update_aircraft_db()`:
   process snapshot sees an empty table mid-write. The staging-table
   build keeps the old table untouched until the rename, which the
   in-place variant cannot. (Note: the current design *does* now hold one
-  transaction for the staging build + swap — see the 2026-05-31 SQLite
-  3.45.x revision — but it builds the *new* table rather than mutating
+  transaction for the staging build + swap — see the later single-transaction
+  SQLite 3.45.x revision — but it builds the *new* table rather than mutating
   the live one, and the collector is stopped during the refresh, so the
-  A13-061 lock-cooperation concern no longer applies.)
+  earlier lock-cooperation concern no longer applies.)
 - **`UPSERT` per row keyed on `icao_hex`.** Avoids the swap entirely
   but cannot detect deletions on the upstream side; rows removed from
   tar1090-db would linger forever in the local cache.

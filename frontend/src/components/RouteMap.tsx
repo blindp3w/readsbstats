@@ -11,6 +11,7 @@ import {
 import { LngLatBounds } from 'maplibre-gl';
 import type { StyleSpecification } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
+import { routeFitKey } from '@/lib/routeFitKey';
 
 // Flight route map. Each position becomes a vertex of a polyline; ADS-B vs
 // MLAT segments are colored differently so users can spot multilateration
@@ -155,7 +156,9 @@ export default function RouteMap({ positions, receiverLat, receiverLon }: Props)
   const lastFitKey = useRef<string | null>(null);
   useEffect(() => {
     if (allPoints.length === 0) return;
-    const key = `${allPoints.length}-${allPoints[0][0]}-${allPoints[allPoints.length - 1][0]}`;
+    // Key on count + both coordinates of the endpoints (see lib/routeFitKey) —
+    // longitude alone collided on tracks sharing endpoint longitudes (BUG-2).
+    const key = routeFitKey(allPoints);
     if (key === lastFitKey.current) return;
     lastFitKey.current = key;
     const bounds = allPoints.reduce(

@@ -219,7 +219,7 @@ trust model is "bind to loopback, sit behind nginx on a trusted LAN."
   logged-in browser. It does not identify, authenticate, or authorize the
   caller — a direct `curl` with that header passes it. Never treat it as access
   control.
-- **Optional bearer-token gate (audit 2026-05-31 SH-1).** Setting
+- **Optional bearer-token gate.** Setting
   `RSBS_API_TOKEN=<value>` requires every mutating call to carry
   `Authorization: Bearer <value>`; comparison uses `hmac.compare_digest`. No-op
   when the env var is unset (default trusted-LAN posture unchanged). Read
@@ -243,7 +243,7 @@ is not enough for public exposure.
 with an SSRF guard (HTTPS-only, globally-reachable-IP-only, multicast-blocked,
 redirect-blocked). Provider photo URLs are additionally checked against
 per-source CDN host allowlists before they are cached, and at the API response
-boundary on every photo emission (audit 2026-05-31 PY-6) so cached
+boundary on every photo emission, so cached
 off-allowlist URLs never reach the SPA regardless of `RSBS_PHOTO_HOST_ENFORCE`.
 The image-host and link-host allowlists are separate — see `docs/configuration.md`.
 

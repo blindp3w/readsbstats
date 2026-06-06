@@ -323,6 +323,12 @@ def _migrate(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_flights_max_alt "
         "ON flights(max_alt_baro DESC)"
     )
+    # F08/SQL-1 (Audit 18, measure-first): flights.last_seen is intentionally
+    # NOT indexed. It's UPDATE-ed on every poll for each active flight (index
+    # write amplification on the hot path), and its only reader — the default-
+    # off retention purge — doesn't justify that cost. Revisit only with an
+    # EXPLAIN QUERY PLAN + a Pi write-throughput check if retention is enabled
+    # on a large DB.
     # NOTE: backfill of NULL primary_source on closed flights moved to
     # run_background_migrations() — it's a full-table UPDATE that would block
     # web startup on the SQLite write lock. See audit-12 #139.
@@ -478,6 +484,12 @@ def _build_positions_indexes(path: str = config.DB_PATH) -> None:
             "CREATE INDEX IF NOT EXISTS idx_positions_flight_id_desc "
             "ON positions(flight_id, id DESC)"
         )
+        # F08/SQL-1 (Audit 18, measure-first): a partial
+        # `(flight_id, id DESC) WHERE lat IS NOT NULL AND lon IS NOT NULL` index
+        # for /api/live's latest-fix subquery was considered and deliberately
+        # deferred — it would be maintained on the highest-frequency write
+        # (every position insert) to speed an occasional read. Revisit only with
+        # EXPLAIN QUERY PLAN + write-throughput evidence on the Pi's SQLite 3.45.
         # Audit 2026-05-26: composite covering `WHERE flight_id=? ORDER BY ts`
         # used by /api/flights/{id} positions, purge_ghosts, purge_bad_gs.
         # NOTE (Audit 17): this index is ALSO declared in the top-level DDL
@@ -723,6 +735,24 @@ def _recover_swap(conn: sqlite3.Connection, base: str) -> None:
     if new in names:
         _log.info("%s recovery: dropping leftover %s", base, new)
         conn.execute(f"DROP TABLE {new}")
+    # F02 follow-up (Audit 18): the 'canonical present + _old leftover' branch
+    # above drops aircraft_db_old — and the type_code index that followed the
+    # first RENAME lives on that old table, so dropping it leaves the new
+    # canonical aircraft_db unindexed (update_aircraft_db's post-swap CREATE
+    # never ran in the interrupted case). photo_sources.py JOINs
+    # aircraft_db.type_code on every type-fallback lookup, so re-create the
+    # index. Safe across all three branches: it only runs once both staging
+    # tables (and their copy of the index) are gone, so the schema-global index
+    # name is free, and IF NOT EXISTS makes it a no-op when the index survived.
+    if base == "aircraft_db" and base in {
+        row[0] for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name=?", (base,)
+        ).fetchall()
+    }:
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_aircraft_db_type_code "
+            "ON aircraft_db(type_code)"
+        )
     conn.commit()
 
 

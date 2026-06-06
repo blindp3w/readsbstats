@@ -3248,6 +3248,45 @@ class TestNotificationConsumer:
         assert len(boom_called) == 1
         assert len(ok_called) == 1
 
+    def test_consumer_logs_dispatch_exception_and_keeps_draining(self, monkeypatch, caplog):
+        """A raising notify_* dispatch must be LOGGED (collector.py ~:618
+        `log.exception("Notification dispatch error")`), not swallowed
+        silently — the log line is the only thing that surfaces a dropped
+        Telegram alert in journalctl. The sibling
+        test_consumer_survives_dispatch_exception proves the thread keeps
+        draining; this one asserts the error is actually observable AND that
+        the second item is still processed (thread stayed alive)."""
+        import logging
+        from readsbstats import collector, notifier
+
+        def boom(*a):
+            raise RuntimeError("simulated dispatch error")
+        monkeypatch.setattr(notifier, "notify_military", boom)
+        ok_called = []
+        monkeypatch.setattr(notifier, "notify_squawk",
+                            lambda *a: ok_called.append(a))
+
+        with caplog.at_level(logging.ERROR, logger="readsbstats.collector"):
+            collector.start_notification_consumer()
+            collector._notification_queue.put(
+                ("mil", "aabbcc", "REG1", None, "T", "T1", 100.0),
+            )
+            collector._notification_queue.put(
+                ("sqk", "ddeeff", "REG2", None, "7700", 50.0),
+            )
+            collector._drain_notifications(timeout=1.0)
+
+        # The raising dispatch was logged (visible in journalctl, not dropped).
+        err_records = [
+            rec for rec in caplog.records
+            if "Notification dispatch error" in rec.message
+        ]
+        assert err_records, "raising dispatch must be logged"
+        # log.exception → record carries the traceback for the original error.
+        assert err_records[0].exc_info is not None
+        # …and the consumer kept draining: the second item was still processed.
+        assert len(ok_called) == 1
+
     def test_start_notification_consumer_is_idempotent(self):
         from readsbstats import collector
         t1 = collector.start_notification_consumer()
@@ -3369,3 +3408,70 @@ class TestConsumerSqliteReuse:
         # Inside the consumer thread, the thread-local must be populated when
         # a dispatched alert runs.
         assert observed["conn_set_in_consumer"] is True
+
+
+# ---------------------------------------------------------------------------
+# PERF-3 — notification queue is bounded; hot-path enqueue sheds load
+# ---------------------------------------------------------------------------
+
+class TestNotificationQueueBounded:
+    """The dispatch queue must be bounded so a slow Telegram/CDN during a
+    burst can't grow it without limit (the consumer does DB lookups + up to
+    10 MB photo downloads per item). The hot-path producer in `_poll` must
+    never block on a full queue — a blocking put would stall the systemd
+    watchdog — so it drops the item and logs a warning instead."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self, monkeypatch):
+        _reset_collector_state()
+        from readsbstats import collector
+        import queue as _queue
+        # Capture the REAL module-level bound before swapping, so
+        # test_queue_is_bounded asserts against the production default rather
+        # than this fixture's replacement.
+        self.real_maxsize = collector._notification_queue.maxsize
+        # Use a fresh bounded queue per test so filling it can't poison other
+        # tests; monkeypatch auto-restores the module global on teardown.
+        # Hardcode the bound under test (not derived from the global, which is
+        # still unbounded in the RED phase — deriving 0 would make .full() loop
+        # forever below).
+        self._q = _queue.Queue(maxsize=500)
+        monkeypatch.setattr(collector, "_notification_queue", self._q)
+        yield
+
+    def test_queue_is_bounded(self):
+        # A bound large enough that normal bursts never hit it, but finite.
+        # Asserts the production module-level default (captured pre-swap).
+        assert self.real_maxsize == 500
+
+    def test_hot_path_enqueue_drops_and_warns_when_full(self, caplog):
+        """Fill the queue to maxsize, then the next hot-path enqueue must NOT
+        raise (no blocking, no crash) and MUST log a drop — backpressure sheds
+        load and the service keeps running."""
+        import logging
+        from readsbstats import collector
+        item = ("mil", "aabbcc", "REG1", None, "Type1", "T1", 100.0)
+        # Saturate the queue.
+        while not self._q.full():
+            self._q.put_nowait(item)
+        assert self._q.full()
+        assert self._q.qsize() == 500
+
+        with caplog.at_level(logging.WARNING, logger="readsbstats.collector"):
+            # Must return normally (sheds load) rather than block or raise.
+            collector._enqueue_alert(item)
+
+        # The over-limit item was dropped, not enqueued.
+        assert self._q.qsize() == 500
+        assert any(
+            "notification queue full" in rec.getMessage().lower()
+            for rec in caplog.records
+        ), "a dropped hot-path alert must be logged at WARNING"
+
+    def test_hot_path_enqueue_succeeds_with_room(self):
+        """With capacity available the hot-path enqueue stores the item."""
+        from readsbstats import collector
+        item = ("sqk", "ddeeff", "REG2", None, "7700", 50.0)
+        collector._enqueue_alert(item)
+        assert self._q.qsize() == 1
+        assert self._q.get_nowait() == item

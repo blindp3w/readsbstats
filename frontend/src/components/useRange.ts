@@ -34,7 +34,19 @@ export function useRange(defaultValue: RangeValue = '24h'): {
   const toRaw = params.get('to');
   const rangeRaw = params.get('range') as RangeValue | null;
 
-  const hasCustom = fromRaw != null && toRaw != null;
+  // A custom window is only honoured when BOTH params are present, finite, AND
+  // ordered (from < to). An inverted or zero-length window from a shared/edited
+  // URL falls back to the default preset — mirrors CustomRangeForm.apply's
+  // `a >= b` guard (BUG-14). Without this, `?from=…&to=…` with from >= to maps
+  // to a zero/negative-length window and silently returns nothing.
+  // Treat an empty/blank param as absent: Number('') === 0 (finite), which would
+  // otherwise sail through the isFinite + from<to guard and resolve to a hidden
+  // 1970-epoch window (same "from 1970" class History.tsx guards). (code-review)
+  const customFrom = fromRaw && fromRaw.trim() !== '' ? Number(fromRaw) : NaN;
+  const customTo = toRaw && toRaw.trim() !== '' ? Number(toRaw) : NaN;
+  const hasCustom =
+    Number.isFinite(customFrom) && Number.isFinite(customTo) && customFrom < customTo;
+
   let value: RangeValue;
   if (hasCustom) value = 'custom';
   else if (rangeRaw && PRESET_VALUES.has(rangeRaw)) value = rangeRaw;
@@ -43,12 +55,8 @@ export function useRange(defaultValue: RangeValue = '24h'): {
   let from: number | undefined;
   let to: number | undefined;
   if (hasCustom) {
-    from = Number(fromRaw);
-    to = Number(toRaw);
-    if (!Number.isFinite(from) || !Number.isFinite(to)) {
-      from = undefined;
-      to = undefined;
-    }
+    from = customFrom;
+    to = customTo;
   } else {
     const w = presetWindow(value);
     from = w.from;
