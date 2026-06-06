@@ -33,6 +33,18 @@ from readsbstats import config, database
 from _purge_helpers import new_max_gs as _new_max_gs
 
 
+# Absolute floor (kts) for the statistical-outlier pass. A GS sample is only
+# nulled as an outlier when it ALSO exceeds this floor. Without it, a low
+# --outlier-factor against a mostly-slow flight (taxi → climb-out, or a
+# military low-then-fast pass) would null genuinely-fast real samples and
+# silently lower max_gs. 700 kts sits above realistic jetstream-boosted
+# civil ground speeds (~650) yet well under the GS where MLAT spikes land
+# (often 1000+), and below the civil hard limit (config.MAX_GS_CIVIL_KTS,
+# default 750). Mirrors purge_bad_gs's intent of not touching plausibly-real
+# speeds (its _MIN_GS_XVAL is a cross-validation skip, a different mechanism).
+_MIN_GS_OUTLIER_FLOOR = 700.0
+
+
 # ---------------------------------------------------------------------------
 # Core logic
 # ---------------------------------------------------------------------------
@@ -129,7 +141,13 @@ def scan_statistical_outliers(
         p75 = statistics.quantiles(gs_sorted, n=4)[2]
         threshold = p75 * outlier_factor
 
-        bad_ids = [r["id"] for r in rows if r["gs"] > threshold]
+        # Absolute floor: a sample must be BOTH a statistical outlier AND
+        # above _MIN_GS_OUTLIER_FLOOR to be nulled, so a genuinely-fast
+        # flight's real high-GS samples aren't culled at a low outlier_factor.
+        bad_ids = [
+            r["id"] for r in rows
+            if r["gs"] > threshold and r["gs"] > _MIN_GS_OUTLIER_FLOOR
+        ]
         if bad_ids:
             bad[fid] = bad_ids
 

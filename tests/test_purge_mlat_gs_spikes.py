@@ -355,6 +355,53 @@ class TestScanStatisticalOutliers:
         bad = scan_statistical_outliers(self.conn, outlier_factor=5.0, min_readings=10)
         assert normal_pid not in bad.get(fid, [])
 
+    # -----------------------------------------------------------------------
+    # Absolute floor — protect genuinely-fast-but-plausible flights
+    # -----------------------------------------------------------------------
+
+    def test_fast_but_plausible_not_overnulled_at_low_factor(self):
+        """A genuinely fast flight (climb-out / military pass) whose real
+        high-GS samples are statistical outliers of its own (mostly-slow)
+        distribution must NOT be nulled at a low outlier_factor: the samples
+        are below the absolute plausible-real floor, so they're kept and
+        max_gs is not silently lowered.
+        """
+        from purge_mlat_gs_spikes import _MIN_GS_OUTLIER_FLOOR
+
+        fid = insert_flight(self.conn, max_gs=450.0)
+        # 12 slow samples (taxi / low approach) → low p75.
+        for t in range(1000, 1120, 10):
+            insert_pos(self.conn, fid, t, 150.0)
+        # 3 genuinely-fast samples, comfortably under the floor.
+        fast_gs = _MIN_GS_OUTLIER_FLOOR - 100.0
+        fast_pids = [
+            insert_pos(self.conn, fid, 2000, fast_gs),
+            insert_pos(self.conn, fid, 2010, fast_gs),
+            insert_pos(self.conn, fid, 2020, fast_gs),
+        ]
+        # Low factor: without the floor, 2.0 × p75(~150) would null the fast ones.
+        bad = scan_statistical_outliers(self.conn, outlier_factor=2.0, min_readings=10)
+        for pid in fast_pids:
+            assert pid not in bad.get(fid, []), (
+                "genuinely-fast-but-plausible sample nulled below the "
+                "absolute floor"
+            )
+
+    def test_obvious_spike_still_flagged_above_floor(self):
+        """A sample above the absolute floor that is also a statistical
+        outlier is still flagged — the floor only protects plausible-real
+        speeds, not implausible MLAT spikes."""
+        from purge_mlat_gs_spikes import _MIN_GS_OUTLIER_FLOOR
+
+        fid = insert_flight(self.conn, max_gs=1100.0)
+        for t in range(1000, 1120, 10):
+            insert_pos(self.conn, fid, t, 150.0)
+        spike_gs = _MIN_GS_OUTLIER_FLOOR + 400.0   # implausible MLAT spike
+        spike_pid = insert_pos(self.conn, fid, 2000, spike_gs)
+        bad = scan_statistical_outliers(self.conn, outlier_factor=2.0, min_readings=10)
+        assert fid in bad
+        assert spike_pid in bad[fid]
+
 
 # ---------------------------------------------------------------------------
 # main() CLI — audit-12 #203

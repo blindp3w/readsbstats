@@ -41,6 +41,11 @@ from _purge_helpers import new_max_gs as _new_max_gs
 
 haversine_nm = geo.haversine_nm
 
+# PERF-2: chunk size for the batched aircraft_db flag lookup. SQLite's
+# default SQLITE_MAX_VARIABLE_NUMBER is 999 (>=3.32: 32766); 500 stays
+# comfortably under every build while keeping the round-trip count low.
+_AIRCRAFT_DB_CHUNK = 500
+
 # Min/max dt (seconds) for cross-validation.
 # ADS-B positions use GPS — accurate enough at short intervals.
 # MLAT/other positions have higher position uncertainty, need longer dt.
@@ -62,6 +67,34 @@ def _is_military(flags: int) -> bool:
     return bool(flags & config.FLAG_MILITARY)
 
 
+def _flags_for_icaos(
+    conn: sqlite3.Connection,
+    icaos: set[str],
+) -> dict[str, int]:
+    """Return {icao_hex: flags} for just the given ICAOs, queried in chunks.
+
+    PERF-2: the previous implementation preloaded the ENTIRE aircraft_db
+    (~620k rows / hundreds of MB transient on the 8 GB Pi, competing with
+    the live collector) even though scan_flights only ever needs the flags
+    for the handful of ICAOs that actually have flights. This pulls only
+    those rows, in batches of ``_AIRCRAFT_DB_CHUNK``. ICAOs absent from
+    aircraft_db simply don't appear in the result — callers apply their own
+    default (``-1`` → "not in aircraft_db"), preserving prior behaviour.
+    """
+    out: dict[str, int] = {}
+    icao_list = list(icaos)
+    for i in range(0, len(icao_list), _AIRCRAFT_DB_CHUNK):
+        chunk = icao_list[i:i + _AIRCRAFT_DB_CHUNK]
+        placeholders = ",".join("?" * len(chunk))
+        for row in conn.execute(
+            f"SELECT icao_hex, flags FROM aircraft_db "
+            f"WHERE icao_hex IN ({placeholders})",
+            chunk,
+        ):
+            out[row[0]] = row[1]
+    return out
+
+
 def scan_flights(
     conn: sqlite3.Connection,
     civil_limit: int,
@@ -76,17 +109,18 @@ def scan_flights(
     ~35 k round trips on a typical DB.  The per-flight icao lookup is
     also batched into a single query.
     """
-    # Load military flags once per ICAO to avoid per-position lookups.
-    flags_by_icao: dict[str, int] = {
-        row[0]: row[1]
-        for row in conn.execute("SELECT icao_hex, flags FROM aircraft_db").fetchall()
-    }
     # Bulk-load (flight_id → icao_hex) so we don't query flights once per
     # flight inside the loop.
     icao_by_fid: dict[int, str] = {
         row[0]: row[1]
         for row in conn.execute("SELECT id, icao_hex FROM flights").fetchall()
     }
+    # PERF-2: load military flags for ONLY the ICAOs that have flights, in
+    # batches — not the whole ~620k-row aircraft_db. ``None`` icao_hex (a
+    # flight with no ICAO) can't match aircraft_db, so drop it from the lookup
+    # set; it falls through to the -1 default below exactly as before.
+    needed_icaos = {icao for icao in icao_by_fid.values() if icao is not None}
+    flags_by_icao: dict[str, int] = _flags_for_icaos(conn, needed_icaos)
 
     cursor = conn.execute(
         "SELECT flight_id, id, ts, lat, lon, gs, source_type FROM positions "

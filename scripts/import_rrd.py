@@ -6,6 +6,12 @@ Reads dump1090 RRD files (as collected by graphs1090/collectd), extracts
 AVERAGE data at multiple resolution tiers, and inserts into receiver_stats.
 Finest resolution is imported first so INSERT OR IGNORE preserves precise data.
 
+Note: unlike the purge_* scripts this does NOT take a pre-write snapshot
+(database.snapshot_db). Writes are INSERT OR IGNORE — non-destructive, so a
+snapshot is unnecessary. If you'd rather not write the live DB while the
+collector is running, stop the collector and/or back up first; a startup
+WARNING repeats this.
+
 Usage:
     python3 scripts/import_rrd.py \\
         --rrd-dir /tmp/rrd_peek/localhost/dump1090-localhost \\
@@ -98,7 +104,14 @@ def parse_fetch_output(output: str) -> list[tuple[int, list[float | None]]]:
         if ":" not in line:
             continue
         ts_str, rest = line.split(":", 1)
-        ts = int(ts_str.strip())
+        # BUG-7: tolerate a colon-bearing line whose prefix isn't an integer
+        # (a re-emitted header, an rrdtool warning, etc.). Skip it like the
+        # value loop below skips unparseable values, rather than raising and
+        # aborting the whole import mid-run after partial commits.
+        try:
+            ts = int(ts_str.strip())
+        except ValueError:
+            continue
         parts = rest.strip().split()
         values = []
         for p in parts:
@@ -273,6 +286,20 @@ def main() -> None:
     print(f"Last update:  {end}")
     print(f"Dry run:      {args.dry_run}")
     print()
+
+    # Unlike the purge_* scripts, this importer does NOT take a pre-write
+    # database.snapshot_db() before mutating. Writes are INSERT OR IGNORE
+    # (non-destructive — existing rows are preserved, only new timestamps are
+    # added), so a snapshot is unnecessary for data safety. Still warn the
+    # operator: if you'd rather not write the live DB while the collector is
+    # running, stop the collector and/or back up first.
+    if not args.dry_run:
+        print(
+            "WARNING: no snapshot is taken before import. Writes are "
+            "INSERT OR IGNORE (non-destructive), but if you're concerned, "
+            "stop the collector and/or back up the DB before continuing.",
+            file=sys.stderr,
+        )
 
     # Ensure DB has the receiver_stats table
     if not args.dry_run:
