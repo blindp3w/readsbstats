@@ -194,8 +194,11 @@ function WatchButton({ icao }: { icao: string }) {
     staleTime: 30_000,
   });
 
+  // `icao` is already lowercased + `~`-stripped (see AircraftPage). Normalize the
+  // stored watchlist value the SAME way before comparing, so an anonymous
+  // airframe saved as `~ABC123` still matches the stripped `abc123` (BUG-10).
   const existing = listQ.data?.entries.find(
-    (e) => e.match_type === 'icao' && e.value.toLowerCase() === icao,
+    (e) => e.match_type === 'icao' && e.value.toLowerCase().replace(/^~/, '') === icao,
   );
 
   const addMut = useMutation({

@@ -52,9 +52,13 @@ function isSortKey(s: string): s is SortKey {
   return (SORT_KEYS as string[]).includes(s);
 }
 
-function localMidnightEpoch(dateStr: string): number {
+// Returns the local-midnight epoch (seconds) for a YYYY-MM-DD string, or
+// `null` when the input doesn't match. Callers MUST skip emitting the
+// from/to param on null — returning 0 would emit a hidden "from 1970" filter
+// for a malformed/edited URL (e.g. `?date_from=foo`), yielding empty results.
+function localMidnightEpoch(dateStr: string): number | null {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateStr);
-  if (!m) return 0;
+  if (!m) return null;
   return Math.floor(new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])).getTime() / 1000);
 }
 
@@ -141,8 +145,13 @@ export default function HistoryPage() {
   const sortDir: SortDir = String(sortDirRaw) === 'asc' ? 'asc' : 'desc';
 
   const queryParams = new URLSearchParams();
-  if (dateFrom) queryParams.set('from', String(localMidnightEpoch(String(dateFrom))));
-  if (dateTo) queryParams.set('to', String(localMidnightEpoch(String(dateTo)) + 86400));
+  // Skip the param entirely when the date string is malformed (localMidnightEpoch
+  // returns null) — otherwise a bad `?date_from=foo` would emit `from=0` (a hidden
+  // 1970 filter) and silently return no results.
+  const fromEpoch = dateFrom ? localMidnightEpoch(String(dateFrom)) : null;
+  const toEpoch = dateTo ? localMidnightEpoch(String(dateTo)) : null;
+  if (fromEpoch != null) queryParams.set('from', String(fromEpoch));
+  if (toEpoch != null) queryParams.set('to', String(toEpoch + 86400));
   if (icao) queryParams.set('icao', String(icao));
   if (callsign) queryParams.set('callsign', String(callsign));
   if (registration) queryParams.set('registration', String(registration));

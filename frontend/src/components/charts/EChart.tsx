@@ -36,12 +36,18 @@ export function EChart({ option, height = 220, group, onEvents }: Props) {
     chartRef.current?.setOption(option, { notMerge: true, lazyUpdate: true });
   }, [option]);
 
-  // Group sync for cross-panel tooltip + dataZoom.
+  // Group sync for cross-panel tooltip + dataZoom. Clean up on unmount / group
+  // change so a disposed chart doesn't linger in echarts' connected-group
+  // registry (BUG-18). Defensive today — call sites pass static literals.
   useEffect(() => {
     const chart = chartRef.current;
     if (!chart || !group) return;
     chart.group = group;
     echarts.connect(group);
+    return () => {
+      chart.group = '';
+      echarts.disconnect(group);
+    };
   }, [group]);
 
   // Event binding — replace handlers when the map identity changes.

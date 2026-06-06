@@ -7,20 +7,23 @@ vi.unmock('@/components/charts/EChart');
 
 // vi.mock hoists to top of file; pull spy creation into vi.hoisted so the
 // factory below can close over the same references the test reads.
-const { init, connect, fakeInstance, setOption, resize, dispose, on, off } = vi.hoisted(() => {
-  const setOption = vi.fn();
-  const resize = vi.fn();
-  const dispose = vi.fn();
-  const on = vi.fn();
-  const off = vi.fn();
-  const fakeInstance: any = { setOption, resize, dispose, on, off, group: '' };
-  const init = vi.fn(() => fakeInstance);
-  const connect = vi.fn();
-  return { init, connect, fakeInstance, setOption, resize, dispose, on, off };
-});
+const { init, connect, disconnect, fakeInstance, setOption, resize, dispose, on, off } = vi.hoisted(
+  () => {
+    const setOption = vi.fn();
+    const resize = vi.fn();
+    const dispose = vi.fn();
+    const on = vi.fn();
+    const off = vi.fn();
+    const fakeInstance: any = { setOption, resize, dispose, on, off, group: '' };
+    const init = vi.fn(() => fakeInstance);
+    const connect = vi.fn();
+    const disconnect = vi.fn();
+    return { init, connect, disconnect, fakeInstance, setOption, resize, dispose, on, off };
+  },
+);
 
 vi.mock('@/components/charts/echarts-setup', () => ({
-  echarts: { init, connect, use: vi.fn() },
+  echarts: { init, connect, disconnect, use: vi.fn() },
 }));
 
 // jsdom doesn't implement ResizeObserver — provide a no-op.
@@ -42,6 +45,7 @@ describe('<EChart>', () => {
     off.mockClear();
     init.mockClear();
     connect.mockClear();
+    disconnect.mockClear();
     fakeInstance.group = '';
   });
 
@@ -67,6 +71,18 @@ describe('<EChart>', () => {
   it('does not call connect when group prop is omitted', () => {
     render(<EChart option={{ series: [] }} />);
     expect(connect).not.toHaveBeenCalled();
+  });
+
+  // BUG-18: the group effect must clean up on unmount — otherwise a disposed
+  // chart lingers in echarts' connected-group registry.
+  it('disconnects the group and clears chart.group on unmount', () => {
+    const { unmount } = render(<EChart option={{ series: [] }} group="metrics" />);
+    expect(fakeInstance.group).toBe('metrics');
+    expect(disconnect).not.toHaveBeenCalled();
+    unmount();
+    expect(disconnect).toHaveBeenCalledWith('metrics');
+    // chart.group reset so a re-used instance doesn't stay bound to the group.
+    expect(fakeInstance.group).not.toBe('metrics');
   });
 
   it('disposes on unmount', () => {

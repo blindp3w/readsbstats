@@ -1,4 +1,4 @@
-import { fmtTs } from '@/lib/format';
+import { useFormat } from '@/hooks/useFormat';
 import { Badge } from '@/components/ui/Badge';
 import type { Vdl2Message } from '@/lib/types';
 
@@ -15,6 +15,9 @@ interface Props {
 }
 
 export function MessageList({ messages, onHexClick, onRegClick }: Props) {
+  // Reactive timestamp formatter — re-renders when the 12h/24h clock-format
+  // store toggles (a bare `fmtTs` import would snapshot the format at mount).
+  const { fmtTs } = useFormat();
   return (
     <ul className="divide-y divide-[var(--color-border-default)]" data-testid="vdl2-list">
       {messages.map((m) => (

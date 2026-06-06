@@ -22,6 +22,15 @@ function setupFetchStub() {
   ) as unknown as typeof fetch;
 }
 
+// Collect every /api/flights URL the fetch stub saw, so we can assert on the
+// query string the page built (the `from`/`to` epoch mapping).
+function flightsUrls(): string[] {
+  const fetchMock = globalThis.fetch as unknown as { mock: { calls: unknown[][] } };
+  return fetchMock.mock.calls
+    .map((c) => (typeof c[0] === 'string' ? c[0] : String(c[0])))
+    .filter((u) => u.includes('/api/flights?'));
+}
+
 // Probe component to expose the current URL search params for assertion.
 function SearchProbe() {
   const [params] = useSearchParams();
@@ -114,5 +123,31 @@ describe('History filter dropdowns', () => {
     const { getByTestId } = renderHistory('/history?source=mlat');
     await openAdvanced(getByTestId);
     expect(getByTestId('history-filter-source').textContent).toContain('MLAT');
+  });
+});
+
+describe('History date param epoch mapping (BUG-1)', () => {
+  it('does NOT emit from=0 for a malformed ?date_from', async () => {
+    // A malformed date_from (e.g. a shared/edited URL) must not map to epoch 0
+    // — that silently filters "from 1970" and returns empty results.
+    renderHistory('/history?date_from=foo');
+    await waitFor(() => {
+      expect(flightsUrls().length).toBeGreaterThan(0);
+    });
+    const url = flightsUrls().at(-1)!;
+    const params = new URLSearchParams(url.split('?')[1]);
+    expect(params.has('from')).toBe(false);
+    expect(url).not.toContain('from=0');
+  });
+
+  it('still maps a valid ?date_from to a non-zero epoch', async () => {
+    renderHistory('/history?date_from=2026-01-15');
+    await waitFor(() => {
+      expect(flightsUrls().length).toBeGreaterThan(0);
+    });
+    const url = flightsUrls().at(-1)!;
+    const params = new URLSearchParams(url.split('?')[1]);
+    expect(params.has('from')).toBe(true);
+    expect(Number(params.get('from'))).toBeGreaterThan(0);
   });
 });
