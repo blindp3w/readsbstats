@@ -1,5 +1,51 @@
 # Changelog
 
+## [Unreleased]
+
+Hardening and correctness fixes from a full codebase security/quality audit.
+
+### Security
+
+- **Outbound-request SSRF guard now blocks IPv6 transition-prefix bypasses.** The
+  egress allow-check explicitly rejects NAT64 (`64:ff9b::/96`, `64:ff9b:1::/48`),
+  6to4 (`2002::/16`), Teredo (`2001::/32`), and deprecated site-local (`fec0::/10`)
+  addresses rather than trusting the standard library's "global" classification,
+  and rejects credentialed (`user:pass@`) URLs on both request paths. The SPA's
+  URL guard likewise rejects credentialed URLs.
+- **External data is validated at every trust boundary.** Coordinates and ICAO /
+  airport identifiers from the route-enrichment API, VDL2/ACARS ingest, the
+  operator's receiver location, and watchlist entries are now range/format-checked;
+  malformed or out-of-range values are rejected or nulled instead of persisted.
+  Untrusted short-text fields also have control characters stripped (newlines in
+  ACARS bodies preserved).
+
+### Fixed
+
+- **The weekly aircraft-database refresh no longer drops the `type_code` index**, so
+  type-photo fallbacks stay fast instead of full-scanning until the next restart;
+  the crash-recovery path rebuilds it too. The airline refresh now preserves the
+  table's `NOT NULL` / default constraints.
+- **A cached "no photo for this aircraft" result no longer suppresses the
+  type-representative photo** for the rest of the cache window.
+- **History date filters ignore malformed dates** (e.g. from a hand-edited or shared
+  URL) instead of silently filtering to 1970.
+- **Map route framing now accounts for latitude** (previously two routes sharing
+  endpoint longitudes could leave the map mis-framed).
+- **VDL2 message search no longer returns the full feed** for a too-short term on
+  SQLite builds without FTS5.
+- The daily-summary "Longest" line shows days for flights over 24 h; ACARS message
+  timestamps follow the 12/24-h clock toggle; the watchlist API rejects malformed
+  values with 422.
+
+### Reliability & performance
+
+- **The notification queue is bounded** — during a Telegram/photo-CDN outage it sheds
+  load with a warning instead of growing without limit. Telegram photo captions are
+  always length-clamped before send.
+- **Concurrent identical filtered-Statistics requests are coalesced** (compute once,
+  serve the rest from cache). The offline bad-ground-speed purge no longer loads the
+  entire aircraft database into memory.
+
 ## 2.15.3 — 2026-06-06
 
 Faster Statistics page: default to a 7-day window and background-warm the
