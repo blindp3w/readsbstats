@@ -1,5 +1,27 @@
 # Changelog
 
+## 2.15.2 — 2026-06-06
+
+VDL2/ACARS flight-detail UX refinements (all viewports).
+
+### Changed
+
+- **Empty ACARS block hidden** — when a flight (or airframe) has no ACARS
+  messages, the ACARS block is omitted entirely instead of showing an empty
+  "ACARS (0) — No ACARS messages" card. Applies on both the flight-details and
+  aircraft-history pages.
+- **ACARS badge in the flight header** — a neutral `ACARS` badge now renders next
+  to the `ADS-B`/`MLAT` source badge when the flight has ACARS messages.
+
+Both are driven by one shared hook (`useVdl2FlightMessages`); the header badge
+and the ACARS block call it with the same query key, so TanStack Query dedups
+them into a single request and the two can never disagree.
+
+### Tests
+
+- Frontend 359 → 361 (empty-state assertions flipped to assert the block is
+  hidden; added flight-header badge present/absent tests).
+
 ## 2.15.1 — 2026-06-06
 
 Audit 17 remediation — a fresh full-codebase sweep (0 Critical / 0 High
