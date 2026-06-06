@@ -640,22 +640,22 @@ def test_v2_range_picker_reopen_after_preset_reflects_new_window(request, v2_ser
     try:
         page.goto(f"{base_url}/", wait_until="load")
 
-        # First open: Stats uses useRange('all'), so state.from/to are
-        # undefined and the form falls back to now-24h / now defaults.
+        # First open: Stats defaults to useRange('7d'), so state.from/to are the
+        # 7-day window and the form initialises From ≈ now-7d.
         page.locator('[data-testid="range-custom-toggle"]').click()
         expect(page.locator('[data-testid="range-custom-panel"]')).to_be_visible()
         first_from = page.locator('[data-testid="range-custom-from"]').inner_text().strip()
 
-        # Click 7d preset — Radix detects outside-click, closes the popover
-        # and the URL gains ?range=7d.
-        page.locator('[data-testid="range-7d"]').click()
+        # Click the 30d preset — a NON-default chip (clicking 7d would clear
+        # ?range, since 7d is now the default). Radix detects outside-click,
+        # closes the popover, and the URL gains ?range=30d.
+        page.locator('[data-testid="range-30d"]').click()
         expect(page.locator('[data-testid="range-custom-panel"]')).not_to_be_visible()
-        expect(page).to_have_url(re.compile(r"[?&]range=7d"))
+        expect(page).to_have_url(re.compile(r"[?&]range=30d"))
 
-        # Reopen — form initialiser should now consume state.from = now-7d,
-        # producing a From date approximately six days earlier than the
-        # previous now-24h. Exact locale-formatted text varies; we just
-        # assert the strings differ.
+        # Reopen — form initialiser should now consume state.from = now-30d,
+        # producing a From date ~23 days earlier than the previous now-7d.
+        # Exact locale-formatted text varies; we just assert the strings differ.
         page.locator('[data-testid="range-custom-toggle"]').click()
         expect(page.locator('[data-testid="range-custom-panel"]')).to_be_visible()
         second_from = page.locator('[data-testid="range-custom-from"]').inner_text().strip()
