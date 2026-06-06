@@ -17,6 +17,7 @@ from fastapi.testclient import TestClient
 
 from readsbstats import cache, enrichment, web
 from readsbstats.api import _deps
+from readsbstats.api import stats as stats_mod
 from tests._helpers import make_db
 
 
@@ -115,3 +116,77 @@ class TestStatsWindowBoundary:
             f"{data.get('flights_last_24h')}"
         )
         assert data.get("trends", {}).get("flights_24h_prev") == 1
+
+
+class TestFilteredStatsCoalescing:
+    """PERF-1: concurrent identical filtered-stats requests must coalesce onto a
+    single compute under `cache._stats_compute_lock` (the same double-checked
+    cache pattern the all-time path uses), so N viewers of one custom window
+    don't each run the ~15-query GROUP-BY pass."""
+
+    def test_warm_cache_does_not_recompute(self, client, db_conn, monkeypatch):
+        """Deterministic half of the contract: the second request for the same
+        filtered window is served from cache and never re-enters the compute."""
+        now = int(time.time())
+        _insert(db_conn, "dd0001", now - 3600)
+
+        calls = {"n": 0}
+        real = stats_mod._compute_stats_sync
+
+        def spy(from_ts, to_ts):
+            calls["n"] += 1
+            return real(from_ts, to_ts)
+
+        monkeypatch.setattr(stats_mod, "_compute_stats_sync", spy)
+
+        url = f"/api/stats?from=0&to={now + 1}"
+        assert client.get(url).status_code == 200
+        assert calls["n"] == 1, "first request must compute exactly once"
+        # Second identical request: warm cache → no recompute.
+        assert client.get(url).status_code == 200
+        assert calls["n"] == 1, "warm-cache filtered request must not recompute"
+
+    def test_concurrent_identical_filtered_requests_compute_once(
+        self, client, db_conn, monkeypatch,
+    ):
+        """Two threads hitting the SAME cold filtered window must invoke the
+        underlying compute exactly once — the lock serializes the cold compute
+        and the loser re-reads the freshly written cache."""
+        import threading
+
+        now = int(time.time())
+        _insert(db_conn, "ee0001", now - 3600)
+
+        calls = {"n": 0}
+        lock = threading.Lock()
+        real = stats_mod._compute_stats_sync
+        start = threading.Barrier(2)
+
+        def spy(from_ts, to_ts):
+            with lock:
+                calls["n"] += 1
+            # Hold the compute long enough that the second thread is guaranteed
+            # to be waiting on _stats_compute_lock before this one writes cache.
+            time.sleep(0.2)
+            return real(from_ts, to_ts)
+
+        monkeypatch.setattr(stats_mod, "_compute_stats_sync", spy)
+
+        url = f"/api/stats?from=0&to={now + 1}"
+        results: list[int] = []
+
+        def hit():
+            start.wait(timeout=5)
+            results.append(client.get(url).status_code)
+
+        threads = [threading.Thread(target=hit) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10)
+
+        assert results == [200, 200]
+        assert calls["n"] == 1, (
+            f"concurrent identical filtered requests must coalesce to one "
+            f"compute; got {calls['n']}"
+        )

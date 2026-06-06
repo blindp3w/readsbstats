@@ -54,8 +54,11 @@ async def _check_systemd_unit(unit: str) -> dict:
             except ProcessLookupError:
                 pass
         return {"systemd": "timeout"}
-    except Exception as exc:
-        return {"systemd": f"error: {exc}"}
+    except Exception:
+        # STY-5: don't echo the raw exception into the status payload (info
+        # leak + noisy UI). Return a fixed token and log the detail server-side.
+        log.warning("systemd unit check failed", exc_info=True)
+        return {"systemd": "error"}
 
 
 async def _check_port(port: int, host: str = "127.0.0.1") -> dict:
@@ -104,8 +107,12 @@ def _feeder_details_readsb(status_path: str) -> list[tuple[str, str]]:
         if msgs:
             start = last.get("start", 0)
             end = last.get("end", 0)
-            dur = end - start if end > start else 60
-            details.append(("Messages/s", f"{msgs / dur:.0f}"))
+            # STY-6: only emit a rate when the window duration is actually known
+            # (end > start). Missing/zero start/end means we can't compute msgs/s
+            # — omit the row rather than divide by a stale 60 s and show a wrong
+            # number.
+            if end > start:
+                details.append(("Messages/s", f"{msgs / (end - start):.0f}"))
         local = last.get("local", {})
         if "signal" in local:
             details.append(("Signal", f"{local['signal']:.1f} dBFS"))

@@ -157,6 +157,12 @@ def _query_messages(
                 # LIKE '%x%' on a 1-char term is a useless full scan — skip it.
                 w.append("body LIKE ? ESCAPE '\\'")
                 p.append(_like_contains(q.strip()))
+            else:
+                # BUG-4/F09: no FTS and the term is too short to LIKE. The user
+                # DID supply a search term, so a too-short term must match
+                # nothing — never silently fall through to the unfiltered
+                # newest-N feed. A guaranteed-false predicate yields [].
+                w.append("0")
         sql = f"SELECT {_LIST_COLS} FROM vdl2_messages"
         if w:
             sql += " WHERE " + " AND ".join(w)

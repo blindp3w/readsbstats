@@ -28,8 +28,13 @@ import re
 
 from ..cleaners import clean_short_text
 
-# TEI keys are 2 OR 3 letters (OFF is 3). Greedy {2,3} still backtracks to 2 for
-# `ON`/`IN`/`OT` (the 3rd char is the value-separating space).
+# TEI keys are 2 OR 3 letters (OFF is 3). The key is the MAXIMAL run of 2-3
+# uppercase letters immediately before the value-separating whitespace: for
+# `ON 0210` the run is just `ON` (the 3rd char is a space, not [A-Z], so {2,3}
+# matches 2 directly — no backtracking involved); for `OFF 0030` it's the full
+# 3-letter `OFF`. A 3-letter run that ISN'T an OOOI key (e.g. a stray `ABC`) is
+# captured whole and then DROPPED by the `key in _OOOI_KEYS` membership check
+# below — it is never re-interpreted as a 2-letter key.
 _FIELD = re.compile(r"^([A-Z]{2,3})\s+(\S.*)$")
 _OOOI_KEYS = frozenset({"AN", "FI", "DA", "DS", "AD", "OT", "OFF", "ON", "IN"})
 _ID_CAP = 16   # registration / flight / airport idents are short

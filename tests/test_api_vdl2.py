@@ -104,6 +104,62 @@ class TestMessagesFeed:
         data = client.get("/api/vdl2/messages?limit=1").json()
         assert "raw" not in data["messages"][0]
 
+    def test_short_query_fts_path_still_honored(self, client):
+        # On an FTS build a 1-char `q` IS honored via MATCH (single-letter tokens
+        # are valid FTS terms). The bodies share no single letter that matches
+        # exactly one message, so just assert it filters (not the full feed) and
+        # doesn't 500. 'k' appears in 'krakow' and 'clearance'/'gate' too — use a
+        # letter present in exactly one body's tokens for a tight assertion: 'x'
+        # appears in no seeded body, so MATCH 'x' → [].
+        data = client.get("/api/vdl2/messages?q=x").json()
+        assert data["messages"] == []   # 1-char MATCH honored, nothing matches 'x'
+
+
+class TestNoFtsFallback:
+    """BUG-4/F09: on a build/DB without FTS5, search falls back to LIKE. A
+    too-short term (<2 chars) is a useless `LIKE '%x%'` full scan, so it's
+    skipped — but the OLD code then appended NO predicate at all, returning the
+    unfiltered newest-N feed. A too-short term on the no-FTS path must yield []."""
+
+    @pytest.fixture()
+    def nofts_client(self, monkeypatch):
+        monkeypatch.setattr(config, "VDL2_ENABLED", True)
+        conn = make_vdl2_db()
+        _seed(conn)
+        # Force the LIKE fallback: drop the FTS index so has_fts() is False,
+        # exactly as on a SQLite build without FTS5.
+        conn.execute("DROP TABLE IF EXISTS vdl2_fts")
+        conn.commit()
+        assert vdl2_db.has_fts(conn) is False
+        monkeypatch.setattr(vdl2_db, "_conn", conn)
+        app = FastAPI()
+        web._include_optional_routers(app)
+        with TestClient(app) as c:
+            yield c
+        conn.close()
+
+    def test_baseline_no_fts_two_char_query_filters(self, nofts_client):
+        # Sanity: a >=2-char term on the no-FTS path uses LIKE and filters.
+        data = nofts_client.get("/api/vdl2/messages?q=krakow").json()
+        assert len(data["messages"]) == 1
+        assert "krakow" in data["messages"][0]["body"]
+
+    def test_short_query_no_fts_returns_empty_not_full_feed(self, nofts_client):
+        # The defect: a 1-char term on the no-FTS path returned the full feed
+        # because neither predicate was appended. It must now return [].
+        data = nofts_client.get("/api/vdl2/messages?q=a").json()
+        assert data["messages"] == [], (
+            "a too-short term on the no-FTS path must yield [], not the full feed"
+        )
+        # No `q` at all still returns the full feed (the guard is q-specific).
+        allmsgs = nofts_client.get("/api/vdl2/messages").json()
+        assert len(allmsgs["messages"]) == 3
+
+    def test_short_query_no_fts_per_aircraft_returns_empty(self, nofts_client):
+        # Same guard on the per-airframe endpoint (shares _query_messages).
+        data = nofts_client.get("/api/vdl2/messages/48e95d?q=a").json()
+        assert data["messages"] == []
+
 
 class TestPerAircraft:
     def test_by_icao(self, client):

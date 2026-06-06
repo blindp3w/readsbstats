@@ -19,6 +19,13 @@ def api_aircraft_flights(
     sort_by: str | None = Query(None),
     sort_dir: str | None = Query(None, description="asc | desc"),
 ) -> dict:
+    # BUG-9: an unknown / never-seen (but well-formed) ICAO returns HTTP 200
+    # with a sparse all-NULL `aircraft_info` and `total == 0` / empty `flights`,
+    # NOT a 404. This is the intentional contract: the SPA drill-down renders the
+    # empty state from the 200 body, and a malformed ICAO is already rejected as
+    # 404 upstream by `_parse_icao_path`. Changing this to 404 would require
+    # coordinated SPA work (the page would need to handle a 404 it currently
+    # never expects), so it is deliberately left as 200.
     conn = _deps.db()
     icao = _deps._parse_icao_path(icao_hex)
 

@@ -727,12 +727,41 @@ class TestApiHealth:
         assert r.json()["status"] == "ok"
 
     def test_degraded_when_db_raises(self, client, monkeypatch):
+        # STY-7: the probe except is narrowed to (sqlite3.Error, OSError); a
+        # genuine DB-liveness failure still degrades fail-soft (200, not 500).
+        import sqlite3
+
         def bad_db():
-            raise RuntimeError("disk error")
+            raise sqlite3.OperationalError("disk I/O error")
         monkeypatch.setattr(_deps, "db", bad_db)
         r = client.get("/api/health")
         assert r.status_code == 200
         assert r.json()["status"] == "degraded"
+
+    def test_degraded_on_oserror(self, client, monkeypatch):
+        # STY-7: an OSError opening the DB file is also a liveness failure and
+        # must degrade, not 500.
+        def bad_db():
+            raise OSError("unable to open database file")
+        monkeypatch.setattr(_deps, "db", bad_db)
+        r = client.get("/api/health")
+        assert r.status_code == 200
+        assert r.json()["status"] == "degraded"
+
+    def test_non_db_error_not_swallowed(self, db_conn, monkeypatch):
+        # STY-7: the narrowed (sqlite3.Error, OSError) except must NOT swallow a
+        # non-DB programming error (e.g. a TypeError from a future refactor) —
+        # that should surface as a 500, not be masked as a benign "degraded".
+        monkeypatch.setattr(_deps, "_db", db_conn)
+        monkeypatch.setattr(config, "PREWARM_MAP_CACHE", False)
+        cache._cache.clear()
+
+        def boom():
+            raise RuntimeError("programming bug, not a DB liveness failure")
+        monkeypatch.setattr(_deps, "db", boom)
+        with TestClient(web.app, raise_server_exceptions=False) as c:
+            r = c.get("/api/health")
+        assert r.status_code == 500
 
     def test_does_not_leak_db_path(self, client):
         # /api/health is a public uptime probe — must not reveal filesystem
@@ -1691,6 +1720,38 @@ class TestFeederDetailParsers:
         assert "Signal" in labels
         assert "Max range" in labels
         assert any(v == "2" for _, v in details if _ == "Aircraft tracked")
+        # STY-6: a valid window (end > start) yields the correct rate:
+        # 3000 msgs / (1060 - 1000) s = 50.
+        msgs_per_s = next(v for k, v in details if k == "Messages/s")
+        assert msgs_per_s == "50"
+
+    def test_readsb_messages_per_s_omitted_on_zero_end(self, tmp_path):
+        # STY-6: when end/start are missing/zero (end <= start) the duration is
+        # unknown, so the "Messages/s" row must be OMITTED rather than computed
+        # against a stale 60 s fallback (which printed a misleading rate).
+        (tmp_path / "aircraft.json").write_text('{"aircraft": []}')
+        (tmp_path / "stats.json").write_text(json.dumps({
+            "last1min": {
+                "start": 0, "end": 0, "messages": 3000,
+                "local": {"signal": -8.5},
+                "max_distance": 150.5,
+            }
+        }))
+        details = feeders._feeder_details_readsb(str(tmp_path))
+        labels = {k for k, _ in details}
+        assert "Messages/s" not in labels
+        # The rest of the card still renders.
+        assert "Signal" in labels
+        assert "Max range" in labels
+
+    def test_readsb_messages_per_s_omitted_on_inverted_window(self, tmp_path):
+        # STY-6: a malformed end < start window is also unknown-duration → omit.
+        (tmp_path / "aircraft.json").write_text('{"aircraft": []}')
+        (tmp_path / "stats.json").write_text(json.dumps({
+            "last1min": {"start": 2000, "end": 1000, "messages": 600, "local": {}},
+        }))
+        details = feeders._feeder_details_readsb(str(tmp_path))
+        assert "Messages/s" not in {k for k, _ in details}
 
     def test_readsb_details_max_distance_converted_to_nm(self, tmp_path):
         # max_distance in stats.json is meters; server returns raw nm string for JS unit formatting
@@ -1765,14 +1826,17 @@ class TestFeederDetailParsers:
         assert result["systemd"] == "timeout"
 
     def test_check_systemd_generic_error(self, monkeypatch):
+        # STY-5: a generic failure must return a FIXED token, not echo the raw
+        # exception text into the API/status payload (info leak + noisy UI).
         import asyncio
 
         async def mock_exec(*args, **kwargs):
-            raise RuntimeError("boom")
+            raise RuntimeError("boom secret /etc/path detail")
 
         monkeypatch.setattr(asyncio, "create_subprocess_exec", mock_exec)
         result = asyncio.get_event_loop().run_until_complete(feeders._check_systemd_unit("test.service"))
-        assert result["systemd"].startswith("error:")
+        assert result == {"systemd": "error"}
+        assert "boom" not in result["systemd"]  # no raw exception text leaked
 
     def test_fetch_feeder_details_readsb_dispatch(self, monkeypatch, tmp_path):
         import asyncio
@@ -2027,6 +2091,25 @@ class TestApiAircraftFlights:
         assert r.status_code == 200
         assert r.json()["total"] == 0
         assert r.json()["icao_hex"] == "aabbcc"
+
+    def test_unknown_icao_200_empty_contract(self, client):
+        # BUG-9: a well-formed but never-seen ICAO is 200-with-empty by
+        # contract (NOT 404). Pin the shape so a future change to 404 is a
+        # deliberate, reviewed decision rather than an accident.
+        r = client.get("/api/aircraft/abcdef/flights")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["total"] == 0
+        assert body["flights"] == []
+        assert body["icao_hex"] == "abcdef"
+        # aircraft_info is present but sparse: the COUNT/MIN/MAX aggregate row
+        # exists with NULLs, plus the computed country key. No aircraft_db row,
+        # so registration/type_code/type_desc/flags are absent or None.
+        info = body["aircraft_info"]
+        assert info["total_flights"] == 0
+        assert info["first_seen"] is None
+        assert info["last_seen"] is None
+        assert info.get("registration") is None
 
     def test_returns_flights_for_icao(self, client, db_conn):
         insert_flight(db_conn, icao="aabbcc")
