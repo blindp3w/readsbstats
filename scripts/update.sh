@@ -60,7 +60,12 @@ DB_FILE="/mnt/ext/readsbstats/history.db"
 if [[ -f "$DB_FILE" ]]; then
   BACKUP="$DB_FILE.backup.$(date +%Y%m%d_%H%M%S)"
   echo "==> Backing up database → $BACKUP"
-  cp "$DB_FILE" "$BACKUP"
+  # VACUUM INTO yields a transactionally-consistent snapshot of a live WAL
+  # DB. A plain cp races the writer and produces a truncated/corrupt copy
+  # (observed on the 2026-06-10 dump). -cmd ".timeout 30000" lets the CLI
+  # wait up to 30 s for any in-flight write transaction to finish (the default
+  # busy_timeout is 0, which would fail immediately if the collector is writing).
+  sqlite3 -cmd ".timeout 30000" "$DB_FILE" "VACUUM INTO '$BACKUP'"
   # Keep only the 3 most recent backups. Use find+sort over modification
   # time instead of parsing `ls` output (shellcheck SC2012 / audit-13).
   find "$(dirname "$DB_FILE")" -maxdepth 1 -name "$(basename "$DB_FILE").backup.*" \
