@@ -152,6 +152,19 @@ DB_PATH            = os.getenv(*_register("db_path",        "RSBS_DB_PATH",     
 RETENTION_DAYS     = _int(*_register("retention_days", "RSBS_RETENTION_DAYS",  "0",    "RETENTION_DAYS"))      # 0 = keep forever
 PURGE_INTERVAL_SEC = _int(*_register("purge_interval", "RSBS_PURGE_INTERVAL",  "3600", "PURGE_INTERVAL_SEC"))
 
+# SQLite synchronous level. NORMAL is the right setting for WAL mode on the
+# Pi's USB HDD: commits skip the per-transaction fsync (67 ms flush latency
+# measured on the production disk) and the WAL still guarantees corruption-
+# free recovery; a power cut can lose only the final few commits. Set FULL
+# to restore per-commit durability.
+DB_SYNCHRONOUS = os.getenv("RSBS_DB_SYNCHRONOUS", "NORMAL").strip().upper()
+if DB_SYNCHRONOUS not in ("FULL", "NORMAL"):
+    print(
+        f"readsbstats: invalid RSBS_DB_SYNCHRONOUS={DB_SYNCHRONOUS!r}; using NORMAL",
+        file=sys.stderr,
+    )
+    DB_SYNCHRONOUS = "NORMAL"
+
 # ---------------------------------------------------------------------------
 # Receiver location
 # ---------------------------------------------------------------------------

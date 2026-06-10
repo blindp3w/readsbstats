@@ -439,3 +439,38 @@ class TestTimeFormat:
         import readsbstats.config
         importlib.reload(readsbstats.config)
         assert readsbstats.config.TIME_FORMAT == "24h"
+
+
+class TestDbSynchronous:
+    """RSBS_DB_SYNCHRONOUS — allow-list (FULL | NORMAL), invalid falls back to NORMAL."""
+
+    def test_defaults_to_normal(self, monkeypatch):
+        monkeypatch.delenv("RSBS_DB_SYNCHRONOUS", raising=False)
+        import readsbstats.config
+        importlib.reload(readsbstats.config)
+        assert readsbstats.config.DB_SYNCHRONOUS == "NORMAL"
+
+    def test_accepts_full(self, monkeypatch):
+        monkeypatch.setenv("RSBS_DB_SYNCHRONOUS", "FULL")
+        import readsbstats.config
+        importlib.reload(readsbstats.config)
+        assert readsbstats.config.DB_SYNCHRONOUS == "FULL"
+
+    def test_case_insensitive(self, monkeypatch):
+        monkeypatch.setenv("RSBS_DB_SYNCHRONOUS", "full")
+        import readsbstats.config
+        importlib.reload(readsbstats.config)
+        assert readsbstats.config.DB_SYNCHRONOUS == "FULL"
+
+    def test_whitespace_stripped(self, monkeypatch):
+        monkeypatch.setenv("RSBS_DB_SYNCHRONOUS", "  NORMAL  ")
+        import readsbstats.config
+        importlib.reload(readsbstats.config)
+        assert readsbstats.config.DB_SYNCHRONOUS == "NORMAL"
+
+    def test_invalid_falls_back_to_normal(self, monkeypatch, capsys):
+        monkeypatch.setenv("RSBS_DB_SYNCHRONOUS", "TURBO")
+        import readsbstats.config
+        importlib.reload(readsbstats.config)
+        assert readsbstats.config.DB_SYNCHRONOUS == "NORMAL"
+        assert "RSBS_DB_SYNCHRONOUS" in capsys.readouterr().err

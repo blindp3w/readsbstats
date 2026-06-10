@@ -38,6 +38,19 @@ class TestConnect:
         conn.close()
 
 
+class TestSynchronousPragma:
+    def test_connect_synchronous_normal_by_default(self, tmp_path):
+        """WAL + synchronous=NORMAL is the project default (Pi USB-HDD:
+        fsync only at checkpoint; power loss costs at most the last few
+        commits, never corruption)."""
+        conn = database.connect(str(tmp_path / "sync.db"))
+        try:
+            # PRAGMA synchronous: 0=OFF 1=NORMAL 2=FULL 3=EXTRA
+            assert conn.execute("PRAGMA synchronous").fetchone()[0] == 1
+        finally:
+            conn.close()
+
+
 class TestInitDb:
     def test_creates_all_tables(self, tmp_path):
         db_path = str(tmp_path / "test.db")

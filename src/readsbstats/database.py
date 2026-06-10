@@ -125,7 +125,7 @@ CREATE TABLE IF NOT EXISTS receiver_stats (
 
 DDL = f"""
 PRAGMA journal_mode = WAL;
-PRAGMA synchronous  = FULL;
+PRAGMA synchronous  = {config.DB_SYNCHRONOUS};
 PRAGMA foreign_keys = ON;
 PRAGMA cache_size   = -65536;
 
@@ -268,7 +268,7 @@ def connect(path: str = config.DB_PATH, *, uri: bool = False) -> sqlite3.Connect
     conn.row_factory = sqlite3.Row
     conn.executescript(
         "PRAGMA journal_mode = WAL;"
-        "PRAGMA synchronous  = FULL;"
+        f"PRAGMA synchronous  = {config.DB_SYNCHRONOUS};"
         "PRAGMA foreign_keys = ON;"
         "PRAGMA cache_size   = -65536;"
         "PRAGMA mmap_size    = 268435456;"
