@@ -184,7 +184,6 @@ CREATE TABLE IF NOT EXISTS positions (
     source_type TEXT            -- "adsb_icao" | "mlat" | "adsr_icao" | "mode_s" | …
 );
 
-CREATE INDEX IF NOT EXISTS idx_positions_flight ON positions(flight_id);
 CREATE INDEX IF NOT EXISTS idx_positions_ts     ON positions(ts);
 -- Audit 2026-05-26: composite for the hot `WHERE flight_id=? ORDER BY ts`
 -- pattern used by flight-detail rendering and the purge scripts. Built
@@ -471,25 +470,28 @@ def backfill_bearing(path: str = config.DB_PATH) -> None:
 
 
 def _build_positions_indexes(path: str = config.DB_PATH) -> None:
-    """Create the large composite indexes on the positions table.  Separated
+    """Create the large composite indexes on the positions table and drop
+    indexes that are redundant or harmful to query-plan choices.  Separated
     from _migrate() so the collector can run them in a background thread
-    after READY=1 rather than blocking startup."""
+    after READY=1 rather than blocking startup.
+
+    Phase 1 drops (2026-06, production-dump analysis on 6.18M-row DB):
+    - idx_positions_flight        — left-prefix duplicate of idx_positions_flight_ts
+    - idx_positions_ts_coords     — 0% NULL coords in practice; planner picked
+                                    it for heatmap-all and did a per-row table
+                                    lookup, measured 28% slower than a plain scan
+    - idx_positions_flight_id_desc — freed by Task 2 (latest-fix queries now use
+                                    ORDER BY ts via idx_positions_flight_ts)
+    Saves ~280 MB and cuts per-insert B-tree updates from 8 to 5.
+    ORDERING: idx_positions_flight_ts is created BEFORE the drops so the
+    latest-fix query never lacks a usable index on a stale DB.
+    """
     _log = logging.getLogger(__name__)
     conn: sqlite3.Connection | None = None
     try:
         conn = connect(path)
         conn.execute("PRAGMA busy_timeout = 30000")
         _log.info("Building positions indexes …")
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_positions_flight_id_desc "
-            "ON positions(flight_id, id DESC)"
-        )
-        # F08/SQL-1 (Audit 18, measure-first): a partial
-        # `(flight_id, id DESC) WHERE lat IS NOT NULL AND lon IS NOT NULL` index
-        # for /api/live's latest-fix subquery was considered and deliberately
-        # deferred — it would be maintained on the highest-frequency write
-        # (every position insert) to speed an occasional read. Revisit only with
-        # EXPLAIN QUERY PLAN + write-throughput evidence on the Pi's SQLite 3.45.
         # Audit 2026-05-26: composite covering `WHERE flight_id=? ORDER BY ts`
         # used by /api/flights/{id} positions, purge_ghosts, purge_bad_gs.
         # NOTE (Audit 17): this index is ALSO declared in the top-level DDL
@@ -511,15 +513,21 @@ def _build_positions_indexes(path: str = config.DB_PATH) -> None:
                 "CREATE INDEX IF NOT EXISTS idx_positions_ts_lat_lon "
                 "ON positions(ts, lat, lon)"
             )
-            # Partial index for /api/map/heatmap and /api/map/coverage which
-            # filter `WHERE lat IS NOT NULL AND lon IS NOT NULL`.  MLAT-only
-            # and Mode-S-only rows often have NULL coords; the partial index
-            # skips them so cache-cold scans don't read the whole table.
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_positions_ts_coords "
-                "ON positions(ts) "
-                "WHERE lat IS NOT NULL AND lon IS NOT NULL"
-            )
+        # Phase 1 (2026-06, production-dump analysis): drop indexes that are
+        # redundant (left-prefix duplicates) or actively harmful (the planner
+        # chose idx_positions_ts_coords for heatmap-all and did a per-row
+        # table lookup — measured 28% slower than a plain scan). Saves
+        # ~280 MB on a 6M-row DB and cuts per-insert B-tree updates 8 → 5.
+        # Ordering: idx_positions_flight_ts is created above BEFORE these
+        # drops so the latest-fix query never lacks a usable index.
+        conn.execute("DROP INDEX IF EXISTS idx_positions_flight")
+        conn.execute("DROP INDEX IF EXISTS idx_positions_ts_coords")
+        conn.execute("DROP INDEX IF EXISTS idx_positions_flight_id_desc")
+        # First-ever statistics for the query planner (production DB had no
+        # sqlite_stat1 at all). analysis_limit bounds the row sample so this
+        # stays cheap even on millions of rows.
+        conn.execute("PRAGMA analysis_limit = 1000")
+        conn.execute("ANALYZE")
         conn.commit()
         _log.info("Positions indexes ready.")
     except Exception:

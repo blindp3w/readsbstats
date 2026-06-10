@@ -286,28 +286,57 @@ class TestMigrate:
             for row in conn.execute("PRAGMA index_list(positions)").fetchall()
             if row[1] is not None
         }
-        assert "idx_positions_flight_id_desc" in indexes
+        # Phase 1 (2026-06): redundant/pessimal indexes are DROPPED:
+        #  - idx_positions_flight        (left prefix of idx_positions_flight_ts)
+        #  - idx_positions_ts_coords     (0% NULL coords in practice; planner
+        #                                 picked it over a faster table scan)
+        #  - idx_positions_flight_id_desc (latest-fix queries now ORDER BY ts)
+        assert "idx_positions_flight" not in indexes
+        assert "idx_positions_ts_coords" not in indexes
+        assert "idx_positions_flight_id_desc" not in indexes
+        # Still present until Phase 2 (rollups) lands:
         assert "idx_positions_ts_flight" in indexes
         assert "idx_positions_ts_lat_lon" in indexes
-        assert "idx_positions_ts_coords" in indexes
+        # Permanent set:
+        assert "idx_positions_flight_ts" in indexes
+        assert "idx_positions_ts" in indexes
         conn.close()
 
-    def test_partial_index_recorded_with_where_clause(self, tmp_path):
-        """idx_positions_ts_coords is a partial index — verify the WHERE
-        clause survives in sqlite_master so the planner can use it."""
-        db_path = str(tmp_path / "partial.db")
+    def test_build_positions_indexes_drops_legacy_indexes(self, tmp_path):
+        """Simulate an existing install with idx_positions_flight present;
+        _build_positions_indexes must drop it."""
+        db_path = str(tmp_path / "legacy.db")
         database.init_db(db_path)
+        conn = database.connect(db_path)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_positions_flight ON positions(flight_id)"
+        )
+        conn.commit()
+        conn.close()
         database._build_positions_indexes(db_path)
         conn = database.connect(db_path)
-        ddl = conn.execute(
-            "SELECT sql FROM sqlite_master WHERE name = 'idx_positions_ts_coords'"
-        ).fetchone()
-        assert ddl is not None and ddl[0] is not None
-        sql = ddl[0]
-        assert "WHERE" in sql.upper()
-        assert "lat IS NOT NULL" in sql
-        assert "lon IS NOT NULL" in sql
+        indexes = {
+            row[1]
+            for row in conn.execute("PRAGMA index_list(positions)").fetchall()
+            if row[1] is not None
+        }
+        assert "idx_positions_flight" not in indexes
         conn.close()
+
+    def test_build_positions_indexes_runs_analyze(self, tmp_path):
+        path = str(tmp_path / "a.db")
+        conn = database.connect(path)
+        conn.executescript(database.DDL)
+        database._migrate(conn)
+        conn.close()
+        database._build_positions_indexes(path)
+        conn = database.connect(path)
+        try:
+            assert conn.execute(
+                "SELECT name FROM sqlite_master WHERE name = 'sqlite_stat1'"
+            ).fetchone() is not None
+        finally:
+            conn.close()
 
     def test_run_background_migrations_idempotent(self, tmp_path):
         db_path = str(tmp_path / "test.db")
@@ -320,7 +349,7 @@ class TestMigrate:
             for row in conn.execute("PRAGMA index_list(positions)").fetchall()
             if row[1] is not None
         }
-        assert "idx_positions_flight_id_desc" in indexes
+        assert "idx_positions_flight_id_desc" not in indexes
         conn.close()
 
     def test_idx_positions_flight_ts_built(self, tmp_path):
