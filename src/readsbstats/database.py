@@ -525,7 +525,8 @@ def _build_positions_indexes(path: str = config.DB_PATH) -> None:
         conn.execute("DROP INDEX IF EXISTS idx_positions_flight_id_desc")
         # First-ever statistics for the query planner (production DB had no
         # sqlite_stat1 at all). analysis_limit bounds the row sample so this
-        # stays cheap even on millions of rows.
+        # stays cheap even on millions of rows. Re-runs on every collector
+        # start; ~0.1 s at this limit.
         conn.execute("PRAGMA analysis_limit = 1000")
         conn.execute("ANALYZE")
         conn.commit()

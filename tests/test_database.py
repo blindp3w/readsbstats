@@ -303,13 +303,21 @@ class TestMigrate:
         conn.close()
 
     def test_build_positions_indexes_drops_legacy_indexes(self, tmp_path):
-        """Simulate an existing install with idx_positions_flight present;
-        _build_positions_indexes must drop it."""
+        """Simulate an existing install with all three legacy positions
+        indexes present; _build_positions_indexes must drop every one."""
         db_path = str(tmp_path / "legacy.db")
         database.init_db(db_path)
         conn = database.connect(db_path)
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_positions_flight ON positions(flight_id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_positions_ts_coords ON positions(ts) "
+            "WHERE lat IS NOT NULL AND lon IS NOT NULL"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_positions_flight_id_desc "
+            "ON positions(flight_id, id DESC)"
         )
         conn.commit()
         conn.close()
@@ -321,6 +329,8 @@ class TestMigrate:
             if row[1] is not None
         }
         assert "idx_positions_flight" not in indexes
+        assert "idx_positions_ts_coords" not in indexes
+        assert "idx_positions_flight_id_desc" not in indexes
         conn.close()
 
     def test_build_positions_indexes_runs_analyze(self, tmp_path):

@@ -1,7 +1,7 @@
 # SQLite crash-safety hardening: synchronous=FULL + integrity checks
 
-- Status: ACCEPTED
-- Date: 2026-05-19
+- Status: ACCEPTED (decision 1, `synchronous = FULL`, superseded 2026-06-11 — default is `NORMAL` again; decisions 2–3 stand)
+- Date: 2026-05-19 (revised 2026-06-11: `synchronous = FULL` superseded by DB performance overhaul Phase 1)
 
 ## Context
 
@@ -24,6 +24,20 @@ mitigation needed at the filesystem layer.
 This adds one fsync per commit (a few extra ms on USB HDD; negligible for the
 5-second poll loop) and guarantees that committed transactions survive power
 loss when the underlying disk respects fsync.
+
+**Revision (2026-06-11, DB performance overhaul Phase 1): superseded.** The
+default is `synchronous = NORMAL` again, with a new `RSBS_DB_SYNCHRONOUS`
+env var (`FULL` | `NORMAL`) to restore the FULL behavior. Two things changed
+since this ADR. First, the original cost estimate ("a few extra ms") was
+wrong: the production USB HDD was measured at ~67 ms per flush, paid on
+every commit. Second, the durability/cost framing was re-examined: WAL +
+NORMAL is already corruption-safe — a power cut can lose at most the last
+few committed transactions, never the database itself — so FULL only bought
+durability for the final few seconds of position data, which for a tracker
+re-polling live aircraft every 5 s is not worth a 67 ms fsync per write
+(user-approved tradeoff). Operators who prefer per-commit durability set
+`RSBS_DB_SYNCHRONOUS=FULL`. Decisions 2 and 3 below (dirty-shutdown
+sentinel, integrity-check timers) are unaffected and remain in force.
 
 **2. Dirty-shutdown sentinel** at `<DB_PATH>.parent/.dirty_shutdown`. The
 collector writes it on startup and deletes it on graceful shutdown. On the
