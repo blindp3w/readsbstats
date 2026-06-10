@@ -1175,6 +1175,15 @@ def _purge(conn: sqlite3.Connection) -> None:
     log.info("Purge complete (cutoff epoch %d)", cutoff)
 
 
+def _run_maintenance(conn: sqlite3.Connection) -> None:
+    """Hourly DB maintenance: retention purge + planner-statistics refresh.
+    `PRAGMA optimize` is the SQLite-recommended periodic call — it re-ANALYZEs
+    only tables whose content changed enough to matter, with an internal
+    row-sample cap, so it's cheap even on the Pi."""
+    _purge(conn)
+    conn.execute("PRAGMA optimize")
+
+
 # ---------------------------------------------------------------------------
 # Notification helpers
 # ---------------------------------------------------------------------------
@@ -1372,7 +1381,7 @@ def main() -> None:
 
         if time.time() - last_purge >= config.PURGE_INTERVAL_SEC:
             try:
-                _purge(conn)
+                _run_maintenance(conn)
             except Exception:
                 log.exception("Purge error")
             last_purge = time.time()

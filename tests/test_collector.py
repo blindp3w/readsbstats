@@ -1938,6 +1938,25 @@ class TestPurge:
 
 
 # ---------------------------------------------------------------------------
+# _run_maintenance
+# ---------------------------------------------------------------------------
+
+class TestRunMaintenance:
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        _reset_collector_state()
+        self.conn = make_db()
+        yield
+        self.conn.close()
+
+    def test_run_maintenance_executes_without_error(self):
+        """_run_maintenance wraps _purge + PRAGMA optimize; must be a no-op
+        safe call on a fresh DB with retention disabled."""
+        from readsbstats import collector
+        collector._run_maintenance(self.conn)   # must not raise
+
+
+# ---------------------------------------------------------------------------
 # _poll edge cases — ground altitude and emergency squawks
 # ---------------------------------------------------------------------------
 
