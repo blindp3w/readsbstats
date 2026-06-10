@@ -1383,7 +1383,7 @@ def main() -> None:
             try:
                 _run_maintenance(conn)
             except Exception:
-                log.exception("Purge error")
+                log.exception("Maintenance error")
             last_purge = time.time()
 
         _check_daily_summary(conn)
