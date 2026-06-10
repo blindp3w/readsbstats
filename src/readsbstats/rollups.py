@@ -15,6 +15,7 @@ from collections import Counter
 
 FINE_SCALE = 100    # 0.01° ≈ 1 km cells — 24h/7d display precision
 COARSE_SCALE = 10   # 0.1°  ≈ 11 km cells — 30d/all display precision
+SCALES = (FINE_SCALE, COARSE_SCALE)  # iterated by accumulator; reuse for backfill
 
 
 def bucket(value: float, scale: int) -> int:
@@ -27,13 +28,25 @@ class RollupAccumulator:
     """Per-poll in-memory aggregation; one instance per _poll() cycle."""
 
     def __init__(self) -> None:
-        self.grid: Counter = Counter()
+        self.grid: Counter[tuple[int, int, int, int]] = Counter()
         self.cov: dict[tuple[int, int], float] = {}
 
     def add(self, ts: int, lat: float, lon: float,
             dist_nm: float, bearing_deg: float) -> None:
+        """Accumulate one position sample into the in-memory counters.
+
+        SQL twins:
+        - ``day = ts // 86400`` mirrors SQL ``ts / 86400`` on INTEGER ts
+          (SQLite integer division truncates toward zero, matching Python ``//``
+          for positive Unix timestamps).
+        - Bucket values match SQL ``CAST(FLOOR(lat*scale + 0.5) AS INTEGER)``
+          via :func:`bucket`.
+
+        Precondition: ``bearing_deg`` must be in [0, 360) as returned by
+        :func:`geo.bearing`.
+        """
         day = ts // 86400
-        for scale in (FINE_SCALE, COARSE_SCALE):
+        for scale in SCALES:
             self.grid[(scale, day, bucket(lat, scale), bucket(lon, scale))] += 1
         key = (day, int(bearing_deg) % 360)
         if dist_nm > self.cov.get(key, 0.0):

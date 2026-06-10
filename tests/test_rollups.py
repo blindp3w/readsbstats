@@ -1,4 +1,6 @@
 """Unit tests for the daily heatmap/coverage rollups."""
+import sqlite3
+
 import pytest
 
 from readsbstats import rollups
@@ -14,6 +16,26 @@ class TestBucket:
         # Must match SQL FLOOR(lat*scale + 0.5) for southern/western coords.
         assert rollups.bucket(-0.004, 100) == 0       # floor(0.1)
         assert rollups.bucket(-0.006, 100) == -1      # floor(-0.1)
+
+    def test_bucket_sql_parity(self):
+        """Python bucket() must agree with SQLite CAST(FLOOR(?*?+0.5) AS INTEGER)
+        for knife-edge values across both scales."""
+        knife_edge_values = [
+            52.205, -0.005, 89.995, -89.995, 179.995, -179.995,
+            0.0, 52.2049, -0.006, 21.00005,
+        ]
+        mem = sqlite3.connect(":memory:")
+        for scale in rollups.SCALES:
+            for v in knife_edge_values:
+                sql_result = mem.execute(
+                    "SELECT CAST(FLOOR(? * ? + 0.5) AS INTEGER)", (v, scale)
+                ).fetchone()[0]
+                py_result = rollups.bucket(v, scale)
+                assert py_result == sql_result, (
+                    f"bucket({v!r}, {scale}) = {py_result!r} "
+                    f"but SQL = {sql_result!r}"
+                )
+        mem.close()
 
 
 class TestAccumulatorFlush:
@@ -71,3 +93,10 @@ class TestAccumulatorFlush:
             "INSERT INTO meta(key, value) VALUES('rollups_ready', '1')"
         )
         assert rollups.ready(self.conn) is True
+
+    def test_flush_empty_accumulator_is_noop(self):
+        """flush() on a brand-new accumulator must not raise and must write
+        no rows to either rollup table."""
+        rollups.flush(self.conn, rollups.RollupAccumulator())
+        assert self.conn.execute("SELECT COUNT(*) FROM grid_daily").fetchone()[0] == 0
+        assert self.conn.execute("SELECT COUNT(*) FROM coverage_daily").fetchone()[0] == 0
