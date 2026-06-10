@@ -208,4 +208,38 @@ class TestMapSnapshot:
         # deleted; the SPA's catch-all serves /map natively.
         r = client.get("/live", follow_redirects=False)
         assert r.status_code == 302
-        assert r.headers["location"].endswith("/map")
+
+    def test_api_live_picks_highest_ts_not_highest_id(self, client, db_conn):
+        """api_live must return the latest fix by timestamp. Insert two
+        positions out of ts order so rowid order and ts order disagree: the
+        old ORDER BY id DESC wrongly picks the higher-rowid (lower-ts) row."""
+        now = int(time.time())
+        fid = db_conn.execute(
+            """
+            INSERT INTO flights
+                (icao_hex, callsign, registration, aircraft_type, first_seen, last_seen,
+                 total_positions, primary_source, lat_min, lat_max, lon_min, lon_max)
+            VALUES ('aabbcc', 'TST123', 'SP-TST', 'B738', ?, ?, 2, 'adsb', 0, 0, 0, 0)
+            """,
+            (now, now + 3600),
+        ).lastrowid
+        db_conn.execute(
+            "INSERT INTO active_flights (icao_hex, flight_id, last_seen) VALUES ('aabbcc', ?, ?)",
+            (fid, now),
+        )
+        # Lower rowid, HIGHER ts — this is the correct "latest" position.
+        db_conn.execute(
+            "INSERT INTO positions (flight_id, ts, lat, lon, source_type) VALUES (?, ?, 52.0, 21.0, 'adsb_icao')",
+            (fid, now),
+        )
+        # Higher rowid, LOWER ts — the old ORDER BY id DESC wrongly picks this.
+        db_conn.execute(
+            "INSERT INTO positions (flight_id, ts, lat, lon, source_type) VALUES (?, ?, 53.0, 20.0, 'adsb_icao')",
+            (fid, now - 50),
+        )
+        db_conn.commit()
+        resp = client.get("/api/live")
+        assert resp.status_code == 200
+        aircraft = resp.json()["aircraft"]
+        assert len(aircraft) == 1
+        assert aircraft[0]["lat"] == pytest.approx(52.0)

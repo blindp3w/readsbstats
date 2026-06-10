@@ -2434,6 +2434,33 @@ class TestLoadActive:
         _load_active(self.conn)
         assert _active["aabbcc"]["last_gs"] is None
 
+    def test_load_active_picks_highest_ts_not_highest_id(self):
+        """_load_active must restore the latest fix by timestamp. Insert rows
+        out of ts order so rowid order and ts order disagree."""
+        from readsbstats.collector import _load_active, _active
+        self.conn.execute(
+            "INSERT INTO flights (icao_hex, first_seen, last_seen) VALUES ('abc123', 100, 200)"
+        )
+        fid = self.conn.execute("SELECT id FROM flights").fetchone()[0]
+        self.conn.execute(
+            "INSERT INTO active_flights (icao_hex, flight_id, last_seen) VALUES ('abc123', ?, 200)",
+            (fid,),
+        )
+        # Lower rowid, HIGHER ts first; then higher rowid, LOWER ts — the old
+        # ORDER BY id DESC wrongly picks the second one.
+        self.conn.execute(
+            "INSERT INTO positions (flight_id, ts, lat, lon, source_type) VALUES (?, 200, 52.0, 21.0, 'adsb_icao')",
+            (fid,),
+        )
+        self.conn.execute(
+            "INSERT INTO positions (flight_id, ts, lat, lon, source_type) VALUES (?, 150, 53.0, 20.0, 'adsb_icao')",
+            (fid,),
+        )
+        self.conn.commit()
+        _load_active(self.conn)
+        assert _active["abc123"]["last_pos_ts"] == 200
+        assert _active["abc123"]["last_lat"] == pytest.approx(52.0)
+
 
 # ---------------------------------------------------------------------------
 # _enrich — aircraft_db lookup + field merging

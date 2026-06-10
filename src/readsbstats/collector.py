@@ -204,9 +204,12 @@ def _load_active(conn: sqlite3.Connection) -> None:
     Audit-13 A13-002: previous query window-functioned the entire
     `positions` table on every startup — seconds-long stall on a
     multi-million-row table. The replacement uses a per-flight
-    correlated subquery against `idx_positions_flight_id_desc`
-    (which is on `(flight_id, id DESC)`), so each lookup is
-    O(log n) instead of O(n).
+    correlated subquery with a reverse scan of `idx_positions_flight_ts`
+    (which is on `(flight_id, ts)`), so each lookup is O(log n)
+    instead of O(n). Ties on ts within a flight don't occur — the
+    collector inserts at most one row per flight per poll and skips
+    samples with pos_ts <= last_pos_ts; if a tie ever existed, either
+    row would be a valid latest fix.
     """
     _active.clear()
     rows = conn.execute(
@@ -217,7 +220,7 @@ def _load_active(conn: sqlite3.Connection) -> None:
         LEFT JOIN positions p ON p.id = (
             SELECT id FROM positions
             WHERE flight_id = af.flight_id
-            ORDER BY id DESC
+            ORDER BY ts DESC
             LIMIT 1
         )
         """
