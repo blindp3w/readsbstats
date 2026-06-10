@@ -206,10 +206,12 @@ def _load_active(conn: sqlite3.Connection) -> None:
     multi-million-row table. The replacement uses a per-flight
     correlated subquery with a reverse scan of `idx_positions_flight_ts`
     (which is on `(flight_id, ts)`), so each lookup is O(log n)
-    instead of O(n). Ties on ts within a flight don't occur — the
-    collector inserts at most one row per flight per poll and skips
-    samples with pos_ts <= last_pos_ts; if a tie ever existed, either
-    row would be a valid latest fix.
+    instead of O(n). Ties on ts within a flight are handled in two
+    stages: the poll loop rejects strictly-backward pos_ts up front, and
+    the ghost filter's `dt <= 0` drops equal-ts re-reports once a prior
+    fix exists; if a tie ever reached the table, the reverse index scan
+    returns the highest-rowid row — the same row the old ORDER BY id DESC
+    picked.
     """
     _active.clear()
     rows = conn.execute(

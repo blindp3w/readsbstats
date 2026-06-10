@@ -208,6 +208,7 @@ class TestMapSnapshot:
         # deleted; the SPA's catch-all serves /map natively.
         r = client.get("/live", follow_redirects=False)
         assert r.status_code == 302
+        assert r.headers["location"].endswith("/map")
 
     def test_api_live_picks_highest_ts_not_highest_id(self, client, db_conn):
         """api_live must return the latest fix by timestamp. Insert two
