@@ -50,6 +50,17 @@ class TestSynchronousPragma:
         finally:
             conn.close()
 
+    def test_connect_synchronous_full_override(self, tmp_path, monkeypatch):
+        """RSBS_DB_SYNCHRONOUS=FULL must reach the actual connection pragma
+        (connect() reads config at call time — guard against the f-string
+        being baked at import)."""
+        monkeypatch.setattr(database.config, "DB_SYNCHRONOUS", "FULL")
+        conn = database.connect(str(tmp_path / "sync_full.db"))
+        try:
+            assert conn.execute("PRAGMA synchronous").fetchone()[0] == 2  # FULL
+        finally:
+            conn.close()
+
 
 class TestInitDb:
     def test_creates_all_tables(self, tmp_path):

@@ -474,3 +474,12 @@ class TestDbSynchronous:
         importlib.reload(readsbstats.config)
         assert readsbstats.config.DB_SYNCHRONOUS == "NORMAL"
         assert "RSBS_DB_SYNCHRONOUS" in capsys.readouterr().err
+
+    def test_blank_env_falls_back_silently(self, monkeypatch, capsys):
+        """RSBS_DB_SYNCHRONOUS= (blank/whitespace) means unset — must default
+        to NORMAL without emitting a stderr warning (blank ≈ unset model)."""
+        monkeypatch.setenv("RSBS_DB_SYNCHRONOUS", "")
+        import readsbstats.config
+        importlib.reload(readsbstats.config)
+        assert readsbstats.config.DB_SYNCHRONOUS == "NORMAL"
+        assert capsys.readouterr().err == ""

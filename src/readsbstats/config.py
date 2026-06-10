@@ -157,13 +157,18 @@ PURGE_INTERVAL_SEC = _int(*_register("purge_interval", "RSBS_PURGE_INTERVAL",  "
 # measured on the production disk) and the WAL still guarantees corruption-
 # free recovery; a power cut can lose only the final few commits. Set FULL
 # to restore per-commit durability.
-DB_SYNCHRONOUS = os.getenv("RSBS_DB_SYNCHRONOUS", "NORMAL").strip().upper()
-if DB_SYNCHRONOUS not in ("FULL", "NORMAL"):
+# Not in _register — internal tunable, not surfaced via /api/settings.
+_DB_SYNCHRONOUS_RAW = os.getenv("RSBS_DB_SYNCHRONOUS", "NORMAL").strip().upper()
+if not _DB_SYNCHRONOUS_RAW:  # blank/whitespace = unset, silently default (operator model: blank ≈ unset)
+    DB_SYNCHRONOUS = "NORMAL"
+elif _DB_SYNCHRONOUS_RAW not in ("FULL", "NORMAL"):
     print(
-        f"readsbstats: invalid RSBS_DB_SYNCHRONOUS={DB_SYNCHRONOUS!r}; using NORMAL",
+        f"ERROR: RSBS_DB_SYNCHRONOUS={_DB_SYNCHRONOUS_RAW!r} invalid (FULL or NORMAL), using NORMAL",
         file=sys.stderr,
     )
     DB_SYNCHRONOUS = "NORMAL"
+else:
+    DB_SYNCHRONOUS = _DB_SYNCHRONOUS_RAW
 
 # ---------------------------------------------------------------------------
 # Receiver location
