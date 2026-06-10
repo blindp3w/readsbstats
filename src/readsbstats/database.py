@@ -74,6 +74,33 @@ CREATE TABLE IF NOT EXISTS callsign_routes (
 )
 """
 
+_DDL_META = """
+CREATE TABLE IF NOT EXISTS meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+) WITHOUT ROWID
+"""
+
+_DDL_GRID_DAILY = """
+CREATE TABLE IF NOT EXISTS grid_daily (
+    scale INTEGER NOT NULL,
+    day   INTEGER NOT NULL,
+    lat_b INTEGER NOT NULL,
+    lon_b INTEGER NOT NULL,
+    w     INTEGER NOT NULL,
+    PRIMARY KEY (scale, day, lat_b, lon_b)
+) WITHOUT ROWID
+"""
+
+_DDL_COVERAGE_DAILY = """
+CREATE TABLE IF NOT EXISTS coverage_daily (
+    day       INTEGER NOT NULL,
+    bearing_b INTEGER NOT NULL,
+    max_nm    REAL NOT NULL,
+    PRIMARY KEY (day, bearing_b)
+) WITHOUT ROWID
+"""
+
 _DDL_RECEIVER_STATS = """
 CREATE TABLE IF NOT EXISTS receiver_stats (
     ts                  INTEGER PRIMARY KEY,
@@ -247,6 +274,19 @@ CREATE TABLE IF NOT EXISTS photos (
 -- Receiver metrics time-series (metrics_collector.py)
 {_DDL_RECEIVER_STATS.strip()};
 
+-- Generic key/value metadata (first use: rollups_ready flag).
+{_DDL_META.strip()};
+
+-- Daily heatmap rollups, maintained incrementally by the collector inside
+-- the poll transaction. scale=100 → 0.01° cells (serves 7d window, pruned
+-- to RSBS_GRID_FINE_RETENTION_DAYS); scale=10 → 0.1° cells (serves
+-- 30d/all, kept forever). Bucket = FLOOR(coord*scale + 0.5), identical to
+-- the historical heatmap SQL so cells line up across the migration.
+{_DDL_GRID_DAILY.strip()};
+
+-- Daily per-bearing max range (1° buckets; the API rebuckets to 10°).
+{_DDL_COVERAGE_DAILY.strip()};
+
 CREATE TABLE IF NOT EXISTS schema_version (
     version    INTEGER PRIMARY KEY,
     applied_at INTEGER NOT NULL
@@ -380,6 +420,13 @@ def _migrate(conn: sqlite3.Connection) -> None:
 
     # Receiver metrics time-series (metrics_collector.py)
     conn.execute(_DDL_RECEIVER_STATS)
+
+    # Rollup tables: generic metadata store + daily heatmap/coverage rollups.
+    # Added in Phase 2 (2026-06); must be in _migrate() so the web server
+    # picks them up on existing DBs without a collector restart.
+    conn.execute(_DDL_META)
+    conn.execute(_DDL_GRID_DAILY)
+    conn.execute(_DDL_COVERAGE_DAILY)
 
     conn.commit()
 
