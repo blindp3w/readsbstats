@@ -26,7 +26,16 @@ SCALES = (FINE_SCALE, COARSE_SCALE)  # iterated by accumulator; reuse for backfi
 
 def bucket(value: float, scale: int) -> int:
     """Half-up grid bucket; must stay identical to the SQL expression
-    FLOOR(value*scale + 0.5) used by the backfill and the 24h raw path."""
+    FLOOR(value*scale + 0.5).
+
+    Two SQL twins exist:
+    - Raw-float live path: ``CAST(FLOOR(lat * scale + 0.5) AS INTEGER)``
+      (24h backfill, used directly on the float from readsb).
+    - Quantized decode path: ``CAST(FLOOR(lat_enc / 100000.0 * scale + 0.5) AS INTEGER)``
+      where lat_enc is the v6 INTEGER column (= posenc.enc5(lat)).
+    Values within 5e-6° of a cell edge may differ by one fine cell between the
+    two paths due to integer quantisation; this is accepted.
+    """
     return math.floor(value * scale + 0.5)
 
 

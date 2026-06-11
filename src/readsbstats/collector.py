@@ -820,6 +820,18 @@ def _poll(conn: sqlite3.Connection) -> None:
             baro_rate = _coerce_int(ac.get("baro_rate"))
             rssi      = _coerce_float(ac.get("rssi"))
 
+            # Range-clamp track and rssi to physically plausible bounds.
+            # Schema v6 stores these as scaled INTEGERs (posenc.enc1); a
+            # corrupt feed value like 1e300 produces an int that overflows
+            # SQLite's 64-bit column at bind time, rolling back the entire
+            # poll transaction.  v5 REAL columns tolerated any finite float.
+            if track is not None and not (0.0 <= track <= 360.0):
+                log.debug("Out-of-range track nulled for %s: %r", icao, track)
+                track = None
+            if rssi is not None and not (-200.0 <= rssi <= 100.0):
+                log.debug("Out-of-range rssi nulled for %s: %r", icao, rssi)
+                rssi = None
+
             # Enrich with local aircraft_db (cached); always called to get flags
             registration, aircraft_type, type_desc, flags, found_in_db = _enrich(
                 conn, icao, registration, aircraft_type

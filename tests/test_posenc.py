@@ -22,6 +22,46 @@ class TestCoordCodec:
         assert posenc.dec1(-235) == -23.5   # rssi is negative dB
 
 
+class TestOverflowGuard:
+    """enc5/enc1 must return None instead of an astronomically large int that
+    would overflow SQLite's 64-bit signed INTEGER column (schema v6)."""
+
+    _INT64_MAX = 9223372036854775807
+    _INT64_MIN = -9223372036854775808
+
+    def test_enc1_huge_positive_returns_none(self):
+        assert posenc.enc1(1e300) is None
+
+    def test_enc1_huge_negative_returns_none(self):
+        assert posenc.enc1(-1e300) is None
+
+    def test_enc5_huge_positive_returns_none(self):
+        assert posenc.enc5(1e300) is None
+
+    def test_enc5_huge_negative_returns_none(self):
+        assert posenc.enc5(-1e300) is None
+
+    def test_enc1_normal_values_unaffected(self):
+        """Normal readsb track/gs/rssi values must still encode correctly."""
+        assert posenc.enc1(359.9) == 3599
+        assert posenc.enc1(-50.5) == -505
+        assert posenc.enc1(0.0) == 0
+
+    def test_enc5_normal_values_unaffected(self):
+        """Normal lat/lon values must still encode correctly."""
+        assert posenc.enc5(52.20491) == 5220491
+        assert posenc.enc5(-21.00001) == -2100001
+
+    def test_enc1_large_but_in_range_passes_through(self):
+        """A large-but-finite value whose encoded form fits in INT64 must pass."""
+        # 1e17 * 10 = 1e18, well within INT64_MAX (~9.2e18)
+        assert posenc.enc1(1e17) == 1_000_000_000_000_000_000
+
+    def test_enc5_large_but_in_range_passes_through(self):
+        # 1e13 * 100000 = 1e18, well within INT64_MAX
+        assert posenc.enc5(1e13) == 1_000_000_000_000_000_000
+
+
 class TestSourceCodec:
     def test_known_round_trip(self):
         for name, code in posenc.SOURCE_TO_CODE.items():

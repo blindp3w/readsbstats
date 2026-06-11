@@ -32,14 +32,26 @@ CODE_TO_SOURCE: dict[int, str] = {v: k for k, v in SOURCE_TO_CODE.items()}
 CODE_TO_SOURCE[OTHER_CODE] = "other"
 
 
+_INT64_MAX = 9223372036854775807
+_INT64_MIN = -9223372036854775808
+
+
 def enc5(v: float | None) -> int | None:
     """Degrees → int(deg × 1e5).
+
+    Returns None if the encoded magnitude would exceed SQLite's 64-bit signed
+    INTEGER range (defense-in-depth against corrupt feed values; v6 stores
+    lat/lon as INTEGER, not REAL, so an overflowed value raises OverflowError
+    at bind time and rolls back the entire poll transaction).
 
     Note: Python round() uses banker's rounding (half-to-even); the migration
     SQL uses ROUND() (half-away-from-zero). Exact-half inputs may differ by
     1 LSB (≤1e-5° / ~1 m), which is cosmetically irrelevant for ADS-B data.
     """
-    return None if v is None else round(v * 100000)
+    if v is None:
+        return None
+    i = round(v * 100000)
+    return i if _INT64_MIN <= i <= _INT64_MAX else None
 
 
 def dec5(i: int | None) -> float | None:
@@ -49,11 +61,18 @@ def dec5(i: int | None) -> float | None:
 def enc1(v: float | None) -> int | None:
     """0.1-unit codec for gs (kts), track (deg), rssi (dB).
 
+    Returns None if the encoded magnitude would exceed SQLite's 64-bit signed
+    INTEGER range (defense-in-depth against corrupt feed values; same rationale
+    as enc5 — v6 INTEGER columns raise OverflowError on bind for huge floats).
+
     Note: Python round() uses banker's rounding (half-to-even); the migration
     SQL uses ROUND() (half-away-from-zero). Exact-half inputs may differ by
     1 LSB (≤0.1 unit), which is cosmetically irrelevant for ADS-B data.
     """
-    return None if v is None else round(v * 10)
+    if v is None:
+        return None
+    i = round(v * 10)
+    return i if _INT64_MIN <= i <= _INT64_MAX else None
 
 
 def dec1(i: int | None) -> float | None:

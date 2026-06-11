@@ -1161,6 +1161,24 @@ class TestPoll:
             "SELECT COUNT(*) FROM grid_daily"
         ).fetchone()[0] == 0
 
+    def test_poll_survives_huge_track_and_rssi(self):
+        """Corrupt feed: finite-but-huge track/rssi must degrade to NULL for
+        that field, not OverflowError the whole poll transaction (v6 stores
+        them as scaled INTEGERs; v5 REAL columns tolerated any finite float)."""
+        from readsbstats.collector import _poll
+        self._write_json([
+            {"hex": "aabbcc", "lat": 52.0, "lon": 21.0, "seen_pos": 0,
+             "track": 1e300, "rssi": -1e300},
+            {"hex": "ddeeff", "lat": 52.1, "lon": 21.1, "seen_pos": 0},
+        ])
+        _poll(self.conn)
+        # both aircraft persisted; the corrupt fields are NULL
+        assert self.conn.execute("SELECT COUNT(*) FROM positions").fetchone()[0] == 2
+        row = self.conn.execute(
+            "SELECT track, rssi FROM positions p JOIN flights f ON f.id = p.flight_id "
+            "WHERE f.icao_hex = 'aabbcc'").fetchone()
+        assert row["track"] is None and row["rssi"] is None
+
 
 class TestGsCrossValidation:
     """GS cross-validation: null gs when it disagrees with position-derived speed."""

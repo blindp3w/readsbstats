@@ -4,7 +4,7 @@ import time
 
 import pytest
 
-from readsbstats import config, database, geo, rollups
+from readsbstats import config, database, geo, posenc, rollups
 from tests._helpers import insert_position, make_db
 
 
@@ -20,7 +20,15 @@ class TestBucket:
 
     def test_bucket_sql_parity(self):
         """Python bucket() must agree with SQLite CAST(FLOOR(?*?+0.5) AS INTEGER)
-        for knife-edge values across both scales."""
+        for knife-edge values across both scales.
+
+        Two live paths hit bucket():
+        - Raw-float live path: bucket(lat_float, scale) — lat/lon directly from readsb.
+        - Quantized decode path: bucket(posenc.dec5(posenc.enc5(lat)), scale) — when
+          positions are read back from the INTEGER-encoded v6 column. Values within
+          5e-6° of a cell edge may differ by one fine cell between the two paths
+          (INT quantisation error); this is accepted.
+        """
         knife_edge_values = [
             52.205, -0.005, 89.995, -89.995, 179.995, -179.995,
             0.0, 52.2049, -0.006, 21.00005,
@@ -35,6 +43,20 @@ class TestBucket:
                 assert py_result == sql_result, (
                     f"bucket({v!r}, {scale}) = {py_result!r} "
                     f"but SQL = {sql_result!r}"
+                )
+                # Quantized-value parity: verify the decode path (v6 INTEGER column
+                # → dec5 → bucket) agrees with the SQL expression applied to the
+                # encoded int projected as lat/100000.0*scale.
+                enc = posenc.enc5(v)
+                dec = posenc.dec5(enc)
+                sql_quantized = mem.execute(
+                    "SELECT CAST(FLOOR(? / 100000.0 * ? + 0.5) AS INTEGER)", (enc, scale)
+                ).fetchone()[0]
+                py_quantized = rollups.bucket(dec, scale)
+                assert py_quantized == sql_quantized, (
+                    f"quantized bucket({v!r}, {scale}): "
+                    f"Python={py_quantized!r} SQL={sql_quantized!r} "
+                    f"(enc={enc!r}, dec={dec!r})"
                 )
         mem.close()
 
