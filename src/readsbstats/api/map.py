@@ -13,7 +13,7 @@ import time
 
 from fastapi import APIRouter, HTTPException, Query
 
-from .. import analytics, cache, config, geo, rollups, schemas
+from .. import cache, config, geo, rollups, schemas
 from . import _deps
 
 
@@ -27,8 +27,7 @@ def _compute_heatmap_sync(window: str) -> dict:
     7d/30d/all sum the grid_daily rollups (thousands of rows, day-quantized
     window: last N full days + today-so-far, day cutoff = (now - secs) //
     86400); 24h keeps exact rolling semantics with a ts-ranged scan of raw
-    positions. Falls back to the legacy path — DuckDB attempt (gated by
-    `analytics.is_available()`), then raw SQLite — while the one-time rollup
+    positions. Falls back to the raw SQLite path while the one-time rollup
     backfill hasn't completed (rollups_ready unset). All paths feed into
     shared post-processing so the response shape is identical."""
     precision = _deps._HEATMAP_PRECISION[window]
@@ -54,40 +53,30 @@ def _compute_heatmap_sync(window: str) -> dict:
             """,
             params,
         ).fetchall()
-        rows: list[tuple[float, float, int]] | None = [
+        rows: list[tuple[float, float, int]] = [
             (r["lat_b"] / scale, r["lon_b"] / scale, r["w"]) for r in grid_rows
         ]
     else:
-        try:
-            rows = analytics.heatmap(cutoff, precision)
-        except Exception:  # noqa: BLE001 — belt-and-suspenders: SQLite path must still answer
-            log.warning("analytics.heatmap raised; falling back to SQLite", exc_info=True)
-            rows = None
-        if rows is None:
-            params = []
-            extra = ""
-            if cutoff is not None:
-                extra = "AND ts > ?"
-                params.append(cutoff)
-            # improvements.md A13-019: GROUP BY integer bucket (FLOOR(x*10^p + 0.5))
-            # and divide in Python so this path agrees bucket-for-bucket with the
-            # DuckDB heatmap.  Raw `round()` differs across engines (SQLite is
-            # half-away-from-zero, DuckDB is banker's) and even an explicit
-            # `FLOOR/scale` on the SQL side picks up a per-engine float drift on
-            # the divide step.
-            sqlite_rows = conn.execute(
-                f"""
-                SELECT CAST(FLOOR(lat * {scale} + 0.5) AS INTEGER) AS lat_bucket,
-                       CAST(FLOOR(lon * {scale} + 0.5) AS INTEGER) AS lon_bucket,
-                       COUNT(*) AS w
-                FROM positions
-                WHERE lat IS NOT NULL AND lon IS NOT NULL
-                  {extra}
-                GROUP BY lat_bucket, lon_bucket
-                """,
-                params,
-            ).fetchall()
-            rows = [(r["lat_bucket"] / scale, r["lon_bucket"] / scale, r["w"]) for r in sqlite_rows]
+        raw_params: list = []
+        raw_extra = ""
+        if cutoff is not None:
+            raw_extra = "AND ts > ?"
+            raw_params.append(cutoff)
+        # GROUP BY integer bucket (FLOOR(x*10^p + 0.5)) and divide in Python
+        # so bucket assignment is stable regardless of floating-point precision.
+        sqlite_rows = conn.execute(
+            f"""
+            SELECT CAST(FLOOR(lat * {scale} + 0.5) AS INTEGER) AS lat_bucket,
+                   CAST(FLOOR(lon * {scale} + 0.5) AS INTEGER) AS lon_bucket,
+                   COUNT(*) AS w
+            FROM positions
+            WHERE lat IS NOT NULL AND lon IS NOT NULL
+              {raw_extra}
+            GROUP BY lat_bucket, lon_bucket
+            """,
+            raw_params,
+        ).fetchall()
+        rows = [(r["lat_bucket"] / scale, r["lon_bucket"] / scale, r["w"]) for r in sqlite_rows]
 
     if not rows:
         return {"points": [], "window": window, "count": 0}
@@ -136,10 +125,9 @@ def _compute_coverage_sync(window: str) -> dict:
     full days + today-so-far, day cutoff = (now - secs) // 86400). 24h
     keeps exact rolling semantics over raw positions, where bearing and
     haversine distance are computed per-position in SQL so each 10° bucket
-    reflects the actual farthest position recorded in that direction. While
-    the one-time rollup backfill hasn't completed (rollups_ready unset),
-    all windows use the legacy path: DuckDB engine first (when available),
-    SQLite fallback on unavailable or per-query failure.
+    reflects the actual farthest position recorded in that direction. Falls
+    back to the raw SQLite path while the one-time rollup backfill hasn't
+    completed (rollups_ready unset).
     """
     secs = _deps._HEATMAP_WINDOWS[window]
     cutoff = (int(time.time()) - secs) if secs is not None else None
@@ -165,46 +153,40 @@ def _compute_coverage_sync(window: str) -> dict:
         ).fetchall()
         by_bucket = {r["bucket"]: r["max_dist"] for r in rows}
     else:
-        try:
-            by_bucket = analytics.coverage(cutoff, config.RECEIVER_LAT, config.RECEIVER_LON, _deps._BUCKET_DEG)
-        except Exception:  # noqa: BLE001
-            log.warning("analytics.coverage raised; falling back to SQLite", exc_info=True)
-            by_bucket = None
-        if by_bucket is None:
-            sql_params: dict = {"rlat": config.RECEIVER_LAT, "rlon": config.RECEIVER_LON}
-            extra = ""
-            if cutoff is not None:
-                extra = "AND ts > :cutoff"
-                sql_params["cutoff"] = cutoff
+        sql_params: dict = {"rlat": config.RECEIVER_LAT, "rlon": config.RECEIVER_LON}
+        raw_extra = ""
+        if cutoff is not None:
+            raw_extra = "AND ts > :cutoff"
+            sql_params["cutoff"] = cutoff
 
-            # Audit-13 A13-076: shared SQL helpers — single source of truth.
-            bearing_expr = geo.bearing_sql("lat", "lon", ":rlat", ":rlon")
-            dist_expr    = geo.haversine_sql("lat", "lon", ":rlat", ":rlon")
-            rows = conn.execute(
-                f"""
-                WITH pos_bearing AS (
-                    SELECT
-                        {bearing_expr} AS bearing_deg,
-                        {dist_expr}    AS dist_nm
-                    FROM positions
-                    WHERE lat IS NOT NULL AND lon IS NOT NULL
-                      {extra}
-                )
+        # Audit-13 A13-076: shared SQL helpers — single source of truth.
+        bearing_expr = geo.bearing_sql("lat", "lon", ":rlat", ":rlon")
+        dist_expr    = geo.haversine_sql("lat", "lon", ":rlat", ":rlon")
+        rows = conn.execute(
+            f"""
+            WITH pos_bearing AS (
                 SELECT
-                    CAST(bearing_deg / {_deps._BUCKET_DEG}.0 AS INT) % {_deps._NUM_BUCKETS} AS bucket,
-                    MAX(dist_nm) AS max_dist
-                FROM pos_bearing
-                GROUP BY bucket
-                """,
-                sql_params,
-            ).fetchall()
-            by_bucket = {r["bucket"]: r["max_dist"] for r in rows}
+                    {bearing_expr} AS bearing_deg,
+                    {dist_expr}    AS dist_nm
+                FROM positions
+                WHERE lat IS NOT NULL AND lon IS NOT NULL
+                  {raw_extra}
+            )
+            SELECT
+                CAST(bearing_deg / {_deps._BUCKET_DEG}.0 AS INT) % {_deps._NUM_BUCKETS} AS bucket,
+                MAX(dist_nm) AS max_dist
+            FROM pos_bearing
+            GROUP BY bucket
+            """,
+            sql_params,
+        ).fetchall()
+        by_bucket = {r["bucket"]: r["max_dist"] for r in rows}
 
     polygon: list[list[float]] = []
     for i in range(_deps._NUM_BUCKETS):
-        # Audit 17: a bucket's MAX(dist) can be NULL (None) — e.g. a DuckDB
-        # result with a NULL-producing distance expr. Coalesce to 0.0 so the
-        # bucket collapses to the receiver instead of raising on `None > 0`.
+        # Audit 17: a bucket's MAX(dist) can be NULL (None) if the rollup row
+        # exists but max_nm is NULL, or a missing bucket key. Coalesce to 0.0
+        # so the bucket collapses to the receiver instead of raising on `None > 0`.
         dist = by_bucket.get(i, 0.0) or 0.0
         if dist > 0:
             lat, lon = geo.destination_point(

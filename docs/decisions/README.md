@@ -10,7 +10,7 @@ a date-stamped **Revision** note (see ADR-0010).
 | # | Decision | Status | Date |
 |---|---|---|---|
 | [0001](0001-sqlite-wal-per-thread-connections.md) | SQLite WAL mode + per-thread connections in the web server | Accepted | 2026-05-09 |
-| [0002](0002-duckdb-analytical-accelerator.md) | DuckDB analytical accelerator for aggregate scans | Accepted | 2026-05-17 |
+| [0002](0002-duckdb-analytical-accelerator.md) | DuckDB analytical accelerator for aggregate scans | Superseded by ADR-0014 | 2026-05-17 |
 | [0003](0003-flag-anonymous-computed-at-query-time.md) | FLAG_ANONYMOUS computed at query time, not stored | Accepted | 2026-05-13 |
 | [0004](0004-http-safe-ssrf-guard.md) | Centralised SSRF guard via http_safe.py | Accepted | 2026-05-11 |
 | [0005](0005-notification-dispatch-queue.md) | Single long-lived Telegram dispatch consumer thread | Accepted | 2026-05-11 |
@@ -22,6 +22,7 @@ a date-stamped **Revision** note (see ADR-0010).
 | [0011](0011-positions-endpoints-split.md) | Split `/api/flights/{id}` positions into three endpoints | Accepted | 2026-05-26 |
 | [0012](0012-coalesce-drop-deferred.md) | Defer COALESCE drop in flight filter SQL | Accepted | 2026-05-26 |
 | [0013](0013-vdl2-timeseries-reuses-metrics-columnar-contract.md) | VDL2 reception charts reuse the `/api/metrics` columnar contract | Accepted | 2026-06-05 |
+| [0014](0014-daily-rollups-replace-duckdb.md) | Daily rollup tables replace the DuckDB accelerator | Accepted | 2026-06-11 |
 
 ## Adding an ADR
 

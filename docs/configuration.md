@@ -89,16 +89,11 @@ Boolean vars accept `1`/`0`, `true`/`false`, `yes`/`no`, `on`/`off`
 | `RSBS_METRICS_INTERVAL` | `60` | Seconds between metrics polls (min `10`). NOTE: readsb's `last1min` stats window is fixed at 60 s upstream — changing the poll cadence does NOT change the CPU/message-rate denominators. |
 | `RSBS_STATS_JSON` | `/run/readsb/stats.json` | Path to readsb's stats.json |
 
-### DuckDB analytical accelerator (web process)
+### Cache prewarmer
 
 | Variable | Default | Description |
 |---|---|---|
-| `RSBS_USE_DUCKDB` | `0` | Enable DuckDB for heatmap/coverage endpoints (SQLite remains the only write path) |
-| `RSBS_DUCKDB_MEMORY_MB` | `256` | DuckDB working-set cap (MB; min `64`) |
-| `RSBS_DUCKDB_THREADS` | `2` | DuckDB worker threads (min `1`) |
-| `RSBS_DUCKDB_HOME_DIR` | `/mnt/ext/readsbstats/duckdb-home` | DuckDB home directory (extension cache; required because `readsbstats` is a system user with no `/home`) |
-| `RSBS_DUCKDB_TEMP_DIR` | `/mnt/ext/readsbstats/duckdb-tmp` | DuckDB spill directory |
-| `RSBS_PREWARM_MAP_CACHE` | `1` | Background prewarmer for the all-time stats payload **and** heatmap/coverage caches (`0` to disable). Stats prewarm runs on every install; the heatmap/coverage targets self-disable when DuckDB is unavailable |
+| `RSBS_PREWARM_MAP_CACHE` | `1` | Background prewarmer for the all-time stats payload and heatmap/coverage caches (`0` to disable). ≥7d map windows are answered from daily rollup tables and are cheap; 24h stays a small raw scan. |
 
 ### Receiver health dashboard
 
@@ -205,10 +200,6 @@ To use custom airspace data, download a GeoJSON from [openaip.net](https://www.o
 ```ini
 Environment="RSBS_AIRSPACE_GEOJSON=/opt/readsbstats/my_airspace.geojson"
 ```
-
-## DuckDB accelerator
-
-`RSBS_USE_DUCKDB=1` enables columnar scans for `/api/map/heatmap` and `/api/map/coverage`. The DuckDB extension binary is pre-fetched by `scripts/update.sh` to avoid a ~5 s download on first hit. SQLite remains the only write path — DuckDB is read-only. Set `RSBS_PREWARM_MAP_CACHE=1` (on by default) to keep the cache hot at half-TTL: the all-time stats payload is warmed on every install, plus the 8 heatmap/coverage entries when DuckDB is available.
 
 ## VDL2 / ACARS (opt-in)
 

@@ -1,6 +1,6 @@
 # DuckDB analytical accelerator for aggregate scans
 
-- Status: ACCEPTED
+- Status: SUPERSEDED by [ADR-0014](0014-daily-rollups-replace-duckdb.md)
 - Date: 2026-05-17
 
 ## Context

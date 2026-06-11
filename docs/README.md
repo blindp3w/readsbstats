@@ -8,7 +8,7 @@ what you're trying to do.
 
 | Guide | Contents |
 |---|---|
-| [Configuration](configuration.md) | Every `RSBS_*` environment variable (defaults + ranges), logging, DuckDB, airspace, VDL2, database crash-safety |
+| [Configuration](configuration.md) | Every `RSBS_*` environment variable (defaults + ranges), logging, airspace, VDL2, database crash-safety |
 | [API Reference](api.md) | All HTTP API endpoints, SPA routes, and the SQLite database schema |
 
 ## How-to — get a task done

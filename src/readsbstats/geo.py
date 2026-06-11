@@ -30,8 +30,8 @@ def haversine_sql(lat_col: str, lon_col: str,
     """Return a SQL expression for great-circle distance in nautical miles.
 
     Audit-13 A13-076: single source of truth for the inline haversine
-    SQL formula used by `analytics.py` and `web.py`. Both engines
-    (SQLite + DuckDB) parse this identically.
+    SQL formula used by the rollups backfill (collector) and the raw
+    positions path in `api/map.py`.
 
     `lat_col` / `lon_col` are SQL column refs (e.g. ``"p.lat"``).
     `ref_*_param` are bind-parameter placeholders or numeric literals.

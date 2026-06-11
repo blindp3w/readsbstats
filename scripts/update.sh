@@ -147,45 +147,6 @@ echo "==> Installing Python dependencies"
 "$APP_DIR/venv/bin/pip" install -q -r "$APP_DIR/requirements.txt"
 "$APP_DIR/venv/bin/pip" install -q -e "$APP_DIR"
 
-# ---- Pre-flight DuckDB sqlite_scanner extension cache -----------------------
-# The first `INSTALL sqlite_scanner` triggers a ~5 s HTTPS download from
-# extensions.duckdb.org. If that lands on the first user request to a
-# heavy endpoint (heatmap?window=all), the request can blow the 60 s nginx
-# timeout we're trying to fix. Run it once here so the extension binary
-# is cached for subsequent loads.
-#
-# The `readsbstats` user is a system user with no /home, so we point DuckDB
-# at an explicit home directory on /mnt/ext (already writable for this user
-# and survives across deploys). Same path the web service uses at runtime
-# via `config.DUCKDB_HOME_DIR`.
-DUCKDB_HOME_DIR="${RSBS_DUCKDB_HOME_DIR:-/mnt/ext/readsbstats/duckdb-home}"
-echo "==> Pre-caching DuckDB sqlite_scanner extension at $DUCKDB_HOME_DIR"
-install -d -o "$SERVICE_USER" -g "$SERVICE_USER" -m 0750 "$DUCKDB_HOME_DIR"
-# Audit 2026-05-25: pass the directory through the environment and validate +
-# quote it inside Python using the same helpers the runtime uses. The
-# previous version interpolated $DUCKDB_HOME_DIR directly into the python -c
-# string AND the SQL literal, so a path containing a quote / backslash /
-# newline would break the pre-cache step.
-RSBS_DUCKDB_HOME_DIR="$DUCKDB_HOME_DIR" \
-runuser --preserve-environment -u "$SERVICE_USER" -- \
-    "$APP_DIR/venv/bin/python" - <<'PY' \
-|| echo "WARNING: DuckDB extension pre-cache failed; will be downloaded on first use" >&2
-import os, sys
-import duckdb
-from readsbstats.analytics import _is_safe_sql_path, _quote_sql_string
-
-home = os.environ["RSBS_DUCKDB_HOME_DIR"]
-if not _is_safe_sql_path(home):
-    sys.stderr.write(
-        f"ERROR: refusing unsafe RSBS_DUCKDB_HOME_DIR={home!r}\n"
-    )
-    sys.exit(2)
-c = duckdb.connect()
-c.execute(f"SET home_directory={_quote_sql_string(home)}")
-c.execute("INSTALL sqlite_scanner")
-c.execute("LOAD sqlite_scanner")
-PY
-
 echo "==> Reloading systemd"
 cp "$APP_DIR/systemd/readsbstats-collector.service"     /etc/systemd/system/
 cp "$APP_DIR/systemd/readsbstats-web.service"           /etc/systemd/system/
