@@ -524,6 +524,54 @@ class TestRunMetricsLoop:
         # Only the initial connection, no reconnect for a non-Operational error
         assert connect_count["n"] == 1
 
+    def test_disabled_returns_immediately(self, caplog):
+        self.monkeypatch.setattr(config, "METRICS_ENABLED", False)
+        with caplog.at_level("INFO"):
+            self.mc.run_metrics_loop(self.db_path)   # plain return, no loop
+        assert self.sleeps == []
+        assert any("disabled" in r.getMessage().lower() for r in caplog.records)
+
+    def test_transient_error_backs_off(self):
+        """_TransientError (stats file unreadable) doubles the sleep instead
+        of hammering the missing file at full cadence."""
+        def fake_poll(conn, path):
+            raise self.mc._TransientError("stats file unreadable")
+
+        self.monkeypatch.setattr(self.mc, "_poll_stats", fake_poll)
+        self._run_until_done()
+        assert len(self.sleeps) >= 3
+        assert self.sleeps[1] > self.sleeps[0], (
+            f"transient error did not back off: sleeps={self.sleeps}"
+        )
+
+    def test_reconnect_failure_logged_and_loop_survives(self, caplog):
+        """OperationalError handler: a conn whose close() raises must be
+        tolerated, and a failing reconnect must be logged and retried next
+        cycle — never crash the thread."""
+        def fake_poll(conn, path):
+            raise sqlite3.OperationalError("disk I/O error")
+
+        self.monkeypatch.setattr(self.mc, "_poll_stats", fake_poll)
+
+        class BoomCloseConn:
+            def close(self):
+                raise RuntimeError("close failed")
+
+        connects = {"n": 0}
+
+        def flaky_connect(path):
+            connects["n"] += 1
+            if connects["n"] == 1:
+                return BoomCloseConn()        # initial conn: close() raises
+            raise RuntimeError("disk gone")   # every reconnect fails
+
+        self.monkeypatch.setattr(self.mc.database, "connect", flaky_connect)
+        with caplog.at_level("ERROR"):
+            self._run_until_done()
+        assert connects["n"] >= 2
+        assert any("Metrics reconnect failed" in r.getMessage()
+                   for r in caplog.records)
+
 
 class TestStartMetricsCollector:
     @pytest.fixture(autouse=True)

@@ -169,3 +169,27 @@ class TestNoFtsFallback:
             "SELECT id FROM vdl2_messages WHERE body LIKE ?", ("%warsaw%",)
         ).fetchall()
         assert len(rows) == 1
+
+    def test_fts5_available_false_when_module_missing(self):
+        # An SQLite build without the FTS5 module raises OperationalError on
+        # the probe — must mean False, not an exception out of ensure_schema.
+        import sqlite3
+
+        class NoFts5Conn:
+            def execute(self, sql, *a):
+                raise sqlite3.OperationalError("no such module: fts5")
+
+        assert vdl2_db.fts5_available(NoFts5Conn()) is False
+
+    def test_close_all_web_conns_swallows_close_errors(self):
+        # Best-effort teardown: an already-broken reader conn must not stop
+        # the rest from being closed, and the registry must end empty.
+        import sqlite3
+
+        class BoomConn:
+            def close(self):
+                raise sqlite3.ProgrammingError("already closed")
+
+        vdl2_db._web_conns.append(BoomConn())
+        vdl2_db.close_all_web_conns()      # must not raise
+        assert vdl2_db._web_conns == []

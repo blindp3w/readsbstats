@@ -124,6 +124,37 @@ class TestWatchdogLoop:
 
 
 # ---------------------------------------------------------------------------
+# _coerce_float / _coerce_int — feed-data numeric coercion
+# ---------------------------------------------------------------------------
+
+class TestCoerceHelpers:
+    def test_coerce_float_rejects_bool(self):
+        # isinstance(True, int) is True in Python — feed data like "gs": true
+        # must become None, not 1.0.
+        from readsbstats.collector import _coerce_float
+        assert _coerce_float(True) is None
+        assert _coerce_float(False) is None
+
+    def test_coerce_int_rejects_bool(self):
+        from readsbstats.collector import _coerce_int
+        assert _coerce_int(True) is None
+        assert _coerce_int(False) is None
+
+    def test_coerce_int_passes_int_through(self):
+        from readsbstats.collector import _coerce_int
+        assert _coerce_int(35000) == 35000
+
+    def test_coerce_int_truncates_finite_float(self):
+        from readsbstats.collector import _coerce_int
+        assert _coerce_int(7.9) == 7
+
+    def test_coerce_int_rejects_non_finite_float(self):
+        from readsbstats.collector import _coerce_int
+        assert _coerce_int(float("nan")) is None
+        assert _coerce_int(float("inf")) is None
+
+
+# ---------------------------------------------------------------------------
 # haversine_nm
 # ---------------------------------------------------------------------------
 
@@ -2984,6 +3015,21 @@ class TestDispatchOne:
             collector._dispatch_one(("xyz", "abc123"))
         assert any("xyz" in rec.message for rec in caplog.records)
 
+    def test_arity_mismatch_drops_and_warns(self, monkeypatch, caplog):
+        """A known kind with the wrong tuple length must be dropped with a
+        warning (an IndexError here would count as a dispatch error and
+        silently lose the alert)."""
+        from readsbstats import collector, notifier
+        import logging
+        called = []
+        monkeypatch.setattr(notifier, "notify_military",
+                            lambda *a: called.append(a))
+        with caplog.at_level(logging.WARNING, logger="readsbstats.collector"):
+            collector._dispatch_one(("mil", "abc123"))   # 2 fields, expects 7
+        assert called == []
+        assert any("expected 7 fields, got 2" in rec.message
+                   for rec in caplog.records)
+
 
 # ---------------------------------------------------------------------------
 # _check_daily_summary — lines 534-544
@@ -3179,6 +3225,58 @@ class TestMain:
         monkeypatch.setattr(time, "sleep", self._sleep_exit())
 
         collector.main()  # must not raise
+
+    def test_telegram_enabled_starts_command_listener(self, monkeypatch):
+        """With Telegram configured, startup must load the notified-set and
+        start the command listener (skipped entirely when disabled)."""
+        from readsbstats import collector, database, notifier
+        conn = make_db()
+        monkeypatch.setattr(database, "init_db", lambda: None)
+        monkeypatch.setattr(database, "connect", lambda p=None: conn)
+        monkeypatch.setattr(notifier, "telegram_enabled", lambda: True)
+        loaded: list[str] = []
+        monkeypatch.setattr(collector, "_load_notified",
+                            lambda c: loaded.append("notified"))
+        listener_paths: list[str] = []
+        monkeypatch.setattr(notifier, "start_command_listener",
+                            lambda p: listener_paths.append(p))
+        monkeypatch.setattr(collector, "_poll", lambda c: None)
+        monkeypatch.setattr(collector, "_check_daily_summary", lambda c: None)
+        monkeypatch.setattr(time, "sleep", self._sleep_exit())
+
+        collector.main()
+        assert loaded == ["notified"]
+        assert listener_paths == [config.DB_PATH]
+
+    def test_shutdown_finalisation_errors_are_logged(self, monkeypatch, caplog):
+        """A raising _close_flight or consumer stop during shutdown must be
+        logged and must not prevent the rest of the teardown."""
+        import logging
+        from readsbstats import collector, database, notifier
+        conn = make_db()
+        monkeypatch.setattr(database, "init_db", lambda: None)
+        monkeypatch.setattr(database, "connect", lambda p=None: conn)
+        monkeypatch.setattr(notifier, "start_command_listener", lambda p: None)
+        monkeypatch.setattr(collector, "_poll", lambda c: None)
+        monkeypatch.setattr(collector, "_check_daily_summary", lambda c: None)
+        monkeypatch.setattr(time, "sleep", self._sleep_exit())
+        # Plant one active flight (via the _load_active seam so it survives
+        # startup) whose close raises, and a consumer stop that raises too.
+        monkeypatch.setattr(collector, "_load_active",
+                            lambda c: collector._active.__setitem__("aabbcc", {}))
+        monkeypatch.setattr(collector, "_close_flight",
+                            lambda c, icao: (_ for _ in ()).throw(
+                                RuntimeError("close fail")))
+        monkeypatch.setattr(collector, "stop_notification_consumer",
+                            lambda timeout=5.0: (_ for _ in ()).throw(
+                                RuntimeError("stop fail")))
+
+        with caplog.at_level(logging.ERROR, logger="readsbstats.collector"):
+            collector.main()   # must not raise
+
+        msgs = [r.message for r in caplog.records]
+        assert any("Error during shutdown finalisation" in m for m in msgs)
+        assert any("Error stopping notification consumer" in m for m in msgs)
 
     def test_purge_triggered(self, monkeypatch):
         from readsbstats import collector, database, notifier
@@ -3471,6 +3569,39 @@ class TestNotificationConsumer:
         assert t1 is t2
         assert t1.daemon is True
         assert t1.name == "tg-dispatch"
+
+    def test_consumer_tolerates_handler_deleting_thread_local_conn(self, monkeypatch):
+        """The consumer's finally must survive the shared thread-local
+        connection attribute having been removed mid-run (AttributeError →
+        pass) and still close the connection. Runs the consumer
+        synchronously: a None sentinel pre-queued after the poison item
+        makes it return without a thread."""
+        from readsbstats import collector, database, notifier
+        # Ensure no background consumer thread can steal the queued items.
+        collector.stop_notification_consumer(timeout=2.0)
+
+        real_conn = make_db()
+        closed = []
+
+        class ClosingConn:
+            def close(self):
+                closed.append(True)
+                real_conn.close()
+
+            def __getattr__(self, name):
+                return getattr(real_conn, name)
+
+        monkeypatch.setattr(config, "DB_PATH", "unused-path.db")
+        monkeypatch.setattr(database, "connect", lambda *a, **k: ClosingConn())
+        monkeypatch.setattr(collector, "_dispatch_one",
+                            lambda item: delattr(notifier._thread_local, "conn"))
+        collector._notification_queue.put(("mil", "x", None, None, None, None, 1.0))
+        collector._notification_queue.put(None)
+
+        collector._notification_consumer()     # must not raise
+
+        assert closed == [True]
+        assert not hasattr(notifier._thread_local, "conn")
 
     def test_drain_returns_when_queue_empty(self):
         from readsbstats import collector

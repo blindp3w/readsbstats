@@ -39,9 +39,12 @@ jobs:
       - name: Run tests
         run: pytest --tb=short -q
 
+      # Gate raised 90 → 93 after the 2026-06-11 coverage push (measured 98%
+      # statement / 97% with --cov-branch); ≥5% headroom so a legitimately
+      # hard-to-test branch never blocks an unrelated PR.
       - name: Run tests with coverage
         if: matrix.python-version == '3.12'
-        run: pytest --cov=readsbstats --cov-report=term-missing --cov-fail-under=90
+        run: pytest --cov=readsbstats --cov-report=term-missing --cov-fail-under=93
 
       - name: Set up Node.js
         if: matrix.python-version == '3.12'
@@ -93,10 +96,13 @@ jobs:
         working-directory: frontend
         run: npm run lint -- --max-warnings 0
 
-      - name: Run frontend unit tests (Vitest)
+      # Coverage is report-only (no thresholds): the v8 report in the job log
+      # tracks which src/ files have no tests at all (coverage.include in
+      # vitest.config.ts makes never-imported files count as 0%).
+      - name: Run frontend unit tests (Vitest + coverage report)
         if: matrix.python-version == '3.12'
         working-directory: frontend
-        run: npm test
+        run: npm run test:coverage
 
       # Audit-15 regression-lock job. Runs the three Playwright tests that
       # pin today's bug fixes:

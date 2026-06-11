@@ -5,6 +5,49 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+Test-coverage hardening sweep: every documented security/reliability
+invariant now has a regression test, and coverage gating got stricter.
+
+### Fixed
+
+- **Feeder port-check timeout misreported as "closed"** on Python 3.11+.
+  `asyncio.TimeoutError` became an alias of the builtin `TimeoutError`
+  (an `OSError` subclass) in 3.11, so the `OSError` handler caught it
+  first and the dedicated timeout branch was dead code. The status now
+  reports `timeout` correctly. (Found by the new `_check_port` tests.)
+
+### Tests
+
+- Backend 1924 → 2019 (+95), coverage 95% → 98% (97% with branch
+  coverage). Highlights:
+  - **Route-guard invariant tests** — every mutating endpoint is now
+    machine-checked for both the CSRF and bearer-auth dependencies, the
+    mutating-route inventory is pinned, and the VDL2 router is asserted
+    read-only at the route level.
+  - **VDL2 ingest collector 70% → 99%** — dirty-shutdown sentinel gate,
+    bind failure, idle/batch flush cadences, flush retry/drop, sd_notify,
+    prune loop.
+  - Sort-allowlist injection tests for the flagged gallery and per-
+    aircraft flights (previously only `/api/flights` was probed).
+  - Reliability fallbacks: VDL2 attach degradation, web lifespan
+    fail-open, startup-integrity alert path, notification-consumer
+    teardown, cache eviction edge cases, metrics-collector reconnect.
+  - tar1090-db parser gotchas (semicolon delimiter, binary flag strings)
+    pinned with dedicated unit tests.
+- Frontend 386 → 414 (+28): `useIsMobile` / VDL2 gating hooks,
+  `RangePicker` custom-form contracts, `HealthStripe` focus management
+  (unit twin of the Playwright regression lock), `ErrorBoundary` /
+  `RouteError`.
+
+### CI
+
+- Backend coverage gate raised **90% → 93%** (measured 98%).
+- Frontend Vitest step now emits a v8 coverage report (report-only, no
+  threshold) with never-imported files included, so untested components
+  are visible instead of silently absent.
+
 ## 2.19.0 — 2026-06-11
 
 Phase 4 of the database performance overhaul: safe batch purge and

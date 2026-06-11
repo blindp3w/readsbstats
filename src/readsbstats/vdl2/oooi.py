@@ -51,7 +51,7 @@ def parse_oooi(body: object) -> dict | None:
     if not isinstance(body, str) or not body:
         return None
     segments = [s.strip() for s in body.split("/")]
-    if not segments:
+    if not segments:  # pragma: no cover — str.split always yields ≥1 element
         return None
     lead = segments[0].upper()
     if lead not in ("DEP", "ARR"):

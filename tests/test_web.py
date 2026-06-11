@@ -5,10 +5,13 @@ Uses an in-memory SQLite database injected by patching _deps._db.
 
 import json
 import math
+import sqlite3
 import time
 from unittest.mock import patch
 
 import pytest
+from fastapi import FastAPI
+from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
 from readsbstats import config, database, enrichment, geo, photo_sources, web
@@ -493,6 +496,11 @@ class TestApiFlightsDateRange:
         r = client.get("/api/flights?date_from=not-a-date")
         assert r.status_code == 400
 
+    def test_date_to_validation_400_on_malformed(self, client):
+        # date_to has its own strptime/400 branch in _deps — pin it separately.
+        r = client.get("/api/flights?date_to=not-a-date")
+        assert r.status_code == 400
+
 
 # ---------------------------------------------------------------------------
 # API: /api/flights/export.csv
@@ -953,6 +961,54 @@ class TestCache:
         assert errors == []
         assert len(cache._cache) <= cache._CACHE_MAX_ENTRIES
 
+    def test_set_cache_refresh_moves_key_to_end(self, clear_web_cache, monkeypatch):
+        """Refreshing an existing key must reset its eviction position —
+        otherwise a hot, recently-refreshed key gets evicted before
+        never-touched-since keys."""
+        monkeypatch.setattr(cache, "_CACHE_MAX_ENTRIES", 3)
+        cache._set_cache("stats:0:a", 1)
+        cache._set_cache("stats:0:b", 2)
+        cache._set_cache("stats:0:a", 10)   # refresh → back of the queue
+        cache._set_cache("stats:0:c", 3)
+        cache._set_cache("stats:0:d", 4)    # over cap → evict oldest
+        assert cache._get_cache("stats:0:b") is None   # b was oldest, not a
+        assert cache._get_cache("stats:0:a") == 10
+
+    def test_set_cache_eviction_drops_expired_first(self, clear_web_cache, monkeypatch):
+        """The over-cap sweep removes expired entries before touching any live
+        one, and stops as soon as the cap is satisfied."""
+        monkeypatch.setattr(cache, "_CACHE_MAX_ENTRIES", 3)
+        cache._set_cache("stats:0:live1", 1)
+        cache._set_cache("stats:0:live2", 2)
+        cache._cache["stats:0:zombie"] = (time.time() - 99999, "dead")
+        cache._set_cache("stats:0:live3", 3)
+        assert "stats:0:zombie" not in cache._cache
+        assert cache._get_cache("stats:0:live1") == 1
+        assert cache._get_cache("stats:0:live2") == 2
+        assert cache._get_cache("stats:0:live3") == 3
+
+    def test_set_cache_all_protected_keys_evicts_oldest(self, clear_web_cache, monkeypatch):
+        """Guard branch for a cap shrunk below the named-key count: when every
+        entry is protected (exact _CACHE_TTLS key), evict the oldest protected
+        one rather than looping forever."""
+        monkeypatch.setattr(cache, "_CACHE_MAX_ENTRIES", 2)
+        cache._set_cache("stats", 1)
+        cache._set_cache("polar", 2)
+        cache._set_cache("records", 3)
+        assert len(cache._cache) <= 2
+        assert "stats" not in cache._cache             # oldest protected evicted
+        assert cache._get_cache("records") == 3
+
+    def test_heatmap_and_coverage_locks_are_per_window_singletons(self):
+        """The per-window async locks must be stable singletons — a fresh Lock
+        per call would coalesce nothing."""
+        h24 = cache._heatmap_lock("24h")
+        assert cache._heatmap_lock("24h") is h24
+        assert cache._heatmap_lock("7d") is not h24
+        c24 = cache._coverage_lock("24h")
+        assert cache._coverage_lock("24h") is c24
+        assert c24 is not h24                          # separate families
+
 
 class TestDbConnection:
     """`db()` must be per-thread in production so requests don't serialize on
@@ -1038,6 +1094,40 @@ class TestStartupMigrate:
         # migrated in place — never via ensure_base_schema (which opens a path).
         assert calls == ["migrate"]
 
+    # _ensure_vdl2_schema is FAIL-OPEN by contract: a feature-local vdl2.db
+    # problem must never take down the core web app.
+
+    def test_ensure_vdl2_schema_failure_logs_and_continues(self, monkeypatch, caplog):
+        from readsbstats.vdl2 import db as vdl2_db
+        monkeypatch.setattr(config, "VDL2_ENABLED", True)
+        monkeypatch.setattr(vdl2_db, "_conn", None)
+        monkeypatch.setattr(
+            vdl2_db, "connect",
+            lambda *a, **k: (_ for _ in ()).throw(
+                sqlite3.OperationalError("disk I/O error")))
+        with caplog.at_level("WARNING"):
+            web._ensure_vdl2_schema()      # must not raise
+        assert any("VDL2 schema unavailable" in r.getMessage()
+                   for r in caplog.records)
+
+    def test_ensure_vdl2_schema_respects_injected_conn(self, monkeypatch):
+        from readsbstats.vdl2 import db as vdl2_db
+        monkeypatch.setattr(config, "VDL2_ENABLED", True)
+        sentinel_conn = object()
+        monkeypatch.setattr(vdl2_db, "_conn", sentinel_conn)
+        calls = []
+        monkeypatch.setattr(
+            vdl2_db, "ensure_schema",
+            lambda conn, build_fts=True: calls.append((conn, build_fts)))
+        monkeypatch.setattr(
+            vdl2_db, "connect",
+            lambda *a, **k: (_ for _ in ()).throw(
+                AssertionError("must not open a new connection")))
+        web._ensure_vdl2_schema()
+        # Test-injected connection used directly; web never builds FTS
+        # (collector owns the FTS rebuild).
+        assert calls == [(sentinel_conn, False)]
+
 
 # ---------------------------------------------------------------------------
 # /live compat redirect + JSON API for settings / feeders
@@ -1052,6 +1142,29 @@ class TestCompatRedirects:
         r = client.get("/live", follow_redirects=False)
         assert r.status_code == 302
         assert r.headers["location"].endswith("/map")
+
+    def test_live_redirect_guards_hostile_root_path(self):
+        """A13-049 defence in depth: a reverse proxy injecting an absolute
+        root_path ("//evil.com") must not turn /live into an open redirect —
+        the urlparse guard falls back to a bare /map. Calls the handler
+        directly: the app's own root_path would override a TestClient scope."""
+        from starlette.requests import Request
+        scope = {"type": "http", "method": "GET", "path": "/live",
+                 "headers": [], "query_string": b"",
+                 "root_path": "//evil.com"}
+        resp = web.redirect_live(Request(scope))
+        assert resp.status_code == 302
+        assert resp.headers["location"] == "/map"
+
+    def test_favicon_served_from_spa_dist(self, client):
+        """The Vite public/ files get explicit root routes (not a / mount that
+        would shadow /api/*) — pin the headers on the representative one."""
+        if not web._SPA_AVAILABLE:
+            pytest.skip("frontend/dist not built")
+        r = client.get("/favicon.svg")
+        assert r.status_code == 200
+        assert r.headers["content-type"].startswith("image/svg+xml")
+        assert "max-age=86400" in r.headers.get("cache-control", "")
 
 
 class TestApiSettings:
@@ -1534,6 +1647,80 @@ class TestFeederChecks:
     @pytest.fixture(autouse=True)
     def setup(self):
         yield
+
+    def test_check_systemd_unit_rejects_flag_like_name(self):
+        """A13-042: a unit name starting with '-' would be parsed as a
+        systemctl flag — rejected before any subprocess is spawned."""
+        import asyncio
+        result = asyncio.get_event_loop().run_until_complete(
+            feeders._check_systemd_unit("--evil"))
+        assert result == {"systemd": "invalid-unit-name"}
+
+    def test_feeder_details_mlat_rejects_flag_like_name(self):
+        """A13-042 twin for journalctl."""
+        import asyncio
+        details = asyncio.get_event_loop().run_until_complete(
+            feeders._feeder_details_mlat("-o evil"))
+        assert details == []
+
+    def test_check_port_closed(self):
+        import asyncio
+        import socket as _socket
+        s = _socket.socket()
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+        s.close()                          # nothing listening any more
+        result = asyncio.get_event_loop().run_until_complete(
+            feeders._check_port(port))
+        assert result["port_status"] == "closed"
+
+    def test_check_port_timeout(self, monkeypatch):
+        import asyncio
+
+        async def timing_out_wait_for(coro, timeout):
+            coro.close()       # silence the never-awaited warning
+            raise asyncio.TimeoutError()
+
+        monkeypatch.setattr(asyncio, "wait_for", timing_out_wait_for)
+        result = asyncio.get_event_loop().run_until_complete(
+            feeders._check_port(30005))
+        assert result["port_status"] == "timeout"
+
+    def test_is_safe_status_path_rejects_nul_byte(self):
+        # realpath() raises ValueError on an embedded NUL — must mean False,
+        # not an exception escaping into the handler.
+        assert feeders._is_safe_status_path("/run/x\0y") is False
+
+    def test_is_safe_status_url_rejects_unparseable(self):
+        assert feeders._is_safe_status_url("http://[") is False
+
+    def test_fetch_details_rejects_unsafe_piaware_path(self, caplog):
+        import asyncio
+        feeder = {"name": "pia", "status_type": "piaware",
+                  "status_path": "/etc/passwd"}
+        with caplog.at_level("WARNING"):
+            details = asyncio.get_event_loop().run_until_complete(
+                feeders._fetch_feeder_details(feeder))
+        assert details == []
+        assert any("rejecting status_path" in r.getMessage()
+                   for r in caplog.records)
+
+    def test_fetch_details_exception_logged_returns_empty(self, monkeypatch, caplog):
+        """audit-12 #151: a failing details fetch must be visible in the log,
+        not silently swallowed as []."""
+        import asyncio
+
+        async def boom(unit):
+            raise RuntimeError("mlat details fail")
+
+        monkeypatch.setattr(feeders, "_feeder_details_mlat", boom)
+        feeder = {"name": "m", "status_type": "mlat", "unit": "mlat-client.service"}
+        with caplog.at_level("WARNING"):
+            details = asyncio.get_event_loop().run_until_complete(
+                feeders._fetch_feeder_details(feeder))
+        assert details == []
+        assert any("details fetch failed" in r.getMessage()
+                   for r in caplog.records)
 
     def test_check_systemd_unit_active(self, monkeypatch):
         import asyncio
@@ -2126,6 +2313,16 @@ class TestApiAircraftFlights:
         r = client.get("/api/aircraft/aabbcc/flights?sort_by=first_seen&sort_dir=asc")
         flights = r.json()["flights"]
         assert flights[0]["first_seen"] == 1_000_001
+
+    def test_sort_injection_falls_back_to_default(self, client, db_conn):
+        """sort_by goes through the _SORT_COLS allowlist (.get with default) —
+        an injection payload must be a no-op, same as /api/flights."""
+        insert_flight(db_conn, icao="aabbcc")
+        r = client.get(
+            "/api/aircraft/aabbcc/flights?sort_by=first_seen;DROP TABLE flights")
+        assert r.status_code == 200
+        assert r.json()["total"] == 1
+        assert db_conn.execute("SELECT COUNT(*) FROM flights").fetchone()[0] == 1
 
     def test_invalid_icao_rejected_404(self, client):
         # BE-11: a non-hex / wrong-length path param is rejected before any
@@ -2742,6 +2939,28 @@ class TestApiFlightPhoto:
         assert row is None, (
             "transient source failure poisoned the cache with a negative row"
         )
+
+    def test_transient_error_serves_stale_positive_row(self, client, db_conn, monkeypatch):
+        """PY-5 flip side: when every source errors but a previously-resolved
+        positive row exists (even past its TTL), serve the stale photo — an
+        outage must not drop existing coverage."""
+        fid = insert_flight(db_conn, icao="aabbcc")
+        db_conn.execute(
+            "INSERT INTO photos (icao_hex, thumbnail_url, large_url, link_url, "
+            "photographer, fetched_at) VALUES ('aabbcc', "
+            "'https://plnspttrs.net/t.jpg', 'https://plnspttrs.net/l.jpg', "
+            "'https://plnspttrs.net/p', 'Bob', 1)",   # fetched_at=1 → long expired
+        )
+        db_conn.commit()
+        monkeypatch.setattr(
+            photo_sources, "_fetch_photo_with_status",
+            lambda icao: (None, "error"),
+        )
+        r = client.get(f"/api/flights/{fid}/photo")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["thumbnail_url"] == "https://plnspttrs.net/t.jpg"
+        assert data["photographer"] == "Bob"
 
     def test_photo_returned_and_stored(self, client, db_conn, monkeypatch):
         # PY-6: use an allowlisted host so the API-boundary suppression
@@ -3526,6 +3745,76 @@ class TestApiAuthToken:
 
 
 # ---------------------------------------------------------------------------
+# Route-guard invariant: every mutating endpoint must carry BOTH _csrf_check
+# and _auth_check (CLAUDE.md non-negotiable). The per-endpoint tests above
+# prove the watchlist routes behave; these tests prove no future POST/PUT/
+# DELETE/PATCH route can ship without the guards — the failure message names
+# the offending route.
+# ---------------------------------------------------------------------------
+
+_MUTATING_METHODS = {"POST", "PUT", "DELETE", "PATCH"}
+
+
+def _mutating_api_routes(app_):
+    """Yield (method, route) for every mutating method on every APIRoute."""
+    for route in app_.routes:
+        if not isinstance(route, APIRoute):
+            continue
+        for method in sorted((route.methods or set()) & _MUTATING_METHODS):
+            yield method, route
+
+
+def _route_dependency_calls(route):
+    """All dependency callables wired on a route, via both surfaces: the
+    resolved dependant (route-level Depends land there wrapped by
+    get_parameterless_sub_dependant, .call = the original function) and the
+    raw route.dependencies list — so the check survives FastAPI internals
+    changing either representation."""
+    calls = {d.call for d in route.dependant.dependencies}
+    calls |= {d.dependency for d in route.dependencies}
+    return calls
+
+
+class TestMutatingRouteGuards:
+    # Intentional exceptions go here as (method, path) — keep empty unless a
+    # route genuinely must skip a guard, so the exemption is visible in review.
+    ALLOWLIST: set = set()
+
+    def test_every_mutating_route_has_csrf_and_auth_dependencies(self):
+        required = {_deps._csrf_check, _deps._auth_check}
+        offenders = []
+        for method, route in _mutating_api_routes(web.app):
+            if (method, route.path) in self.ALLOWLIST:
+                continue
+            missing = required - _route_dependency_calls(route)
+            if missing:
+                offenders.append(
+                    (method, route.path, sorted(f.__name__ for f in missing)))
+        assert not offenders, (
+            "Mutating routes missing CSRF/auth guards "
+            f"(add dependencies=[Depends(_csrf_check), Depends(_auth_check)]): {offenders}")
+
+    def test_mutating_route_inventory_is_known(self):
+        """Exact inventory of mutating routes. Adding an endpoint must fail
+        here, forcing a conscious update — which is the moment to re-read the
+        guard rule in CLAUDE.md and the frontend apiFetch contract."""
+        inventory = {(m, r.path) for m, r in _mutating_api_routes(web.app)}
+        assert inventory == {
+            ("POST", "/api/watchlist"),
+            ("DELETE", "/api/watchlist/{entry_id}"),
+        }
+
+    def test_vdl2_router_registers_no_mutating_routes(self, monkeypatch):
+        """VDL2 is read-only by design (separate vdl2.db, mode=ro ATTACH) —
+        lock that at the route level: enabling the feature must not register
+        a single mutating route."""
+        monkeypatch.setattr(config, "VDL2_ENABLED", True)
+        app_ = FastAPI()
+        web._include_optional_routers(app_)
+        assert list(_mutating_api_routes(app_)) == []
+
+
+# ---------------------------------------------------------------------------
 # API: /api/aircraft/flagged  — flagged aircraft gallery
 # ---------------------------------------------------------------------------
 
@@ -3678,6 +3967,53 @@ class TestApiFlaggedAircraft:
         aircraft = r.json()["aircraft"]
         assert aircraft[0]["icao_hex"] == "112233"
         assert aircraft[1]["icao_hex"] == "aabbcc"
+
+    # sort_by/sort_dir go through the _FLAGGED_SORT_COLS allowlist and an
+    # explicit ASC/DESC ternary (A13-077) — pin the injection-safety the same
+    # way /api/flights pins _SORT_COLS. Each distinct query string is its own
+    # cache key, so no cache clearing is needed between requests.
+
+    def test_flagged_sort_by_injection_falls_back_to_default(self, client, db_conn):
+        _insert_aircraft_db(db_conn, "aabbcc", flags=1)
+        _insert_aircraft_db(db_conn, "112233", flags=1)
+        insert_flight(db_conn, icao="aabbcc")
+        insert_flight(db_conn, icao="112233")
+        r = client.get("/api/aircraft/flagged?sort_by=last_seen;DROP TABLE flights")
+        assert r.status_code == 200
+        assert r.json()["total"] == 2
+        assert db_conn.execute("SELECT COUNT(*) FROM flights").fetchone()[0] == 2
+
+    def test_flagged_all_sort_columns_accepted(self, client, db_conn):
+        """Every column in _FLAGGED_SORT_COLS × both directions returns 200
+        with all rows present (sort never drops aircraft)."""
+        _insert_aircraft_db(db_conn, "aabbcc", registration="SP-AAA",
+                            type_code="F16", flags=1)
+        _insert_aircraft_db(db_conn, "112233", registration="SP-BBB",
+                            type_code="G550", flags=1)
+        insert_flight(db_conn, icao="aabbcc", registration="SP-AAA",
+                      aircraft_type="F16", first_seen=1_000_000, last_seen=1_003_600)
+        insert_flight(db_conn, icao="112233", registration="SP-BBB",
+                      aircraft_type="G550", first_seen=2_000_000, last_seen=2_003_600)
+        for col in _deps._FLAGGED_SORT_COLS:
+            for direction in ("asc", "desc"):
+                r = client.get(
+                    f"/api/aircraft/flagged?sort_by={col}&sort_dir={direction}")
+                assert r.status_code == 200, f"Failed for sort_by={col}&sort_dir={direction}"
+                icaos = {a["icao_hex"] for a in r.json()["aircraft"]}
+                assert icaos == {"aabbcc", "112233"}, (
+                    f"Missing aircraft for sort_by={col}&sort_dir={direction}")
+
+    def test_flagged_bogus_sort_dir_falls_back_to_desc(self, client, db_conn):
+        """Anything but 'asc' (case-insensitive) normalizes to DESC — a hostile
+        sort_dir can never reach the SQL string."""
+        _insert_aircraft_db(db_conn, "aabbcc", flags=1)
+        _insert_aircraft_db(db_conn, "112233", flags=1)
+        insert_flight(db_conn, icao="aabbcc", first_seen=1_000_000, last_seen=1_003_600)
+        insert_flight(db_conn, icao="112233", first_seen=2_000_000, last_seen=2_003_600)
+        r = client.get("/api/aircraft/flagged?sort_dir=evil)")
+        assert r.status_code == 200
+        aircraft = r.json()["aircraft"]
+        assert [a["icao_hex"] for a in aircraft] == ["112233", "aabbcc"]
 
     def test_includes_photo_data(self, client, db_conn):
         _insert_aircraft_db(db_conn, "aabbcc", flags=1)
@@ -4258,6 +4594,59 @@ class TestMapPrewarmer:
         a2 = _photos._type_lock("A320")
         assert a1 is a2
 
+    @staticmethod
+    def _acquire_sync(lock):
+        # Acquire on a private throwaway loop WITHOUT touching the thread's
+        # ambient event-loop slot (asyncio.run would unset it and break the
+        # get_event_loop().run_until_complete pattern used elsewhere in this
+        # file). locked()/release() afterwards are loop-free.
+        import asyncio
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(lock.acquire())
+        finally:
+            loop.close()
+
+    def test_type_lock_never_evicts_held_lock(self, monkeypatch):
+        """A13-004: a held lock must be rotated past, never evicted — evicting
+        it would hand the next caller a fresh lock racing the in-flight fetch."""
+        _photos._type_fetch_locks.clear()
+        monkeypatch.setattr(_photos, "_TYPE_LOCKS_MAX", 2)
+        held = _photos._type_lock("HELD")
+        self._acquire_sync(held)
+        try:
+            _photos._type_lock("B")
+            _photos._type_lock("C")    # over cap: HELD is locked → B evicted
+            assert "HELD" in _photos._type_fetch_locks
+            assert "B" not in _photos._type_fetch_locks
+            assert _photos._type_lock("HELD") is held   # same object survived
+        finally:
+            held.release()
+            _photos._type_fetch_locks.clear()
+
+    def test_type_lock_all_held_breaks_eviction_loop(self, monkeypatch):
+        """Safety net: with every cached lock held (only reachable if the cap
+        shrinks below the held count), eviction must break out instead of
+        rotating forever."""
+        _photos._type_fetch_locks.clear()
+        monkeypatch.setattr(_photos, "_TYPE_LOCKS_MAX", 2)
+        l1 = _photos._type_lock("X1")
+        l2 = _photos._type_lock("X2")
+        self._acquire_sync(l1)
+        self._acquire_sync(l2)
+        monkeypatch.setattr(_photos, "_TYPE_LOCKS_MAX", 1)
+        try:
+            l3 = _photos._type_lock("X3")   # must terminate, not spin
+            assert "X1" in _photos._type_fetch_locks
+            assert "X2" in _photos._type_fetch_locks
+            # The unheld newcomer was the only evictable entry.
+            assert "X3" not in _photos._type_fetch_locks
+            assert not l3.locked()
+        finally:
+            l1.release()
+            l2.release()
+            _photos._type_fetch_locks.clear()
+
     def test_prewarm_loop_survives_one_prewarm_raising(self, monkeypatch):
         """Audit-12 #211 — a single _prewarm_one() exception must NOT kill
         the daemon thread. The loop catches the exception, schedules a
@@ -4316,6 +4705,43 @@ class TestMapPrewarmer:
         cache._prewarmer_stop.clear()
         # Restore the wait method ref (monkeypatch handles undo, but be explicit)
         _ = original_wait
+
+    def test_prewarm_loop_honours_future_schedule_without_running(self, monkeypatch):
+        """When every target's next_at lies in the future, the loop must wait
+        (and re-check) instead of running a prewarm early."""
+        cache._prewarmer_stop.clear()
+        ran: list = []
+        monkeypatch.setattr(cache, "_prewarm_one", lambda k, w: ran.append((k, w)))
+        monkeypatch.setattr(cache, "_initial_prewarm_schedule",
+                            lambda targets, now: {t: now + 1000 for t in targets})
+        waits = {"n": 0}
+
+        def fake_wait(timeout=None):
+            # 1st: the 5s startup gate; 2nd: the future-schedule wait (False →
+            # loop re-checks); 3rd: stop requested → loop exits.
+            waits["n"] += 1
+            return waits["n"] >= 3
+
+        monkeypatch.setattr(cache._prewarmer_stop, "wait", fake_wait)
+        cache._prewarm_loop([("heatmap", "24h")])
+        assert ran == []
+
+    def test_start_prewarmer_noop_when_thread_alive(self, monkeypatch):
+        """Idempotent start: a live prewarmer thread must not be duplicated
+        (two threads would race the same heavy scans)."""
+        import threading as _threading
+
+        class AliveThread:
+            def is_alive(self):
+                return True
+
+        monkeypatch.setattr(cache, "_prewarmer_thread", AliveThread())
+
+        def boom(*a, **k):
+            raise AssertionError("must not spawn a second prewarmer thread")
+
+        monkeypatch.setattr(_threading, "Thread", boom)
+        cache._start_prewarmer()   # returns without constructing a Thread
 
     def test_initial_prewarm_schedule_staggers_targets(self):
         """Regression for audit-12 #185 — the prewarmer used to start all 8
@@ -4627,6 +5053,44 @@ class TestFetchTypePhoto:
         result = asyncio.get_event_loop().run_until_complete(_photos._fetch_type_photo("B738"))
         assert result is not None
         assert result["thumbnail_url"] == "https://plnspttrs.net/b738.jpg"
+
+    def test_type_photo_double_check_under_lock(self, client, db_conn, monkeypatch):
+        """A competing request can resolve the type while we wait on the type
+        lock — the second cache check under the lock must serve that row
+        instead of refetching."""
+        import asyncio
+
+        class InsertingLock:
+            async def __aenter__(self):
+                db_conn.execute(
+                    "INSERT INTO type_photos (type_code, thumbnail_url, large_url, "
+                    "link_url, photographer, fetched_at) VALUES "
+                    "('B738', 'https://plnspttrs.net/race.jpg', NULL, NULL, 'Race', ?)",
+                    (int(time.time()),))
+                db_conn.commit()
+
+            async def __aexit__(self, *exc):
+                return False
+
+        monkeypatch.setattr(_photos, "_type_lock", lambda tc: InsertingLock())
+        fetch_calls: list = []
+        monkeypatch.setattr(photo_sources, "resolve_photo",
+                            lambda *a, **k: fetch_calls.append(1))
+        result = asyncio.get_event_loop().run_until_complete(
+            _photos._fetch_type_photo("B738"))
+        assert result is not None
+        assert result["thumbnail_url"] == "https://plnspttrs.net/race.jpg"
+        assert fetch_calls == []                  # no redundant fetch
+
+    def test_suppress_off_allowlist_drops_disallowed_link_url(self):
+        out = _photos._suppress_off_allowlist({
+            "thumbnail_url": "https://plnspttrs.net/t.jpg",
+            "large_url": "https://plnspttrs.net/l.jpg",
+            "link_url": "https://evil.example/page",
+        })
+        assert out is not None
+        assert out["link_url"] is None
+        assert out["thumbnail_url"] == "https://plnspttrs.net/t.jpg"
 
     def test_type_photos_negative_cache_returns_none(self, client, db_conn):
         db_conn.execute(

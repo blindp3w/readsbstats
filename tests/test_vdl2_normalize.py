@@ -171,3 +171,26 @@ class TestNormalizeDumpvdl2:
         rec = normalize.normalize(raw, decoder="dumpvdl2")
         assert rec is not None
         assert rec["icao_hex"] is None
+
+
+class TestHelperCoercion:
+    """Residual branches of the _ts / _num field coercers."""
+
+    def test_ts_bool_falls_back_to_now(self):
+        # isinstance(True, int) is True — a JSON `true` must not become ts=1.
+        now = int(time.time())
+        assert abs(normalize._ts(True) - now) <= 1
+
+    def test_ts_numeric_string_parses(self):
+        assert normalize._ts("1749065117.6") == 1749065117
+
+    def test_ts_garbage_string_falls_back_to_now(self):
+        now = int(time.time())
+        assert abs(normalize._ts("yesterday") - now) <= 1
+
+    def test_num_numeric_string_accepted(self):
+        # Some decoder dialects quote freq/lat/lon.
+        assert normalize._num("136.975") == 136.975
+
+    def test_num_garbage_string_rejected(self):
+        assert normalize._num("not-a-number") is None

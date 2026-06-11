@@ -203,6 +203,40 @@ class TestMainFailClosed:
         assert any("STATUS=" in m and "integrity" in m.lower() for m in sd_msgs)
         assert "READY=1" not in sd_msgs
 
+    def test_integrity_alert_send_failure_still_exits_2(self, tmp_path, monkeypatch, caplog):
+        """A failing Telegram send must not mask the fail-closed exit: the
+        exception is logged and main() still exits 2 with the sentinel kept."""
+        import logging
+        from readsbstats import notifier
+
+        sentinel = tmp_path / ".dirty_shutdown"
+        sentinel.touch()
+        monkeypatch.setattr(collector, "_SENTINEL", sentinel)
+        monkeypatch.setattr(database, "init_db", lambda: None)
+        monkeypatch.setattr(database, "connect", lambda *a, **k: object())
+        monkeypatch.setattr(
+            collector, "_startup_integrity_check",
+            lambda conn, s: (_ for _ in ()).throw(
+                collector.StartupIntegrityError("quick_check found 3 issue(s)")
+            ),
+        )
+        monkeypatch.setattr(
+            notifier, "_send",
+            lambda text: (_ for _ in ()).throw(RuntimeError("telegram down")),
+        )
+        sd_msgs: list[str] = []
+        monkeypatch.setattr(collector, "_sd_notify", lambda msg: sd_msgs.append(msg))
+
+        with caplog.at_level(logging.ERROR, logger="readsbstats.collector"):
+            with pytest.raises(SystemExit) as ei:
+                collector.main()
+
+        assert ei.value.code == 2
+        assert sentinel.exists()
+        assert any("Failed to send DB integrity alert" in rec.message
+                   for rec in caplog.records)
+        assert any("STATUS=" in m and "integrity" in m.lower() for m in sd_msgs)
+
 
 # ---------------------------------------------------------------------------
 # check_db.py script — exit codes

@@ -70,10 +70,13 @@ async def _check_port(port: int, host: str = "127.0.0.1") -> dict:
         writer.close()
         await writer.wait_closed()
         return {"port": port, "port_status": "open"}
-    except (ConnectionRefusedError, OSError):
-        return {"port": port, "port_status": "closed"}
+    # TimeoutError must come first: since Python 3.11 asyncio.TimeoutError IS
+    # the builtin TimeoutError, an OSError subclass — with OSError listed
+    # first, a slow host misreports as "closed" instead of "timeout".
     except asyncio.TimeoutError:
         return {"port": port, "port_status": "timeout"}
+    except (ConnectionRefusedError, OSError):
+        return {"port": port, "port_status": "closed"}
 
 
 def _read_json_file(path: str) -> dict | None:

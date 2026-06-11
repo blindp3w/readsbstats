@@ -31,3 +31,9 @@ markers = [
 
 [tool.coverage.run]
 source = ["readsbstats", "purge_ghosts", "purge_bad_gs", "purge_mlat_gs_spikes"]
+
+[tool.coverage.report]
+# The `sys.exit(main())` entry guards (collector, vdl2_collector, scripts) are
+# only reachable via `python -m`, never from tests — exclude them from the
+# denominator instead of pretending they're a coverage gap.
+exclude_also = ["if __name__ == .__main__.:"]
