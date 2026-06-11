@@ -53,7 +53,7 @@ readsb and tar1090 give you a great live view — readsbstats adds the other hal
 - Optional [DuckDB](https://duckdb.org/) analytical accelerator for heatmap/coverage (`RSBS_USE_DUCKDB=1`)
 - Optional **VDL2 / ACARS** integration — ingest VHF Data Link Mode 2 traffic from a separate SDR via [vdlm2dec](https://github.com/TLeconte/vdlm2dec): a Messages tab (live feed, filters, full-text search) plus an ACARS panel on flight pages, a "has ACARS" badge/filter in history, and a Stats card. Fully pluggable (`RSBS_VDL2_ENABLED`), stored in its own database (see [Operations](docs/operations.md#vdl2--acars-ingest))
 - Unit switching: Aeronautical / Metric / Imperial — persisted in browser
-- SQLite crash-safety (`synchronous=FULL` + WAL) with dirty-shutdown detection (fail-closed on corruption — see [Operations](docs/operations.md#database-integrity--startup-recovery)) and weekly/monthly integrity checks via systemd timers
+- SQLite crash-safety (WAL + `synchronous=NORMAL`, `RSBS_DB_SYNCHRONOUS=FULL` for per-commit durability) with dirty-shutdown detection (fail-closed on corruption — see [Operations](docs/operations.md#database-integrity--startup-recovery)) and weekly/monthly integrity checks via systemd timers
 
 ## Requirements
 

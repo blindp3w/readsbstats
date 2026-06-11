@@ -47,6 +47,7 @@ Boolean vars accept `1`/`0`, `true`/`false`, `yes`/`no`, `on`/`off`
 | Variable | Default | Description |
 |---|---|---|
 | `RSBS_DB_PATH` | `/mnt/ext/readsbstats/history.db` | SQLite database path. Empty string falls back to the default — an empty path silently creates an in-memory DB. |
+| `RSBS_DB_SYNCHRONOUS` | `NORMAL` | SQLite `synchronous` level: `NORMAL` or `FULL`. In WAL mode `NORMAL` is corruption-safe — a power cut can lose at most the last few commits, never the database. `FULL` fsyncs every commit (per-commit durability) at a measurable cost on USB HDDs. Invalid values log an error and fall back to `NORMAL`. See [Database crash safety](#database-crash-safety). |
 | `RSBS_RETENTION_DAYS` | `0` | Days to keep raw positions (`0` = keep forever) |
 | `RSBS_PURGE_INTERVAL` | `3600` | Seconds between retention-purge passes (min `1`; only fires when `RETENTION_DAYS > 0`) |
 
@@ -238,7 +239,7 @@ decoder runbook and the two-switch enablement model.
 
 ## Database crash safety
 
-The collector and web server both open the SQLite DB with `journal_mode = WAL` and `synchronous = FULL` (changed from `NORMAL` in v2.1.19 after a power outage). FULL adds one fsync per write commit — negligible at the 5-second poll cadence, and necessary because USB HDDs commonly lie about `SYNCHRONIZE CACHE`.
+The collector and web server both open the SQLite DB with `journal_mode = WAL` and `synchronous = NORMAL` (the default since v2.16.0; `FULL` was the default from v2.1.19 to v2.15.4). In WAL mode `NORMAL` is corruption-safe: a power cut can lose at most the last few commits, never the database itself. The per-commit fsync that `FULL` adds was measured at ~67 ms per flush on the production USB HDD — too expensive for the durability of a few final seconds of position data. Set `RSBS_DB_SYNCHRONOUS=FULL` to restore per-commit durability (see [ADR-0007](decisions/0007-sqlite-integrity-checks.md)).
 
 On startup, the collector writes a sentinel file at `<DB-dir>/.dirty_shutdown` and removes it only on graceful shutdown. If the sentinel is present at the next startup, the collector runs `PRAGMA quick_check(10)` and logs results to journald. Detected corruption is logged CRITICAL but the service continues (degraded) — observability over availability for the unattended Pi.
 

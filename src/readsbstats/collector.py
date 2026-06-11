@@ -204,9 +204,14 @@ def _load_active(conn: sqlite3.Connection) -> None:
     Audit-13 A13-002: previous query window-functioned the entire
     `positions` table on every startup — seconds-long stall on a
     multi-million-row table. The replacement uses a per-flight
-    correlated subquery against `idx_positions_flight_id_desc`
-    (which is on `(flight_id, id DESC)`), so each lookup is
-    O(log n) instead of O(n).
+    correlated subquery with a reverse scan of `idx_positions_flight_ts`
+    (which is on `(flight_id, ts)`), so each lookup is O(log n)
+    instead of O(n). Ties on ts within a flight are handled in two
+    stages: the poll loop rejects strictly-backward pos_ts up front, and
+    the ghost filter's `dt <= 0` drops equal-ts re-reports once a prior
+    fix exists; if a tie ever reached the table, the reverse index scan
+    returns the highest-rowid row — the same row the old ORDER BY id DESC
+    picked.
     """
     _active.clear()
     rows = conn.execute(
@@ -217,7 +222,7 @@ def _load_active(conn: sqlite3.Connection) -> None:
         LEFT JOIN positions p ON p.id = (
             SELECT id FROM positions
             WHERE flight_id = af.flight_id
-            ORDER BY id DESC
+            ORDER BY ts DESC
             LIMIT 1
         )
         """
@@ -1170,6 +1175,15 @@ def _purge(conn: sqlite3.Connection) -> None:
     log.info("Purge complete (cutoff epoch %d)", cutoff)
 
 
+def _run_maintenance(conn: sqlite3.Connection) -> None:
+    """Hourly DB maintenance: retention purge + planner-statistics refresh.
+    `PRAGMA optimize` is the SQLite-recommended periodic call — it re-ANALYZEs
+    only tables whose content changed enough to matter, with an internal
+    row-sample cap, so it's cheap even on the Pi."""
+    _purge(conn)
+    conn.execute("PRAGMA optimize")
+
+
 # ---------------------------------------------------------------------------
 # Notification helpers
 # ---------------------------------------------------------------------------
@@ -1367,9 +1381,9 @@ def main() -> None:
 
         if time.time() - last_purge >= config.PURGE_INTERVAL_SEC:
             try:
-                _purge(conn)
+                _run_maintenance(conn)
             except Exception:
-                log.exception("Purge error")
+                log.exception("Maintenance error")
             last_purge = time.time()
 
         _check_daily_summary(conn)

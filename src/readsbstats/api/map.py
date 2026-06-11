@@ -200,9 +200,10 @@ async def api_map_coverage(window: str = Query("7d")) -> dict:
 def api_live() -> dict:
     """
     Audit-13 A13-069: single query (was two — fetch IDs, then bind into an
-    IN-clause). The correlated subquery uses idx_positions_flight_id_desc
-    on (flight_id, id DESC), so each per-flight position lookup is
-    O(log n) without materialising a Python list of active IDs.
+    IN-clause). The correlated subquery uses a reverse scan of
+    idx_positions_flight_ts on (flight_id, ts), so each per-flight
+    position lookup is O(log n) without materialising a Python list of
+    active IDs.
     """
     conn = _deps.db()
     rows = conn.execute(
@@ -227,7 +228,7 @@ def api_live() -> dict:
             WHERE flight_id = af.flight_id
               AND lat IS NOT NULL
               AND lon IS NOT NULL
-            ORDER BY id DESC
+            ORDER BY ts DESC
             LIMIT 1
         )
         ORDER BY af.last_seen DESC

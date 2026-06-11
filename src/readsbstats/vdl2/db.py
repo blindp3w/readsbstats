@@ -102,10 +102,10 @@ def connect(path: str | None = None) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.executescript(
         "PRAGMA journal_mode = WAL;"
-        # synchronous=NORMAL (not core's FULL): VDL2 is lossy best-effort SDR data
-        # — on power loss WAL+NORMAL can drop only the last few committed messages
-        # (never corruption), an acceptable trade for avoiding an fsync per commit
-        # on the Pi. Core history.db keeps FULL (see docs/configuration.md).
+        # synchronous=NORMAL (same as core history.db default): VDL2 is lossy
+        # best-effort SDR data — on power loss WAL+NORMAL can drop only the last
+        # few committed messages (never corruption), an acceptable trade for
+        # avoiding an fsync per commit on the Pi.
         "PRAGMA synchronous  = NORMAL;"
         "PRAGMA busy_timeout = 30000;"
         "PRAGMA cache_size   = -16384;"

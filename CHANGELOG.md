@@ -5,6 +5,57 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 2.16.0 — 2026-06-11
+
+Phase 1 of a database performance overhaul. All numbers were measured on a
+copy of the production database (1.3 GB, 6.18 M `positions` rows) on a Pi 4
+with a USB HDD.
+
+### Changed
+
+- **Three redundant or harmful `positions` indexes are dropped:**
+  `idx_positions_flight` (a left-prefix duplicate of
+  `idx_positions_flight_ts`), `idx_positions_ts_coords` (a partial index the
+  query planner mispicked for the all-time heatmap, measured 28% slower than
+  a plain scan), and `idx_positions_flight_id_desc` (freed by rewriting the
+  two latest-fix queries to `ORDER BY ts DESC`, which a reverse scan of
+  `idx_positions_flight_ts` serves). Frees ~280 MB and cuts per-insert B-tree
+  updates from 8 to 5. The file size shrinks only after a later phase's
+  VACUUM — until then the freed pages are recycled for new writes.
+- **SQLite `synchronous` now defaults to `NORMAL`** (was `FULL`). In WAL mode
+  NORMAL is corruption-safe: a power cut can lose at most the last few
+  commits, never the database itself. The per-commit fsync that FULL adds
+  costs ~67 ms per flush on the production USB HDD — for a tracker whose
+  data is a 5-second poll of live aircraft, that durability of the final few
+  seconds wasn't worth the tax on every write. The new `RSBS_DB_SYNCHRONOUS`
+  env var (`FULL` | `NORMAL`) restores per-commit durability if you want it.
+  Supersedes the `synchronous=FULL` portion of
+  [ADR-0007](docs/decisions/0007-sqlite-integrity-checks.md).
+
+### Added
+
+- **Query-planner statistics, for the first time.** Background migrations now
+  run `ANALYZE` (bounded by `PRAGMA analysis_limit = 1000`, so it stays
+  ~0.1 s even on millions of rows), and the collector's hourly maintenance
+  pass runs `PRAGMA optimize` to keep the statistics fresh. The production
+  database had no `sqlite_stat1` at all — the planner had been choosing plans
+  blind since the first install.
+
+### Fixed
+
+- **Deploy-time database backups are no longer racy.** `update.sh` used to
+  `cp` the live database while the collector was writing, which produced
+  truncated backups. It now snapshots with `sqlite3 … "VACUUM INTO …"` — a
+  transactionally consistent copy — waiting up to 30 s for any in-flight
+  write transaction. The backup step now takes a few minutes instead of
+  seconds; that's the price of a restorable backup.
+
+### Tests
+
+- Backend 1879 → 1891 (legacy-index drops, ANALYZE, `RSBS_DB_SYNCHRONOUS`
+  parsing, hourly `PRAGMA optimize` scheduling, latest-fix `ORDER BY ts`
+  behavior). Frontend unchanged (386).
+
 ## 2.15.4 — 2026-06-06
 
 Hardening and correctness fixes from a full codebase security/quality audit, plus a public-docs audit.
