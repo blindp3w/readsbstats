@@ -97,10 +97,21 @@ def backfill_and_finalize(path: str = config.DB_PATH) -> None:
     Runs in the collector's background-migrations thread. Day-batched: one
     transaction per UTC day so the writer lock is released between days and
     the poll loop interleaves. Only FULL past days are backfilled — today's
-    counts come from the live accumulator; positions inserted earlier today
-    (before this deploy) are undercounted for today only, which self-heals
-    at midnight. Re-runnable: completed days are skipped, and the ready
-    flag short-circuits the whole call.
+    counts come from the live accumulator. Deploy-day positions recorded before
+    the collector restart are not backfilled; the loss is bounded to part of
+    one day and only affects ≥7d window counts marginally.
+
+    Re-runnable: a watermark stored in ``meta`` (key ``rollups_backfill_done_through``)
+    tracks the last completed day so the loop resumes correctly after a restart.
+    The watermark is written atomically inside each day's transaction, so a crash
+    mid-day leaves no partial state. The ready flag short-circuits the whole call
+    once backfill is complete.
+
+    The grid upsert (ON CONFLICT … DO UPDATE SET w = w + excluded.w) handles the
+    one-poll-overlap case: a collector poll straddling midnight may have already
+    flushed a row for a day the backfill is now processing; the merge double-counts
+    at most that one fix. The watermark (not a ``have`` set) governs resume, so a
+    live-flushed row can never cause an entire day's historical rows to be skipped.
     """
     from . import database, geo  # lazy: database.run_background_migrations calls us
 
@@ -112,26 +123,24 @@ def backfill_and_finalize(path: str = config.DB_PATH) -> None:
         row = conn.execute("SELECT MIN(ts), MAX(ts) FROM positions").fetchone()
         if row[0] is not None:
             today = int(time.time()) // 86400
-            have = {
-                r[0] for r in conn.execute(
-                    "SELECT DISTINCT day FROM grid_daily WHERE scale = ?",
-                    (COARSE_SCALE,),
-                )
-            }
+            wm_row = conn.execute(
+                "SELECT value FROM meta WHERE key = 'rollups_backfill_done_through'"
+            ).fetchone()
             bearing_expr = geo.bearing_sql("lat", "lon", ":rlat", ":rlon")
             dist_expr = geo.haversine_sql("lat", "lon", ":rlat", ":rlon")
             first_day = row[0] // 86400
             last_day = min(row[1] // 86400, today - 1)
+            done_through = int(wm_row[0]) if wm_row else first_day - 1
             done = 0
-            for day in range(first_day, last_day + 1):
-                if day in have:
-                    continue
+            for day in range(max(first_day, done_through + 1), last_day + 1):
                 lo, hi = day * 86400, (day + 1) * 86400
                 with conn:
                     for scale in SCALES:
-                        # Upsert (not plain INSERT): a poll straddling
-                        # midnight may have already flushed a row for this
-                        # day; the merge double-counts at most that one fix.
+                        # Upsert (not plain INSERT): the watermark governs
+                        # resume; this upsert handles only the one-poll-overlap
+                        # case where the live accumulator already flushed a row
+                        # for this day (e.g. a midnight-straddle fix). The merge
+                        # double-counts at most that one poll's worth of fixes.
                         conn.execute(
                             """
                             INSERT INTO grid_daily(scale, day, lat_b, lon_b, w)
@@ -171,7 +180,18 @@ def backfill_and_finalize(path: str = config.DB_PATH) -> None:
                         {"day": day, "lo": lo, "hi": hi,
                          "rlat": config.RECEIVER_LAT, "rlon": config.RECEIVER_LON},
                     )
+                    # Watermark commits atomically with this day's data: if the
+                    # process is killed mid-backfill, this day reruns on restart.
+                    conn.execute(
+                        "INSERT OR REPLACE INTO meta(key, value) "
+                        "VALUES('rollups_backfill_done_through', ?)",
+                        (str(day),),
+                    )
                 done += 1
+                # Yield the write lock between days so the collector's 5 s poll
+                # loop can grab it; SQLite's busy-handler makes immediate
+                # re-acquisition by the backfill loop likely without this pause.
+                time.sleep(0.25)
                 if done % 10 == 0:
                     log.info("  … backfilled %d days", done)
         with conn:

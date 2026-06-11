@@ -4,7 +4,7 @@ import time
 
 import pytest
 
-from readsbstats import database, rollups
+from readsbstats import config, database, geo, rollups
 from tests._helpers import make_db
 
 
@@ -114,8 +114,9 @@ class TestBackfill:
         fid = conn.execute("SELECT id FROM flights").fetchone()[0]
         now = int(time.time())
         # three positions across two PAST days + one with NULL coords (skipped)
+        known_lat, known_lon = 52.20, 21.00
         for ts, lat, lon in [
-            (now - 3 * 86400, 52.20, 21.00),
+            (now - 3 * 86400, known_lat, known_lon),
             (now - 3 * 86400 + 60, 52.21, 21.01),
             (now - 2 * 86400, 52.90, 20.50),
         ]:
@@ -140,7 +141,89 @@ class TestBackfill:
             "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='positions'")}
         assert "idx_positions_ts_flight" not in idx
         assert "idx_positions_ts_lat_lon" not in idx
+
+        # Pin exact bucket placement for the known row (lat=52.20, lon=21.00):
+        # scale-100 → (5220, 2100), scale-10 → (522, 210)
+        expected_fine = (rollups.bucket(known_lat, rollups.FINE_SCALE),
+                         rollups.bucket(known_lon, rollups.FINE_SCALE))
+        assert expected_fine == (5220, 2100)
+        fine_row = conn.execute(
+            "SELECT lat_b, lon_b FROM grid_daily WHERE scale = ? AND lat_b = ? AND lon_b = ?",
+            (rollups.FINE_SCALE, 5220, 2100)).fetchone()
+        assert fine_row is not None, "Expected fine-scale bucket (5220, 2100) not found"
+
+        # Pin backfill-SQL vs Python-twin parity for the coverage row:
+        # max_nm and bearing_b for known_lat/known_lon must match geo helpers.
+        expected_nm = geo.haversine_nm(
+            config.RECEIVER_LAT, config.RECEIVER_LON, known_lat, known_lon)
+        expected_bearing_b = int(geo.bearing(
+            config.RECEIVER_LAT, config.RECEIVER_LON, known_lat, known_lon)) % 360
+        cov_row = conn.execute(
+            "SELECT max_nm FROM coverage_daily WHERE bearing_b = ?",
+            (expected_bearing_b,)).fetchone()
+        assert cov_row is not None, (
+            f"No coverage row for bearing_b={expected_bearing_b}")
+        assert cov_row[0] == pytest.approx(expected_nm, rel=1e-6), (
+            f"coverage max_nm {cov_row[0]!r} != haversine_nm {expected_nm!r}")
+
         conn.close()
+
+    def test_backfill_watermark_not_skipped_by_live_flush(self, tmp_path):
+        """Regression: a live-flushed row for day D must NOT cause the backfill
+        to skip day D's historical positions.
+
+        The old `have` mechanism checked ``SELECT DISTINCT day FROM grid_daily``
+        and skipped any day already in that set.  A single midnight-straddle fix
+        flushed by the collector puts day D in grid_daily before the backfill
+        runs — the backfill then skips all historical rows for D, and the loss
+        is permanent and silent.
+
+        The fix (watermark in meta) only advances the watermark AFTER a day's
+        transaction commits, so pre-seeded rows are merged via the upsert and
+        never silently dropped.
+        """
+        path = str(tmp_path / "wm.db")
+        conn = database.connect(path)
+        conn.executescript(database.DDL)
+        database._migrate(conn)
+        conn.execute(
+            "INSERT INTO flights (icao_hex, first_seen, last_seen) VALUES ('abc123', 0, 0)")
+        fid = conn.execute("SELECT id FROM flights").fetchone()[0]
+        now = int(time.time())
+        day_d = (now - 3 * 86400) // 86400
+
+        # 5 historical positions on day D
+        for i in range(5):
+            conn.execute(
+                "INSERT INTO positions (flight_id, ts, lat, lon, source_type) "
+                "VALUES (?,?,?,?, 'adsb_icao')",
+                (fid, day_d * 86400 + i * 60, 52.20, 21.00))
+
+        # Simulate a live-flushed straddle row for day D (COARSE and FINE scales)
+        conn.execute(
+            "INSERT INTO grid_daily(scale, day, lat_b, lon_b, w) VALUES (?, ?, 522, 210, 1)",
+            (rollups.COARSE_SCALE, day_d))
+        conn.execute(
+            "INSERT INTO grid_daily(scale, day, lat_b, lon_b, w) VALUES (?, ?, 5220, 2100, 1)",
+            (rollups.FINE_SCALE, day_d))
+        conn.commit()
+        conn.close()
+
+        rollups.backfill_and_finalize(path)
+
+        conn = database.connect(path)
+        try:
+            # Historical rows (5) must be merged with the pre-seeded row (1) = 6 total
+            total = conn.execute(
+                "SELECT SUM(w) FROM grid_daily WHERE scale = ?",
+                (rollups.FINE_SCALE,)).fetchone()[0]
+            assert total == 6, (
+                f"Expected 6 (5 historical + 1 pre-seeded), got {total}. "
+                "Old 'have' bug would have left only 1 (the seeded row — day skipped entirely)."
+            )
+            assert rollups.ready(conn)
+        finally:
+            conn.close()
 
     def test_backfill_is_idempotent(self, tmp_path):
         path = str(tmp_path / "bf2.db")
