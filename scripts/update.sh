@@ -147,6 +147,20 @@ echo "==> Installing Python dependencies"
 "$APP_DIR/venv/bin/pip" install -q -r "$APP_DIR/requirements.txt"
 "$APP_DIR/venv/bin/pip" install -q -e "$APP_DIR"
 
+# ---- One-shot schema v6 migration (positions slimming) ----------------------
+# Detects a pre-v6 DB and rebuilds it offline. Services are stopped for the
+# duration (~10-20 min on a 6M-row table, mostly the final VACUUM); the
+# backup taken above is the rollback path. Idempotent — skips on v6+.
+if [[ -f "$DB_FILE" && ( "$MODE" == "code" || "$MODE" == "full" ) ]]; then
+  CUR_VER=$(sqlite3 "$DB_FILE" "SELECT COALESCE(MAX(version), 0) FROM schema_version" 2>/dev/null || echo 0)
+  if [[ "$CUR_VER" -lt 6 ]]; then
+    echo "==> Schema v$CUR_VER < 6 — running offline positions migration (services stopped)"
+    systemctl stop readsbstats-collector readsbstats-web 2>/dev/null || true
+    runuser -u "$SERVICE_USER" -- \
+      "$APP_DIR/venv/bin/python" "$APP_DIR/scripts/migrate_v6.py" "$DB_FILE"
+  fi
+fi
+
 echo "==> Reloading systemd"
 cp "$APP_DIR/systemd/readsbstats-collector.service"     /etc/systemd/system/
 cp "$APP_DIR/systemd/readsbstats-web.service"           /etc/systemd/system/
