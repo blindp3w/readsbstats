@@ -43,7 +43,7 @@ Please report:
 - **Secret leakage**: bot tokens, paths, IPs, or coordinates appearing in
   HTTP responses, logs, or error messages where they shouldn't.
 - **Dependency CVEs** in the production dependency set (FastAPI, uvicorn,
-  httpx, DuckDB) when there is a realistic exploit path
+  httpx) when there is a realistic exploit path
   reachable from the running services.
 - **CSRF or origin-confusion** affecting mutating endpoints (`POST` /
   `DELETE` on `/api/watchlist*`) — the `X-Requested-With` check is the

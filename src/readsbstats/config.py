@@ -85,7 +85,7 @@ def _bool(name: str, default: bool) -> bool:
 # Removing the `_register(...)` removes the env-var name passed to the
 # parser, so the failure mode is "the line stops compiling" rather than
 # "the metadata silently drifts". Only settings shipped by /api/settings
-# need registration; purely internal tunables (DuckDB, MLAT outlier
+# need registration; purely internal tunables (MLAT outlier
 # filter, etc.) are left untouched.
 _META_REGISTRY: dict[str, dict] = {}
 
@@ -152,6 +152,14 @@ DB_PATH            = os.getenv(*_register("db_path",        "RSBS_DB_PATH",     
 RETENTION_DAYS     = _int(*_register("retention_days", "RSBS_RETENTION_DAYS",  "0",    "RETENTION_DAYS"))      # 0 = keep forever
 PURGE_INTERVAL_SEC = _int(*_register("purge_interval", "RSBS_PURGE_INTERVAL",  "3600", "PURGE_INTERVAL_SEC"))
 
+# Days of 0.01° heatmap rollups to keep (serves the 7d window; the 0.1°
+# rollups that serve 30d/all are kept forever). Floor 8 so the 7d window
+# never reads a pruned day.
+# Not in _register — internal tunable, not surfaced via /api/settings.
+GRID_FINE_RETENTION_DAYS = _min_or_default_int(
+    "RSBS_GRID_FINE_RETENTION_DAYS",
+    _int("RSBS_GRID_FINE_RETENTION_DAYS", "14"), 8, 14)
+
 # SQLite synchronous level. NORMAL is the right setting for WAL mode on the
 # Pi's USB HDD: commits skip the per-transaction fsync (67 ms flush latency
 # measured on the production disk) and the WAL still guarantees corruption-
@@ -204,22 +212,6 @@ ADSBX_API_URL       = os.getenv(*_register("adsbx_url",  "RSBS_ADSBX_URL",
 METRICS_ENABLED  = _bool(*_register("metrics_enabled",  "RSBS_METRICS_ENABLED", False, "METRICS_ENABLED"))
 METRICS_INTERVAL = _int(*_register("metrics_interval",  "RSBS_METRICS_INTERVAL", "60", "METRICS_INTERVAL"))
 STATS_JSON       = os.getenv(*_register("stats_json",   "RSBS_STATS_JSON", "/run/readsb/stats.json", "STATS_JSON", secret=True))
-
-# ---------------------------------------------------------------------------
-# DuckDB analytical accelerator (web process only) — disabled by default
-# ---------------------------------------------------------------------------
-USE_DUCKDB        = _bool("RSBS_USE_DUCKDB", default=False)
-DUCKDB_MEMORY_MB  = _min_or_default_int("RSBS_DUCKDB_MEMORY_MB",
-                               _int("RSBS_DUCKDB_MEMORY_MB", "256"), 64, 256)
-DUCKDB_THREADS    = _min_or_default_int("RSBS_DUCKDB_THREADS",
-                               _int("RSBS_DUCKDB_THREADS", "2"), 1, 2)
-DUCKDB_TEMP_DIR   = os.getenv("RSBS_DUCKDB_TEMP_DIR",
-                              "/mnt/ext/readsbstats/duckdb-tmp")
-# `readsbstats` is a system user with no /home — DuckDB needs an explicit
-# home for its extension cache. Lives next to the DB on /mnt/ext (already
-# writable for this user, survives across deploys, doesn't clutter /opt).
-DUCKDB_HOME_DIR   = os.getenv("RSBS_DUCKDB_HOME_DIR",
-                              "/mnt/ext/readsbstats/duckdb-home")
 
 # ---------------------------------------------------------------------------
 # VDL2 / ACARS (opt-in, SEPARATE DB) — disabled by default
@@ -286,10 +278,9 @@ ADSBX_OVERRIDES_TTL_DAYS = _int(
     *_register("adsbx_overrides_ttl_days", "RSBS_ADSBX_OVERRIDES_TTL_DAYS",
                "365", "ADSBX_OVERRIDES_TTL_DAYS")
 )
-# Background prewarmer for map heatmap/coverage caches. On when DuckDB is
-# on; harmless to leave on with DuckDB off (the prewarmer self-disables if
-# the analytics engine isn't available — running the heavy SQLite query
-# unsolicited would hammer the collector).
+# Background prewarmer for map heatmap/coverage caches. ≥7d windows answer
+# from rollup tables (grid_daily / coverage_daily) and are cheap; 24h stays
+# a raw positions scan but is small. Enabled by default on all installs.
 PREWARM_MAP_CACHE = _bool("RSBS_PREWARM_MAP_CACHE", default=True)
 
 # ---------------------------------------------------------------------------

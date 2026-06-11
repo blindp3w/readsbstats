@@ -202,9 +202,9 @@ def _initial_prewarm_schedule(
 
     Ordering: the all-time stats payload goes first — it's the only stats
     target, and a cold "All time" click otherwise pays the full ~15-query scan
-    for ~120 s after a restart on DuckDB hosts (where it would sort last among
-    9 targets). Map targets follow, by TTL ascending (shortest-window =
-    most-user-hit = first), heatmap before coverage at each TTL.
+    for ~120 s after a restart (where it would sort last among 9 targets).
+    Map targets follow, by TTL ascending (shortest-window = most-user-hit =
+    first), heatmap before coverage at each TTL.
 
     Pulled out so we can unit-test the ordering without spinning up the
     thread or sleeping for real time.
@@ -293,23 +293,19 @@ def _prewarm_loop(targets: list[tuple[str, str]] | None = None) -> None:
             return
 
 
-def _start_prewarmer(include_map: bool = True) -> None:
+def _start_prewarmer() -> None:
     """Start the cache prewarmer daemon.
 
-    ``include_map=False`` warms only the all-time stats payload (pure SQLite)
-    and skips heatmap/coverage — used when DuckDB is unavailable so a bare Pi
-    doesn't run scheduled full-``positions`` scans through the SQLite fallback.
+    Warms all ``_PREWARM_TARGETS`` — stats, heatmap, and coverage for every
+    window. ≥7d map targets are served from rollup tables and are cheap;
+    24h stays a raw positions scan but is small.
     """
     global _prewarmer_thread
     if _prewarmer_thread is not None and _prewarmer_thread.is_alive():
         return
-    targets = (
-        _PREWARM_TARGETS if include_map
-        else [t for t in _PREWARM_TARGETS if t[0] == "stats"]
-    )
     _prewarmer_stop.clear()
     _prewarmer_thread = threading.Thread(
-        target=_prewarm_loop, args=(targets,), name="cache-prewarm", daemon=True
+        target=_prewarm_loop, args=(_PREWARM_TARGETS,), name="cache-prewarm", daemon=True
     )
     _prewarmer_thread.start()
 

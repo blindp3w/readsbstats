@@ -25,7 +25,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import analytics, cache, config, database
+from . import cache, config, database
 from .api import _deps  # used by _startup_migrate() to read the test-injected _db
 from .api import (
     aircraft as _api_aircraft,
@@ -108,28 +108,19 @@ async def _lifespan(app_: FastAPI) -> AsyncIterator[None]:
     # Audit 2026-06-01 W-3: background migrations AND route enrichment are
     # owned by the collector so two processes don't fight on the SQLite write
     # lock. Web is read-only (except for the per-request response cache).
-    # Eager-init DuckDB so the first user hit doesn't pay extension+ATTACH
-    # cost (~1–2 s).
-    if analytics.is_available():
-        log.info("analytics: DuckDB engine ready")
     # Kick off the prewarmer so users land on warm cache instead of the
-    # cold-scan path. Gated on PREWARM_MAP_CACHE but NOT on DuckDB: the
-    # all-time stats payload is pure SQLite and benefits every install. Map
-    # (heatmap/coverage) targets stay DuckDB-gated via include_map so a bare
-    # Pi doesn't run scheduled full-`positions` scans through the SQLite
-    # fallback. (Before 2026-06-06 the prewarmer never started without DuckDB,
-    # so map caches went unwarmed there too.)
+    # cold-scan path. Gated on PREWARM_MAP_CACHE: rollup-backed ≥7d windows
+    # are cheap; 24h stays a raw scan but is small. Stats, heatmap, and
+    # coverage are all prewarmed unconditionally.
     if config.PREWARM_MAP_CACHE:
-        with_map = analytics.is_available()
-        log.info("starting cache prewarmer (map=%s, half-TTL refresh)", with_map)
-        cache._start_prewarmer(include_map=with_map)
+        log.info("starting cache prewarmer (half-TTL refresh)")
+        cache._start_prewarmer()
     yield
     # Audit 17 review: _stop_prewarmer now join()s the worker (up to 15 s if a
     # scan is in flight), so run it off-loop — a synchronous call here would
     # freeze the event loop during a mid-scan shutdown, stalling in-flight
     # responses. Mirrors the to_thread(_startup_migrate) pattern above.
     await asyncio.to_thread(cache._stop_prewarmer)
-    analytics.close()
     if config.VDL2_ENABLED:
         from .vdl2 import db as vdl2_db
         vdl2_db.close_all_web_conns()

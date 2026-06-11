@@ -14,7 +14,7 @@ updates:
       actions:
         patterns: ["*"]
 
-  # Python: FastAPI / uvicorn / duckdb / httpx / jinja2 / aiofiles + dev
+  # Python: FastAPI / uvicorn / httpx / jinja2 / aiofiles + dev
   # tooling. Bundled weekly so CVE fixes for the whole stack land in one
   # PR; we still bump major versions case-by-case.
   - package-ecosystem: pip

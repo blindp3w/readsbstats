@@ -50,7 +50,7 @@ readsb and tar1090 give you a great live view — readsbstats adds the other hal
 - Aircraft watchlist — track by ICAO hex, registration, or callsign prefix
 - Receiver metrics dashboard with 10 time-series charts (Apache ECharts canvas, cross-panel hover sync, wheel/pinch zoom, LTTB downsampling) and 9 health checks
 - Statistics dashboard — receiver-wide aggregates (top aircraft/airlines/routes/airports, hourly & daily activity, DOW×hour heatmap, polar coverage range). Defaults to the **last 7 days** for fast loads; the all-time view is background-warmed so it stays snappy
-- Optional [DuckDB](https://duckdb.org/) analytical accelerator for heatmap/coverage (`RSBS_USE_DUCKDB=1`)
+- Heatmap and coverage overlays served from collector-maintained daily rollup tables — millisecond responses at any history size, and the all-time views survive raw-position retention
 - Optional **VDL2 / ACARS** integration — ingest VHF Data Link Mode 2 traffic from a separate SDR via [vdlm2dec](https://github.com/TLeconte/vdlm2dec): a Messages tab (live feed, filters, full-text search) plus an ACARS panel on flight pages, a "has ACARS" badge/filter in history, and a Stats card. Fully pluggable (`RSBS_VDL2_ENABLED`), stored in its own database (see [Operations](docs/operations.md#vdl2--acars-ingest))
 - Unit switching: Aeronautical / Metric / Imperial — persisted in browser
 - SQLite crash-safety (WAL + `synchronous=NORMAL`, `RSBS_DB_SYNCHRONOUS=FULL` for per-commit durability) with dirty-shutdown detection (fail-closed on corruption — see [Operations](docs/operations.md#database-integrity--startup-recovery)) and weekly/monthly integrity checks via systemd timers
@@ -155,7 +155,7 @@ readsbstats/
 │   ├── http_safe.py            # SSRF-safe HTTP helpers (HTTPS-only)
 │   ├── photo_sources.py        # Planespotters → airport-data → hexdb → Wikipedia
 │   ├── notifier.py             # Telegram notifications
-│   ├── analytics.py            # DuckDB accelerator (opt-in)
+│   ├── rollups.py              # Daily heatmap/coverage rollups (collector-maintained)
 │   ├── health.py               # Receiver health checks
 │   ├── geo.py                  # haversine_nm, bearing
 │   └── vdl2/                   # Opt-in VDL2/ACARS ingest (separate vdl2.db)
@@ -166,7 +166,7 @@ readsbstats/
 │   ├── purge_bad_gs.py         # One-shot: null implausible gs values
 │   └── purge_mlat_gs_spikes.py # One-shot: null MLAT gs spikes
 ├── frontend/                   # React 19 + Vite 8 SPA (386 Vitest tests)
-├── tests/                      # pytest (1879 tests) + Playwright UI (84 tests)
+├── tests/                      # pytest (1898 tests) + Playwright UI (84 tests)
 ├── static/airspace/            # Bundled airspace GeoJSON
 ├── systemd/                    # Service + timer unit files
 └── docs/                       # Public documentation
@@ -185,7 +185,7 @@ Full guides live in [`docs/`](docs/), grouped by reference / how-to / explanatio
 
 | Guide | Contents |
 |---|---|
-| [Configuration](docs/configuration.md) | All 86 `RSBS_*` env vars, logging, DuckDB, airspace config |
+| [Configuration](docs/configuration.md) | All 83 `RSBS_*` env vars, logging, airspace config |
 | [API Reference](docs/api.md) | All API endpoints, SPA routes, database schema |
 | [Integrations](docs/integrations.md) | Telegram setup, bot commands, ghost/GS filtering |
 | [Operations](docs/operations.md) | Updating code, DB sync, useful commands, backups |

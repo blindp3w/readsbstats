@@ -483,3 +483,24 @@ class TestDbSynchronous:
         importlib.reload(readsbstats.config)
         assert readsbstats.config.DB_SYNCHRONOUS == "NORMAL"
         assert capsys.readouterr().err == ""
+
+
+class TestGridFineRetentionDays:
+    def test_below_floor_falls_back_to_default(self, monkeypatch, capsys):
+        monkeypatch.setenv("RSBS_GRID_FINE_RETENTION_DAYS", "3")
+        import readsbstats.config
+        importlib.reload(readsbstats.config)
+        assert readsbstats.config.GRID_FINE_RETENTION_DAYS == 14
+        assert "RSBS_GRID_FINE_RETENTION_DAYS" in capsys.readouterr().err
+
+    def test_at_floor_passes_through(self, monkeypatch):
+        monkeypatch.setenv("RSBS_GRID_FINE_RETENTION_DAYS", "8")
+        import readsbstats.config
+        importlib.reload(readsbstats.config)
+        assert readsbstats.config.GRID_FINE_RETENTION_DAYS == 8
+
+    def test_above_floor_passes_through(self, monkeypatch):
+        monkeypatch.setenv("RSBS_GRID_FINE_RETENTION_DAYS", "30")
+        import readsbstats.config
+        importlib.reload(readsbstats.config)
+        assert readsbstats.config.GRID_FINE_RETENTION_DAYS == 30

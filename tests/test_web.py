@@ -46,8 +46,8 @@ def client(db_conn, monkeypatch):
     """
     monkeypatch.setattr(_deps, "_db", db_conn)
     # The lifespan starts the cache prewarmer when PREWARM_MAP_CACHE is on
-    # (now independent of DuckDB). Tests don't want a background thread warming
-    # the cache out from under their assertions — disable it here.
+    # Tests don't want a background thread warming the cache out from under
+    # their assertions — disable it here.
     monkeypatch.setattr(config, "PREWARM_MAP_CACHE", False)
     cache._cache.clear()
     with TestClient(web.app, raise_server_exceptions=True,
@@ -3959,21 +3959,35 @@ class TestApiMapCoverage:
         self._insert_position_at(db_conn, bearing_deg=95.0, dist_nm=200.0)
         assert client.get("/api/map/coverage?window=all").json()["max_range_nm"] == pytest.approx(200.0)
 
-    def test_null_distance_bucket_does_not_crash(self, monkeypatch):
-        """Audit 17: a bucket whose max distance is None (e.g. a DuckDB result
-        with a NULL-producing distance expr) must collapse to the receiver
-        location, not raise TypeError comparing None > 0 / max(None,...)."""
+    def test_missing_bucket_coalesces_to_receiver(self, db_conn, monkeypatch):
+        """Audit 17: buckets absent from the rollup result must collapse to the
+        receiver location, not raise TypeError on max()/comparison.
+
+        Seed only buckets 0 and 1 in coverage_daily with rollups_ready set,
+        so the 34 remaining buckets are missing from the query result.  The
+        `by_bucket.get(i, 0.0) or 0.0` loop must handle this without raising.
+        """
         from readsbstats.api import map as map_mod
         cache._cache.clear()
-        # analytics.coverage is the DuckDB path; return a None bucket value.
-        monkeypatch.setattr(map_mod.analytics, "coverage",
-                            lambda *a, **k: {0: None, 1: 100.0})
+        monkeypatch.setattr(_deps, "_db", db_conn)
+        # Mark rollups as ready so _compute_coverage_sync uses coverage_daily.
+        db_conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES('rollups_ready', '1')")
+        # Seed only 2 of 36 display buckets (bearing_b 0 and 10 map to
+        # display buckets 0 and 1 after `bearing_b / 10`).
+        db_conn.execute(
+            "INSERT INTO coverage_daily(day, bearing_b, max_nm) VALUES(0, 0, 0.0)"
+        )
+        db_conn.execute(
+            "INSERT INTO coverage_daily(day, bearing_b, max_nm) VALUES(0, 10, 100.0)"
+        )
+        db_conn.commit()
         result = map_mod._compute_coverage_sync("all")
         assert len(result["polygon"]) == 36
-        # bucket 0 (None) collapses to the receiver location
-        assert result["polygon"][0][0] == pytest.approx(config.RECEIVER_LAT, abs=1e-6)
-        assert result["polygon"][0][1] == pytest.approx(config.RECEIVER_LON, abs=1e-6)
-        # max_range ignores the None and reflects the real bucket
+        # Buckets 2–35 are missing — they must all collapse to receiver location.
+        for i in range(2, 36):
+            assert result["polygon"][i][0] == pytest.approx(config.RECEIVER_LAT, abs=1e-6)
+            assert result["polygon"][i][1] == pytest.approx(config.RECEIVER_LON, abs=1e-6)
+        # max_range_nm reflects the real seeded value.
         assert result["max_range_nm"] == pytest.approx(100.0)
 
     def test_bucket_uses_max_distance(self, client, db_conn):
@@ -4496,34 +4510,12 @@ class TestStatsPrewarm:
 
     def test_stats_prewarm_scheduled_first(self):
         # stats:all must warm first so the opt-in all-time view isn't cold for
-        # ~120s after a restart on DuckDB hosts (9 targets, 15s stagger).
+        # ~120s after a restart (9 targets, 15s stagger).
         schedule = cache._initial_prewarm_schedule(cache._PREWARM_TARGETS, now=1_000_000.0)
         ranked = sorted(cache._PREWARM_TARGETS, key=lambda t: schedule[t])
         assert ranked[0] == ("stats", "all")
 
-    def test_start_prewarmer_excludes_map_without_duckdb(self, monkeypatch):
-        import threading
-        captured: dict = {}
-        ran = threading.Event()
-
-        def fake_loop(targets=None):
-            captured["targets"] = targets
-            ran.set()
-
-        monkeypatch.setattr(cache, "_prewarm_loop", fake_loop)
-        cache._stop_prewarmer()  # ensure a clean slate
-        try:
-            cache._start_prewarmer(include_map=False)
-            assert ran.wait(2), "prewarmer did not invoke the loop"
-            # Robust to future stats targets: the point is map targets are excluded.
-            assert captured["targets"]
-            assert all(t[0] == "stats" for t in captured["targets"])
-            assert ("stats", "all") in captured["targets"]
-        finally:
-            cache._stop_prewarmer()
-            cache._prewarmer_stop.clear()
-
-    def test_start_prewarmer_includes_map_with_duckdb(self, monkeypatch):
+    def test_start_prewarmer_includes_map_targets(self, monkeypatch):
         import threading
         captured: dict = {}
         ran = threading.Event()
@@ -4535,11 +4527,12 @@ class TestStatsPrewarm:
         monkeypatch.setattr(cache, "_prewarm_loop", fake_loop)
         cache._stop_prewarmer()
         try:
-            cache._start_prewarmer(include_map=True)
+            cache._start_prewarmer()
             assert ran.wait(2)
             assert captured["targets"] == cache._PREWARM_TARGETS
             assert ("stats", "all") in captured["targets"]
             assert ("heatmap", "24h") in captured["targets"]
+            assert ("coverage", "7d") in captured["targets"]
         finally:
             cache._stop_prewarmer()
             cache._prewarmer_stop.clear()

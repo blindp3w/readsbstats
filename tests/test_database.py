@@ -294,9 +294,12 @@ class TestMigrate:
         assert "idx_positions_flight" not in indexes
         assert "idx_positions_ts_coords" not in indexes
         assert "idx_positions_flight_id_desc" not in indexes
-        # Still present until Phase 2 (rollups) lands:
-        assert "idx_positions_ts_flight" in indexes
-        assert "idx_positions_ts_lat_lon" in indexes
+        # Phase 2 (rollups): the ts-composite indexes are no longer created —
+        # they only served the heatmap/coverage scans now answered by
+        # grid_daily/coverage_daily (rollups.backfill_and_finalize drops
+        # them on existing DBs).
+        assert "idx_positions_ts_flight" not in indexes
+        assert "idx_positions_ts_lat_lon" not in indexes
         # Permanent set:
         assert "idx_positions_flight_ts" in indexes
         assert "idx_positions_ts" in indexes
@@ -360,6 +363,13 @@ class TestMigrate:
             if row[1] is not None
         }
         assert "idx_positions_flight_id_desc" not in indexes
+        # Phase 2 (rollups): after the backfill finalizes, the permanent
+        # positions index set is exactly these two — the ts-composites are
+        # gone and the rollups_ready flag is set.
+        named = {n for n in indexes if not n.startswith("sqlite_autoindex")}
+        assert named == {"idx_positions_flight_ts", "idx_positions_ts"}
+        from readsbstats import rollups
+        assert rollups.ready(conn)
         conn.close()
 
     def test_idx_positions_flight_ts_built(self, tmp_path):
@@ -762,6 +772,53 @@ class TestSnapshotDb:
         assert "callsign" in routes_cols
         assert "origin_icao" in routes_cols
         assert "dest_icao" in routes_cols
+        conn.close()
+
+    def test_migrate_creates_rollup_tables(self, tmp_path):
+        """Regression for Phase-2 rollup tables — meta, grid_daily, coverage_daily
+        must be created by _migrate() so the web server picks them up on existing
+        DBs without a collector restart (web-only-restart path)."""
+        db_path = str(tmp_path / "test_rollup.db")
+        conn = database.connect(db_path)
+        # Build a minimal schema then drop the three rollup tables so _migrate()
+        # must recreate them — simulates an existing DB before Phase-2 upgrade.
+        conn.execute("""
+            CREATE TABLE flights (
+                id INTEGER PRIMARY KEY, icao_hex TEXT, callsign TEXT,
+                registration TEXT, aircraft_type TEXT,
+                first_seen INTEGER, last_seen INTEGER,
+                max_distance_nm REAL, max_alt_baro REAL, max_gs REAL,
+                total_positions INTEGER DEFAULT 0,
+                adsb_positions INTEGER DEFAULT 0,
+                mlat_positions INTEGER DEFAULT 0,
+                primary_source TEXT
+            )
+        """)
+        conn.execute("CREATE TABLE IF NOT EXISTS positions (id INTEGER PRIMARY KEY, flight_id INTEGER)")
+        conn.execute("CREATE TABLE IF NOT EXISTS active_flights (icao_hex TEXT PRIMARY KEY, flight_id INTEGER NOT NULL, last_seen INTEGER NOT NULL)")
+        conn.commit()
+        # Ensure the three tables are absent before _migrate runs.
+        for tbl in ("meta", "grid_daily", "coverage_daily"):
+            conn.execute(f"DROP TABLE IF EXISTS {tbl}")
+        conn.commit()
+
+        database._migrate(conn)
+
+        tables = {
+            row[0]
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        assert "meta" in tables
+        assert "grid_daily" in tables
+        assert "coverage_daily" in tables
+        # Schema sanity — key columns present
+        meta_cols = {row[1] for row in conn.execute("PRAGMA table_info(meta)")}
+        assert "key" in meta_cols
+        assert "value" in meta_cols
+        grid_cols = {row[1] for row in conn.execute("PRAGMA table_info(grid_daily)")}
+        assert {"scale", "day", "lat_b", "lon_b", "w"}.issubset(grid_cols)
+        cov_cols = {row[1] for row in conn.execute("PRAGMA table_info(coverage_daily)")}
+        assert {"day", "bearing_b", "max_nm"}.issubset(cov_cols)
         conn.close()
 
 

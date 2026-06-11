@@ -5,6 +5,67 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 2.17.0 — 2026-06-11
+
+Phase 2 of the database performance overhaul: collector-maintained daily
+rollup tables replace both the whole-history `positions` scans and the
+DuckDB accelerator. Numbers below were measured on a copy of the production
+database (6.18 M `positions` rows) on a Pi 4 with a USB HDD.
+
+### Added
+
+- **Daily rollup tables, maintained by the collector.** Two new tables —
+  `grid_daily` (per-day position counts in grid cells at two scales: 0.01°
+  fine cells pruned after `RSBS_GRID_FINE_RETENTION_DAYS` (default 14,
+  floor 8), and 0.1° coarse cells kept forever) and `coverage_daily` (max
+  detection range per 1° bearing bucket per day, kept forever) — plus a
+  generic `meta` key/value table. Rollups are flushed inside the same
+  transaction as the position inserts, so they can never drift from
+  committed positions: if the flush fails, the whole poll rolls back. A
+  one-time, day-batched backfill builds them from existing history on first
+  run (crash-safe watermark, resumes after a restart) and then flips a
+  readiness flag.
+- `RSBS_GRID_FINE_RETENTION_DAYS` env var (default `14`, min `8`) — how
+  long the fine-scale heatmap grid is kept. Coarse grid and coverage
+  rollups are permanent.
+
+### Changed
+
+- **Heatmap and coverage windows of 7d/30d/all are served from the
+  rollups.** The all-time heatmap went from ~30 s of raw scanning to
+  ~10 ms. The 24h window keeps its exact rolling semantics via a small
+  ts-indexed raw scan. **Semantic note:** the ≥7d windows are now
+  UTC-day-quantized — "last N full days + today-so-far" — so they may
+  include up to ~24 h more data at the window edge than the old exact
+  rolling cutoff.
+- **Two more legacy `positions` indexes are dropped** once the backfill
+  completes: `idx_positions_ts_flight` and `idx_positions_ts_lat_lon`
+  (~320 MB) only served the whole-history scans the rollups now answer.
+  After this, `positions` carries exactly two indexes:
+  `idx_positions_flight_ts` and `idx_positions_ts`. As with Phase 1, the
+  file shrinks only after a later phase's VACUUM.
+- **All-time heatmap and coverage now survive raw-position deletion.**
+  Because the rollups are permanent and independent of the `positions`
+  rows they were built from, the all-time map views keep their full
+  history even if a retention policy later purges old raw positions.
+
+### Removed
+
+- **The DuckDB analytical accelerator is retired**
+  ([ADR-0014](docs/decisions/0014-daily-rollups-replace-duckdb.md);
+  supersedes [ADR-0002](docs/decisions/0002-duckdb-analytical-accelerator.md)).
+  The rollups made it redundant — and strictly better: no 256 MB
+  working-set cap, no 2 dedicated worker threads, no extension pre-fetch in
+  `update.sh`, no second query engine to keep consistent. The
+  `RSBS_USE_DUCKDB` / `RSBS_DUCKDB_*` env vars, the `analytics` module, the
+  dependency, and its tests are all gone. Existing installs can drop the
+  stale env vars and the `duckdb-home` / `duckdb-tmp` directories.
+
+### Tests
+
+- Backend 1891 → 1898 (rollup accumulator/flush/backfill/prune, rollup-served
+  map windows, raw fallbacks, index-drop checks). Frontend unchanged (386).
+
 ## 2.16.0 — 2026-06-11
 
 Phase 1 of a database performance overhaul. All numbers were measured on a

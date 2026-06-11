@@ -24,7 +24,7 @@ import sys
 import threading
 import time
 
-from . import adsbx_enricher, config, database, enrichment, geo, icao_ranges, metrics_collector, notifier, route_enricher
+from . import adsbx_enricher, config, database, enrichment, geo, icao_ranges, metrics_collector, notifier, rollups, route_enricher
 from .cleaners import clean_short_text
 
 # 24-bit Mode-S address, lowercase hex. Validated *after* stripping the
@@ -728,6 +728,7 @@ def _poll(conn: sqlite3.Connection) -> None:
         "SELECT match_type, value, label FROM watchlist"
     ).fetchall() if _tg else []
 
+    acc = rollups.RollupAccumulator()
     with conn:
         for ac in aircraft_list:
             # BE-6: a non-dict entry (string/None/int from a corrupt feed)
@@ -945,6 +946,7 @@ def _poll(conn: sqlite3.Connection) -> None:
                 lat, lon, alt_baro, alt_geom,
                 gs, track, baro_rate, rssi, messages, source_type,
             )
+            acc.add(pos_ts, lat, lon, distance_nm, distance_bearing)
             _update_flight_agg(
                 conn, flight_id, icao, pos_ts,
                 callsign, registration, aircraft_type, squawk,
@@ -1023,6 +1025,7 @@ def _poll(conn: sqlite3.Connection) -> None:
             _close_flight(conn, icao)
         if expired:
             log.debug("Closed %d expired flight(s)", len(expired))
+        rollups.flush(conn, acc)
 
     # Enqueue alerts for the dispatch consumer.  Lazily start the consumer if
     # it isn't already running (production starts it in main(); tests may
@@ -1176,11 +1179,14 @@ def _purge(conn: sqlite3.Connection) -> None:
 
 
 def _run_maintenance(conn: sqlite3.Connection) -> None:
-    """Hourly DB maintenance: retention purge + planner-statistics refresh.
+    """Hourly DB maintenance: retention purge, fine-rollup pruning,
+    planner-statistics refresh.
     `PRAGMA optimize` is the SQLite-recommended periodic call — it re-ANALYZEs
     only tables whose content changed enough to matter, with an internal
     row-sample cap, so it's cheap even on the Pi."""
     _purge(conn)
+    with conn:
+        rollups.prune_fine(conn, int(time.time()))
     conn.execute("PRAGMA optimize")
 
 
