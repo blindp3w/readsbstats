@@ -634,3 +634,161 @@ class TestGating:
         web._include_optional_routers(app)
         paths = {r.path for r in app.routes}
         assert "/api/vdl2/messages" in paths
+
+
+# ---------------------------------------------------------------------------
+# Edge branches: helper functions, cache hits, degraded paths
+# ---------------------------------------------------------------------------
+
+class TestEdgeBranches:
+    def test_fts_match_no_word_terms_returns_empty_phrase(self):
+        # Pure punctuation tokenizes to nothing — the MATCH expr must stay a
+        # valid (matches-nothing) phrase, not raise an FTS syntax error.
+        assert vdl2_api._fts_match("!!! ???") == '""'
+
+    def test_timeseries_bucket_spans(self):
+        assert vdl2_api._timeseries_bucket(3_600) == 60
+        assert vdl2_api._timeseries_bucket(604_800) == 300
+        assert vdl2_api._timeseries_bucket(2_592_000) == 900
+        assert vdl2_api._timeseries_bucket(7_776_000) == 3600
+        assert vdl2_api._timeseries_bucket(50_000_000) == 14400
+
+    def test_health_served_from_cache_on_second_call(self, client):
+        h1 = vdl2_api.vdl2_health()
+        assert vdl2_api.vdl2_health() is h1     # same cached object
+
+    def test_health_attach_probe_error_degrades_to_false(self, client, monkeypatch):
+        # history.db side down: available (vdl2 store) stays True, only the
+        # attach bit degrades — the two bits are independent by contract.
+        monkeypatch.setattr(
+            _deps, "db",
+            lambda: (_ for _ in ()).throw(sqlite3.OperationalError("history down")))
+        h = vdl2_api.vdl2_health()
+        assert h["available"] is True
+        assert h["attach_available"] is False
+
+    def test_health_store_error_leaves_available_false(self, client, monkeypatch):
+        class BrokenConn:
+            def execute(self, *a, **k):
+                raise sqlite3.OperationalError("broken store")
+
+        monkeypatch.setattr(vdl2_db, "web_conn", lambda: BrokenConn())
+        h = vdl2_api.vdl2_health()
+        assert h["enabled"] is True
+        assert h["available"] is False
+
+    def test_search_falls_back_to_like_when_match_raises(self, client):
+        # Build/DB skew: has_fts says yes but MATCH raises OperationalError —
+        # the handler must degrade to the LIKE path, not 500.
+        conn = vdl2_db._conn
+        conn.execute("DROP TABLE IF EXISTS vdl2_fts")
+        real_has_fts = vdl2_db.has_fts
+        vdl2_db.has_fts = lambda c: True
+        try:
+            r = client.get("/api/vdl2/messages?q=krakow")
+        finally:
+            vdl2_db.has_fts = real_has_fts
+        assert r.status_code == 200
+        assert [m["body"] for m in r.json()["messages"]] == ["position report krakow"]
+
+    def test_oooi_until_bounds_the_scan(self, client):
+        base = int(time.time())
+        conn = vdl2_db._conn
+        vdl2_db.insert_messages(conn, [{
+            "ts": base - 5, "icao_hex": "48e95d",
+            "body": "ARR / FI JA401/AN CC-AWE/DA SPJC/AD SCEL/ON 0145/IN 0157",
+        }])
+        conn.commit()
+        full = client.get("/api/vdl2/oooi/48e95d").json()
+        assert full["arr"] is not None and full["has_oooi"] is True
+        bounded = client.get(f"/api/vdl2/oooi/48e95d?until={base - 3600}").json()
+        assert bounded["arr"] is None           # window excluded the ARR
+
+    def test_stats_slow_query_logs_warning(self, client, monkeypatch, caplog):
+        import itertools
+        ticks = itertools.count(start=0, step=10)
+        monkeypatch.setattr(vdl2_api.time, "perf_counter",
+                            lambda: float(next(ticks)))
+        with caplog.at_level("WARNING"):
+            assert client.get("/api/vdl2/stats").status_code == 200
+        assert any("vdl2 stats query slow" in rec.getMessage()
+                   for rec in caplog.records)
+
+    def test_timeseries_slow_query_logs_warning(self, client, monkeypatch, caplog):
+        import itertools
+        ticks = itertools.count(start=0, step=10)
+        monkeypatch.setattr(vdl2_api.time, "perf_counter",
+                            lambda: float(next(ticks)))
+        with caplog.at_level("WARNING"):
+            assert client.get("/api/vdl2/timeseries").status_code == 200
+        assert any("vdl2 timeseries query slow" in rec.getMessage()
+                   for rec in caplog.records)
+
+    def test_flights_overlap_pct_none_on_core_db_error(self, client, monkeypatch):
+        # Heaviest stats sub-query must degrade to None, never 503 the card.
+        monkeypatch.setattr(
+            _deps, "db",
+            lambda: (_ for _ in ()).throw(sqlite3.OperationalError("core down")))
+        assert vdl2_api._flights_overlap_pct() is None
+
+    def test_positions_skips_coarse_duplicate_of_precise(self, client):
+        # One row with BOTH a parseable Label-16 AUTPOS body and XID lat/lon
+        # columns must yield a single (precise) point, not a duplicate.
+        base = int(time.time())
+        conn = vdl2_db._conn
+        vdl2_db.insert_messages(conn, [{
+            "ts": base - 5, "icao_hex": "48e95d", "label": "16",
+            "lat": 52.0, "lon": 20.5,
+            "body": "WA921  ,N 52.166,E 020.772,4406, 251,2054, 72",
+        }])
+        conn.commit()
+        data = client.get("/api/vdl2/positions?minutes=60").json()
+        pts = [p for p in data["points"] if p["icao_hex"] == "48e95d"]
+        assert len(pts) == 1
+        assert pts[0]["precise"] is True
+        assert abs(pts[0]["lat"] - 52.166) < 1e-6
+
+    def test_active_and_positions_cache_hits(self, client):
+        a1 = client.get("/api/vdl2/active").json()
+        assert client.get("/api/vdl2/active").json() == a1
+        p1 = client.get("/api/vdl2/positions").json()
+        assert client.get("/api/vdl2/positions").json() == p1
+        s1 = client.get("/api/vdl2/stats").json()
+        assert client.get("/api/vdl2/stats").json() == s1
+
+    def test_oooi_scan_breaks_early_when_complete(self, client):
+        # Newest-first scan: once dep + arr + dsta are all found, the loop
+        # must break instead of scanning the rest of the airframe's history.
+        base = int(time.time())
+        conn = vdl2_db._conn
+        vdl2_db.insert_messages(conn, [
+            {"ts": base - 30, "icao_hex": "48aaaa", "body": "old noise"},
+            {"ts": base - 20, "icao_hex": "48aaaa",
+             "body": "DEP / FI LO1/AN SP-ABC/DA EPWA/DS EGLL/OT 0030/OFF 0042"},
+            {"ts": base - 10, "icao_hex": "48aaaa", "dsta": "EPWA",
+             "body": "ARR / FI JA401/AN CC-AWE/DA SPJC/AD SCEL/ON 0145/IN 0157"},
+        ])
+        conn.commit()
+        data = client.get("/api/vdl2/oooi/48aaaa").json()
+        assert data["dep"] is not None
+        assert data["arr"] is not None
+        assert data["dsta"] == "EPWA"
+        assert data["has_oooi"] is True
+
+    def test_flights_overlap_pct_none_when_no_flights(self, tmp_path, monkeypatch):
+        # Attach available but zero flights in the 24h window → None (the SPA
+        # hides the overlap chip), not a divide-by-zero or 0.0.
+        from readsbstats import database
+        monkeypatch.setattr(config, "VDL2_ENABLED", True)
+        vdl2_path = str(tmp_path / "vdl2.db")
+        monkeypatch.setattr(config, "VDL2_DB_PATH", vdl2_path)
+        vconn = vdl2_db.connect(vdl2_path)
+        vdl2_db.ensure_schema(vconn)
+        vconn.commit()
+        vconn.close()
+        core = database.connect(str(tmp_path / "history.db"), uri=True)
+        core.executescript(database.DDL)
+        database._migrate(core)
+        monkeypatch.setattr(_deps, "_db", core)
+        assert vdl2_api._flights_overlap_pct() is None
+        core.close()

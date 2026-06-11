@@ -135,6 +135,55 @@ describe('HealthStripe — happy path with 4 checks', () => {
   });
 });
 
+describe('HealthStripe — square-click focus management', () => {
+  // Unit twin of the CI Playwright regression lock
+  // `test_v2_health_stripe_second_square_click_re_focuses`: catching the
+  // focus regression here costs ~1 s instead of a browser run.
+
+  it('first square click expands the panel and focuses the matching row', async () => {
+    renderMetrics();
+    const squares = await waitFor(() => {
+      const els = screen.queryAllByTestId('health-stripe-square');
+      if (els.length === 0) throw new Error('squares not ready');
+      return els;
+    });
+    fireEvent.click(squares[1]); // signal_drop
+    await waitFor(() => {
+      expect(document.activeElement?.id).toBe('health-check-signal_drop');
+    });
+  });
+
+  it('second square click while the panel is open re-focuses the new row', async () => {
+    // The original bug: the [open]-keyed effect did not re-run on the second
+    // click (setOpen(true) bails out), so focus stayed on the first row.
+    // openAndFocus now takes the synchronous path when already open.
+    renderMetrics();
+    const squares = await waitFor(() => {
+      const els = screen.queryAllByTestId('health-stripe-square');
+      if (els.length === 0) throw new Error('squares not ready');
+      return els;
+    });
+    fireEvent.click(squares[1]); // signal_drop — opens panel
+    await waitFor(() => {
+      expect(document.activeElement?.id).toBe('health-check-signal_drop');
+    });
+    fireEvent.click(squares[2]); // cpu_saturation — panel already open
+    expect(document.activeElement?.id).toBe('health-check-cpu_saturation');
+  });
+
+  it('failing-summary click also opens and focuses its check row', async () => {
+    renderMetrics();
+    const failing = await waitFor(() =>
+      screen.getByTestId('health-stripe-failing-cpu_saturation'),
+    );
+    fireEvent.click(failing);
+    await waitFor(() => {
+      expect(document.activeElement?.id).toBe('health-check-cpu_saturation');
+    });
+  });
+});
+
+
 describe('HealthStripe — edge cases', () => {
   it('empty checks array shows "0 checks" and the toggle is disabled', async () => {
     stubHealth = { overall: 'ok', as_of: 0, checks: [] };

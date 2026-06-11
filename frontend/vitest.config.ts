@@ -20,6 +20,13 @@ export default defineConfig({
     globals: true,
     setupFiles: ['./test/setup.ts'],
     css: false,
-    coverage: { provider: 'v8', reportsDirectory: './coverage' },
+    coverage: {
+      provider: 'v8',
+      reportsDirectory: './coverage',
+      // Vitest 4 removed `coverage.all`; without an explicit include, files
+      // never imported by any test are invisible in the report — which would
+      // hide exactly the untested components the report exists to surface.
+      include: ['src/**/*.{ts,tsx}'],
+    },
   },
 });

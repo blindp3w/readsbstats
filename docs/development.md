@@ -43,11 +43,12 @@ RSBS_AIRCRAFT_JSON=/tmp/rsbs_sim.json RSBS_DB_PATH=./db/history.db \
 ## Running tests
 
 ```bash
-.venv/bin/pytest                                              # 1879 Python tests
-( cd frontend && npm test )                                   # 386 Vitest tests
+.venv/bin/pytest                                              # 2019 Python tests
+( cd frontend && npm test )                                   # 414 Vitest tests
 
-# Coverage
+# Coverage (CI gates the backend at 93%; frontend report is informational)
 .venv/bin/pytest --cov=readsbstats --cov-report=term-missing
+( cd frontend && npm run test:coverage )
 ```
 
 > **Run the linter before pushing.** CI runs `eslint . --max-warnings 0` as a

@@ -7,6 +7,8 @@ no 500 rather than erroring.
 """
 from __future__ import annotations
 
+import sqlite3
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -155,3 +157,68 @@ def test_attach_failure_degrades_no_500(tmp_path, monkeypatch):
     assert r.status_code == 200
     assert "has_acars" not in r.json()["flights"][0]
     core.close()
+
+
+# ---------------------------------------------------------------------------
+# _maybe_attach_vdl2 fallback branches: the attach must degrade (DETACH /
+# stay unattached) and never raise into the request path, whatever state the
+# vdl2.db file is in.
+# ---------------------------------------------------------------------------
+
+def test_attach_detaches_when_vdl2_db_has_no_messages_table(tmp_path, monkeypatch):
+    # A valid SQLite file that isn't a vdl2.db (no vdl2_messages table) — the
+    # probe must DETACH so a later has_acars query can't hit a missing table.
+    vdl2_path = str(tmp_path / "vdl2.db")
+    other = sqlite3.connect(vdl2_path)
+    other.execute("CREATE TABLE not_vdl2 (x INTEGER)")
+    other.commit()
+    other.close()
+    monkeypatch.setattr(config, "VDL2_ENABLED", True)
+    monkeypatch.setattr(config, "VDL2_DB_PATH", vdl2_path)
+    core = _core_db(str(tmp_path / "history.db"))
+    _deps._maybe_attach_vdl2(core)
+    assert _deps.vdl2_attached(core) is False
+    core.close()
+
+
+def test_attach_garbage_file_never_raises(tmp_path, monkeypatch):
+    # Corrupt vdl2.db (not a database at all): the sqlite3.Error path must be
+    # swallowed and the connection left unattached.
+    vdl2_path = tmp_path / "vdl2.db"
+    vdl2_path.write_bytes(b"this is not a database" * 100)
+    monkeypatch.setattr(config, "VDL2_ENABLED", True)
+    monkeypatch.setattr(config, "VDL2_DB_PATH", str(vdl2_path))
+    core = _core_db(str(tmp_path / "history.db"))
+    _deps._maybe_attach_vdl2(core)            # must not raise
+    assert _deps.vdl2_attached(core) is False
+    core.close()
+
+
+def test_attach_error_with_failing_detach_never_raises(tmp_path, monkeypatch):
+    # Deterministic pin for the nested except (ATTACH raises, then the
+    # best-effort DETACH raises too because the alias never existed).
+    vdl2_path = tmp_path / "vdl2.db"
+    vdl2_path.touch()
+    monkeypatch.setattr(config, "VDL2_ENABLED", True)
+    monkeypatch.setattr(config, "VDL2_DB_PATH", str(vdl2_path))
+    core = _core_db(str(tmp_path / "history.db"))
+
+    class AttachRaisingConn:
+        def __init__(self, real):
+            self._real = real
+
+        def execute(self, sql, *args, **kwargs):
+            if sql.lstrip().upper().startswith(("ATTACH", "DETACH")):
+                raise sqlite3.OperationalError("simulated attach failure")
+            return self._real.execute(sql, *args, **kwargs)
+
+    wrapped = AttachRaisingConn(core)
+    _deps._maybe_attach_vdl2(wrapped)         # must not raise
+    assert _deps.vdl2_attached(core) is False
+    core.close()
+
+
+def test_vdl2_attached_false_on_closed_conn(tmp_path):
+    core = _core_db(str(tmp_path / "history.db"))
+    core.close()
+    assert _deps.vdl2_attached(core) is False

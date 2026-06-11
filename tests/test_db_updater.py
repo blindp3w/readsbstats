@@ -1041,3 +1041,57 @@ class TestParseAircraftCsvRow:
         assert row[2] == "A320"
         assert row[3] == "AIRBUS"
 
+    def test_semicolon_delimiter_preserves_commas_in_type_desc(self):
+        """CLAUDE.md gotcha: tar1090-db CSV is ';'-delimited, NOT comma. A
+        type_desc containing a comma must survive intact end-to-end — a
+        comma-configured reader would shear the row apart."""
+        import csv
+        line = "3c4b26;D-AIBF;A320;10;Airbus A320-211, twin-jet"
+        parts = next(csv.reader([line], delimiter=";"))
+        row = db_updater._parse_aircraft_csv_row(parts)
+        assert row is not None
+        icao, reg, type_code, type_desc, flags = row
+        assert icao == "3c4b26"
+        assert type_desc == "Airbus A320-211, twin-jet"
+        assert flags == 1                       # '10' = military-only
+        # Anti-regression: the same line through a comma reader is garbage.
+        bad_parts = next(csv.reader([line], delimiter=","))
+        assert db_updater._parse_aircraft_csv_row(bad_parts) is None
+
+
+class TestParseFlags:
+    """CLAUDE.md gotcha: the flags field is a BINARY STRING ('10' = military-
+    only, '0001' = LADD-only) — parsing it as a number (int(s, 0) or int(s))
+    would silently misclassify the whole aircraft_db."""
+
+    def test_military_only(self):
+        assert db_updater._parse_flags("10") == 1
+
+    def test_ladd_only(self):
+        assert db_updater._parse_flags("0001") == 8
+
+    def test_military_and_interesting(self):
+        assert db_updater._parse_flags("11") == 3
+
+    def test_all_four_bits(self):
+        assert db_updater._parse_flags("1111") == 15
+
+    def test_empty_string_is_zero(self):
+        assert db_updater._parse_flags("") == 0
+
+    def test_non_binary_digit_is_zero(self):
+        # '2' would be accepted by int() — the binary-string parser must not.
+        assert db_updater._parse_flags("2") == 0
+
+    def test_non_numeric_is_zero(self):
+        assert db_updater._parse_flags("ab") == 0
+
+    def test_extra_positions_ignored(self):
+        # zip() truncates at the 4 known bits; unknown future bits are ignored.
+        assert db_updater._parse_flags("11111") == 15
+
+    def test_int_parse_would_misclassify(self):
+        # The motivating bug: int('10') == 10 (PIA+interesting?!) while the
+        # correct binary read is military-only == 1.
+        assert db_updater._parse_flags("10") != int("10")
+
