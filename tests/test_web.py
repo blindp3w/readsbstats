@@ -3959,12 +3959,16 @@ class TestApiMapCoverage:
         self._insert_position_at(db_conn, bearing_deg=95.0, dist_nm=200.0)
         assert client.get("/api/map/coverage?window=all").json()["max_range_nm"] == pytest.approx(200.0)
 
-    def test_null_distance_bucket_does_not_crash(self, monkeypatch):
+    def test_null_distance_bucket_does_not_crash(self, db_conn, monkeypatch):
         """Audit 17: a bucket whose max distance is None (e.g. a DuckDB result
         with a NULL-producing distance expr) must collapse to the receiver
         location, not raise TypeError comparing None > 0 / max(None,...)."""
         from readsbstats.api import map as map_mod
         cache._cache.clear()
+        # Phase 2 (rollups): _compute_coverage_sync now opens the DB up front
+        # for the rollups.ready() check, so inject the test connection. The
+        # flag is unset here, so the DuckDB-patched legacy path still answers.
+        monkeypatch.setattr(_deps, "_db", db_conn)
         # analytics.coverage is the DuckDB path; return a None bucket value.
         monkeypatch.setattr(map_mod.analytics, "coverage",
                             lambda *a, **k: {0: None, 1: 100.0})

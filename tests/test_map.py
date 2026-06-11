@@ -86,6 +86,121 @@ class TestIndex:
 
 
 # ---------------------------------------------------------------------------
+# Tests: heatmap/coverage served from the daily rollups (Phase 2).
+# Cache interplay: the `client` fixture clears cache._cache per test, and
+# each test issues a single GET per window, so no stale heatmap:{window} /
+# coverage:{window} entries can leak between tests.
+# ---------------------------------------------------------------------------
+
+def _set_rollups_ready(conn):
+    conn.execute("INSERT INTO meta(key, value) VALUES('rollups_ready', '1')")
+
+
+class TestHeatmapFromRollups:
+    def test_all_window_reads_grid_daily(self, client, db_conn):
+        db_conn.execute(
+            "INSERT INTO grid_daily(scale, day, lat_b, lon_b, w) VALUES (10, 100, 522, 210, 8)")
+        db_conn.execute(
+            "INSERT INTO grid_daily(scale, day, lat_b, lon_b, w) VALUES (10, 101, 522, 210, 2)")
+        # decoy at fine scale — 30d/all must NOT read scale=100
+        db_conn.execute(
+            "INSERT INTO grid_daily(scale, day, lat_b, lon_b, w) VALUES (100, 100, 5220, 2100, 99)")
+        _set_rollups_ready(db_conn)
+        db_conn.commit()
+        r = client.get("/api/map/heatmap?window=all")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["count"] == 10
+        assert body["points"] == [[52.2, 21.0, 1.0]]   # 10/10 normalised
+
+    def test_7d_window_uses_fine_scale_and_day_cutoff(self, client, db_conn):
+        now_day = int(time.time()) // 86400
+        db_conn.execute(
+            "INSERT INTO grid_daily(scale, day, lat_b, lon_b, w) VALUES (100, ?, 5220, 2100, 5)",
+            (now_day,))
+        db_conn.execute(  # too old — outside 7d
+            "INSERT INTO grid_daily(scale, day, lat_b, lon_b, w) VALUES (100, ?, 5220, 2100, 7)",
+            (now_day - 30,))
+        _set_rollups_ready(db_conn)
+        db_conn.commit()
+        body = client.get("/api/map/heatmap?window=7d").json()
+        assert body["count"] == 5
+
+    def test_falls_back_to_raw_when_not_ready(self, client, db_conn):
+        """No rollups_ready flag → legacy raw scan answers (covers the
+        deploy→backfill-complete gap)."""
+        db_conn.execute(
+            "INSERT INTO flights (icao_hex, first_seen, last_seen) VALUES ('abc123', 1, 2)")
+        fid = db_conn.execute("SELECT id FROM flights").fetchone()[0]
+        db_conn.execute(
+            "INSERT INTO positions (flight_id, ts, lat, lon, source_type) "
+            "VALUES (?, 1, 52.2, 21.0, 'adsb_icao')", (fid,))
+        db_conn.commit()
+        body = client.get("/api/map/heatmap?window=all").json()
+        assert body["count"] == 1
+
+    def test_24h_stays_raw_even_when_ready(self, client, db_conn):
+        """24h keeps exact rolling semantics — it must NEVER read grid_daily,
+        even after the rollups_ready flag is set."""
+        insert_flight_with_position(db_conn, lat=52.2, lon=21.0)
+        # decoy rollup rows at both scales — must be invisible to 24h
+        db_conn.execute(
+            "INSERT INTO grid_daily(scale, day, lat_b, lon_b, w) VALUES (100, 100, 5220, 2100, 99)")
+        db_conn.execute(
+            "INSERT INTO grid_daily(scale, day, lat_b, lon_b, w) VALUES (10, 100, 522, 210, 99)")
+        _set_rollups_ready(db_conn)
+        db_conn.commit()
+        body = client.get("/api/map/heatmap?window=24h").json()
+        assert body["count"] == 1
+
+
+class TestCoverageFromRollups:
+    def test_rebuckets_1deg_to_10deg(self, client, db_conn):
+        db_conn.execute(
+            "INSERT INTO coverage_daily(day, bearing_b, max_nm) VALUES (100, 123, 80.0)")
+        db_conn.execute(
+            "INSERT INTO coverage_daily(day, bearing_b, max_nm) VALUES (101, 127, 120.0)")
+        _set_rollups_ready(db_conn)
+        db_conn.commit()
+        body = client.get("/api/map/coverage?window=all").json()
+        assert body["max_range_nm"] == 120.0   # both 1° buckets → 10° bucket 12
+
+    def test_30d_window_applies_day_cutoff(self, client, db_conn):
+        now_day = int(time.time()) // 86400
+        db_conn.execute(
+            "INSERT INTO coverage_daily(day, bearing_b, max_nm) VALUES (?, 45, 90.0)",
+            (now_day,))
+        db_conn.execute(  # too old — outside 30d
+            "INSERT INTO coverage_daily(day, bearing_b, max_nm) VALUES (?, 45, 250.0)",
+            (now_day - 90,))
+        _set_rollups_ready(db_conn)
+        db_conn.commit()
+        body = client.get("/api/map/coverage?window=30d").json()
+        assert body["max_range_nm"] == 90.0
+
+    def test_falls_back_to_raw_when_not_ready(self, client, db_conn):
+        from readsbstats import geo
+        lat, lon = geo.destination_point(
+            config.RECEIVER_LAT, config.RECEIVER_LON, 45.0, 100.0)
+        insert_flight_with_position(db_conn, lat=lat, lon=lon)
+        body = client.get("/api/map/coverage?window=all").json()
+        assert body["max_range_nm"] == pytest.approx(100.0, rel=0.01)
+
+    def test_24h_stays_raw_even_when_ready(self, client, db_conn):
+        """24h must never read coverage_daily, even after rollups_ready."""
+        from readsbstats import geo
+        lat, lon = geo.destination_point(
+            config.RECEIVER_LAT, config.RECEIVER_LON, 45.0, 100.0)
+        insert_flight_with_position(db_conn, lat=lat, lon=lon)
+        db_conn.execute(  # decoy — would dominate if 24h read the rollup
+            "INSERT INTO coverage_daily(day, bearing_b, max_nm) VALUES (100, 45, 999.0)")
+        _set_rollups_ready(db_conn)
+        db_conn.commit()
+        body = client.get("/api/map/coverage?window=24h").json()
+        assert body["max_range_nm"] == pytest.approx(100.0, rel=0.01)
+
+
+# ---------------------------------------------------------------------------
 # Tests: /api/map/snapshot
 # (The /map Jinja page was deleted at v2.0.0 cutover; the React SPA at
 #  /v2/map owns the live-map UI. The /live compat redirect → /v2/map is

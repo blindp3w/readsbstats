@@ -13,7 +13,7 @@ import time
 
 from fastapi import APIRouter, HTTPException, Query
 
-from .. import analytics, cache, config, geo, schemas
+from .. import analytics, cache, config, geo, rollups, schemas
 from . import _deps
 
 
@@ -22,47 +22,72 @@ router = APIRouter()
 
 
 def _compute_heatmap_sync(window: str) -> dict:
-    """Run the heavy aggregation query — call via run_in_executor to avoid blocking the event loop.
+    """Heatmap grid — call via run_in_executor to avoid blocking the event loop.
 
-    Tries the DuckDB engine first (gated by `analytics.is_available()`);
-    falls through to a SQLite query on unavailable or per-query failure.
-    Both paths feed into shared post-processing so the response shape is
-    identical."""
+    7d/30d/all sum the grid_daily rollups (thousands of rows, day-quantized
+    window: last N full days + today-so-far, day cutoff = (now - secs) //
+    86400); 24h keeps exact rolling semantics with a ts-ranged scan of raw
+    positions. Falls back to the legacy path — DuckDB attempt (gated by
+    `analytics.is_available()`), then raw SQLite — while the one-time rollup
+    backfill hasn't completed (rollups_ready unset). All paths feed into
+    shared post-processing so the response shape is identical."""
     precision = _deps._HEATMAP_PRECISION[window]
     secs = _deps._HEATMAP_WINDOWS[window]
     cutoff = (int(time.time()) - secs) if secs is not None else None
+    # scale = 10**precision picks the matching rollup: 7d → 100 (0.01°
+    # cells), 30d/all → 10 (0.1° cells). Same factor buckets the raw path.
+    scale = 10 ** precision
+    conn = _deps.db()
 
-    try:
-        rows: list[tuple[float, float, int]] | None = analytics.heatmap(cutoff, precision)
-    except Exception:  # noqa: BLE001 — belt-and-suspenders: SQLite path must still answer
-        log.warning("analytics.heatmap raised; falling back to SQLite", exc_info=True)
-        rows = None
-    if rows is None:
-        params: list = []
+    if window != "24h" and rollups.ready(conn):
+        params: list = [scale]
         extra = ""
         if cutoff is not None:
-            extra = "AND ts > ?"
-            params.append(cutoff)
-        # improvements.md A13-019: GROUP BY integer bucket (FLOOR(x*10^p + 0.5))
-        # and divide in Python so this path agrees bucket-for-bucket with the
-        # DuckDB heatmap.  Raw `round()` differs across engines (SQLite is
-        # half-away-from-zero, DuckDB is banker's) and even an explicit
-        # `FLOOR/scale` on the SQL side picks up a per-engine float drift on
-        # the divide step.
-        scale = 10 ** precision
-        sqlite_rows = _deps.db().execute(
+            extra = "AND day >= ?"
+            params.append(cutoff // 86400)
+        grid_rows = conn.execute(
             f"""
-            SELECT CAST(FLOOR(lat * {scale} + 0.5) AS INTEGER) AS lat_bucket,
-                   CAST(FLOOR(lon * {scale} + 0.5) AS INTEGER) AS lon_bucket,
-                   COUNT(*) AS w
-            FROM positions
-            WHERE lat IS NOT NULL AND lon IS NOT NULL
-              {extra}
-            GROUP BY lat_bucket, lon_bucket
+            SELECT lat_b, lon_b, SUM(w) AS w
+            FROM grid_daily
+            WHERE scale = ? {extra}
+            GROUP BY lat_b, lon_b
             """,
             params,
         ).fetchall()
-        rows = [(r["lat_bucket"] / scale, r["lon_bucket"] / scale, r["w"]) for r in sqlite_rows]
+        rows: list[tuple[float, float, int]] | None = [
+            (r["lat_b"] / scale, r["lon_b"] / scale, r["w"]) for r in grid_rows
+        ]
+    else:
+        try:
+            rows = analytics.heatmap(cutoff, precision)
+        except Exception:  # noqa: BLE001 — belt-and-suspenders: SQLite path must still answer
+            log.warning("analytics.heatmap raised; falling back to SQLite", exc_info=True)
+            rows = None
+        if rows is None:
+            params = []
+            extra = ""
+            if cutoff is not None:
+                extra = "AND ts > ?"
+                params.append(cutoff)
+            # improvements.md A13-019: GROUP BY integer bucket (FLOOR(x*10^p + 0.5))
+            # and divide in Python so this path agrees bucket-for-bucket with the
+            # DuckDB heatmap.  Raw `round()` differs across engines (SQLite is
+            # half-away-from-zero, DuckDB is banker's) and even an explicit
+            # `FLOOR/scale` on the SQL side picks up a per-engine float drift on
+            # the divide step.
+            sqlite_rows = conn.execute(
+                f"""
+                SELECT CAST(FLOOR(lat * {scale} + 0.5) AS INTEGER) AS lat_bucket,
+                       CAST(FLOOR(lon * {scale} + 0.5) AS INTEGER) AS lon_bucket,
+                       COUNT(*) AS w
+                FROM positions
+                WHERE lat IS NOT NULL AND lon IS NOT NULL
+                  {extra}
+                GROUP BY lat_bucket, lon_bucket
+                """,
+                params,
+            ).fetchall()
+            rows = [(r["lat_bucket"] / scale, r["lon_bucket"] / scale, r["w"]) for r in sqlite_rows]
 
     if not rows:
         return {"points": [], "window": window, "count": 0}
@@ -104,50 +129,76 @@ async def api_map_heatmap(window: str = Query("7d")) -> dict:
 
 
 def _compute_coverage_sync(window: str) -> dict:
-    """Compute per-bearing max-range polygon from raw positions — call via run_in_executor.
+    """Compute per-bearing max-range polygon — call via run_in_executor.
 
-    Bearing and haversine distance are computed per-position in SQL so each 10° bucket
-    reflects the actual farthest position recorded in that direction, not just the single
-    furthest-point bearing stored on the flight row.  DuckDB engine first (when available);
+    7d/30d/all rebucket the coverage_daily rollup (1° bearing buckets →
+    10° display buckets via integer division; day-quantized window: last N
+    full days + today-so-far, day cutoff = (now - secs) // 86400). 24h
+    keeps exact rolling semantics over raw positions, where bearing and
+    haversine distance are computed per-position in SQL so each 10° bucket
+    reflects the actual farthest position recorded in that direction. While
+    the one-time rollup backfill hasn't completed (rollups_ready unset),
+    all windows use the legacy path: DuckDB engine first (when available),
     SQLite fallback on unavailable or per-query failure.
     """
     secs = _deps._HEATMAP_WINDOWS[window]
     cutoff = (int(time.time()) - secs) if secs is not None else None
+    conn = _deps.db()
 
-    try:
-        by_bucket = analytics.coverage(cutoff, config.RECEIVER_LAT, config.RECEIVER_LON, _deps._BUCKET_DEG)
-    except Exception:  # noqa: BLE001
-        log.warning("analytics.coverage raised; falling back to SQLite", exc_info=True)
-        by_bucket = None
-    if by_bucket is None:
-        params: dict = {"rlat": config.RECEIVER_LAT, "rlon": config.RECEIVER_LON}
+    if window != "24h" and rollups.ready(conn):
+        params: list = []
         extra = ""
         if cutoff is not None:
-            extra = "AND ts > :cutoff"
-            params["cutoff"] = cutoff
-
-        # Audit-13 A13-076: shared SQL helpers — single source of truth.
-        bearing_expr = geo.bearing_sql("lat", "lon", ":rlat", ":rlon")
-        dist_expr    = geo.haversine_sql("lat", "lon", ":rlat", ":rlon")
-        rows = _deps.db().execute(
+            extra = "WHERE day >= ?"
+            params.append(cutoff // 86400)
+        # bearing_b is an INTEGER in [0, 359], so SQLite's integer `/` gives
+        # the same 10° bucket as the raw path's CAST(bearing/10.0 AS INT) % 36.
+        rows = conn.execute(
             f"""
-            WITH pos_bearing AS (
-                SELECT
-                    {bearing_expr} AS bearing_deg,
-                    {dist_expr}    AS dist_nm
-                FROM positions
-                WHERE lat IS NOT NULL AND lon IS NOT NULL
-                  {extra}
-            )
-            SELECT
-                CAST(bearing_deg / {_deps._BUCKET_DEG}.0 AS INT) % {_deps._NUM_BUCKETS} AS bucket,
-                MAX(dist_nm) AS max_dist
-            FROM pos_bearing
+            SELECT bearing_b / {_deps._BUCKET_DEG} AS bucket,
+                   MAX(max_nm) AS max_dist
+            FROM coverage_daily
+            {extra}
             GROUP BY bucket
             """,
             params,
         ).fetchall()
         by_bucket = {r["bucket"]: r["max_dist"] for r in rows}
+    else:
+        try:
+            by_bucket = analytics.coverage(cutoff, config.RECEIVER_LAT, config.RECEIVER_LON, _deps._BUCKET_DEG)
+        except Exception:  # noqa: BLE001
+            log.warning("analytics.coverage raised; falling back to SQLite", exc_info=True)
+            by_bucket = None
+        if by_bucket is None:
+            sql_params: dict = {"rlat": config.RECEIVER_LAT, "rlon": config.RECEIVER_LON}
+            extra = ""
+            if cutoff is not None:
+                extra = "AND ts > :cutoff"
+                sql_params["cutoff"] = cutoff
+
+            # Audit-13 A13-076: shared SQL helpers — single source of truth.
+            bearing_expr = geo.bearing_sql("lat", "lon", ":rlat", ":rlon")
+            dist_expr    = geo.haversine_sql("lat", "lon", ":rlat", ":rlon")
+            rows = conn.execute(
+                f"""
+                WITH pos_bearing AS (
+                    SELECT
+                        {bearing_expr} AS bearing_deg,
+                        {dist_expr}    AS dist_nm
+                    FROM positions
+                    WHERE lat IS NOT NULL AND lon IS NOT NULL
+                      {extra}
+                )
+                SELECT
+                    CAST(bearing_deg / {_deps._BUCKET_DEG}.0 AS INT) % {_deps._NUM_BUCKETS} AS bucket,
+                    MAX(dist_nm) AS max_dist
+                FROM pos_bearing
+                GROUP BY bucket
+                """,
+                sql_params,
+            ).fetchall()
+            by_bucket = {r["bucket"]: r["max_dist"] for r in rows}
 
     polygon: list[list[float]] = []
     for i in range(_deps._NUM_BUCKETS):
