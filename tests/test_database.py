@@ -294,9 +294,12 @@ class TestMigrate:
         assert "idx_positions_flight" not in indexes
         assert "idx_positions_ts_coords" not in indexes
         assert "idx_positions_flight_id_desc" not in indexes
-        # Still present until Phase 2 (rollups) lands:
-        assert "idx_positions_ts_flight" in indexes
-        assert "idx_positions_ts_lat_lon" in indexes
+        # Phase 2 (rollups): the ts-composite indexes are no longer created —
+        # they only served the heatmap/coverage scans now answered by
+        # grid_daily/coverage_daily (rollups.backfill_and_finalize drops
+        # them on existing DBs).
+        assert "idx_positions_ts_flight" not in indexes
+        assert "idx_positions_ts_lat_lon" not in indexes
         # Permanent set:
         assert "idx_positions_flight_ts" in indexes
         assert "idx_positions_ts" in indexes
@@ -360,6 +363,13 @@ class TestMigrate:
             if row[1] is not None
         }
         assert "idx_positions_flight_id_desc" not in indexes
+        # Phase 2 (rollups): after the backfill finalizes, the permanent
+        # positions index set is exactly these two — the ts-composites are
+        # gone and the rollups_ready flag is set.
+        named = {n for n in indexes if not n.startswith("sqlite_autoindex")}
+        assert named == {"idx_positions_flight_ts", "idx_positions_ts"}
+        from readsbstats import rollups
+        assert rollups.ready(conn)
         conn.close()
 
     def test_idx_positions_flight_ts_built(self, tmp_path):

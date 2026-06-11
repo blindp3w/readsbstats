@@ -69,7 +69,10 @@ def insert_flight_with_position(
 # ---------------------------------------------------------------------------
 
 class TestIndex:
-    def test_ts_flight_index_created_by_background_migration(self, tmp_path):
+    def test_legacy_ts_composites_not_created_by_background_migration(self, tmp_path):
+        """Phase 2 (rollups): the ts-composite indexes are gone — heatmap and
+        coverage windows ≥7d read grid_daily/coverage_daily instead. The plain
+        idx_positions_ts remains for windowed raw scans (24h path)."""
         from readsbstats import database
         db_path = str(tmp_path / "idx.db")
         database.init_db(db_path)
@@ -77,7 +80,9 @@ class TestIndex:
         conn = database.connect(db_path)
         indexes = {row[1] for row in conn.execute("PRAGMA index_list(positions)")}
         conn.close()
-        assert "idx_positions_ts_flight" in indexes
+        assert "idx_positions_ts_flight" not in indexes
+        assert "idx_positions_ts_lat_lon" not in indexes
+        assert "idx_positions_ts" in indexes
 
 
 # ---------------------------------------------------------------------------

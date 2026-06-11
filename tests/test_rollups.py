@@ -1,9 +1,10 @@
 """Unit tests for the daily heatmap/coverage rollups."""
 import sqlite3
+import time
 
 import pytest
 
-from readsbstats import rollups
+from readsbstats import database, rollups
 from tests._helpers import make_db
 
 
@@ -100,3 +101,68 @@ class TestAccumulatorFlush:
         rollups.flush(self.conn, rollups.RollupAccumulator())
         assert self.conn.execute("SELECT COUNT(*) FROM grid_daily").fetchone()[0] == 0
         assert self.conn.execute("SELECT COUNT(*) FROM coverage_daily").fetchone()[0] == 0
+
+
+class TestBackfill:
+    def test_backfill_matches_raw_group_by(self, tmp_path):
+        path = str(tmp_path / "bf.db")
+        conn = database.connect(path)
+        conn.executescript(database.DDL)
+        database._migrate(conn)
+        conn.execute(
+            "INSERT INTO flights (icao_hex, first_seen, last_seen) VALUES ('abc123', 0, 0)")
+        fid = conn.execute("SELECT id FROM flights").fetchone()[0]
+        now = int(time.time())
+        # three positions across two PAST days + one with NULL coords (skipped)
+        for ts, lat, lon in [
+            (now - 3 * 86400, 52.20, 21.00),
+            (now - 3 * 86400 + 60, 52.21, 21.01),
+            (now - 2 * 86400, 52.90, 20.50),
+        ]:
+            conn.execute(
+                "INSERT INTO positions (flight_id, ts, lat, lon, source_type) "
+                "VALUES (?,?,?,?, 'adsb_icao')", (fid, ts, lat, lon))
+        conn.execute(
+            "INSERT INTO positions (flight_id, ts, source_type) VALUES (?,?, 'mlat')",
+            (fid, now - 2 * 86400))
+        conn.commit()
+        conn.close()
+
+        rollups.backfill_and_finalize(path)
+
+        conn = database.connect(path)
+        assert rollups.ready(conn)
+        assert conn.execute(
+            "SELECT SUM(w) FROM grid_daily WHERE scale = 100").fetchone()[0] == 3
+        assert conn.execute(
+            "SELECT COUNT(*) FROM coverage_daily").fetchone()[0] >= 1
+        idx = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='positions'")}
+        assert "idx_positions_ts_flight" not in idx
+        assert "idx_positions_ts_lat_lon" not in idx
+        conn.close()
+
+    def test_backfill_is_idempotent(self, tmp_path):
+        path = str(tmp_path / "bf2.db")
+        conn = database.connect(path)
+        conn.executescript(database.DDL)
+        database._migrate(conn)
+        conn.execute(
+            "INSERT INTO flights (icao_hex, first_seen, last_seen) VALUES ('abc123', 0, 0)")
+        fid = conn.execute("SELECT id FROM flights").fetchone()[0]
+        conn.execute(
+            "INSERT INTO positions (flight_id, ts, lat, lon, source_type) "
+            "VALUES (?,?, 52.2, 21.0, 'adsb_icao')",
+            (fid, int(time.time()) - 2 * 86400))
+        conn.commit()
+        conn.close()
+
+        rollups.backfill_and_finalize(path)
+        rollups.backfill_and_finalize(path)   # short-circuits on ready flag
+
+        conn = database.connect(path)
+        try:
+            assert conn.execute(
+                "SELECT SUM(w) FROM grid_daily WHERE scale = 100").fetchone()[0] == 1
+        finally:
+            conn.close()

@@ -517,7 +517,7 @@ def backfill_bearing(path: str = config.DB_PATH) -> None:
 
 
 def _build_positions_indexes(path: str = config.DB_PATH) -> None:
-    """Create the large composite indexes on the positions table and drop
+    """Ensure idx_positions_flight_ts exists on the positions table and drop
     indexes that are redundant or harmful to query-plan choices.  Separated
     from _migrate() so the collector can run them in a background thread
     after READY=1 rather than blocking startup.
@@ -532,6 +532,13 @@ def _build_positions_indexes(path: str = config.DB_PATH) -> None:
     Saves ~280 MB and cuts per-insert B-tree updates from 8 to 5.
     ORDERING: idx_positions_flight_ts is created BEFORE the drops so the
     latest-fix query never lacks a usable index on a stale DB.
+
+    Phase 2 (rollups): idx_positions_ts_flight / idx_positions_ts_lat_lon are
+    no longer created here — they only served the heatmap/coverage scans now
+    answered by grid_daily/coverage_daily, and rollups.backfill_and_finalize()
+    (called right after this in run_background_migrations) drops them from
+    existing DBs (~320 MB on production). idx_positions_ts (plain, from DDL)
+    remains for windowed raw scans.
     """
     _log = logging.getLogger(__name__)
     conn: sqlite3.Connection | None = None
@@ -549,17 +556,6 @@ def _build_positions_indexes(path: str = config.DB_PATH) -> None:
             "CREATE INDEX IF NOT EXISTS idx_positions_flight_ts "
             "ON positions(flight_id, ts)"
         )
-        pos_cols = {row[1] for row in conn.execute("PRAGMA table_info(positions)")}
-        if "ts" in pos_cols:
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_positions_ts_flight "
-                "ON positions(ts, flight_id)"
-            )
-        if "lat" in pos_cols and "lon" in pos_cols:
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_positions_ts_lat_lon "
-                "ON positions(ts, lat, lon)"
-            )
         # Phase 1 (2026-06, production-dump analysis): drop indexes that are
         # redundant (left-prefix duplicates) or actively harmful (the planner
         # chose idx_positions_ts_coords for heatmap-all and did a per-row
@@ -691,9 +687,13 @@ def _backfill_flights_enrichment(path: str = config.DB_PATH) -> None:
 
 def run_background_migrations(path: str = config.DB_PATH) -> None:
     """Run slow one-time migrations in a background thread (after READY=1).
-    Builds positions indexes, backfills max_distance_bearing, and sets
-    primary_source='other' on closed flights crashed mid-write."""
+    Builds positions indexes, backfills the heatmap/coverage rollups (then
+    drops the legacy ts-composite indexes and sets rollups_ready), backfills
+    max_distance_bearing, and sets primary_source='other' on closed flights
+    crashed mid-write."""
     _build_positions_indexes(path)
+    from . import rollups  # lazy: rollups.backfill_and_finalize imports us back
+    rollups.backfill_and_finalize(path)
     backfill_bearing(path)
     _backfill_primary_source(path)
     _backfill_flights_enrichment(path)

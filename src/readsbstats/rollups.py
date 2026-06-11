@@ -9,9 +9,15 @@ all-time analytics outlive any purge horizon.
 """
 from __future__ import annotations
 
+import logging
 import math
 import sqlite3
+import time
 from collections import Counter
+
+from . import config
+
+log = logging.getLogger(__name__)
 
 FINE_SCALE = 100    # 0.01° ≈ 1 km cells — 24h/7d display precision
 COARSE_SCALE = 10   # 0.1°  ≈ 11 km cells — 30d/all display precision
@@ -82,3 +88,102 @@ def ready(conn: sqlite3.Connection) -> bool:
         "SELECT value FROM meta WHERE key = 'rollups_ready'"
     ).fetchone()
     return bool(row and row[0] == "1")
+
+
+def backfill_and_finalize(path: str = config.DB_PATH) -> None:
+    """One-time build of grid_daily/coverage_daily from historical positions,
+    then drop the legacy ts-composite indexes and set the rollups_ready flag.
+
+    Runs in the collector's background-migrations thread. Day-batched: one
+    transaction per UTC day so the writer lock is released between days and
+    the poll loop interleaves. Only FULL past days are backfilled — today's
+    counts come from the live accumulator; positions inserted earlier today
+    (before this deploy) are undercounted for today only, which self-heals
+    at midnight. Re-runnable: completed days are skipped, and the ready
+    flag short-circuits the whole call.
+    """
+    from . import database, geo  # lazy: database.run_background_migrations calls us
+
+    conn = database.connect(path)
+    try:
+        if ready(conn):
+            return
+        log.info("Rollup backfill starting …")
+        row = conn.execute("SELECT MIN(ts), MAX(ts) FROM positions").fetchone()
+        if row[0] is not None:
+            today = int(time.time()) // 86400
+            have = {
+                r[0] for r in conn.execute(
+                    "SELECT DISTINCT day FROM grid_daily WHERE scale = ?",
+                    (COARSE_SCALE,),
+                )
+            }
+            bearing_expr = geo.bearing_sql("lat", "lon", ":rlat", ":rlon")
+            dist_expr = geo.haversine_sql("lat", "lon", ":rlat", ":rlon")
+            first_day = row[0] // 86400
+            last_day = min(row[1] // 86400, today - 1)
+            done = 0
+            for day in range(first_day, last_day + 1):
+                if day in have:
+                    continue
+                lo, hi = day * 86400, (day + 1) * 86400
+                with conn:
+                    for scale in SCALES:
+                        # Upsert (not plain INSERT): a poll straddling
+                        # midnight may have already flushed a row for this
+                        # day; the merge double-counts at most that one fix.
+                        conn.execute(
+                            """
+                            INSERT INTO grid_daily(scale, day, lat_b, lon_b, w)
+                            SELECT :scale, :day,
+                                   CAST(FLOOR(lat * :scale + 0.5) AS INTEGER),
+                                   CAST(FLOOR(lon * :scale + 0.5) AS INTEGER),
+                                   COUNT(*)
+                            FROM positions
+                            WHERE ts >= :lo AND ts < :hi
+                              AND lat IS NOT NULL AND lon IS NOT NULL
+                            GROUP BY 3, 4
+                            ON CONFLICT(scale, day, lat_b, lon_b)
+                            DO UPDATE SET w = w + excluded.w
+                            """,
+                            {"scale": scale, "day": day, "lo": lo, "hi": hi},
+                        )
+                    # Inner GROUP BY, outer NULL guard: the trig expressions
+                    # can yield NULL on float-domain edge cases (Audit 17 saw
+                    # NULL coverage buckets), and coverage_daily's PK/NOT NULL
+                    # would reject such rows. The outer WHERE also satisfies
+                    # SQLite's upsert-after-SELECT parsing rule.
+                    conn.execute(
+                        f"""
+                        INSERT INTO coverage_daily(day, bearing_b, max_nm)
+                        SELECT :day, b, mx FROM (
+                            SELECT CAST({bearing_expr} AS INTEGER) % 360 AS b,
+                                   MAX({dist_expr}) AS mx
+                            FROM positions
+                            WHERE ts >= :lo AND ts < :hi
+                              AND lat IS NOT NULL AND lon IS NOT NULL
+                            GROUP BY b
+                        )
+                        WHERE b IS NOT NULL AND mx IS NOT NULL
+                        ON CONFLICT(day, bearing_b)
+                        DO UPDATE SET max_nm = MAX(max_nm, excluded.max_nm)
+                        """,
+                        {"day": day, "lo": lo, "hi": hi,
+                         "rlat": config.RECEIVER_LAT, "rlon": config.RECEIVER_LON},
+                    )
+                done += 1
+                if done % 10 == 0:
+                    log.info("  … backfilled %d days", done)
+        with conn:
+            # These two only served the heatmap/coverage scans now answered
+            # by the rollups. (~320 MB on the production DB.)
+            conn.execute("DROP INDEX IF EXISTS idx_positions_ts_flight")
+            conn.execute("DROP INDEX IF EXISTS idx_positions_ts_lat_lon")
+            conn.execute(
+                "INSERT OR REPLACE INTO meta(key, value) VALUES('rollups_ready', '1')"
+            )
+        log.info("Rollup backfill complete.")
+    except Exception:
+        log.exception("rollup backfill failed")
+    finally:
+        conn.close()
