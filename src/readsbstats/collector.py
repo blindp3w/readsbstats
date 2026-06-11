@@ -142,6 +142,12 @@ def _sd_notify(msg: str) -> None:
 # on a CREATE INDEX (background migration) cannot starve the heartbeat.
 _WATCHDOG_INTERVAL_SEC = 20
 
+# Positions purged per transaction. 50k rows ≈ a few MB of WAL — large
+# enough to finish in minutes, small enough that the writer lock yields
+# to the poll loop between batches (first enablement against months of
+# backlog would otherwise be one giant transaction of random HDD I/O).
+_PURGE_BATCH = 50_000
+
 
 def _watchdog_loop() -> None:
     while _running:
@@ -1057,11 +1063,33 @@ def _poll(conn: sqlite3.Connection) -> None:
 def _purge(conn: sqlite3.Connection) -> None:
     if config.RETENTION_DAYS <= 0:
         return
+    if not rollups.ready(conn):
+        # The one-time rollup backfill hasn't finished — purging now would
+        # delete raw rows whose days aren't in grid_daily/coverage_daily yet,
+        # permanently losing all-time heatmap/coverage history. The hourly
+        # maintenance cycle retries after the backfill completes.
+        log.info("Purge skipped: rollup backfill not finished yet")
+        return
     cutoff = int(time.time()) - config.RETENTION_DAYS * 86400
 
-    # 1) Delete positions older than the cutoff in a single transaction.
-    with conn:
-        conn.execute("DELETE FROM positions WHERE ts < ?", (cutoff,))
+    # 1) Delete expired positions in batches, committing between batches so
+    #    the poll loop and web readers interleave. idx_positions_ts drives
+    #    the subquery.
+    deleted = 0
+    while True:
+        with conn:
+            cur = conn.execute(
+                "DELETE FROM positions WHERE id IN ("
+                "  SELECT id FROM positions WHERE ts < ? LIMIT ?)",
+                (cutoff, _PURGE_BATCH),
+            )
+        n = cur.rowcount
+        deleted += n
+        if n < _PURGE_BATCH:
+            break
+        time.sleep(0.2)
+    if deleted:
+        log.info("Purge: deleted %d expired positions", deleted)
 
     # 2) BE-7 (Audit 2026-05-31): a flight that *crosses* the cutoff (first_seen
     #    before, last_seen at/after) keeps some positions and loses others, so

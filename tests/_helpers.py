@@ -86,3 +86,13 @@ class CountingConn:
     def commit(self) -> None:
         self.commits += 1
         self._c.commit()
+
+    def __enter__(self):
+        self._c.__enter__()
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        if exc_type is None:
+            # `with conn:` commits on clean exit — count it like .commit()
+            self.commits += 1
+        return self._c.__exit__(exc_type, exc, tb)

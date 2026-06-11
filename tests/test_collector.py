@@ -21,7 +21,7 @@ from readsbstats import config, database, enrichment
 # Helpers
 # ---------------------------------------------------------------------------
 
-from tests._helpers import insert_position, make_db  # noqa: E402 — kept under section header
+from tests._helpers import CountingConn, insert_position, make_db  # noqa: E402 — kept under section header
 
 
 def _reset_telegram_state():
@@ -1720,6 +1720,12 @@ class TestPurge:
     def setup(self):
         _reset_collector_state()
         self.conn = make_db()
+        # Purge is gated on rollup-backfill completion; these tests exercise
+        # the post-backfill behavior (the gate itself is covered by
+        # TestPurgeGatedOnRollupReadiness).
+        self.conn.execute(
+            "INSERT OR REPLACE INTO meta(key, value) VALUES('rollups_ready', '1')")
+        self.conn.commit()
         yield
         self.conn.close()
 
@@ -1999,6 +2005,86 @@ class TestPurge:
         assert row["lat_min"] == 10.0 and row["lat_max"] == 53.0
         assert row["max_distance_nm"] == 9999.0
         assert row["max_distance_bearing"] == 12.0
+
+
+# ---------------------------------------------------------------------------
+# Batched positions purge
+# ---------------------------------------------------------------------------
+
+class TestBatchedPositionsPurge:
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        _reset_collector_state()
+        self.conn = make_db()
+        # Purge is gated on rollup-backfill completion; this test exercises
+        # the post-backfill batching behavior.
+        self.conn.execute(
+            "INSERT OR REPLACE INTO meta(key, value) VALUES('rollups_ready', '1')")
+        self.conn.commit()
+        yield
+        self.conn.close()
+
+    def test_purge_deletes_in_batches_with_commit_each(self, monkeypatch):
+        from readsbstats import collector
+        monkeypatch.setattr(collector.time, "sleep", lambda s: None)
+        conn = self.conn
+        wrapped = CountingConn(conn)
+        monkeypatch.setattr(collector.config, "RETENTION_DAYS", 1)
+        monkeypatch.setattr(collector, "_PURGE_BATCH", 2)
+        conn.execute(
+            "INSERT INTO flights (icao_hex, first_seen, last_seen, total_positions) "
+            "VALUES ('abc123', 1, 5, 5)")
+        fid = conn.execute("SELECT id FROM flights").fetchone()[0]
+        for ts in range(1, 6):     # 5 ancient positions → 3 batches at size 2
+            insert_position(conn, fid, ts)
+        conn.commit()
+        commits_before = wrapped.commits
+        collector._purge(wrapped)
+        assert conn.execute("SELECT COUNT(*) FROM positions").fetchone()[0] == 0
+        # ≥3 `with conn:` commits for the position batches alone (2+2+1)
+        assert wrapped.commits - commits_before >= 3
+
+
+# ---------------------------------------------------------------------------
+# Purge gated on rollup readiness
+# ---------------------------------------------------------------------------
+
+class TestPurgeGatedOnRollupReadiness:
+    """Retention purge must wait for the one-time rollup backfill: deleting
+    raw rows whose days aren't in grid_daily/coverage_daily yet would
+    permanently lose all-time heatmap/coverage history for those days."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        _reset_collector_state()
+        self.conn = make_db()
+        yield
+        self.conn.close()
+
+    def test_purge_noop_until_rollups_ready_then_deletes(self, monkeypatch):
+        from readsbstats import collector
+        monkeypatch.setattr(collector.time, "sleep", lambda s: None)
+        monkeypatch.setattr(collector.config, "RETENTION_DAYS", 1)
+        self.conn.execute(
+            "INSERT INTO flights (icao_hex, first_seen, last_seen, total_positions) "
+            "VALUES ('abc123', 1, 5, 3)")
+        fid = self.conn.execute("SELECT id FROM flights").fetchone()[0]
+        for ts in (1, 2, 3):   # ancient — far beyond any retention cutoff
+            insert_position(self.conn, fid, ts, lat=52.0, lon=21.0)
+        self.conn.commit()
+
+        # Backfill not finished (no rollups_ready flag) → nothing is deleted.
+        collector._purge(self.conn)
+        assert self.conn.execute(
+            "SELECT COUNT(*) FROM positions").fetchone()[0] == 3
+
+        # Flag set (backfill complete) → the same purge now deletes.
+        self.conn.execute(
+            "INSERT INTO meta(key, value) VALUES('rollups_ready', '1')")
+        self.conn.commit()
+        collector._purge(self.conn)
+        assert self.conn.execute(
+            "SELECT COUNT(*) FROM positions").fetchone()[0] == 0
 
 
 # ---------------------------------------------------------------------------

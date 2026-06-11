@@ -146,8 +146,11 @@ def backfill_and_finalize(path: str = config.DB_PATH) -> None:
                 "SELECT value FROM meta WHERE key = 'rollups_backfill_done_through'"
             ).fetchone()
             # v6 positions: lat/lon are scaled INTEGERs (×1e5) — decode in SQL.
-            # (Phase 2 deploys before Phase 3, so this backfill only ever runs
-            # against the v6 layout.)
+            # (Safe to assume the v6 layout: this thread only starts after
+            # init_db()/_migrate() succeeded, and _migrate() fails closed on a
+            # legacy positions table — on any pre-v6 DB either the rebuild has
+            # already happened or the service refused to start, so this
+            # backfill never sees v5 rows.)
             bearing_expr = geo.bearing_sql("lat / 100000.0", "lon / 100000.0", ":rlat", ":rlon")
             dist_expr = geo.haversine_sql("lat / 100000.0", "lon / 100000.0", ":rlat", ":rlon")
             first_day = row[0] // 86400

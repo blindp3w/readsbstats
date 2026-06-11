@@ -48,9 +48,65 @@ Boolean vars accept `1`/`0`, `true`/`false`, `yes`/`no`, `on`/`off`
 |---|---|---|
 | `RSBS_DB_PATH` | `/mnt/ext/readsbstats/history.db` | SQLite database path. Empty string falls back to the default — an empty path silently creates an in-memory DB. |
 | `RSBS_DB_SYNCHRONOUS` | `NORMAL` | SQLite `synchronous` level: `NORMAL` or `FULL`. In WAL mode `NORMAL` is corruption-safe — a power cut can lose at most the last few commits, never the database. `FULL` fsyncs every commit (per-commit durability) at a measurable cost on USB HDDs. Invalid values log an error and fall back to `NORMAL`. See [Database crash safety](#database-crash-safety). |
-| `RSBS_RETENTION_DAYS` | `0` | Days to keep raw positions (`0` = keep forever) |
-| `RSBS_PURGE_INTERVAL` | `3600` | Seconds between retention-purge passes (min `1`; only fires when `RETENTION_DAYS > 0`) |
+| `RSBS_RETENTION_DAYS` | `0` | Days to keep raw `positions` rows (`0` = keep forever). **Recommended value for a Pi-class install: `180`.** See [Retention — what survives the horizon](#retention--what-survives-the-horizon) below. |
+| `RSBS_PURGE_INTERVAL` | `3600` | Seconds between retention-purge passes (min `1`; only fires when `RETENTION_DAYS > 0`). The purge deletes expired rows in 50 000-row batches with short sleeps between batches so the collector and web readers are not locked out. |
 | `RSBS_GRID_FINE_RETENTION_DAYS` | `14` | Days of fine-scale (0.01°) heatmap rollup rows to keep in `grid_daily` (min `8` — the 7d window needs 7 full days + today). Only the fine grid is pruned; the coarse (0.1°) grid and `coverage_daily` rows are permanent, so the 30d/all-time heatmap and coverage views keep working even if raw positions are ever purged. |
+
+### Retention — what survives the horizon
+
+When `RSBS_RETENTION_DAYS` is set, the collector's hourly purge deletes raw
+`positions` rows older than the cutoff. Here is what that means in practice:
+
+**Survives the horizon — kept forever:**
+
+- Every `flights` row, including its aggregated stats (total positions, max
+  altitude, max ground speed, ADS-B vs MLAT counts, max detection range,
+  bearing, bounding box). These are never touched by position retention.
+- The `grid_daily` coarse (0.1°) heatmap rollup and the `coverage_daily`
+  rollup — both permanent. The all-time heatmap and coverage overlays
+  therefore keep their full history even after positions are purged.
+- All-time statistics and leaderboards (top aircraft, airlines, routes,
+  airports, daily/DOW activity counts).
+
+**Bounded by the horizon — raw replay only:**
+
+- Per-flight raw track replay: the altitude/speed chart and the flight-detail
+  map trace for flights older than `RETENTION_DAYS`. The flight card (date,
+  callsign, aircraft, duration, route, aggregate stats) remains. Only the
+  raw position log and the replay track are gone.
+- The 24h live-map path history is unaffected — it is recent by definition.
+
+**Ghost-track handling:** flights that span the cutoff boundary have their
+per-flight aggregates recomputed from surviving positions. Flights whose
+position count falls below `RSBS_MIN_POSITIONS` *and* whose `last_seen` is
+before the cutoff are dropped (these are ghost tracks that would never have
+been surfaced anyway).
+
+**First enablement against a backlog is safe.** The batched purge
+(50 000 rows per transaction, 200 ms sleep between batches) lets the
+collector and web readers interleave normally. There is no need to stop
+services before enabling retention. The purge also waits for the one-time
+rollup backfill to finish before deleting anything (automatic; at most a
+few minutes after the first deploy), so historical heatmap/coverage days
+are always rolled up before their raw rows can be purged.
+
+**DB file size:** the file does not shrink immediately after the first purge
+— freed pages are recycled via SQLite's freelist for future inserts. At
+180-day retention and current typical Pi traffic, the database plateaus at
+roughly 1.2 GB rather than growing ~7+ GB/year unbounded. A future
+`VACUUM` (or the offline migration in `scripts/migrate_v6.py`) reclaims
+the freed space if smaller file size is important.
+
+**Current data starts 2026-04-06**, so with `RSBS_RETENTION_DAYS=180` the
+first actual deletions happen around 2026-10-03. Until that date the purge
+is a no-op.
+
+To enable retention on a running Pi install:
+
+```bash
+echo 'RSBS_RETENTION_DAYS=180' | sudo tee -a /etc/readsbstats/readsbstats.env
+sudo systemctl restart readsbstats-collector
+```
 
 ### Receiver location
 
