@@ -1106,6 +1106,39 @@ class TestPoll:
         ).fetchone()
         assert row["gs"] == pytest.approx(800.0)
 
+    def test_poll_maintains_rollups(self):
+        """Every inserted position must increment grid_daily (both scales)
+        and raise coverage_daily within the same transaction."""
+        from readsbstats.collector import _poll
+        self._write_json([
+            {"hex": "aabbcc", "lat": 52.0, "lon": 21.0, "seen_pos": 0},
+        ])
+        _poll(self.conn)
+        n_pos = self.conn.execute("SELECT COUNT(*) FROM positions").fetchone()[0]
+        assert n_pos == 1
+        fine = self.conn.execute(
+            "SELECT SUM(w) FROM grid_daily WHERE scale = 100"
+        ).fetchone()[0]
+        coarse = self.conn.execute(
+            "SELECT SUM(w) FROM grid_daily WHERE scale = 10"
+        ).fetchone()[0]
+        assert fine == coarse == n_pos
+        assert self.conn.execute(
+            "SELECT COUNT(*) FROM coverage_daily"
+        ).fetchone()[0] == 1
+
+    def test_poll_empty_aircraft_list_leaves_rollups_empty(self):
+        """A poll with no aircraft must leave the rollup tables empty (flush no-op)."""
+        from readsbstats.collector import _poll
+        self._write_json([])
+        _poll(self.conn)
+        assert self.conn.execute(
+            "SELECT COUNT(*) FROM grid_daily"
+        ).fetchone()[0] == 0
+        assert self.conn.execute(
+            "SELECT COUNT(*) FROM coverage_daily"
+        ).fetchone()[0] == 0
+
 
 class TestGsCrossValidation:
     """GS cross-validation: null gs when it disagrees with position-derived speed."""
