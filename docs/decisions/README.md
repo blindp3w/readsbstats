@@ -23,6 +23,7 @@ a date-stamped **Revision** note (see ADR-0010).
 | [0012](0012-coalesce-drop-deferred.md) | Defer COALESCE drop in flight filter SQL | Accepted | 2026-05-26 |
 | [0013](0013-vdl2-timeseries-reuses-metrics-columnar-contract.md) | VDL2 reception charts reuse the `/api/metrics` columnar contract | Accepted | 2026-06-05 |
 | [0014](0014-daily-rollups-replace-duckdb.md) | Daily rollup tables replace the DuckDB accelerator | Accepted | 2026-06-11 |
+| [0015](0015-scaled-integer-positions-storage.md) | Scaled-integer storage for the positions table (schema v6) | Accepted | 2026-06-11 |
 
 ## Adding an ADR
 

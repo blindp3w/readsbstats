@@ -106,14 +106,14 @@ All paths below are handled by the React SPA at the catch-all; FastAPI API route
 
 ## Database schema
 
-Current schema version: **5** (stored in the internal `schema_version` table). The collector owns full schema creation and slow background migrations; the web server applies only fast `_migrate()` additions.
+Current schema version: **6** (stored in the internal `schema_version` table). The collector owns full schema creation and slow background migrations; the web server applies only fast `_migrate()` additions. Version 6 stores `positions` columns as scaled integers (see the table below); pre-v6 databases are rebuilt once by `scripts/migrate_v6.py`, which `update.sh` runs automatically with the services stopped.
 
-> The opt-in VDL2 feature uses a **separate** database (`RSBS_VDL2_DB_PATH`, default `vdl2.db`) with its own `PRAGMA user_version` schema (table `vdl2_messages` + FTS5 `vdl2_fts`). It is independent of the version-5 core schema below and is never created or migrated unless `RSBS_VDL2_ENABLED` is set.
+> The opt-in VDL2 feature uses a **separate** database (`RSBS_VDL2_DB_PATH`, default `vdl2.db`) with its own `PRAGMA user_version` schema (table `vdl2_messages` + FTS5 `vdl2_fts`). It is independent of the version-6 core schema below and is never created or migrated unless `RSBS_VDL2_ENABLED` is set.
 
 | Table | Purpose |
 |---|---|
 | `flights` | One row per flight: ICAO, callsign, reg, type, timestamps, aggregates (max alt, max speed, max distance, ADS-B/MLAT position counts, origin/dest ICAO) |
-| `positions` | Raw position samples: lat, lon, alt, speed, track, climb rate, RSSI, source type |
+| `positions` | Raw position samples, stored as scaled integers since v6: lat/lon ×10⁵ (~1 m), ground speed/track/RSSI ×10 (0.1 kt / 0.1° / 0.1 dB), altitudes and climb rate plain integers, source type as a small integer code. The API decodes everything back to floats and the `source_type` string — response payloads are identical to v5. |
 | `grid_daily` | Daily heatmap rollup: position count `w` per `(scale, day, lat_b, lon_b)` grid cell. Two scales: `100` (0.01° cells, pruned after `RSBS_GRID_FINE_RETENTION_DAYS`) and `10` (0.1° cells, kept forever). Maintained by the collector inside the poll transaction; backfilled once from history on first run. |
 | `coverage_daily` | Daily coverage rollup: max detection range (nm) per `(day, bearing_b)` — 1° bearing buckets, kept forever. Same maintenance as `grid_daily`. |
 | `active_flights` | Currently open flights — persists collector state across restarts |
@@ -127,7 +127,7 @@ Current schema version: **5** (stored in the internal `schema_version` table). T
 | `adsbx_overrides` | airplanes.live-confirmed flags |
 | `receiver_stats` | Receiver metrics time-series (44 columns; opt-in) |
 | `meta` | Internal: generic key/value store (rollup readiness flag + backfill watermark) |
-| `schema_version` | Internal: one row per applied schema version (`version`, `applied_at`); latest is 5 |
+| `schema_version` | Internal: one row per applied schema version (`version`, `applied_at`); latest is 6 |
 
 After the one-time rollup backfill completes, the `positions` table carries
 exactly two indexes: `idx_positions_flight_ts` (per-flight timelines) and

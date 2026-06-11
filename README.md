@@ -156,6 +156,7 @@ readsbstats/
 │   ├── photo_sources.py        # Planespotters → airport-data → hexdb → Wikipedia
 │   ├── notifier.py             # Telegram notifications
 │   ├── rollups.py              # Daily heatmap/coverage rollups (collector-maintained)
+│   ├── posenc.py               # Scaled-integer codecs for positions columns (schema v6)
 │   ├── health.py               # Receiver health checks
 │   ├── geo.py                  # haversine_nm, bearing
 │   └── vdl2/                   # Opt-in VDL2/ACARS ingest (separate vdl2.db)
@@ -166,7 +167,7 @@ readsbstats/
 │   ├── purge_bad_gs.py         # One-shot: null implausible gs values
 │   └── purge_mlat_gs_spikes.py # One-shot: null MLAT gs spikes
 ├── frontend/                   # React 19 + Vite 8 SPA (386 Vitest tests)
-├── tests/                      # pytest (1898 tests) + Playwright UI (84 tests)
+├── tests/                      # pytest (1921 tests) + Playwright UI (84 tests)
 ├── static/airspace/            # Bundled airspace GeoJSON
 ├── systemd/                    # Service + timer unit files
 └── docs/                       # Public documentation
