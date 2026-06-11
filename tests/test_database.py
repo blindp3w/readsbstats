@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from readsbstats import database
+from readsbstats import database, posenc
 
 
 class TestConnect:
@@ -1160,3 +1160,78 @@ class TestInitDbRecoversBeforeDdl:
         # ordering that would have re-created an empty aircraft_db.
         assert conn.execute("SELECT COUNT(*) FROM aircraft_db").fetchone()[0] == 2
         conn.close()
+
+
+LEGACY_V5_POSITIONS_DDL = """
+CREATE TABLE positions (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    flight_id   INTEGER NOT NULL REFERENCES flights(id) ON DELETE CASCADE,
+    ts          INTEGER NOT NULL,
+    lat REAL, lon REAL, alt_baro INTEGER, alt_geom INTEGER,
+    gs REAL, track REAL, baro_rate INTEGER, rssi REAL,
+    messages INTEGER, source_type TEXT
+);
+"""
+
+
+class TestSchemaV6Migration:
+    def _make_v5(self, path):
+        """Build a v5-shaped DB with sample positions rows."""
+        conn = database.connect(path)
+        conn.executescript(database.DDL)          # v6 baseline …
+        conn.executescript(
+            "DROP TABLE positions;" + LEGACY_V5_POSITIONS_DDL)   # … regress positions to v5
+        conn.execute("DELETE FROM schema_version")
+        conn.execute(
+            "INSERT INTO schema_version VALUES (5, strftime('%s','now'))")
+        conn.execute(
+            "INSERT INTO flights (icao_hex, first_seen, last_seen) VALUES ('abc123', 1, 2)")
+        fid = conn.execute("SELECT id FROM flights").fetchone()[0]
+        conn.execute(
+            "INSERT INTO positions (flight_id, ts, lat, lon, gs, track, rssi, messages, source_type) "
+            "VALUES (?, 100, 52.20491, 21.00001, 437.5, 271.3, -23.5, 1500, 'adsb_icao')", (fid,))
+        conn.execute(
+            "INSERT INTO positions (flight_id, ts, source_type) VALUES (?, 101, 'mlat')", (fid,))
+        conn.execute(
+            "INSERT INTO positions (flight_id, ts, lat, lon, source_type) "
+            "VALUES (?, 102, -1.5, -21.0, 'never_seen_type')", (fid,))
+        conn.commit()
+        return conn
+
+    def test_small_v5_db_rebuilt_inline(self, tmp_path):
+        path = str(tmp_path / "v5.db")
+        conn = self._make_v5(path)
+        database._migrate(conn)
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(positions)")}
+        assert "source" in cols and "source_type" not in cols and "messages" not in cols
+        row = conn.execute(
+            "SELECT lat, lon, gs, track, rssi, source FROM positions WHERE ts = 100"
+        ).fetchone()
+        assert tuple(row) == (5220491, 2100001, 4375, 2713, -235, 0)
+        assert conn.execute(
+            "SELECT source FROM positions WHERE ts = 101").fetchone()[0] == 1
+        assert conn.execute(
+            "SELECT source FROM positions WHERE ts = 102").fetchone()[0] == posenc.OTHER_CODE
+        assert conn.execute(
+            "SELECT MAX(version) FROM schema_version").fetchone()[0] == 6
+        assert conn.execute(
+            "SELECT lat FROM positions WHERE ts = 101").fetchone()[0] is None
+        idx = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='positions'")}
+        assert {"idx_positions_flight_ts", "idx_positions_ts"} <= idx
+
+    def test_large_v5_db_demands_offline_migration(self, tmp_path, monkeypatch):
+        path = str(tmp_path / "big.db")
+        conn = self._make_v5(path)
+        monkeypatch.setattr(database, "_INLINE_REBUILD_MAX", 1)
+        with pytest.raises(RuntimeError, match="migrate_v6"):
+            database._migrate(conn)
+
+    def test_v6_db_passes_gate_untouched(self, tmp_path):
+        """A current-schema DB must not trigger the rebuild path."""
+        path = str(tmp_path / "v6.db")
+        conn = database.connect(path)
+        conn.executescript(database.DDL)
+        database._migrate(conn)   # must not raise, must not alter positions
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(positions)")}
+        assert "source" in cols and "source_type" not in cols
