@@ -21,7 +21,7 @@ from readsbstats import config, database, enrichment
 # Helpers
 # ---------------------------------------------------------------------------
 
-from tests._helpers import make_db  # noqa: E402 — kept under section header
+from tests._helpers import insert_position, make_db  # noqa: E402 — kept under section header
 
 
 def _reset_telegram_state():
@@ -467,15 +467,11 @@ class TestOpenCloseFlight:
             None, None, 52.0, 21.0, None, None, None, None, None,
         )
         # Insert 1 spike + 11 normal MLAT positions (≥ MLAT_OUTLIER_MIN_READINGS)
-        spike_pid = self.conn.execute(
-            "INSERT INTO positions (flight_id, ts, lat, lon, gs, source_type) "
-            "VALUES (?, 1001, 52.0, 21.0, 724.0, 'mlat')", (fid,)
-        ).lastrowid
+        spike_pid = insert_position(self.conn, fid, 1001, lat=52.0, lon=21.0,
+                                    gs=724.0, source_type="mlat")
         for i in range(11):
-            self.conn.execute(
-                "INSERT INTO positions (flight_id, ts, lat, lon, gs, source_type) "
-                "VALUES (?, ?, 52.0, 21.0, 70.0, 'mlat')", (fid, 2000 + i * 10)
-            )
+            insert_position(self.conn, fid, 2000 + i * 10, lat=52.0, lon=21.0,
+                            gs=70.0, source_type="mlat")
         self.conn.execute(
             "UPDATE flights SET total_positions=12, mlat_positions=12, max_gs=724.0 WHERE id=?",
             (fid,),
@@ -500,10 +496,8 @@ class TestOpenCloseFlight:
             None, None, 52.0, 21.0, None, None, None, None, None,
         )
         for i in range(12):
-            self.conn.execute(
-                "INSERT INTO positions (flight_id, ts, lat, lon, gs, source_type) "
-                "VALUES (?, ?, 52.0, 21.0, ?, 'mlat')", (fid, 1000 + i * 5, 70.0 + i)
-            )
+            insert_position(self.conn, fid, 1000 + i * 5, lat=52.0, lon=21.0,
+                            gs=70.0 + i, source_type="mlat")
         self.conn.execute(
             "UPDATE flights SET total_positions=12, mlat_positions=12, max_gs=81.0 WHERE id=?",
             (fid,),
@@ -776,11 +770,12 @@ class TestPoll:
              "type": "adsb_icao"},
         ])
         _poll(self.conn)
+        from readsbstats import posenc
         rows = self.conn.execute(
-            "SELECT f.icao_hex, p.source_type FROM positions p "
+            "SELECT f.icao_hex, p.source FROM positions p "
             "JOIN flights f ON f.id = p.flight_id ORDER BY f.icao_hex"
         ).fetchall()
-        by_icao = {r["icao_hex"]: r["source_type"] for r in rows}
+        by_icao = {r["icao_hex"]: posenc.decode_source(r["source"]) for r in rows}
         assert by_icao == {
             "a1b2c3":   "mlat",       # mlat-hex fallback
             "aabbcc":   None,         # non-string → NULL
@@ -788,8 +783,10 @@ class TestPoll:
         }
 
     def test_poll_source_type_caps_oversized_string(self):
-        """PY-3: an oversized `type` string must be capped, not persisted
-        unbounded (would bloat the positions table over time)."""
+        """PY-3: an oversized `type` string must not abort the poll. With the
+        v6 schema unknown strings are stored as posenc.OTHER_CODE, so nothing
+        unbounded can reach the positions table regardless of feed garbage."""
+        from readsbstats import posenc
         from readsbstats.collector import _poll
         self._write_json([
             {"hex": "aabbcc", "lat": 52.0, "lon": 21.0, "seen_pos": 0,
@@ -797,11 +794,12 @@ class TestPoll:
         ])
         _poll(self.conn)
         row = self.conn.execute(
-            "SELECT p.source_type FROM positions p "
+            "SELECT p.source FROM positions p "
             "JOIN flights f ON f.id = p.flight_id WHERE f.icao_hex = 'aabbcc'"
         ).fetchone()
         assert row is not None
-        assert len(row["source_type"]) == 32
+        assert row["source"] == posenc.OTHER_CODE
+        assert posenc.decode_source(row["source"]) == "other"
 
     # BE-6 (Audit 2026-05-31): validate the top-level feed shape so a corrupt
     # aircraft.json degrades gracefully (skip bad entries / cycle) instead of
@@ -1004,7 +1002,7 @@ class TestPoll:
         ])
         _poll(self.conn)
         row = self.conn.execute(
-            "SELECT p.gs, f.max_gs FROM positions p JOIN flights f ON f.id = p.flight_id"
+            "SELECT p.gs / 10.0 AS gs, f.max_gs FROM positions p JOIN flights f ON f.id = p.flight_id"
             " WHERE f.icao_hex = 'aabbcc'"
         ).fetchone()
         assert row["gs"] is None
@@ -1026,7 +1024,7 @@ class TestPoll:
         ])
         _poll(self.conn)
         row = self.conn.execute(
-            "SELECT p.gs FROM positions p JOIN flights f ON f.id = p.flight_id"
+            "SELECT p.gs / 10.0 AS gs FROM positions p JOIN flights f ON f.id = p.flight_id"
             " WHERE f.icao_hex = 'aabbcc'"
         ).fetchone()
         assert row["gs"] == pytest.approx(750.0)
@@ -1047,7 +1045,7 @@ class TestPoll:
         ])
         _poll(self.conn)
         row = self.conn.execute(
-            "SELECT p.gs FROM positions p JOIN flights f ON f.id = p.flight_id"
+            "SELECT p.gs / 10.0 AS gs FROM positions p JOIN flights f ON f.id = p.flight_id"
             " WHERE f.icao_hex = 'ae0001'"
         ).fetchone()
         assert row["gs"] == pytest.approx(1200.0)
@@ -1068,7 +1066,7 @@ class TestPoll:
         ])
         _poll(self.conn)
         row = self.conn.execute(
-            "SELECT p.gs FROM positions p JOIN flights f ON f.id = p.flight_id"
+            "SELECT p.gs / 10.0 AS gs FROM positions p JOIN flights f ON f.id = p.flight_id"
             " WHERE f.icao_hex = 'ae0001'"
         ).fetchone()
         assert row["gs"] is None
@@ -1085,7 +1083,7 @@ class TestPoll:
         ])
         _poll(self.conn)
         row = self.conn.execute(
-            "SELECT p.gs FROM positions p JOIN flights f ON f.id = p.flight_id"
+            "SELECT p.gs / 10.0 AS gs FROM positions p JOIN flights f ON f.id = p.flight_id"
             " WHERE f.icao_hex = 'cabbed'"
         ).fetchone()
         assert row["gs"] is None
@@ -1101,7 +1099,7 @@ class TestPoll:
         ])
         _poll(self.conn)
         row = self.conn.execute(
-            "SELECT p.gs FROM positions p JOIN flights f ON f.id = p.flight_id"
+            "SELECT p.gs / 10.0 AS gs FROM positions p JOIN flights f ON f.id = p.flight_id"
             " WHERE f.icao_hex = 'cabbed'"
         ).fetchone()
         assert row["gs"] == pytest.approx(800.0)
@@ -1163,6 +1161,24 @@ class TestPoll:
             "SELECT COUNT(*) FROM grid_daily"
         ).fetchone()[0] == 0
 
+    def test_poll_survives_huge_track_and_rssi(self):
+        """Corrupt feed: finite-but-huge track/rssi must degrade to NULL for
+        that field, not OverflowError the whole poll transaction (v6 stores
+        them as scaled INTEGERs; v5 REAL columns tolerated any finite float)."""
+        from readsbstats.collector import _poll
+        self._write_json([
+            {"hex": "aabbcc", "lat": 52.0, "lon": 21.0, "seen_pos": 0,
+             "track": 1e300, "rssi": -1e300},
+            {"hex": "ddeeff", "lat": 52.1, "lon": 21.1, "seen_pos": 0},
+        ])
+        _poll(self.conn)
+        # both aircraft persisted; the corrupt fields are NULL
+        assert self.conn.execute("SELECT COUNT(*) FROM positions").fetchone()[0] == 2
+        row = self.conn.execute(
+            "SELECT track, rssi FROM positions p JOIN flights f ON f.id = p.flight_id "
+            "WHERE f.icao_hex = 'aabbcc'").fetchone()
+        assert row["track"] is None and row["rssi"] is None
+
 
 class TestGsCrossValidation:
     """GS cross-validation: null gs when it disagrees with position-derived speed."""
@@ -1197,7 +1213,7 @@ class TestGsCrossValidation:
 
     def _gs_in_position(self, icao):
         return self.conn.execute(
-            "SELECT p.gs FROM positions p JOIN flights f ON f.id = p.flight_id"
+            "SELECT p.gs / 10.0 AS gs FROM positions p JOIN flights f ON f.id = p.flight_id"
             " WHERE f.icao_hex = ? ORDER BY p.ts DESC LIMIT 1",
             (icao,),
         ).fetchone()["gs"]
@@ -1296,7 +1312,7 @@ class TestMlatGsAccelFilter:
     def _gs_at(self, icao, idx=-1):
         """Return GS from stored position at given index (default: latest)."""
         rows = self.conn.execute(
-            "SELECT p.gs FROM positions p JOIN flights f ON f.id = p.flight_id"
+            "SELECT p.gs / 10.0 AS gs FROM positions p JOIN flights f ON f.id = p.flight_id"
             " WHERE f.icao_hex = ? ORDER BY p.ts",
             (icao,),
         ).fetchall()
@@ -1719,18 +1735,12 @@ class TestPurge:
         return cur.lastrowid
 
     def _insert_position(self, flight_id, ts):
-        self.conn.execute(
-            "INSERT INTO positions (flight_id, ts, lat, lon) VALUES (?,?,52,21)",
-            (flight_id, ts),
-        )
+        insert_position(self.conn, flight_id, ts, lat=52.0, lon=21.0)
         self.conn.commit()
 
     def _insert_pos_full(self, flight_id, ts, *, lat, lon, gs, st):
-        self.conn.execute(
-            "INSERT INTO positions (flight_id, ts, lat, lon, gs, source_type) "
-            "VALUES (?,?,?,?,?,?)",
-            (flight_id, ts, lat, lon, gs, st),
-        )
+        insert_position(self.conn, flight_id, ts, lat=lat, lon=lon, gs=gs,
+                        source_type=st)
         self.conn.commit()
 
     def test_crossing_flight_aggregates_recomputed(self, monkeypatch):
@@ -1874,11 +1884,8 @@ class TestPurge:
     # not just total_positions.
 
     def _insert_rich_position(self, flight_id, ts, lat, lon, gs, alt, source_type):
-        self.conn.execute(
-            "INSERT INTO positions (flight_id, ts, lat, lon, gs, alt_baro, source_type) "
-            "VALUES (?,?,?,?,?,?,?)",
-            (flight_id, ts, lat, lon, gs, alt, source_type),
-        )
+        insert_position(self.conn, flight_id, ts, lat=lat, lon=lon, gs=gs,
+                        alt_baro=alt, source_type=source_type)
         self.conn.commit()
 
     def test_crossing_flight_aggregates_recomputed(self, monkeypatch):
@@ -2419,10 +2426,7 @@ class TestLoadActive:
             (fid,),
         )
         # Positions accumulated over two hours; most recent at ts=1007200
-        self.conn.execute(
-            "INSERT INTO positions (flight_id, ts, lat, lon) VALUES (?,1007200,52.0,21.0)",
-            (fid,),
-        )
+        insert_position(self.conn, fid, 1007200, lat=52.0, lon=21.0)
         self.conn.commit()
 
         _load_active(self.conn)
@@ -2458,14 +2462,8 @@ class TestLoadActive:
             "INSERT INTO active_flights (icao_hex, flight_id, last_seen) VALUES ('aabbcc',?,1000)",
             (fid,),
         )
-        self.conn.execute(
-            "INSERT INTO positions (flight_id, ts, lat, lon, gs) VALUES (?,1010,52.0,21.0,100.0)",
-            (fid,),
-        )
-        self.conn.execute(
-            "INSERT INTO positions (flight_id, ts, lat, lon, gs) VALUES (?,1020,52.1,21.1,120.0)",
-            (fid,),
-        )
+        insert_position(self.conn, fid, 1010, lat=52.0, lon=21.0, gs=100.0)
+        insert_position(self.conn, fid, 1020, lat=52.1, lon=21.1, gs=120.0)
         self.conn.commit()
         _load_active(self.conn)
         assert _active["aabbcc"]["last_gs"] == pytest.approx(120.0)
@@ -2482,14 +2480,8 @@ class TestLoadActive:
             "INSERT INTO active_flights (icao_hex, flight_id, last_seen) VALUES ('aabbcc',?,1000)",
             (fid,),
         )
-        self.conn.execute(
-            "INSERT INTO positions (flight_id, ts, lat, lon, gs) VALUES (?,1010,52.0,21.0,100.0)",
-            (fid,),
-        )
-        self.conn.execute(
-            "INSERT INTO positions (flight_id, ts, lat, lon, gs) VALUES (?,1020,52.1,21.1,NULL)",
-            (fid,),
-        )
+        insert_position(self.conn, fid, 1010, lat=52.0, lon=21.0, gs=100.0)
+        insert_position(self.conn, fid, 1020, lat=52.1, lon=21.1, gs=None)
         self.conn.commit()
         _load_active(self.conn)
         assert _active["aabbcc"]["last_gs"] is None
@@ -2524,14 +2516,10 @@ class TestLoadActive:
         )
         # Lower rowid, HIGHER ts first; then higher rowid, LOWER ts — the old
         # ORDER BY id DESC wrongly picks the second one.
-        self.conn.execute(
-            "INSERT INTO positions (flight_id, ts, lat, lon, source_type) VALUES (?, 200, 52.0, 21.0, 'adsb_icao')",
-            (fid,),
-        )
-        self.conn.execute(
-            "INSERT INTO positions (flight_id, ts, lat, lon, source_type) VALUES (?, 150, 53.0, 20.0, 'adsb_icao')",
-            (fid,),
-        )
+        insert_position(self.conn, fid, 200, lat=52.0, lon=21.0,
+                        source_type="adsb_icao")
+        insert_position(self.conn, fid, 150, lat=53.0, lon=20.0,
+                        source_type="adsb_icao")
         self.conn.commit()
         _load_active(self.conn)
         assert _active["abc123"]["last_pos_ts"] == 200

@@ -4,8 +4,8 @@ import time
 
 import pytest
 
-from readsbstats import config, database, geo, rollups
-from tests._helpers import make_db
+from readsbstats import config, database, geo, posenc, rollups
+from tests._helpers import insert_position, make_db
 
 
 class TestBucket:
@@ -20,7 +20,15 @@ class TestBucket:
 
     def test_bucket_sql_parity(self):
         """Python bucket() must agree with SQLite CAST(FLOOR(?*?+0.5) AS INTEGER)
-        for knife-edge values across both scales."""
+        for knife-edge values across both scales.
+
+        Two live paths hit bucket():
+        - Raw-float live path: bucket(lat_float, scale) — lat/lon directly from readsb.
+        - Quantized decode path: bucket(posenc.dec5(posenc.enc5(lat)), scale) — when
+          positions are read back from the INTEGER-encoded v6 column. Values within
+          5e-6° of a cell edge may differ by one fine cell between the two paths
+          (INT quantisation error); this is accepted.
+        """
         knife_edge_values = [
             52.205, -0.005, 89.995, -89.995, 179.995, -179.995,
             0.0, 52.2049, -0.006, 21.00005,
@@ -35,6 +43,20 @@ class TestBucket:
                 assert py_result == sql_result, (
                     f"bucket({v!r}, {scale}) = {py_result!r} "
                     f"but SQL = {sql_result!r}"
+                )
+                # Quantized-value parity: verify the decode path (v6 INTEGER column
+                # → dec5 → bucket) agrees with the SQL expression applied to the
+                # encoded int projected as lat/100000.0*scale.
+                enc = posenc.enc5(v)
+                dec = posenc.dec5(enc)
+                sql_quantized = mem.execute(
+                    "SELECT CAST(FLOOR(? / 100000.0 * ? + 0.5) AS INTEGER)", (enc, scale)
+                ).fetchone()[0]
+                py_quantized = rollups.bucket(dec, scale)
+                assert py_quantized == sql_quantized, (
+                    f"quantized bucket({v!r}, {scale}): "
+                    f"Python={py_quantized!r} SQL={sql_quantized!r} "
+                    f"(enc={enc!r}, dec={dec!r})"
                 )
         mem.close()
 
@@ -120,12 +142,9 @@ class TestBackfill:
             (now - 3 * 86400 + 60, 52.21, 21.01),
             (now - 2 * 86400, 52.90, 20.50),
         ]:
-            conn.execute(
-                "INSERT INTO positions (flight_id, ts, lat, lon, source_type) "
-                "VALUES (?,?,?,?, 'adsb_icao')", (fid, ts, lat, lon))
-        conn.execute(
-            "INSERT INTO positions (flight_id, ts, source_type) VALUES (?,?, 'mlat')",
-            (fid, now - 2 * 86400))
+            insert_position(conn, fid, ts, lat=lat, lon=lon,
+                            source_type="adsb_icao")
+        insert_position(conn, fid, now - 2 * 86400, source_type="mlat")
         conn.commit()
         conn.close()
 
@@ -194,10 +213,8 @@ class TestBackfill:
 
         # 5 historical positions on day D
         for i in range(5):
-            conn.execute(
-                "INSERT INTO positions (flight_id, ts, lat, lon, source_type) "
-                "VALUES (?,?,?,?, 'adsb_icao')",
-                (fid, day_d * 86400 + i * 60, 52.20, 21.00))
+            insert_position(conn, fid, day_d * 86400 + i * 60,
+                            lat=52.20, lon=21.00, source_type="adsb_icao")
 
         # Simulate a live-flushed straddle row for day D (COARSE and FINE scales)
         conn.execute(
@@ -269,10 +286,8 @@ class TestPruneFine:
         conn.execute(
             "INSERT INTO flights (icao_hex, first_seen, last_seen) VALUES ('abc123', 0, 0)")
         fid = conn.execute("SELECT id FROM flights").fetchone()[0]
-        conn.execute(
-            "INSERT INTO positions (flight_id, ts, lat, lon, source_type) "
-            "VALUES (?,?, 52.2, 21.0, 'adsb_icao')",
-            (fid, int(time.time()) - 2 * 86400))
+        insert_position(conn, fid, int(time.time()) - 2 * 86400,
+                        lat=52.2, lon=21.0, source_type="adsb_icao")
         conn.commit()
         conn.close()
 

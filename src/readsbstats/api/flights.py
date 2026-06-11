@@ -8,11 +8,25 @@ import io
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import Response, StreamingResponse
 
-from .. import config, database, downsample, enrichment, schemas
+from .. import config, database, downsample, enrichment, posenc, schemas
 from . import _deps, _photos
 
 
 router = APIRouter()
+
+# v6 positions store scaled INTEGERs (posenc); decode lat/gs/track/rssi in
+# SQL (NULL propagates through the division) and the source code in Python.
+_POSITION_COLS_SQL = """ts, lat / 100000.0 AS lat, lon / 100000.0 AS lon,
+               alt_baro, alt_geom, gs / 10.0 AS gs, track / 10.0 AS track,
+               baro_rate, rssi / 10.0 AS rssi, source"""
+
+
+def _position_row_dict(row) -> dict:
+    """Row → response dict; positions.source (int code) becomes the public
+    `source_type` field (string) — API contract unchanged from v5."""
+    d = dict(row)
+    d["source_type"] = posenc.decode_source(d.pop("source"))
+    return d
 
 
 @router.get("/api/flights")
@@ -192,9 +206,8 @@ def api_flight_detail(
     positions = []
     if include_positions:
         positions = conn.execute(
-            """
-            SELECT ts, lat, lon, alt_baro, alt_geom, gs, track,
-                   baro_rate, rssi, source_type
+            f"""
+            SELECT {_POSITION_COLS_SQL}
             FROM positions
             WHERE flight_id = ?
             ORDER BY ts
@@ -219,7 +232,7 @@ def api_flight_detail(
 
     return {
         "flight": flight_dict,
-        "positions": [dict(p) for p in positions],
+        "positions": [_position_row_dict(p) for p in positions],
         "other_flights": [dict(f) for f in other_flights],
         "receiver_lat": config.RECEIVER_LAT,
         "receiver_lon": config.RECEIVER_LON,
@@ -243,9 +256,8 @@ def api_flight_positions(
         (flight_id,),
     ).fetchone()["n"]
     rows = conn.execute(
-        """
-        SELECT ts, lat, lon, alt_baro, alt_geom, gs, track,
-               baro_rate, rssi, source_type
+        f"""
+        SELECT {_POSITION_COLS_SQL}
         FROM positions
         WHERE flight_id = ?
         ORDER BY ts
@@ -257,7 +269,7 @@ def api_flight_positions(
         "total": total,
         "limit": limit,
         "offset": offset,
-        "positions": [dict(r) for r in rows],
+        "positions": [_position_row_dict(r) for r in rows],
     }
 
 
@@ -277,10 +289,13 @@ def api_flight_positions_chart(
     polyline, and any future overlay stay row-aligned.
     """
     conn = _deps.db()
+    # Chart rows intentionally omit rssi (response_model_exclude_unset keeps
+    # the payload lean) — same v6 decode as _POSITION_COLS_SQL otherwise.
     rows = conn.execute(
         """
-        SELECT ts, lat, lon, alt_baro, alt_geom, gs, track,
-               baro_rate, source_type
+        SELECT ts, lat / 100000.0 AS lat, lon / 100000.0 AS lon,
+               alt_baro, alt_geom, gs / 10.0 AS gs, track / 10.0 AS track,
+               baro_rate, source
         FROM positions
         WHERE flight_id = ?
         ORDER BY ts
@@ -305,7 +320,7 @@ def api_flight_positions_chart(
         signal.append((float(ts), float(y)))
 
     indices = downsample.lttb_indices(signal, target)
-    picked = [dict(rows[i]) for i in indices]
+    picked = [_position_row_dict(rows[i]) for i in indices]
     return {
         "total": len(rows),
         "target": target,

@@ -13,7 +13,7 @@ from __future__ import annotations
 import pytest
 
 from readsbstats import collector, config, enrichment
-from tests._helpers import make_db
+from tests._helpers import insert_position, make_db
 
 
 @pytest.fixture(autouse=True)
@@ -33,11 +33,8 @@ def _seed_flight_with_mlat_gs(conn, gs_values: list[float]) -> int:
     )
     # Insert each MLAT position with the supplied gs.
     for i, gs in enumerate(gs_values):
-        conn.execute(
-            "INSERT INTO positions (flight_id, ts, lat, lon, gs, source_type) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (fid, 1000 + i, 52.0, 21.0, gs, "mlat"),
-        )
+        insert_position(conn, fid, 1000 + i, lat=52.0, lon=21.0, gs=gs,
+                        source_type="mlat")
     # Reflect the inserts in the aggregated counts so _close_flight does not
     # take the "too few positions" branch.
     conn.execute(
@@ -66,8 +63,8 @@ class TestMlatOutlierP75ZeroGuard:
                 collector._close_flight(conn, "aabbcc")
 
             survivors = conn.execute(
-                "SELECT gs FROM positions WHERE flight_id=? AND gs IS NOT NULL "
-                "AND gs > 0 ORDER BY gs",
+                "SELECT gs / 10.0 AS gs FROM positions WHERE flight_id=? "
+                "AND gs IS NOT NULL AND gs > 0 ORDER BY gs",
                 (fid,),
             ).fetchall()
             assert len(survivors) == 3, (
@@ -94,8 +91,8 @@ class TestMlatOutlierP75ZeroGuard:
                 collector._close_flight(conn, "aabbcc")
 
             survivors = conn.execute(
-                "SELECT gs FROM positions WHERE flight_id=? AND gs IS NOT NULL "
-                "ORDER BY gs DESC LIMIT 1",
+                "SELECT gs / 10.0 AS gs FROM positions WHERE flight_id=? "
+                "AND gs IS NOT NULL ORDER BY gs DESC LIMIT 1",
                 (fid,),
             ).fetchone()
             assert survivors["gs"] == 120.0, (

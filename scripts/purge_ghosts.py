@@ -85,8 +85,10 @@ def find_ghost_ids(
     per-flight SELECT.  On a 35 k-flight DB that's ~35 k round trips
     eliminated.
     """
+    # v6 positions: lat/lon are scaled INTEGERs (×1e5) — decode in SQL.
     cursor = conn.execute(
-        "SELECT flight_id, id, ts, lat, lon FROM positions "
+        "SELECT flight_id, id, ts, lat / 100000.0 AS lat, lon / 100000.0 AS lon "
+        "FROM positions "
         "WHERE lat IS NOT NULL AND lon IS NOT NULL "
         "ORDER BY flight_id, ts"
     )
@@ -123,12 +125,14 @@ def max_distance_after_purge(
     if ghost_ids:
         placeholders = ",".join("?" * len(ghost_ids))
         rows = conn.execute(
-            f"SELECT lat, lon FROM positions WHERE flight_id = ? AND id NOT IN ({placeholders})",
+            f"SELECT lat / 100000.0 AS lat, lon / 100000.0 AS lon "
+            f"FROM positions WHERE flight_id = ? AND id NOT IN ({placeholders})",
             [flight_id] + ghost_ids,
         ).fetchall()
     else:
         rows = conn.execute(
-            "SELECT lat, lon FROM positions WHERE flight_id = ?",
+            "SELECT lat / 100000.0 AS lat, lon / 100000.0 AS lon "
+            "FROM positions WHERE flight_id = ?",
             (flight_id,),
         ).fetchall()
     if not rows:

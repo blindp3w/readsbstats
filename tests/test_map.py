@@ -14,7 +14,7 @@ from readsbstats.api import _deps
 # Fixtures (match test_web.py conventions)
 # ---------------------------------------------------------------------------
 
-from tests._helpers import make_db  # noqa: E402 — kept under section header
+from tests._helpers import insert_position, make_db  # noqa: E402 — kept under section header
 
 
 @pytest.fixture()
@@ -53,13 +53,8 @@ def insert_flight_with_position(
         (icao, "TST123", "SP-TST", "B738", now, now + 3600, 1, "adsb"),
     ).lastrowid
     pos_ts = now + ts_offset
-    conn.execute(
-        """
-        INSERT INTO positions (flight_id, ts, lat, lon, alt_baro, gs, track, source_type)
-        VALUES (?,?,?,?,?,?,?,?)
-        """,
-        (fid, pos_ts, lat, lon, alt_baro, gs, track, source_type),
-    )
+    insert_position(conn, fid, pos_ts, lat=lat, lon=lon, alt_baro=alt_baro,
+                    gs=gs, track=track, source_type=source_type)
     conn.commit()
     return fid
 
@@ -150,9 +145,8 @@ class TestHeatmapFromRollups:
         db_conn.execute(
             "INSERT INTO flights (icao_hex, first_seen, last_seen) VALUES ('abc123', 1, 2)")
         fid = db_conn.execute("SELECT id FROM flights").fetchone()[0]
-        db_conn.execute(
-            "INSERT INTO positions (flight_id, ts, lat, lon, source_type) "
-            "VALUES (?, 1, 52.2, 21.0, 'adsb_icao')", (fid,))
+        insert_position(db_conn, fid, 1, lat=52.2, lon=21.0,
+                        source_type="adsb_icao")
         db_conn.commit()
         body = client.get("/api/map/heatmap?window=all").json()
         assert body["count"] == 1
@@ -367,15 +361,11 @@ class TestMapSnapshot:
             (fid, now),
         )
         # Lower rowid, HIGHER ts — this is the correct "latest" position.
-        db_conn.execute(
-            "INSERT INTO positions (flight_id, ts, lat, lon, source_type) VALUES (?, ?, 52.0, 21.0, 'adsb_icao')",
-            (fid, now),
-        )
+        insert_position(db_conn, fid, now, lat=52.0, lon=21.0,
+                        source_type="adsb_icao")
         # Higher rowid, LOWER ts — the old ORDER BY id DESC wrongly picks this.
-        db_conn.execute(
-            "INSERT INTO positions (flight_id, ts, lat, lon, source_type) VALUES (?, ?, 53.0, 20.0, 'adsb_icao')",
-            (fid, now - 50),
-        )
+        insert_position(db_conn, fid, now - 50, lat=53.0, lon=20.0,
+                        source_type="adsb_icao")
         db_conn.commit()
         resp = client.get("/api/live")
         assert resp.status_code == 200

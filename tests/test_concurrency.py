@@ -14,6 +14,7 @@ import time
 import pytest
 
 from readsbstats import database
+from tests._helpers import insert_position
 
 
 # ---------------------------------------------------------------------------
@@ -74,11 +75,8 @@ class TestConcurrentWriteRead:
                     if stop.is_set():
                         break
                     with writer_conn:
-                        writer_conn.execute(
-                            "INSERT INTO positions (flight_id, ts, lat, lon) "
-                            "VALUES (?, ?, ?, ?)",
-                            (flight_id, 1000000 + i, 52.0 + i * 0.001, 21.0),
-                        )
+                        insert_position(writer_conn, flight_id, 1000000 + i,
+                                        lat=52.0 + i * 0.001, lon=21.0)
                         writer_conn.execute(
                             "UPDATE flights SET total_positions = total_positions + 1, "
                             "last_seen = ? WHERE id = ?",
@@ -138,11 +136,8 @@ class TestConcurrentWriteRead:
             try:
                 for i in range(100):
                     with conn:
-                        conn.execute(
-                            "INSERT INTO positions (flight_id, ts, lat, lon) "
-                            "VALUES (?, ?, ?, ?)",
-                            (flight_id, start + i, 52.0 + i * 0.001, 21.0),
-                        )
+                        insert_position(conn, flight_id, start + i,
+                                        lat=52.0 + i * 0.001, lon=21.0)
                     counts[key] += 1
             except Exception as exc:
                 errors.append(exc)
@@ -182,10 +177,8 @@ class TestConcurrentWriteRead:
         # Writer inserts and commits
         with writer_conn:
             for i in range(10):
-                writer_conn.execute(
-                    "INSERT INTO positions (flight_id, ts, lat, lon) VALUES (?, ?, 52.0, 21.0)",
-                    (flight_id, 1000000 + i),
-                )
+                insert_position(writer_conn, flight_id, 1000000 + i,
+                                lat=52.0, lon=21.0)
 
         # Reader sees the committed rows
         count = reader_conn.execute(
@@ -210,10 +203,8 @@ class TestConcurrentWriteRead:
             try:
                 writer_conn.execute("BEGIN IMMEDIATE")
                 for i in range(50):
-                    writer_conn.execute(
-                        "INSERT INTO positions (flight_id, ts, lat, lon) VALUES (?, ?, 52.0, 21.0)",
-                        (flight_id, 1000000 + i),
-                    )
+                    insert_position(writer_conn, flight_id, 1000000 + i,
+                                    lat=52.0, lon=21.0)
                 # Signal reader to query while transaction is open
                 barrier.wait()
                 # Hold transaction open briefly
@@ -268,11 +259,8 @@ class TestPurgeVsCollectorConcurrency:
         conn = _connect(self.db_path)
         fid = _seed(conn)
         for i in range(20):
-            conn.execute(
-                "INSERT INTO positions (flight_id, ts, lat, lon, gs) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (fid, 1000000 + i, 52.0, 21.0, 450.0),
-            )
+            insert_position(conn, fid, 1000000 + i, lat=52.0, lon=21.0,
+                            gs=450.0)
         conn.commit()
         conn.close()
         yield
@@ -308,11 +296,8 @@ class TestPurgeVsCollectorConcurrency:
                 ts = 2_000_000
                 while not stop.is_set():
                     with w:
-                        w.execute(
-                            "INSERT INTO positions (flight_id, ts, lat, lon, gs) "
-                            "VALUES (?, ?, ?, ?, ?)",
-                            (fid, ts, 52.0, 21.0, 450.0),
-                        )
+                        insert_position(w, fid, ts, lat=52.0, lon=21.0,
+                                        gs=450.0)
                     ts += 1
                     time.sleep(0.005)
                 w.close()

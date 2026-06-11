@@ -58,14 +58,14 @@ def _seed_db(db_path: str) -> int:
     conn.commit()
     flight_id = cur.lastrowid
 
-    conn.executemany(
-        "INSERT INTO positions (flight_id, ts, lat, lon, alt_baro, gs, source_type) VALUES (?,?,?,?,?,?,?)",
-        [
-            (flight_id, now - 3600, 52.10, 20.90, 30000, 420.0, "adsb_icao"),
-            (flight_id, now - 2400, 52.25, 21.02, 35000, 450.0, "adsb_icao"),
-            (flight_id, now -  600, 52.45, 21.25, 33000, 440.0, "adsb_icao"),
-        ],
-    )
+    from tests._helpers import insert_position
+    for ts, lat, lon, alt, gs in [
+        (now - 3600, 52.10, 20.90, 30000, 420.0),
+        (now - 2400, 52.25, 21.02, 35000, 450.0),
+        (now -  600, 52.45, 21.25, 33000, 440.0),
+    ]:
+        insert_position(conn, flight_id, ts, lat=lat, lon=lon, alt_baro=alt,
+                        gs=gs, source_type="adsb_icao")
     conn.commit()
     conn.close()
     return flight_id

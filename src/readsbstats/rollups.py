@@ -26,7 +26,16 @@ SCALES = (FINE_SCALE, COARSE_SCALE)  # iterated by accumulator; reuse for backfi
 
 def bucket(value: float, scale: int) -> int:
     """Half-up grid bucket; must stay identical to the SQL expression
-    FLOOR(value*scale + 0.5) used by the backfill and the 24h raw path."""
+    FLOOR(value*scale + 0.5).
+
+    Two SQL twins exist:
+    - Raw-float live path: ``CAST(FLOOR(lat * scale + 0.5) AS INTEGER)``
+      (24h backfill, used directly on the float from readsb).
+    - Quantized decode path: ``CAST(FLOOR(lat_enc / 100000.0 * scale + 0.5) AS INTEGER)``
+      where lat_enc is the v6 INTEGER column (= posenc.enc5(lat)).
+    Values within 5e-6° of a cell edge may differ by one fine cell between the
+    two paths due to integer quantisation; this is accepted.
+    """
     return math.floor(value * scale + 0.5)
 
 
@@ -136,8 +145,11 @@ def backfill_and_finalize(path: str = config.DB_PATH) -> None:
             wm_row = conn.execute(
                 "SELECT value FROM meta WHERE key = 'rollups_backfill_done_through'"
             ).fetchone()
-            bearing_expr = geo.bearing_sql("lat", "lon", ":rlat", ":rlon")
-            dist_expr = geo.haversine_sql("lat", "lon", ":rlat", ":rlon")
+            # v6 positions: lat/lon are scaled INTEGERs (×1e5) — decode in SQL.
+            # (Phase 2 deploys before Phase 3, so this backfill only ever runs
+            # against the v6 layout.)
+            bearing_expr = geo.bearing_sql("lat / 100000.0", "lon / 100000.0", ":rlat", ":rlon")
+            dist_expr = geo.haversine_sql("lat / 100000.0", "lon / 100000.0", ":rlat", ":rlon")
             first_day = row[0] // 86400
             last_day = min(row[1] // 86400, today - 1)
             done_through = int(wm_row[0]) if wm_row else first_day - 1
@@ -155,8 +167,8 @@ def backfill_and_finalize(path: str = config.DB_PATH) -> None:
                             """
                             INSERT INTO grid_daily(scale, day, lat_b, lon_b, w)
                             SELECT :scale, :day,
-                                   CAST(FLOOR(lat * :scale + 0.5) AS INTEGER),
-                                   CAST(FLOOR(lon * :scale + 0.5) AS INTEGER),
+                                   CAST(FLOOR(lat / 100000.0 * :scale + 0.5) AS INTEGER),
+                                   CAST(FLOOR(lon / 100000.0 * :scale + 0.5) AS INTEGER),
                                    COUNT(*)
                             FROM positions
                             WHERE ts >= :lo AND ts < :hi

@@ -5,6 +5,39 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 2.18.0 — 2026-06-11
+
+Phase 3 of the database performance overhaul: schema version 6 stores the
+`positions` table as scaled integers, halving its size. Numbers measured on
+a copy of the production database (6.18 M rows).
+
+### Changed
+
+- **Schema v6 — slim `positions` layout (breaking, auto-migrated).**
+  Latitude/longitude are stored ×10⁵ (~1 m precision, finer than ADS-B CPR
+  itself), ground speed/track/RSSI ×10 (0.1 kt / 0.1° / 0.1 dB), and the
+  `source_type` string became a one-byte integer code. The write-only
+  `messages` column is gone. Measured: the positions table shrank from
+  519 MB to 259 MB (−50 %); together with the two remaining indexes the
+  whole positions footprint drops from ~1 280 MB (pre-overhaul) to
+  ~435 MB. **API responses are unchanged** — the same field names
+  (`source_type` included) and float units as before; all encoding and
+  decoding is centralized in the new `posenc` module.
+- `update.sh` detects a pre-v6 database and runs the one-shot offline
+  migration (`scripts/migrate_v6.py`) automatically with both services
+  stopped — expect roughly 10–20 minutes of downtime on a multi-million-row
+  database, most of it the final `VACUUM`, which also reclaims all the
+  space freed by Phases 1–2 (expected file size: ~1.3 GB → ~0.5 GB). A
+  consistent backup is taken automatically beforehand. Databases with up to
+  200 k position rows migrate inline at the next service start instead.
+
+### Fixed
+
+- Corrupt-feed hardening: finite-but-absurd `track`/`rssi` values from the
+  feed are now nulled at ingestion (range checks: track 0–360°, RSSI
+  −200…100 dB), with an integer-overflow guard in the encoders as a second
+  layer. Previously such a value could abort an entire poll cycle.
+
 ## 2.17.0 — 2026-06-11
 
 Phase 2 of the database performance overhaul: collector-maintained daily

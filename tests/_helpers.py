@@ -50,6 +50,24 @@ def make_vdl2_db() -> sqlite3.Connection:
     return conn
 
 
+def insert_position(conn, flight_id, ts, lat=None, lon=None, alt_baro=None,
+                    alt_geom=None, gs=None, track=None, baro_rate=None,
+                    rssi=None, source_type="adsb_icao"):
+    """Insert one v6 positions row from HUMAN units (degrees, knots, dB).
+    Tests must use this instead of hand-written INSERT INTO positions —
+    it owns the posenc encoding so schema changes touch one place.
+    Returns the new row id."""
+    from readsbstats import posenc
+    cur = conn.execute(
+        "INSERT INTO positions (flight_id, ts, lat, lon, alt_baro, alt_geom,"
+        " gs, track, baro_rate, rssi, source) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        (flight_id, ts, posenc.enc5(lat), posenc.enc5(lon), alt_baro, alt_geom,
+         posenc.enc1(gs), posenc.enc1(track), baro_rate, posenc.enc1(rssi),
+         posenc.encode_source(source_type)),
+    )
+    return cur.lastrowid
+
+
 class CountingConn:
     """Sqlite3 connection wrapper that counts `.commit()` calls.
 

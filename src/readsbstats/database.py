@@ -7,7 +7,12 @@ import sqlite3
 import time
 from . import config, geo
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
+
+# v5→v6 positions rebuilds at/below this row count run inline in _migrate()
+# (seconds); larger tables must use scripts/migrate_v6.py offline — _migrate()
+# runs before READY=1 and systemd kills the service at 300 s.
+_INLINE_REBUILD_MAX = 200_000
 
 # Watchlist input caps — enforced by the HTTP API and the Telegram bot
 # command path. Kept here (rather than in each consumer) so they cannot drift.
@@ -195,20 +200,24 @@ CREATE INDEX IF NOT EXISTS idx_flights_registration ON flights(registration);
 CREATE INDEX IF NOT EXISTS idx_flights_type         ON flights(aircraft_type);
 -- idx_flights_dist is created in _migrate() after the column is guaranteed to exist
 
+-- v6 slim layout: scaled INTEGER columns (small ints store in 1-4 bytes vs a
+-- flat 8 for REAL). Encode/decode ONLY via posenc — do not hand-roll *100000.
+-- No AUTOINCREMENT: with oldest-first retention the max rowid is never
+-- deleted, so plain rowid assignment can't reuse ids — and dropping
+-- AUTOINCREMENT removes the per-insert sqlite_sequence write.
 CREATE TABLE IF NOT EXISTS positions (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    id          INTEGER PRIMARY KEY,
     flight_id   INTEGER NOT NULL REFERENCES flights(id) ON DELETE CASCADE,
     ts          INTEGER NOT NULL,
-    lat         REAL,
-    lon         REAL,
-    alt_baro    INTEGER,
-    alt_geom    INTEGER,
-    gs          REAL,
-    track       REAL,
-    baro_rate   INTEGER,
-    rssi        REAL,
-    messages    INTEGER,
-    source_type TEXT            -- "adsb_icao" | "mlat" | "adsr_icao" | "mode_s" | …
+    lat         INTEGER,        -- degrees × 1e5  (posenc.enc5)
+    lon         INTEGER,        -- degrees × 1e5
+    alt_baro    INTEGER,        -- ft
+    alt_geom    INTEGER,        -- ft
+    gs          INTEGER,        -- knots × 10     (posenc.enc1)
+    track       INTEGER,        -- degrees × 10
+    baro_rate   INTEGER,        -- ft/min
+    rssi        INTEGER,        -- dB × 10
+    source      INTEGER         -- posenc.SOURCE_TO_CODE
 );
 
 CREATE INDEX IF NOT EXISTS idx_positions_ts     ON positions(ts);
@@ -317,8 +326,71 @@ def connect(path: str = config.DB_PATH, *, uri: bool = False) -> sqlite3.Connect
     return conn
 
 
+def rebuild_positions_v6(conn: sqlite3.Connection) -> None:
+    """Rebuild a legacy (v5) positions table into the slim v6 layout.
+    Caller must wrap in a transaction and stamp schema_version."""
+    from . import posenc
+
+    # Python's sqlite3 opens implicit transactions for DML only — this
+    # CREATE TABLE runs in autocommit even inside `with conn:`. A crash
+    # between it and the INSERT leaves an orphan positions_v6 behind, so
+    # clear any leftover from a previous failed attempt first.
+    conn.execute("DROP TABLE IF EXISTS positions_v6")
+    conn.execute("""
+        CREATE TABLE positions_v6 (
+            id          INTEGER PRIMARY KEY,
+            flight_id   INTEGER NOT NULL REFERENCES flights(id) ON DELETE CASCADE,
+            ts          INTEGER NOT NULL,
+            lat         INTEGER,
+            lon         INTEGER,
+            alt_baro    INTEGER,
+            alt_geom    INTEGER,
+            gs          INTEGER,
+            track       INTEGER,
+            baro_rate   INTEGER,
+            rssi        INTEGER,
+            source      INTEGER
+        )""")
+    conn.execute(f"""
+        INSERT INTO positions_v6
+        SELECT id, flight_id, ts,
+               CAST(ROUND(lat * 100000) AS INTEGER),
+               CAST(ROUND(lon * 100000) AS INTEGER),
+               alt_baro, alt_geom,
+               CAST(ROUND(gs * 10) AS INTEGER),
+               CAST(ROUND(track * 10) AS INTEGER),
+               baro_rate,
+               CAST(ROUND(rssi * 10) AS INTEGER),
+               {posenc.sql_source_case('source_type')}
+        FROM positions""")
+    conn.execute("DROP TABLE positions")
+    conn.execute("ALTER TABLE positions_v6 RENAME TO positions")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_positions_flight_ts ON positions(flight_id, ts)")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_positions_ts ON positions(ts)")
+
+
 def _migrate(conn: sqlite3.Connection) -> None:
     """Apply incremental schema changes to an existing database."""
+    # ── v5 → v6: slim positions layout (scaled INTEGER columns) ──────────
+    pos_cols = {row[1] for row in conn.execute("PRAGMA table_info(positions)")}
+    if "source_type" in pos_cols:
+        n = conn.execute("SELECT COUNT(*) FROM positions").fetchone()[0]
+        if n > _INLINE_REBUILD_MAX:
+            raise RuntimeError(
+                f"positions has {n:,} legacy-layout rows — stop "
+                "readsbstats-collector and readsbstats-web, then run "
+                "scripts/migrate_v6.py offline "
+                "(update.sh does this automatically when schema_version < 6)"
+            )
+        with conn:
+            rebuild_positions_v6(conn)
+            conn.execute(
+                "INSERT OR IGNORE INTO schema_version "
+                "VALUES (6, strftime('%s','now'))"
+            )
+
     existing = {row[1] for row in conn.execute("PRAGMA table_info(flights)")}
     new_cols = {
         "max_distance_nm":   "REAL",
@@ -486,8 +558,9 @@ def backfill_bearing(path: str = config.DB_PATH) -> None:
             # inline SQL: bearing_sql emits [rlon, rlat, rlat, rlon] and
             # haversine_sql emits [rlat, rlat, rlat, rlon, rlon]. Ordering by
             # the full distance is monotonic with the old inner `a` term.
-            bearing_expr = geo.bearing_sql("p.lat", "p.lon", "?", "?")
-            dist_expr = geo.haversine_sql("p.lat", "p.lon", "?", "?")
+            # v6 positions: lat/lon are scaled INTEGERs (×1e5) — decode in SQL.
+            bearing_expr = geo.bearing_sql("p.lat / 100000.0", "p.lon / 100000.0", "?", "?")
+            dist_expr = geo.haversine_sql("p.lat / 100000.0", "p.lon / 100000.0", "?", "?")
             conn.execute(
                 f"""
                 UPDATE flights SET max_distance_bearing = (
