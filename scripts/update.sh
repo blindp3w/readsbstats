@@ -148,16 +148,25 @@ echo "==> Installing Python dependencies"
 "$APP_DIR/venv/bin/pip" install -q -e "$APP_DIR"
 
 # ---- One-shot schema v6 migration (positions slimming) ----------------------
-# Detects a pre-v6 DB and rebuilds it offline. Services are stopped for the
-# duration (~10-20 min on a 6M-row table, mostly the final VACUUM); the
-# backup taken above is the rollback path. Idempotent — skips on v6+.
-if [[ -f "$DB_FILE" && ( "$MODE" == "code" || "$MODE" == "full" ) ]]; then
+# Detects a pre-v6 DB and rebuilds it offline. Runs in EVERY mode: the code
+# sync above already shipped the new source regardless of mode, so a --db-only
+# run against a pre-v6 DB would otherwise hit db_updater → init_db() →
+# _migrate()'s fail-closed RuntimeError and abort (set -e) with the collector
+# stopped. Services are stopped for the duration (~10-20 min on a 6M-row
+# table, mostly the final VACUUM); the backup taken above is the rollback
+# path. Idempotent — skips on v6+.
+if [[ -f "$DB_FILE" ]]; then
   CUR_VER=$(sqlite3 "$DB_FILE" "SELECT COALESCE(MAX(version), 0) FROM schema_version" 2>/dev/null || echo 0)
   if [[ "$CUR_VER" -lt 6 ]]; then
     echo "==> Schema v$CUR_VER < 6 — running offline positions migration (services stopped)"
     systemctl stop readsbstats-collector readsbstats-web 2>/dev/null || true
     runuser -u "$SERVICE_USER" -- \
       "$APP_DIR/venv/bin/python" "$APP_DIR/scripts/migrate_v6.py" "$DB_FILE"
+    if [[ "$MODE" == "db" ]]; then
+      # code/full modes restart later; db-only has no later restart for web —
+      # bring both back now that the DB is migrated.
+      systemctl start readsbstats-collector readsbstats-web 2>/dev/null || true
+    fi
   fi
 fi
 

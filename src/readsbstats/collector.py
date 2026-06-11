@@ -1063,6 +1063,13 @@ def _poll(conn: sqlite3.Connection) -> None:
 def _purge(conn: sqlite3.Connection) -> None:
     if config.RETENTION_DAYS <= 0:
         return
+    if not rollups.ready(conn):
+        # The one-time rollup backfill hasn't finished — purging now would
+        # delete raw rows whose days aren't in grid_daily/coverage_daily yet,
+        # permanently losing all-time heatmap/coverage history. The hourly
+        # maintenance cycle retries after the backfill completes.
+        log.info("Purge skipped: rollup backfill not finished yet")
+        return
     cutoff = int(time.time()) - config.RETENTION_DAYS * 86400
 
     # 1) Delete expired positions in batches, committing between batches so

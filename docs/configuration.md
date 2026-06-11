@@ -85,7 +85,10 @@ been surfaced anyway).
 **First enablement against a backlog is safe.** The batched purge
 (50 000 rows per transaction, 200 ms sleep between batches) lets the
 collector and web readers interleave normally. There is no need to stop
-services before enabling retention.
+services before enabling retention. The purge also waits for the one-time
+rollup backfill to finish before deleting anything (automatic; at most a
+few minutes after the first deploy), so historical heatmap/coverage days
+are always rolled up before their raw rows can be purged.
 
 **DB file size:** the file does not shrink immediately after the first purge
 — freed pages are recycled via SQLite's freelist for future inserts. At
