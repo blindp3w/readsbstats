@@ -1179,11 +1179,14 @@ def _purge(conn: sqlite3.Connection) -> None:
 
 
 def _run_maintenance(conn: sqlite3.Connection) -> None:
-    """Hourly DB maintenance: retention purge + planner-statistics refresh.
+    """Hourly DB maintenance: retention purge, fine-rollup pruning,
+    planner-statistics refresh.
     `PRAGMA optimize` is the SQLite-recommended periodic call — it re-ANALYZEs
     only tables whose content changed enough to matter, with an internal
     row-sample cap, so it's cheap even on the Pi."""
     _purge(conn)
+    with conn:
+        rollups.prune_fine(conn, int(time.time()))
     conn.execute("PRAGMA optimize")
 
 

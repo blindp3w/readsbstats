@@ -225,6 +225,42 @@ class TestBackfill:
         finally:
             conn.close()
 
+class TestPruneFine:
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        self.conn = make_db()
+        yield
+        self.conn.close()
+
+    def test_prunes_old_fine_keeps_coarse_and_recent(self):
+        now = int(time.time())
+        today = now // 86400
+        old = today - config.GRID_FINE_RETENTION_DAYS - 1
+        self.conn.executemany(
+            "INSERT INTO grid_daily(scale, day, lat_b, lon_b, w) VALUES (?,?,?,?,1)",
+            [(100, old, 1, 1), (100, today, 1, 1), (10, old, 1, 1)],
+        )
+        rollups.prune_fine(self.conn, now)
+        rows = {tuple(r) for r in self.conn.execute("SELECT scale, day FROM grid_daily")}
+        assert rows == {(100, today), (10, old)}
+
+    def test_prunes_boundary_exactly(self):
+        """Row at day == cutoff_day survives (DELETE uses strict <)."""
+        now = int(time.time())
+        today = now // 86400
+        cutoff_day = today - config.GRID_FINE_RETENTION_DAYS
+        # cutoff_day itself must survive; cutoff_day - 1 must be deleted
+        self.conn.executemany(
+            "INSERT INTO grid_daily(scale, day, lat_b, lon_b, w) VALUES (?,?,?,?,1)",
+            [(100, cutoff_day, 1, 1), (100, cutoff_day - 1, 1, 2)],
+        )
+        rollups.prune_fine(self.conn, now)
+        days = {r[0] for r in self.conn.execute(
+            "SELECT day FROM grid_daily WHERE scale = 100")}
+        assert cutoff_day in days
+        assert cutoff_day - 1 not in days
+
+
     def test_backfill_is_idempotent(self, tmp_path):
         path = str(tmp_path / "bf2.db")
         conn = database.connect(path)

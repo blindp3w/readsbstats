@@ -82,6 +82,16 @@ def flush(conn: sqlite3.Connection, acc: RollupAccumulator) -> None:
     acc.cov.clear()
 
 
+def prune_fine(conn: sqlite3.Connection, now: int) -> None:
+    """Drop fine-scale (0.01°) rollup days beyond GRID_FINE_RETENTION_DAYS.
+    Coarse rows are permanent. Caller owns the transaction."""
+    cutoff_day = now // 86400 - config.GRID_FINE_RETENTION_DAYS
+    conn.execute(
+        "DELETE FROM grid_daily WHERE scale = ? AND day < ?",
+        (FINE_SCALE, cutoff_day),
+    )
+
+
 def ready(conn: sqlite3.Connection) -> bool:
     """True once backfill_and_finalize() completed on this DB."""
     row = conn.execute(

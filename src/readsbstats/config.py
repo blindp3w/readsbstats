@@ -152,6 +152,14 @@ DB_PATH            = os.getenv(*_register("db_path",        "RSBS_DB_PATH",     
 RETENTION_DAYS     = _int(*_register("retention_days", "RSBS_RETENTION_DAYS",  "0",    "RETENTION_DAYS"))      # 0 = keep forever
 PURGE_INTERVAL_SEC = _int(*_register("purge_interval", "RSBS_PURGE_INTERVAL",  "3600", "PURGE_INTERVAL_SEC"))
 
+# Days of 0.01° heatmap rollups to keep (serves the 7d window; the 0.1°
+# rollups that serve 30d/all are kept forever). Floor 8 so the 7d window
+# never reads a pruned day.
+# Not in _register — internal tunable, not surfaced via /api/settings.
+GRID_FINE_RETENTION_DAYS = _min_or_default_int(
+    "RSBS_GRID_FINE_RETENTION_DAYS",
+    _int("RSBS_GRID_FINE_RETENTION_DAYS", "14"), 8, 14)
+
 # SQLite synchronous level. NORMAL is the right setting for WAL mode on the
 # Pi's USB HDD: commits skip the per-transaction fsync (67 ms flush latency
 # measured on the production disk) and the WAL still guarantees corruption-
