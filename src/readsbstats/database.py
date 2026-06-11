@@ -379,9 +379,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
         n = conn.execute("SELECT COUNT(*) FROM positions").fetchone()[0]
         if n > _INLINE_REBUILD_MAX:
             raise RuntimeError(
-                f"positions has {n} legacy-layout rows — run "
-                "scripts/migrate_v6.py offline (update.sh does this "
-                "automatically when schema_version < 6)"
+                f"positions has {n:,} legacy-layout rows — stop "
+                "readsbstats-collector and readsbstats-web, then run "
+                "scripts/migrate_v6.py offline "
+                "(update.sh does this automatically when schema_version < 6)"
             )
         with conn:
             rebuild_positions_v6(conn)

@@ -33,7 +33,12 @@ CODE_TO_SOURCE[OTHER_CODE] = "other"
 
 
 def enc5(v: float | None) -> int | None:
-    """Degrees → int(deg × 1e5)."""
+    """Degrees → int(deg × 1e5).
+
+    Note: Python round() uses banker's rounding (half-to-even); the migration
+    SQL uses ROUND() (half-away-from-zero). Exact-half inputs may differ by
+    1 LSB (≤1e-5° / ~1 m), which is cosmetically irrelevant for ADS-B data.
+    """
     return None if v is None else round(v * 100000)
 
 
@@ -42,7 +47,12 @@ def dec5(i: int | None) -> float | None:
 
 
 def enc1(v: float | None) -> int | None:
-    """0.1-unit codec for gs (kts), track (deg), rssi (dB)."""
+    """0.1-unit codec for gs (kts), track (deg), rssi (dB).
+
+    Note: Python round() uses banker's rounding (half-to-even); the migration
+    SQL uses ROUND() (half-away-from-zero). Exact-half inputs may differ by
+    1 LSB (≤0.1 unit), which is cosmetically irrelevant for ADS-B data.
+    """
     return None if v is None else round(v * 10)
 
 
