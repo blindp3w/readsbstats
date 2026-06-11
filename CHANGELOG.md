@@ -29,9 +29,15 @@ retention guidance. Phase 4 is deliberately thin — the heavy lifting
   chart for flights older than the cutoff. See
   [Configuration → Retention](docs/configuration.md#retention--what-survives-the-horizon).
 
+### Dependencies
+
+- uvicorn 0.48 → 0.49; `actions/checkout` 6.0.2 → 6.0.3; frontend group —
+  15 patch/minor bumps (React 19.2.7, Vite 8.0.16, Radix UI patches,
+  TanStack Query 5.101, React Router 7.17, TypeScript-ESLint 8.61).
+
 ### Tests
 
-- Backend 1898 → 1922. Frontend unchanged (386).
+- Backend 1898 → 1924. Frontend unchanged (386).
 
 ## 2.18.0 — 2026-06-11
 
