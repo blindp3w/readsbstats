@@ -1139,6 +1139,30 @@ class TestPoll:
             "SELECT COUNT(*) FROM coverage_daily"
         ).fetchone()[0] == 0
 
+    def test_poll_flush_failure_rolls_back_positions(self, monkeypatch):
+        """flush() runs inside the poll transaction: if it raises, the
+        position inserts must roll back with it — rollups and positions
+        can never drift apart. Guards against a future 'defensive'
+        try/except around flush, which would silently break the invariant."""
+        from readsbstats import rollups
+        from readsbstats.collector import _poll
+
+        def boom(conn, acc):
+            raise RuntimeError("flush failed")
+
+        monkeypatch.setattr(rollups, "flush", boom)
+        self._write_json([
+            {"hex": "aabbcc", "lat": 52.0, "lon": 21.0, "seen_pos": 0},
+        ])
+        with pytest.raises(RuntimeError, match="flush failed"):
+            _poll(self.conn)
+        assert self.conn.execute(
+            "SELECT COUNT(*) FROM positions"
+        ).fetchone()[0] == 0
+        assert self.conn.execute(
+            "SELECT COUNT(*) FROM grid_daily"
+        ).fetchone()[0] == 0
+
 
 class TestGsCrossValidation:
     """GS cross-validation: null gs when it disagrees with position-derived speed."""
