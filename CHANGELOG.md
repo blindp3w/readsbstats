@@ -5,6 +5,34 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 2.19.0 — 2026-06-11
+
+Phase 4 of the database performance overhaul: safe batch purge and
+retention guidance. Phase 4 is deliberately thin — the heavy lifting
+(rollup tables, slim schema) was done in Phases 2–3.
+
+### Added
+
+- **Batched positions purge.** When `RSBS_RETENTION_DAYS` is set, the
+  hourly purge now deletes expired `positions` rows in 50 000-row
+  batches with 200 ms sleeps between batches. Enabling retention against
+  months of backlog no longer stalls the collector or blocks web readers.
+
+### Changed
+
+- **Retention guidance** — recommended value for Pi-class installs:
+  `RSBS_RETENTION_DAYS=180`. At 180-day retention the database plateaus
+  at roughly 1.2 GB rather than growing ~7+ GB/year unbounded.
+  What survives forever: `flights` rows and their aggregates, the
+  all-time heatmap/coverage rollups, and all-time statistics. What the
+  horizon bounds: per-flight raw track replay and the altitude/speed
+  chart for flights older than the cutoff. See
+  [Configuration → Retention](docs/configuration.md#retention--what-survives-the-horizon).
+
+### Tests
+
+- Backend 1898 → 1922. Frontend unchanged (386).
+
 ## 2.18.0 — 2026-06-11
 
 Phase 3 of the database performance overhaul: schema version 6 stores the
