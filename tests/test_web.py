@@ -26,7 +26,7 @@ from readsbstats.photo_sources import PhotoResult
 # Shared DB fixture
 # ---------------------------------------------------------------------------
 
-from tests._helpers import make_db  # noqa: E402 — kept under section header
+from tests._helpers import insert_position, make_db  # noqa: E402 — kept under section header
 
 
 @pytest.fixture()
@@ -581,10 +581,8 @@ class TestApiFlightDetail:
         # paginated / downsampled endpoints. Default response keeps the
         # `positions` key but returns it empty.
         fid = insert_flight(db_conn)
-        db_conn.execute(
-            "INSERT INTO positions (flight_id, ts, lat, lon, source_type) VALUES (?,?,?,?,?)",
-            (fid, 1_000_001, 52.0, 21.0, "adsb_icao"),
-        )
+        insert_position(db_conn, fid, 1_000_001, lat=52.0, lon=21.0,
+                        source_type="adsb_icao")
         db_conn.commit()
         r = client.get(f"/api/flights/{fid}")
         assert r.status_code == 200
@@ -594,10 +592,8 @@ class TestApiFlightDetail:
         # BE-10: explicit opt-in still returns the full embedded list for
         # any non-frontend consumer that depends on it.
         fid = insert_flight(db_conn)
-        db_conn.execute(
-            "INSERT INTO positions (flight_id, ts, lat, lon, source_type) VALUES (?,?,?,?,?)",
-            (fid, 1_000_001, 52.0, 21.0, "adsb_icao"),
-        )
+        insert_position(db_conn, fid, 1_000_001, lat=52.0, lon=21.0,
+                        source_type="adsb_icao")
         db_conn.commit()
         r = client.get(f"/api/flights/{fid}?include_positions=true")
         assert r.status_code == 200
@@ -630,16 +626,13 @@ class TestApiFlightPositionsSplit:
     def _seed(self, db_conn, n: int) -> int:
         fid = insert_flight(db_conn)
         # Bulk insert n synthetic positions for the flight
-        db_conn.executemany(
-            "INSERT INTO positions "
-            "(flight_id, ts, lat, lon, alt_baro, gs, source_type) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            [
-                (fid, 1_000_000 + i, 52.0 + i * 0.0001, 21.0 + i * 0.0001,
-                 1000 + i, 200.0 + (i % 50), "adsb_icao")
-                for i in range(n)
-            ],
-        )
+        for i in range(n):
+            insert_position(
+                db_conn, fid, 1_000_000 + i,
+                lat=52.0 + i * 0.0001, lon=21.0 + i * 0.0001,
+                alt_baro=1000 + i, gs=200.0 + (i % 50),
+                source_type="adsb_icao",
+            )
         db_conn.commit()
         return fid
 
@@ -702,12 +695,9 @@ class TestApiFlightPositionsSplit:
         """BE-10/FE-1: the header's at-max vert-rate sublabel now derives
         from the downsampled chart series, so `baro_rate` must be present."""
         fid = insert_flight(db_conn)
-        db_conn.execute(
-            "INSERT INTO positions "
-            "(flight_id, ts, lat, lon, alt_baro, gs, track, baro_rate, source_type) "
-            "VALUES (?,?,?,?,?,?,?,?,?)",
-            (fid, 1_000_001, 52.0, 21.0, 10000, 250.0, 90.0, -640, "adsb_icao"),
-        )
+        insert_position(db_conn, fid, 1_000_001, lat=52.0, lon=21.0,
+                        alt_baro=10000, gs=250.0, track=90.0, baro_rate=-640,
+                        source_type="adsb_icao")
         db_conn.commit()
         r = client.get(f"/api/flights/{fid}/positions/chart?target=500")
         assert r.status_code == 200
@@ -3736,10 +3726,8 @@ class TestMapHeatmap:
             flight_id = insert_flight(conn)
         if ts is None:
             ts = int(time.time())
-        conn.execute(
-            "INSERT INTO positions (flight_id, ts, lat, lon, source_type) VALUES (?,?,?,?,?)",
-            (flight_id, ts, lat, lon, "adsb_icao"),
-        )
+        insert_position(conn, flight_id, ts, lat=lat, lon=lon,
+                        source_type="adsb_icao")
         conn.commit()
         return flight_id
 
@@ -3856,14 +3844,10 @@ class TestMapHeatmap:
     def test_null_positions_excluded(self, client, db_conn):
         """Positions with NULL lat or lon must not appear in heatmap."""
         fid = insert_flight(db_conn)
-        db_conn.execute(
-            "INSERT INTO positions (flight_id, ts, lat, lon, source_type) VALUES (?,?,?,?,?)",
-            (fid, int(time.time()), None, None, "adsb_icao"),
-        )
-        db_conn.execute(
-            "INSERT INTO positions (flight_id, ts, lat, lon, source_type) VALUES (?,?,?,?,?)",
-            (fid, int(time.time()), 52.10, None, "adsb_icao"),
-        )
+        insert_position(db_conn, fid, int(time.time()), lat=None, lon=None,
+                        source_type="adsb_icao")
+        insert_position(db_conn, fid, int(time.time()), lat=52.10, lon=None,
+                        source_type="adsb_icao")
         db_conn.commit()
         r = client.get("/api/map/heatmap?window=all")
         assert r.status_code == 200
@@ -3908,10 +3892,8 @@ class TestApiMapCoverage:
             flight_id = insert_flight(conn)
         if ts is None:
             ts = int(time.time()) - 100
-        conn.execute(
-            "INSERT INTO positions (flight_id, ts, lat, lon, source_type) VALUES (?,?,?,?,?)",
-            (flight_id, ts, lat, lon, "adsb_icao"),
-        )
+        insert_position(conn, flight_id, ts, lat=lat, lon=lon,
+                        source_type="adsb_icao")
         conn.commit()
         return flight_id
 
@@ -4071,10 +4053,8 @@ class TestMapSnapshot:
     """
 
     def _insert_position(self, conn, *, flight_id, ts, lat=52.10, lon=21.00):
-        conn.execute(
-            "INSERT INTO positions (flight_id, ts, lat, lon, source_type) VALUES (?,?,?,?,?)",
-            (flight_id, ts, lat, lon, "adsb_icao"),
-        )
+        insert_position(conn, flight_id, ts, lat=lat, lon=lon,
+                        source_type="adsb_icao")
         conn.commit()
 
     def test_snapshot_returns_freshest_position_per_flight(self, client, db_conn):
@@ -4146,16 +4126,12 @@ class TestMapSnapshot:
         at = now - 10                                                  # is_live
         fid = insert_flight(db_conn, icao="aabbcc", first_seen=at - 7200)
 
-        rows = []
         for offset in (1500, 1000, 600, 300, 100):           # in-window
-            rows.append((fid, at - offset, 51.0, 11.0, "adsb_icao"))
+            insert_position(db_conn, fid, at - offset, lat=51.0, lon=11.0,
+                            source_type="adsb_icao")
         for offset in (3000, 5000, 7000):                     # out-of-window
-            rows.append((fid, at - offset, 52.0, 12.0, "adsb_icao"))
-        db_conn.executemany(
-            "INSERT INTO positions (flight_id, ts, lat, lon, source_type) "
-            "VALUES (?,?,?,?,?)",
-            rows,
-        )
+            insert_position(db_conn, fid, at - offset, lat=52.0, lon=12.0,
+                            source_type="adsb_icao")
         db_conn.commit()
 
         r = client.get(f"/api/map/snapshot?at={at}&trail=50")
@@ -4186,18 +4162,14 @@ class TestMapSnapshot:
         at = now - 4 * 3600
         fid = insert_flight(db_conn, icao="aabbcc", first_seen=at - 7200)
 
-        rows = []
         # 3 positions inside the live-style window
         for offset in (1500, 1000, 100):
-            rows.append((fid, at - offset, 51.0, 11.0, "adsb_icao"))
+            insert_position(db_conn, fid, at - offset, lat=51.0, lon=11.0,
+                            source_type="adsb_icao")
         # 3 positions older than 1800s but still part of the flight track
         for offset in (3000, 5000, 7000):
-            rows.append((fid, at - offset, 52.0, 12.0, "adsb_icao"))
-        db_conn.executemany(
-            "INSERT INTO positions (flight_id, ts, lat, lon, source_type) "
-            "VALUES (?,?,?,?,?)",
-            rows,
-        )
+            insert_position(db_conn, fid, at - offset, lat=52.0, lon=12.0,
+                            source_type="adsb_icao")
         db_conn.commit()
 
         r = client.get(f"/api/map/snapshot?at={at}&trail=50")
@@ -4245,10 +4217,8 @@ class TestMapPrewarmer:
             "primary_source,lat_min,lat_max,lon_min,lon_max) VALUES "
             "('aabbcc','TEST',1000,2000,0,'adsb',0,0,0,0)"
         ).lastrowid
-        db_conn.execute(
-            "INSERT INTO positions (flight_id,ts,lat,lon,source_type) VALUES (?,?,?,?,?)",
-            (fid, now, 52.13, 21.04, "adsb_icao"),
-        )
+        insert_position(db_conn, fid, now, lat=52.13, lon=21.04,
+                        source_type="adsb_icao")
         db_conn.commit()
 
         cache._cache.clear()
@@ -4988,15 +4958,12 @@ def _seed_enriched_flight(conn, *, fid_icao="aabbcc", callsign="LOT123"):
         (fid_icao, "SP-LRA", "B789", "Boeing 787-9", 0),
     )
     _insert_route(conn, callsign, "WAW", "LHR")
-    conn.executemany(
-        "INSERT INTO positions "
-        "(flight_id, ts, lat, lon, alt_baro, alt_geom, gs, track, baro_rate, rssi, source_type) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-        [
-            (fid, 1_000_000, 52.0, 21.0, 1000, 1100, 200.0, 90.0, 1500, -10.0, "adsb_icao"),
-            (fid, 1_000_300, 52.5, 22.0, 35000, 35100, 480.0, 95.0, -640, -8.0, "adsb_icao"),
-        ],
-    )
+    insert_position(conn, fid, 1_000_000, lat=52.0, lon=21.0, alt_baro=1000,
+                    alt_geom=1100, gs=200.0, track=90.0, baro_rate=1500,
+                    rssi=-10.0, source_type="adsb_icao")
+    insert_position(conn, fid, 1_000_300, lat=52.5, lon=22.0, alt_baro=35000,
+                    alt_geom=35100, gs=480.0, track=95.0, baro_rate=-640,
+                    rssi=-8.0, source_type="adsb_icao")
     conn.commit()
     return fid
 
@@ -5080,14 +5047,12 @@ class TestResponseContractParity:
             "VALUES ('aabbcc','SP-LRA','B789','Boeing 787-9',0)",
         )
         _insert_route(db_conn, "LOT123", "WAW", "LHR")
-        db_conn.executemany(
-            "INSERT INTO positions (flight_id, ts, lat, lon, alt_baro, gs, track, source_type) "
-            "VALUES (?,?,?,?,?,?,?,?)",
-            [
-                (fid, at - 200, 50.0, 10.0, 1000, 200.0, 90.0, "adsb_icao"),
-                (fid, at - 30, 51.0, 11.0, 35000, 480.0, 95.0, "adsb_icao"),
-            ],
-        )
+        insert_position(db_conn, fid, at - 200, lat=50.0, lon=10.0,
+                        alt_baro=1000, gs=200.0, track=90.0,
+                        source_type="adsb_icao")
+        insert_position(db_conn, fid, at - 30, lat=51.0, lon=11.0,
+                        alt_baro=35000, gs=480.0, track=95.0,
+                        source_type="adsb_icao")
         db_conn.commit()
         data = client.get(f"/api/map/snapshot?at={at}&trail=10").json()
         assert set(data) == {"at", "is_live", "receiver_lat", "receiver_lon", "aircraft"}

@@ -13,7 +13,7 @@ import time
 
 from fastapi import APIRouter, HTTPException, Query
 
-from .. import cache, config, geo, rollups, schemas
+from .. import cache, config, geo, posenc, rollups, schemas
 from . import _deps
 
 
@@ -65,10 +65,11 @@ def _compute_heatmap_sync(window: str) -> dict:
             raw_params.append(cutoff)
         # GROUP BY integer bucket (FLOOR(x*10^p + 0.5)) and divide in Python
         # so bucket assignment is stable regardless of floating-point precision.
+        # lat/lon are v6 scaled INTEGERs (×1e5) — decode before bucketing.
         sqlite_rows = conn.execute(
             f"""
-            SELECT CAST(FLOOR(lat * {scale} + 0.5) AS INTEGER) AS lat_bucket,
-                   CAST(FLOOR(lon * {scale} + 0.5) AS INTEGER) AS lon_bucket,
+            SELECT CAST(FLOOR(lat / 100000.0 * {scale} + 0.5) AS INTEGER) AS lat_bucket,
+                   CAST(FLOOR(lon / 100000.0 * {scale} + 0.5) AS INTEGER) AS lon_bucket,
                    COUNT(*) AS w
             FROM positions
             WHERE lat IS NOT NULL AND lon IS NOT NULL
@@ -161,8 +162,9 @@ def _compute_coverage_sync(window: str) -> dict:
             sql_params["cutoff"] = cutoff
 
         # Audit-13 A13-076: shared SQL helpers — single source of truth.
-        bearing_expr = geo.bearing_sql("lat", "lon", ":rlat", ":rlon")
-        dist_expr    = geo.haversine_sql("lat", "lon", ":rlat", ":rlon")
+        # lat/lon are v6 scaled INTEGERs (×1e5) — decode inside the exprs.
+        bearing_expr = geo.bearing_sql("lat / 100000.0", "lon / 100000.0", ":rlat", ":rlon")
+        dist_expr    = geo.haversine_sql("lat / 100000.0", "lon / 100000.0", ":rlat", ":rlon")
         rows = conn.execute(
             f"""
             WITH pos_bearing AS (
@@ -250,8 +252,8 @@ def api_live() -> dict:
                f.primary_source,
                cr.origin_icao,
                cr.dest_icao,
-               p.lat,
-               p.lon
+               p.lat / 100000.0 AS lat,
+               p.lon / 100000.0 AS lon
         FROM active_flights af
         JOIN flights f ON f.id = af.flight_id
         LEFT JOIN aircraft_db      adb ON adb.icao_hex  = af.icao_hex
@@ -319,8 +321,10 @@ def api_map_snapshot(
             WHERE ts BETWEEN ? AND ?
               AND lat IS NOT NULL AND lon IS NOT NULL
         )
-        SELECT p.flight_id, p.ts, p.lat, p.lon, p.alt_baro, p.gs, p.track,
-               p.source_type,
+        SELECT p.flight_id, p.ts, p.lat / 100000.0 AS lat,
+               p.lon / 100000.0 AS lon, p.alt_baro, p.gs / 10.0 AS gs,
+               p.track / 10.0 AS track,
+               p.source,
                f.icao_hex, f.callsign,
                {_deps._ENRICH_REG} AS registration,
                {_deps._ENRICH_TYPE} AS aircraft_type,
@@ -340,6 +344,8 @@ def api_map_snapshot(
     aircraft = []
     for r in rows:
         d = dict(r)
+        # positions.source (v6 int code) → public `source_type` field.
+        d["source_type"] = posenc.decode_source(d.pop("source"))
         d["seconds_ago"] = at - r["ts"]
         aircraft.append(d)
 
@@ -368,7 +374,7 @@ def api_map_snapshot(
         trail_rows = conn.execute(
             f"""
             WITH ranked AS (
-                SELECT flight_id, ts, lat, lon,
+                SELECT flight_id, ts, lat / 100000.0 AS lat, lon / 100000.0 AS lon,
                        ROW_NUMBER() OVER (PARTITION BY flight_id ORDER BY ts DESC) AS rn
                 FROM positions
                 WHERE flight_id IN ({placeholders})

@@ -24,7 +24,7 @@ import sys
 import threading
 import time
 
-from . import adsbx_enricher, config, database, enrichment, geo, icao_ranges, metrics_collector, notifier, rollups, route_enricher
+from . import adsbx_enricher, config, database, enrichment, geo, icao_ranges, metrics_collector, notifier, posenc, rollups, route_enricher
 from .cleaners import clean_short_text
 
 # 24-bit Mode-S address, lowercase hex. Validated *after* stripping the
@@ -217,7 +217,8 @@ def _load_active(conn: sqlite3.Connection) -> None:
     rows = conn.execute(
         """
         SELECT af.icao_hex, af.flight_id, af.last_seen,
-               p.lat, p.lon, p.ts AS pos_ts, p.gs
+               p.lat / 100000.0 AS lat, p.lon / 100000.0 AS lon,
+               p.ts AS pos_ts, p.gs / 10.0 AS gs
         FROM active_flights af
         LEFT JOIN positions p ON p.id = (
             SELECT id FROM positions
@@ -383,9 +384,9 @@ def _close_flight(conn: sqlite3.Connection, icao: str) -> None:
     # vs. the flight's own distribution.  Catches isolated leading spikes that
     # the per-sample acceleration filter misses (no predecessor, or huge time gap).
     mlat_gs = conn.execute(
-        "SELECT id, gs FROM positions "
-        "WHERE flight_id = ? AND gs IS NOT NULL AND source_type = 'mlat'",
-        (flight_id,),
+        "SELECT id, gs / 10.0 AS gs FROM positions "
+        "WHERE flight_id = ? AND gs IS NOT NULL AND source = ?",
+        (flight_id, posenc.SOURCE_TO_CODE["mlat"]),
     ).fetchall()
     if len(mlat_gs) >= config.MLAT_OUTLIER_MIN_READINGS:
         gs_sorted = sorted(r[1] for r in mlat_gs)
@@ -404,7 +405,7 @@ def _close_flight(conn: sqlite3.Connection, icao: str) -> None:
                     outlier_ids,
                 )
                 new_max = conn.execute(
-                    "SELECT MAX(gs) FROM positions WHERE flight_id = ? AND gs IS NOT NULL",
+                    "SELECT MAX(gs) / 10.0 FROM positions WHERE flight_id = ? AND gs IS NOT NULL",
                     (flight_id,),
                 ).fetchone()[0]
                 conn.execute(
@@ -435,19 +436,19 @@ def _insert_position(
     track,
     baro_rate,
     rssi,
-    messages,
     source_type,
 ) -> None:
     conn.execute(
         """
         INSERT INTO positions
             (flight_id, ts, lat, lon, alt_baro, alt_geom,
-             gs, track, baro_rate, rssi, messages, source_type)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+             gs, track, baro_rate, rssi, source)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?)
         """,
         (
-            flight_id, ts, lat, lon, alt_baro, alt_geom,
-            gs, track, baro_rate, rssi, messages, source_type,
+            flight_id, ts, posenc.enc5(lat), posenc.enc5(lon), alt_baro, alt_geom,
+            posenc.enc1(gs), posenc.enc1(track), baro_rate, posenc.enc1(rssi),
+            posenc.encode_source(source_type),
         ),
     )
 
@@ -765,15 +766,16 @@ def _poll(conn: sqlite3.Connection) -> None:
                 continue
 
             # PY-3 (Audit 2026-05-31): coerce to a bounded string before
-            # SQLite binding. A non-string `type` (dict/list/number) used
-            # to raise sqlite3.ProgrammingError and roll back the whole
-            # poll; an oversized string would bloat positions.source_type.
+            # use. A non-string `type` (dict/list/number) used to raise
+            # sqlite3.ProgrammingError and roll back the whole poll. (v6:
+            # the stored value is now a posenc int code, so oversize can't
+            # bloat the table — unknown strings collapse to OTHER_CODE.)
             #
             # Behaviour change (code-review note): for a numeric `type`
             # value — not produced by stock readsb but possible from a
             # custom feed — the old path raised and the outer try/except
             # skipped that aircraft entry. The new path stores
-            # source_type=NULL and processes the row. Downstream
+            # source=NULL and processes the row. Downstream
             # `_is_adsb(None)` / `_is_mlat(None)` both return False, so
             # the position is counted as `other` rather than ADS-B or
             # MLAT. Record-and-degrade beats whole-poll rollback; if a
@@ -817,7 +819,6 @@ def _poll(conn: sqlite3.Connection) -> None:
             track     = _coerce_float(ac.get("track"))
             baro_rate = _coerce_int(ac.get("baro_rate"))
             rssi      = _coerce_float(ac.get("rssi"))
-            messages  = _coerce_int(ac.get("messages"))
 
             # Enrich with local aircraft_db (cached); always called to get flags
             registration, aircraft_type, type_desc, flags, found_in_db = _enrich(
@@ -944,7 +945,7 @@ def _poll(conn: sqlite3.Connection) -> None:
             _insert_position(
                 conn, flight_id, pos_ts,
                 lat, lon, alt_baro, alt_geom,
-                gs, track, baro_rate, rssi, messages, source_type,
+                gs, track, baro_rate, rssi, source_type,
             )
             acc.add(pos_ts, lat, lon, distance_nm, distance_bearing)
             _update_flight_agg(
@@ -1069,7 +1070,8 @@ def _purge(conn: sqlite3.Connection) -> None:
     ]
     for fid in crossing_ids:
         prows = conn.execute(
-            "SELECT lat, lon, alt_baro, gs, rssi, source_type "
+            "SELECT lat / 100000.0 AS lat, lon / 100000.0 AS lon, alt_baro, "
+            "gs / 10.0 AS gs, rssi / 10.0 AS rssi, source "
             "FROM positions WHERE flight_id = ?",
             (fid,),
         ).fetchall()
@@ -1086,7 +1088,7 @@ def _purge(conn: sqlite3.Connection) -> None:
         lat_min = lat_max = lon_min = lon_max = None
         max_dist = max_bearing = None
         for p in prows:
-            st = p["source_type"]
+            st = posenc.decode_source(p["source"])
             if _is_adsb(st):
                 adsb += 1
             elif _is_mlat(st):

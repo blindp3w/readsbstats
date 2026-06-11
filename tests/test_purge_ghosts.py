@@ -13,7 +13,7 @@ RLON = 21.02872
 MAX_SPEED = 2000
 
 
-from tests._helpers import make_db  # noqa: E402 — kept under section header
+from tests._helpers import insert_position, make_db  # noqa: E402 — kept under section header
 
 
 def insert_flight(conn, icao="aabbcc") -> int:
@@ -26,12 +26,9 @@ def insert_flight(conn, icao="aabbcc") -> int:
 
 
 def insert_pos(conn, flight_id, ts, lat, lon) -> int:
-    cur = conn.execute(
-        "INSERT INTO positions (flight_id, ts, lat, lon) VALUES (?,?,?,?)",
-        (flight_id, ts, lat, lon),
-    )
+    pid = insert_position(conn, flight_id, ts, lat=lat, lon=lon)
     conn.commit()
-    return cur.lastrowid
+    return pid
 
 
 # ---------------------------------------------------------------------------
@@ -300,9 +297,9 @@ class TestMainCli:
         )
         fid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
         # Two good positions then a ghost (teleport)
-        conn.execute("INSERT INTO positions (flight_id, ts, lat, lon) VALUES (?, 1000, 52.0, 21.0)", (fid,))
-        conn.execute("INSERT INTO positions (flight_id, ts, lat, lon) VALUES (?, 1005, 52.001, 21.001)", (fid,))
-        conn.execute("INSERT INTO positions (flight_id, ts, lat, lon) VALUES (?, 1010, 80.0, 21.0)", (fid,))  # ghost
+        insert_position(conn, fid, 1000, lat=52.0, lon=21.0)
+        insert_position(conn, fid, 1005, lat=52.001, lon=21.001)
+        insert_position(conn, fid, 1010, lat=80.0, lon=21.0)  # ghost
         conn.commit()
         conn.close()
         import sys
@@ -322,9 +319,9 @@ class TestMainCli:
             "VALUES ('aabbcc', 1000, 2000, 100.0, 3)"
         )
         fid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
-        conn.execute("INSERT INTO positions (flight_id, ts, lat, lon) VALUES (?, 1000, 52.0, 21.0)", (fid,))
-        conn.execute("INSERT INTO positions (flight_id, ts, lat, lon) VALUES (?, 1005, 52.001, 21.001)", (fid,))
-        conn.execute("INSERT INTO positions (flight_id, ts, lat, lon) VALUES (?, 1010, 80.0, 21.0)", (fid,))
+        insert_position(conn, fid, 1000, lat=52.0, lon=21.0)
+        insert_position(conn, fid, 1005, lat=52.001, lon=21.001)
+        insert_position(conn, fid, 1010, lat=80.0, lon=21.0)
         conn.commit()
         conn.close()
         import sys
@@ -351,8 +348,8 @@ class TestMainCli:
             "VALUES ('aabbcc', 1000, 2000, 100.0, 3)"
         )
         fid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
-        conn.execute("INSERT INTO positions (flight_id, ts, lat, lon) VALUES (?, 1000, 52.0, 21.0)", (fid,))
-        conn.execute("INSERT INTO positions (flight_id, ts, lat, lon) VALUES (?, 1010, 80.0, 21.0)", (fid,))
+        insert_position(conn, fid, 1000, lat=52.0, lon=21.0)
+        insert_position(conn, fid, 1010, lat=80.0, lon=21.0)
         conn.commit()
         conn.close()
         import sys
@@ -383,11 +380,7 @@ class TestNullCoordinateGuard:
 
     def test_find_ghost_ids_skips_null_coord_rows(self):
         fid = insert_flight(self.conn)
-        # Direct insert that bypasses the helper so we can set lat=NULL
-        self.conn.execute(
-            "INSERT INTO positions (flight_id, ts, lat, lon) VALUES (?,?,NULL,NULL)",
-            (fid, 1000),
-        )
+        insert_position(self.conn, fid, 1000, lat=None, lon=None)
         # Valid positions on either side of the null
         insert_pos(self.conn, fid, 999, 52.6, 20.75)
         insert_pos(self.conn, fid, 1001, 52.61, 20.76)

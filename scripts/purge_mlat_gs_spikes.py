@@ -26,7 +26,7 @@ import itertools
 import sqlite3
 import statistics
 
-from readsbstats import config, database
+from readsbstats import config, database, posenc
 
 # Audit-12 #199 — `_new_max_gs` was duplicated here and in
 # purge_bad_gs.py. Aliased to the shared helper.
@@ -66,8 +66,10 @@ def scan_mlat_spikes(
     Flights that have no MLAT GS at all still appear here but never
     produce bad_ids, so the result set is unchanged.
     """
+    # v6 positions: gs is INTEGER ×10 — decode in SQL so the kts/s math
+    # below stays in knots; source codes are decoded per-row via posenc.
     cursor = conn.execute(
-        "SELECT flight_id, id, ts, gs, source_type FROM positions "
+        "SELECT flight_id, id, ts, gs / 10.0 AS gs, source FROM positions "
         "WHERE gs IS NOT NULL ORDER BY flight_id, ts"
     )
 
@@ -79,7 +81,8 @@ def scan_mlat_spikes(
         prev_ts = None
 
         for pos in group:
-            pid, ts, gs, source_type = pos["id"], pos["ts"], pos["gs"], pos["source_type"]
+            pid, ts, gs = pos["id"], pos["ts"], pos["gs"]
+            source_type = posenc.decode_source(pos["source"])
 
             if source_type != "mlat":
                 # Non-MLAT positions: advance reference normally (gs is non-null
@@ -125,8 +128,9 @@ def scan_statistical_outliers(
     # improvements.md #126: stream one ordered query through
     # ``itertools.groupby`` instead of one SELECT per flight.
     cursor = conn.execute(
-        "SELECT flight_id, id, gs FROM positions "
-        "WHERE gs IS NOT NULL AND source_type = 'mlat' ORDER BY flight_id"
+        "SELECT flight_id, id, gs / 10.0 AS gs FROM positions "
+        "WHERE gs IS NOT NULL AND source = ? ORDER BY flight_id",
+        (posenc.SOURCE_TO_CODE["mlat"],),
     )
 
     bad: dict[int, list[int]] = {}
@@ -165,7 +169,7 @@ def scan_orphan_max_gs(conn: sqlite3.Connection) -> dict[int, float | None]:
     # too — `max_stored_gs IS NULL` means the correct value is NULL. The old
     # INNER JOIN dropped those flights, leaving the phantom max_gs forever.
     rows = conn.execute(
-        "SELECT f.id, f.max_gs, MAX(p.gs) AS max_stored_gs "
+        "SELECT f.id, f.max_gs, MAX(p.gs) / 10.0 AS max_stored_gs "
         "FROM flights f "
         "LEFT JOIN positions p ON p.flight_id = f.id AND p.gs IS NOT NULL "
         "WHERE f.max_gs IS NOT NULL "

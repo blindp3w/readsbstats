@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from readsbstats import database, posenc
+from tests._helpers import insert_position
 
 
 class TestConnect:
@@ -194,10 +195,7 @@ class TestMigrate:
         )
         fid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
         # Add a position north of receiver (bearing ~0°)
-        conn.execute(
-            "INSERT INTO positions (flight_id, ts, lat, lon) VALUES (?, 1500, 53.225, 20.940)",
-            (fid,),
-        )
+        insert_position(conn, fid, 1500, lat=53.225, lon=20.940)
         conn.commit()
         conn.close()
         # backfill_bearing opens its own connection
@@ -233,11 +231,7 @@ class TestMigrate:
             )
             rows.append(cur.lastrowid)
         for fid in rows:
-            conn.execute(
-                "INSERT INTO positions (flight_id, ts, lat, lon) "
-                "VALUES (?, ?, 53.225, 20.940)",
-                (fid, 1500),
-            )
+            insert_position(conn, fid, 1500, lat=53.225, lon=20.940)
         conn.commit()
         conn.close()
 
@@ -555,20 +549,13 @@ class TestBackgroundMigrationsConcurrency:
                 # successful INSERT before the index build runs, otherwise the
                 # writer thread can be scheduled out for the entire (~µs)
                 # index build on a tiny CI runner and the test sees zero rows.
-                conn.execute(
-                    "INSERT INTO positions (flight_id, ts, lat, lon) "
-                    "VALUES (?, ?, ?, ?)",
-                    (fid, ts, 50.0, 20.0),
-                )
+                insert_position(conn, fid, ts, lat=50.0, lon=20.0)
                 conn.commit()
                 first_write_done.set()
                 ts += 1
                 while not stop.is_set():
-                    conn.execute(
-                        "INSERT INTO positions (flight_id, ts, lat, lon) "
-                        "VALUES (?, ?, ?, ?)",
-                        (fid, ts, 50.0 + ts * 0.0001, 20.0 + ts * 0.0001),
-                    )
+                    insert_position(conn, fid, ts, lat=50.0 + ts * 0.0001,
+                                    lon=20.0 + ts * 0.0001)
                     conn.commit()
                     ts += 1
                 conn.close()
@@ -603,8 +590,7 @@ class TestBackgroundMigrationsConcurrency:
         sane_fid = conn.execute(
             "SELECT id FROM flights WHERE icao_hex='aabbcc'"
         ).fetchone()[0]
-        conn.execute("INSERT INTO positions (flight_id, ts, lat, lon) "
-                     "VALUES (?, 0, 53.0, 21.0)", (sane_fid,))
+        insert_position(conn, sane_fid, 0, lat=53.0, lon=21.0)
 
         conn.execute("INSERT INTO flights (icao_hex, first_seen, last_seen, "
                      "max_distance_nm, max_distance_bearing) "
@@ -614,8 +600,7 @@ class TestBackgroundMigrationsConcurrency:
         ).fetchone()[0]
         # 91/-181 are physically impossible — the trig functions still produce
         # a number, but the bearing should at minimum be in [0, 360).
-        conn.execute("INSERT INTO positions (flight_id, ts, lat, lon) "
-                     "VALUES (?, 0, 91.0, -181.0)", (bad_fid,))
+        insert_position(conn, bad_fid, 0, lat=91.0, lon=-181.0)
         conn.commit()
         conn.close()
 

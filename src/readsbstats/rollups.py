@@ -136,8 +136,11 @@ def backfill_and_finalize(path: str = config.DB_PATH) -> None:
             wm_row = conn.execute(
                 "SELECT value FROM meta WHERE key = 'rollups_backfill_done_through'"
             ).fetchone()
-            bearing_expr = geo.bearing_sql("lat", "lon", ":rlat", ":rlon")
-            dist_expr = geo.haversine_sql("lat", "lon", ":rlat", ":rlon")
+            # v6 positions: lat/lon are scaled INTEGERs (×1e5) — decode in SQL.
+            # (Phase 2 deploys before Phase 3, so this backfill only ever runs
+            # against the v6 layout.)
+            bearing_expr = geo.bearing_sql("lat / 100000.0", "lon / 100000.0", ":rlat", ":rlon")
+            dist_expr = geo.haversine_sql("lat / 100000.0", "lon / 100000.0", ":rlat", ":rlon")
             first_day = row[0] // 86400
             last_day = min(row[1] // 86400, today - 1)
             done_through = int(wm_row[0]) if wm_row else first_day - 1
@@ -155,8 +158,8 @@ def backfill_and_finalize(path: str = config.DB_PATH) -> None:
                             """
                             INSERT INTO grid_daily(scale, day, lat_b, lon_b, w)
                             SELECT :scale, :day,
-                                   CAST(FLOOR(lat * :scale + 0.5) AS INTEGER),
-                                   CAST(FLOOR(lon * :scale + 0.5) AS INTEGER),
+                                   CAST(FLOOR(lat / 100000.0 * :scale + 0.5) AS INTEGER),
+                                   CAST(FLOOR(lon / 100000.0 * :scale + 0.5) AS INTEGER),
                                    COUNT(*)
                             FROM positions
                             WHERE ts >= :lo AND ts < :hi

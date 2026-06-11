@@ -14,7 +14,7 @@ from purge_mlat_gs_spikes import (
 )
 
 
-from tests._helpers import make_db  # noqa: E402 — kept under section header
+from tests._helpers import insert_position, make_db  # noqa: E402 — kept under section header
 
 
 def insert_flight(conn, icao="aabbcc", max_gs=500.0) -> int:
@@ -28,13 +28,10 @@ def insert_flight(conn, icao="aabbcc", max_gs=500.0) -> int:
 
 
 def insert_pos(conn, flight_id, ts, gs, source_type="mlat") -> int:
-    cur = conn.execute(
-        "INSERT INTO positions (flight_id, ts, lat, lon, gs, source_type) "
-        "VALUES (?, ?, 52.0, 21.0, ?, ?)",
-        (flight_id, ts, gs, source_type),
-    )
+    pid = insert_position(conn, flight_id, ts, lat=52.0, lon=21.0, gs=gs,
+                          source_type=source_type)
     conn.commit()
-    return cur.lastrowid
+    return pid
 
 
 ACCEL_LIMIT = 8.0

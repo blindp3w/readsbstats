@@ -23,7 +23,10 @@ def new_max_gs(
     flight_id: int,
     bad_ids: list[int],
 ) -> float | None:
-    """Return max gs from positions excluding the bad ones.
+    """Return max gs (knots) from positions excluding the bad ones.
+
+    v6 positions store gs as INTEGER ×10 (posenc) — decode in SQL so the
+    callers keep writing plain knots to flights.max_gs (REAL).
 
     SQLite accepts `NOT IN ()` but the standard SQL grammar forbids it —
     use a plain WHERE when there are no exclusions (also clearer to read).
@@ -31,13 +34,13 @@ def new_max_gs(
     if bad_ids:
         placeholders = ",".join("?" * len(bad_ids))
         row = conn.execute(
-            f"SELECT MAX(gs) FROM positions "
+            f"SELECT MAX(gs) / 10.0 FROM positions "
             f"WHERE flight_id = ? AND id NOT IN ({placeholders}) AND gs IS NOT NULL",
             [flight_id] + bad_ids,
         ).fetchone()
     else:
         row = conn.execute(
-            "SELECT MAX(gs) FROM positions "
+            "SELECT MAX(gs) / 10.0 FROM positions "
             "WHERE flight_id = ? AND gs IS NOT NULL",
             (flight_id,),
         ).fetchone()

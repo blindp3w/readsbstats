@@ -65,7 +65,8 @@ def test_equal_pos_ts_does_not_insert_second_position(monkeypatch, tmp_path):
     collector._poll(conn)
 
     rows = conn.execute(
-        "SELECT lat, lon FROM positions WHERE flight_id IN "
+        "SELECT lat / 100000.0 AS lat, lon / 100000.0 AS lon FROM positions "
+        "WHERE flight_id IN "
         "(SELECT id FROM flights WHERE icao_hex='aabbcc') ORDER BY id"
     ).fetchall()
     assert len(rows) == 1, f"expected exactly 1 position row, got {len(rows)}"

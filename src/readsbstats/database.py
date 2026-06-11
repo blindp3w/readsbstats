@@ -558,8 +558,9 @@ def backfill_bearing(path: str = config.DB_PATH) -> None:
             # inline SQL: bearing_sql emits [rlon, rlat, rlat, rlon] and
             # haversine_sql emits [rlat, rlat, rlat, rlon, rlon]. Ordering by
             # the full distance is monotonic with the old inner `a` term.
-            bearing_expr = geo.bearing_sql("p.lat", "p.lon", "?", "?")
-            dist_expr = geo.haversine_sql("p.lat", "p.lon", "?", "?")
+            # v6 positions: lat/lon are scaled INTEGERs (×1e5) — decode in SQL.
+            bearing_expr = geo.bearing_sql("p.lat / 100000.0", "p.lon / 100000.0", "?", "?")
+            dist_expr = geo.haversine_sql("p.lat / 100000.0", "p.lon / 100000.0", "?", "?")
             conn.execute(
                 f"""
                 UPDATE flights SET max_distance_bearing = (

@@ -32,7 +32,7 @@ import argparse
 import itertools
 import sqlite3
 
-from readsbstats import config, database, geo
+from readsbstats import config, database, geo, posenc
 
 # Audit-12 #199 — `_new_max_gs` was duplicated here and in
 # purge_mlat_gs_spikes.py. Aliased to the shared helper so a fix lands
@@ -122,8 +122,11 @@ def scan_flights(
     needed_icaos = {icao for icao in icao_by_fid.values() if icao is not None}
     flags_by_icao: dict[str, int] = _flags_for_icaos(conn, needed_icaos)
 
+    # v6 positions: decode the scaled INTEGER columns in SQL; the source
+    # code is decoded per-row via posenc at the boundary below.
     cursor = conn.execute(
-        "SELECT flight_id, id, ts, lat, lon, gs, source_type FROM positions "
+        "SELECT flight_id, id, ts, lat / 100000.0 AS lat, lon / 100000.0 AS lon, "
+        "gs / 10.0 AS gs, source FROM positions "
         "WHERE gs IS NOT NULL AND lat IS NOT NULL AND lon IS NOT NULL "
         "ORDER BY flight_id, ts"
     )
@@ -145,10 +148,11 @@ def scan_flights(
         prev = None
 
         for pos in positions:
-            # Row keys: flight_id, id, ts, lat, lon, gs, source_type
-            pid, ts, lat, lon, gs, source_type = (
-                pos["id"], pos["ts"], pos["lat"], pos["lon"], pos["gs"], pos["source_type"],
+            # Row keys: flight_id, id, ts, lat, lon, gs, source
+            pid, ts, lat, lon, gs = (
+                pos["id"], pos["ts"], pos["lat"], pos["lon"], pos["gs"],
             )
+            source_type = posenc.decode_source(pos["source"])
 
             if gs is None:
                 prev = pos

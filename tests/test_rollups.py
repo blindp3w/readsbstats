@@ -5,7 +5,7 @@ import time
 import pytest
 
 from readsbstats import config, database, geo, rollups
-from tests._helpers import make_db
+from tests._helpers import insert_position, make_db
 
 
 class TestBucket:
@@ -120,12 +120,9 @@ class TestBackfill:
             (now - 3 * 86400 + 60, 52.21, 21.01),
             (now - 2 * 86400, 52.90, 20.50),
         ]:
-            conn.execute(
-                "INSERT INTO positions (flight_id, ts, lat, lon, source_type) "
-                "VALUES (?,?,?,?, 'adsb_icao')", (fid, ts, lat, lon))
-        conn.execute(
-            "INSERT INTO positions (flight_id, ts, source_type) VALUES (?,?, 'mlat')",
-            (fid, now - 2 * 86400))
+            insert_position(conn, fid, ts, lat=lat, lon=lon,
+                            source_type="adsb_icao")
+        insert_position(conn, fid, now - 2 * 86400, source_type="mlat")
         conn.commit()
         conn.close()
 
@@ -194,10 +191,8 @@ class TestBackfill:
 
         # 5 historical positions on day D
         for i in range(5):
-            conn.execute(
-                "INSERT INTO positions (flight_id, ts, lat, lon, source_type) "
-                "VALUES (?,?,?,?, 'adsb_icao')",
-                (fid, day_d * 86400 + i * 60, 52.20, 21.00))
+            insert_position(conn, fid, day_d * 86400 + i * 60,
+                            lat=52.20, lon=21.00, source_type="adsb_icao")
 
         # Simulate a live-flushed straddle row for day D (COARSE and FINE scales)
         conn.execute(
@@ -269,10 +264,8 @@ class TestPruneFine:
         conn.execute(
             "INSERT INTO flights (icao_hex, first_seen, last_seen) VALUES ('abc123', 0, 0)")
         fid = conn.execute("SELECT id FROM flights").fetchone()[0]
-        conn.execute(
-            "INSERT INTO positions (flight_id, ts, lat, lon, source_type) "
-            "VALUES (?,?, 52.2, 21.0, 'adsb_icao')",
-            (fid, int(time.time()) - 2 * 86400))
+        insert_position(conn, fid, int(time.time()) - 2 * 86400,
+                        lat=52.2, lon=21.0, source_type="adsb_icao")
         conn.commit()
         conn.close()
 

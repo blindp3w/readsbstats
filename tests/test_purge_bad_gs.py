@@ -20,7 +20,7 @@ from purge_bad_gs import (
 )
 
 
-from tests._helpers import make_db  # noqa: E402 — kept under section header
+from tests._helpers import insert_position, make_db  # noqa: E402 — kept under section header
 
 
 def make_file_db(path: str) -> sqlite3.Connection:
@@ -41,13 +41,10 @@ def insert_flight(conn, icao="aabbcc", max_gs=500.0, callsign=None, registration
 
 
 def insert_pos(conn, flight_id, ts, lat, lon, gs, source_type="adsb_icao") -> int:
-    cur = conn.execute(
-        "INSERT INTO positions (flight_id, ts, lat, lon, gs, source_type) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
-        (flight_id, ts, lat, lon, gs, source_type),
-    )
+    pid = insert_position(conn, flight_id, ts, lat=lat, lon=lon, gs=gs,
+                          source_type=source_type)
     conn.commit()
-    return cur.lastrowid
+    return pid
 
 
 def insert_aircraft_db(conn, icao, flags=0):
@@ -596,7 +593,7 @@ class TestApplyPurge:
         apply_purge(self.conn, {fid: [bad_pid]})
 
         row = self.conn.execute(
-            "SELECT gs FROM positions WHERE id = ?", (good_pid,)
+            "SELECT gs / 10.0 FROM positions WHERE id = ?", (good_pid,)
         ).fetchone()
         assert row[0] == 400
 
@@ -690,7 +687,7 @@ class TestMain:
 
         # Data unchanged
         row = self.conn.execute(
-            "SELECT gs FROM positions WHERE flight_id = ?", (fid,)
+            "SELECT gs / 10.0 FROM positions WHERE flight_id = ?", (fid,)
         ).fetchone()
         assert row[0] == 800
 
@@ -785,11 +782,8 @@ class TestNullCoordinateGuard:
         fid = insert_flight(self.conn)
         # Row with NULL coords but a valid gs value — cross-validation
         # against the previous row would have crashed.
-        self.conn.execute(
-            "INSERT INTO positions (flight_id, ts, lat, lon, gs, source_type) "
-            "VALUES (?,?,NULL,NULL,400.0,'adsb_icao')",
-            (fid, 1500),
-        )
+        insert_position(self.conn, fid, 1500, lat=None, lon=None, gs=400.0,
+                        source_type="adsb_icao")
         # Bracketing valid positions
         insert_pos(self.conn, fid, 1000, 52.6,  20.75, 400.0, "adsb_icao")
         insert_pos(self.conn, fid, 2000, 52.65, 20.80, 400.0, "adsb_icao")
@@ -842,11 +836,8 @@ class TestScanFiltersGsNoneAtSql:
         # Position B: gs=NULL, claims to be 1° north (huge jump). If the
         # SELECT filter is removed, B becomes the cross-validation
         # reference for C below.
-        self.conn.execute(
-            "INSERT INTO positions (flight_id, ts, lat, lon, gs, source_type) "
-            "VALUES (?, ?, ?, ?, NULL, 'adsb_icao')",
-            (fid, 1030, 53.0, 21.0),
-        )
+        insert_position(self.conn, fid, 1030, lat=53.0, lon=21.0, gs=None,
+                        source_type="adsb_icao")
         # Position C: valid gs, ~6.67 nm north of A (400 kts × 60 s).
         # 0.111° of latitude = 6.67 nm — within deviation tolerance.
         insert_pos(self.conn, fid, 1060, 52.111, 21.0, gs=400.0, source_type="adsb_icao")
