@@ -113,6 +113,24 @@ class TestHeatmapFromRollups:
         assert body["count"] == 10
         assert body["points"] == [[52.2, 21.0, 1.0]]   # 10/10 normalised
 
+    def test_two_cells_normalised_against_densest(self, client, db_conn):
+        """Two cells with different summed weights → intensities scale
+        against the densest cell (10 → 1.0, 5 → 0.5)."""
+        # cell A: 8 + 2 across two days = 10
+        db_conn.execute(
+            "INSERT INTO grid_daily(scale, day, lat_b, lon_b, w) VALUES (10, 100, 522, 210, 8)")
+        db_conn.execute(
+            "INSERT INTO grid_daily(scale, day, lat_b, lon_b, w) VALUES (10, 101, 522, 210, 2)")
+        # cell B: 5
+        db_conn.execute(
+            "INSERT INTO grid_daily(scale, day, lat_b, lon_b, w) VALUES (10, 100, 523, 211, 5)")
+        _set_rollups_ready(db_conn)
+        db_conn.commit()
+        body = client.get("/api/map/heatmap?window=all").json()
+        assert body["count"] == 15
+        points = sorted(body["points"], key=lambda p: p[2])
+        assert points == [[52.3, 21.1, 0.5], [52.2, 21.0, 1.0]]
+
     def test_7d_window_uses_fine_scale_and_day_cutoff(self, client, db_conn):
         now_day = int(time.time()) // 86400
         db_conn.execute(

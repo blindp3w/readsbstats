@@ -24,7 +24,8 @@ router = APIRouter()
 def _compute_heatmap_sync(window: str) -> dict:
     """Heatmap grid — call via run_in_executor to avoid blocking the event loop.
 
-    7d/30d/all sum the grid_daily rollups (thousands of rows, day-quantized
+    7d/30d/all sum the grid_daily rollups (orders of magnitude fewer rows
+    than positions, day-quantized
     window: last N full days + today-so-far, day cutoff = (now - secs) //
     86400); 24h keeps exact rolling semantics with a ts-ranged scan of raw
     positions. Falls back to the raw SQLite path while the one-time rollup

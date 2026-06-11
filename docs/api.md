@@ -36,8 +36,8 @@ The web server exposes a JSON API at `http://YOUR_PI_IP/stats/api/`.
 |---|---|---|
 | GET | `/api/live` | Currently tracked aircraft (used by nav badge) |
 | GET | `/api/map/snapshot` | Aircraft snapshot at a given timestamp (`at`, `trail` params) — powers live map and rewind |
-| GET | `/api/map/heatmap` | Position density grid for heatmap overlay. `window`: `24h`/`7d`/`30d`/`all`. GZip-compressed; per-window cache (5 min–6 h). |
-| GET | `/api/map/coverage` | Receiver coverage polygon. `window`: `24h`/`7d`/`30d`/`all`. 36-point polygon, one vertex per 10° bearing bucket. |
+| GET | `/api/map/heatmap` | Position density grid for heatmap overlay. `window`: `24h`/`7d`/`30d`/`all`. GZip-compressed; per-window cache (5 min–6 h). `7d`/`30d`/`all` are served from the daily rollup tables and are UTC-day-quantized (last N full days + today-so-far); `24h` is an exact rolling window over raw positions. |
+| GET | `/api/map/coverage` | Receiver coverage polygon. `window`: `24h`/`7d`/`30d`/`all`. 36-point polygon, one vertex per 10° bearing bucket. Same window semantics as the heatmap: `≥7d` from rollups, day-quantized; `24h` exact rolling. |
 | GET | `/api/airspace` | Airspace GeoJSON. Cached 1 h. |
 
 ## Watchlist
@@ -114,6 +114,8 @@ Current schema version: **5** (stored in the internal `schema_version` table). T
 |---|---|
 | `flights` | One row per flight: ICAO, callsign, reg, type, timestamps, aggregates (max alt, max speed, max distance, ADS-B/MLAT position counts, origin/dest ICAO) |
 | `positions` | Raw position samples: lat, lon, alt, speed, track, climb rate, RSSI, source type |
+| `grid_daily` | Daily heatmap rollup: position count `w` per `(scale, day, lat_b, lon_b)` grid cell. Two scales: `100` (0.01° cells, pruned after `RSBS_GRID_FINE_RETENTION_DAYS`) and `10` (0.1° cells, kept forever). Maintained by the collector inside the poll transaction; backfilled once from history on first run. |
+| `coverage_daily` | Daily coverage rollup: max detection range (nm) per `(day, bearing_b)` — 1° bearing buckets, kept forever. Same maintenance as `grid_daily`. |
 | `active_flights` | Currently open flights — persists collector state across restarts |
 | `aircraft_db` | Aircraft metadata from tar1090-db (~620k rows) |
 | `airlines` | Airline names from OpenFlights |
@@ -124,4 +126,11 @@ Current schema version: **5** (stored in the internal `schema_version` table). T
 | `watchlist` | User-defined watchlist entries |
 | `adsbx_overrides` | airplanes.live-confirmed flags |
 | `receiver_stats` | Receiver metrics time-series (44 columns; opt-in) |
+| `meta` | Internal: generic key/value store (rollup readiness flag + backfill watermark) |
 | `schema_version` | Internal: one row per applied schema version (`version`, `applied_at`); latest is 5 |
+
+After the one-time rollup backfill completes, the `positions` table carries
+exactly two indexes: `idx_positions_flight_ts` (per-flight timelines) and
+`idx_positions_ts` (windowed raw scans, e.g. the 24h map paths). The legacy
+ts-composite indexes that served whole-history heatmap/coverage scans are
+dropped — those queries read `grid_daily`/`coverage_daily` instead.

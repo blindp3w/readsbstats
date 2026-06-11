@@ -14,7 +14,7 @@ Environment="RSBS_FLIGHT_GAP=1200"
 
 ## Environment variables
 
-All 86 `RSBS_*` vars in `config.py`, grouped by section. Numeric values
+All 83 `RSBS_*` vars in `config.py`, grouped by section. Numeric values
 that fall below the documented minimum log a stderr warning and fall
 back to the listed default (see `_min_or_default_int`/`_float`).
 Boolean vars accept `1`/`0`, `true`/`false`, `yes`/`no`, `on`/`off`
@@ -50,6 +50,7 @@ Boolean vars accept `1`/`0`, `true`/`false`, `yes`/`no`, `on`/`off`
 | `RSBS_DB_SYNCHRONOUS` | `NORMAL` | SQLite `synchronous` level: `NORMAL` or `FULL`. In WAL mode `NORMAL` is corruption-safe — a power cut can lose at most the last few commits, never the database. `FULL` fsyncs every commit (per-commit durability) at a measurable cost on USB HDDs. Invalid values log an error and fall back to `NORMAL`. See [Database crash safety](#database-crash-safety). |
 | `RSBS_RETENTION_DAYS` | `0` | Days to keep raw positions (`0` = keep forever) |
 | `RSBS_PURGE_INTERVAL` | `3600` | Seconds between retention-purge passes (min `1`; only fires when `RETENTION_DAYS > 0`) |
+| `RSBS_GRID_FINE_RETENTION_DAYS` | `14` | Days of fine-scale (0.01°) heatmap rollup rows to keep in `grid_daily` (min `8` — the 7d window needs 7 full days + today). Only the fine grid is pruned; the coarse (0.1°) grid and `coverage_daily` rows are permanent, so the 30d/all-time heatmap and coverage views keep working even if raw positions are ever purged. |
 
 ### Receiver location
 
