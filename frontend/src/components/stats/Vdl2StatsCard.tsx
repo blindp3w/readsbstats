@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import { apiJson } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { KpiCard } from '@/components/stats/KpiCard';
+import { labelName } from '@/lib/vdl2Labels';
 import type { Vdl2StatsResponse } from '@/lib/types';
 
 // VDL2 / ACARS summary for the Stats page. Reuses KpiCard (which renders a
@@ -49,7 +50,15 @@ export function Vdl2StatsCard({ enabled = true }: { enabled?: boolean }) {
               <ul className="space-y-1 text-sm">
                 {data.top_labels.map((l) => (
                   <li key={l.label} className="flex items-center justify-between gap-2">
-                    <span className="font-mono">{l.label}</span>
+                    <span className="min-w-0 truncate">
+                      <span className="font-mono">{l.label}</span>
+                      {labelName(l.label) && (
+                        <span className="text-[var(--color-text-dim)]">
+                          {' '}
+                          · {labelName(l.label)}
+                        </span>
+                      )}
+                    </span>
                     <span className="tabnum text-[var(--color-text-dim)]">
                       {l.messages.toLocaleString()}
                     </span>

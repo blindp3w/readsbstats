@@ -44,10 +44,14 @@ function newClient() {
 }
 
 function renderPage() {
+  // TooltipProvider: message rows wrap known-label badges in a tooltip, and
+  // Radix Tooltip.Root throws when rendered without a provider.
   return render(
     <QueryClientProvider client={newClient()}>
       <MemoryRouter initialEntries={['/vdl2']}>
-        <Vdl2Page />
+        <TooltipProvider delayDuration={0}>
+          <Vdl2Page />
+        </TooltipProvider>
       </MemoryRouter>
     </QueryClientProvider>,
   );

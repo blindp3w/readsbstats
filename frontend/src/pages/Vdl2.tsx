@@ -12,6 +12,7 @@ import { Alert } from '@/components/ui/Alert';
 import { PageSkeleton } from '@/components/PageSkeleton';
 import { MessageList } from '@/components/vdl2/MessageList';
 import { useVdl2Health } from '@/hooks/useVdl2Enabled';
+import { labelName } from '@/lib/vdl2Labels';
 import type { Settings, Vdl2MessagesResponse, Vdl2StatsResponse } from '@/lib/types';
 
 // VDL2 / ACARS message feed (opt-in feature; the nav item + this page only
@@ -171,7 +172,7 @@ export default function Vdl2Page() {
                 data-testid="vdl2-search"
               />
             </div>
-            <div className="w-[120px] shrink-0">
+            <div className="relative w-[120px] shrink-0">
               <Label htmlFor="vdl2-label">Label</Label>
               <Input
                 id="vdl2-label"
@@ -183,6 +184,14 @@ export default function Vdl2Page() {
                 spellCheck={false}
                 data-testid="vdl2-label"
               />
+              {labelName(label) && (
+                <p
+                  className="absolute left-0 top-full mt-0.5 max-w-[150px] truncate text-[10px] leading-tight text-[var(--color-text-dim)]"
+                  data-testid="vdl2-label-name"
+                >
+                  {labelName(label)}
+                </p>
+              )}
             </div>
             <div className="w-[150px] shrink-0">
               <Label htmlFor="vdl2-reg">Registration</Label>
