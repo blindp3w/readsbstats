@@ -6,10 +6,11 @@ import { Badge } from '@/components/ui/Badge';
 import { useVdl2FlightWindow } from '@/hooks/useVdl2Enabled';
 import type { Vdl2OooiSummary } from '@/lib/types';
 
-// EXPERIMENTAL: route confirmation + (when available) OOOI block times for this
-// flight. On real air-side VDL2 feeds the standard slash-TEI OOOI form is rare
-// (downlinks are proprietary Teledyne ACMS), so the common signal is the `dsta`
-// destination from XID frames — block times appear only when an OOOI body parses.
+// Route confirmation + (when available) OOOI block times for this flight.
+// Events come from slash-TEI bodies or are synthesized server-side from
+// Q-series QP/QQ/QR/QS compact reports (Ryanair/Wizz style); airline-defined
+// label-49 movement reports and the XID `dsta` destination fill route gaps.
+// Partial events are normal — TimeRow hides slots the feed didn't report.
 // A ✓/✗ chip confirms the reported route against the scheduled origin/dest.
 // Renders NOTHING when nothing parsed and there's no `dsta`.
 

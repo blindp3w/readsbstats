@@ -380,11 +380,12 @@ def api_vdl2_oooi(
     since: int | None = Query(None, ge=0),
     until: int | None = Query(None, ge=0),
 ) -> dict:
-    """OOOI block-time summary for one airframe over a flight window. Scans the
-    airframe's ACARS bodies (OOOI is in the free-text body, NOT the label) and
-    returns the latest DEP + latest ARR, plus a `dsta` destination fallback.
-    EXPERIMENTAL — commonly empty on an H1-dominated feed; the SPA hides the card
-    when `has_oooi` is false and no `dsta`."""
+    """OOOI block-time summary for one airframe over a flight window. The latest
+    slash-TEI DEP/ARR bodies win; where those are absent (the norm on air-side
+    feeds) events are synthesized from Q-series QP/QQ/QR/QS compact reports, and
+    airline-defined label-49 movement reports fill route gaps plus the `dsta`
+    destination fallback. The SPA hides the card when `has_oooi` is false and no
+    `dsta`."""
     hexv = _deps._parse_icao_path(icao_hex)
     _check_window(since, until)
     with _vdl2_guard():
@@ -408,27 +409,118 @@ def _compute_oooi(icao_hex: str, since: int | None, until: int | None) -> dict:
         params.append(until)
     params.append(_OOOI_SCAN_LIMIT)
     rows = conn.execute(
-        f"SELECT body, dsta, ts FROM vdl2_messages WHERE {' AND '.join(where)} "
+        f"SELECT body, dsta, ts, label, registration, flight "
+        f"FROM vdl2_messages WHERE {' AND '.join(where)} "
         "ORDER BY id DESC LIMIT ?",
         params,
     ).fetchall()
 
     dep = arr = None
     dsta = None
+    q_partials: list[dict] = []
+    route49: dict | None = None
     # Rows are newest-first, so the first DEP/ARR we parse is the most recent.
     for r in rows:
         if dsta is None and r["dsta"]:
             dsta = r["dsta"]
+        lab = r["label"]
+        if lab in oooi.Q_PHASES:
+            q = oooi.parse_qseries(lab, r["body"])
+            if q is not None:
+                q_partials.append({**q, "ts": r["ts"],
+                                   "registration": r["registration"],
+                                   "flight": r["flight"]})
+        elif lab == "49" and route49 is None:
+            route49 = oooi.parse_label49(r["body"])
         parsed = oooi.parse_oooi(r["body"])
-        if parsed is None:
-            continue
-        if parsed["type"] == "DEP" and dep is None:
-            dep = {**parsed, "ts": r["ts"]}
-        elif parsed["type"] == "ARR" and arr is None:
-            arr = {**parsed, "ts": r["ts"]}
+        if parsed is not None:
+            if parsed["type"] == "DEP" and dep is None:
+                dep = {**parsed, "ts": r["ts"]}
+            elif parsed["type"] == "ARR" and arr is None:
+                arr = {**parsed, "ts": r["ts"]}
+        # Early exit once slash-TEI gave a complete answer. Accepted trade-off:
+        # this can skip a label-49 route fill for a TEI event missing DA/DS —
+        # rare, and bounded work wins.
         if dep is not None and arr is not None and dsta is not None:
             break
+
+    # Synthesize events from Q-series partials where slash-TEI gave nothing.
+    if q_partials and (dep is None or arr is None):
+        phases = _dominant_q_phases(q_partials)
+        if dep is None:
+            dep = _synth_q_event("DEP", phases.get("out"), phases.get("off"))
+        if arr is None:
+            arr = _synth_q_event("ARR", phases.get("on"), phases.get("in"))
+
+    # Airline-defined label-49 movement reports carry a dep+arr pair: fill route
+    # gaps on events, and serve as the `dsta` fallback when nothing else parsed.
+    if route49 is not None:
+        for ev in (dep, arr):
+            if ev is not None:
+                if ev["dep_icao"] is None:
+                    ev["dep_icao"] = route49["dep_icao"]
+                if ev["dest_icao"] is None:
+                    ev["dest_icao"] = route49["dest_icao"]
+        if dsta is None:
+            dsta = route49["dest_icao"]
+
     return {"dep": dep, "arr": arr, "dsta": dsta, "has_oooi": dep is not None or arr is not None}
+
+
+def _dominant_q_phases(partials: list[dict]) -> dict[str, dict]:
+    """Group Q-series partials by city pair and return ``{phase: partial}`` for
+    the dominant pair — most distinct phases, ties to the pair with the newest
+    partial. A quick turnaround's next-leg OUT report lands inside the flight
+    window's slack; without this, its `t_out` would be mixed into this leg's
+    synthesized DEP and the card would show a false route mismatch."""
+    by_pair: dict[tuple, dict] = {}
+    for p in partials:   # newest-first: first hit per pair/phase is the newest
+        pair = (p["dep_icao"], p["dest_icao"])
+        slot = by_pair.setdefault(pair, {"phases": {}, "newest_ts": p["ts"]})
+        slot["phases"].setdefault(p["phase"], p)
+    best: dict[str, dict] = {}
+    best_key = None
+    for slot in by_pair.values():
+        key = (len(slot["phases"]), slot["newest_ts"])
+        if best_key is None or key > best_key:
+            best_key, best = key, slot["phases"]
+    return best
+
+
+def _synth_q_event(ev_type: str, first: dict | None, second: dict | None) -> dict | None:
+    """Build a Vdl2OooiEvent-shaped dict from up to two Q-series phase partials
+    (DEP: out+off, ARR: on+in), or ``None`` when both are absent. Emits exactly
+    the event-contract keys — `schemas.ApiModel` is ``extra="allow"``, so any
+    internal key (phase/t/t2) would leak into the JSON response."""
+    contributors = [p for p in (first, second) if p is not None]
+    if not contributors:
+        return None
+    newest = max(contributors, key=lambda p: p["ts"])
+    t_out = t_off = t_on = t_in = None
+    if ev_type == "DEP":
+        if first is not None:
+            t_out = first["t"]
+        if second is not None:
+            t_off = second["t"]
+            if t_out is None:
+                t_out = second.get("t2")   # QQ (OFF) echoes the OUT time
+    else:
+        if first is not None:
+            t_on = first["t"]
+        if second is not None:
+            t_in = second["t"]
+    return {
+        "type": ev_type,
+        "registration": newest["registration"],
+        "flight": newest["flight"],
+        "dep_icao": newest["dep_icao"],
+        "dest_icao": newest["dest_icao"],
+        "t_out": t_out,
+        "t_off": t_off,
+        "t_on": t_on,
+        "t_in": t_in,
+        "ts": newest["ts"],
+    }
 
 
 _TIMESERIES_TOP_FREQS = 6

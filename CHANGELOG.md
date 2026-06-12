@@ -5,6 +5,24 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+
+- **VDL2 OOOI parsing for formats real feeds carry.** `/api/vdl2/oooi/{hex}` now
+  synthesizes DEP/ARR events from Q-series compact reports (labels QP/QQ/QR/QS =
+  Out/Off/On/In, `<dep><arr><HHMM>` bodies — Ryanair/Wizz style; a QQ OFF report's
+  trailing OUT-time echo fills `t_out` too), and airline-defined label-49 movement
+  reports fill route gaps plus the `dsta` destination fallback. Slash-TEI bodies
+  still take precedence; a dominant-city-pair rule keeps a quick turnaround's
+  next-leg reports from contaminating the current leg. The flight-page OOOI card
+  lights up unchanged — previously it was effectively always empty on air-side
+  feeds (the slash-TEI form is ground-side ARINC 620).
+- **Human-readable ACARS label names.** New static label dictionary
+  (`frontend/src/lib/vdl2Labels.ts`): message-feed label badges get a tooltip with
+  the label's meaning, the Stats card's "Top message labels" list shows names
+  inline, and the Messages-page label filter echoes the resolved name.
+
 ## 2.19.1 — 2026-06-11
 
 Test-coverage hardening sweep: every documented security/reliability

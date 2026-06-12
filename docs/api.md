@@ -65,7 +65,7 @@ exposed at `/api/health` → `vdl2.available` (the SPA gates surfaces on it).
 | GET | `/api/vdl2/timeseries` | Bucketed reception series for the Metrics charts over `from`/`to` (epoch). Columnar like `/api/metrics`: `{bucket_seconds, metrics:["rate", <freq>…], freqs[], total, newest_ts, newest_age_sec, data:[[ts…],[rate…],…]}`. Series are msgs/min; buckets coarsen with span (60→14400 s, min 60 s); top-6 frequencies by volume; zero-filled. Window capped at ~366 days (400 if exceeded). vdlm2dec-only — **no signal level**. |
 | GET | `/api/vdl2/active` | `{icao_hex[], count}` — airframes that transmitted ACARS in the last `minutes` (default 10, 1–120). Map "transmitting now" badge. |
 | GET | `/api/vdl2/positions` | `{points[], count}` of `{lat, lon, icao_hex, ts, label, precise}` from the last `minutes` (default 60, 1–1440). Precise (~0.001°) fixes are parsed from Label-16 AUTPOS **bodies** (`precise: true`); coarse (~0.1°) VDL2 XID link-frame fixes from the lat/lon columns are the fallback (`precise: false`). Sparse on an H1-dominated feed. Capped at 2000. |
-| GET | `/api/vdl2/oooi/{icao_hex}` | OOOI block-time summary for a flight window (`since`/`until`). `{dep, arr, dsta, has_oooi}` — latest DEP + ARR parsed from ACARS **bodies** (OOOI is not a label), plus a `dsta` destination fallback. EXPERIMENTAL; commonly empty on an H1-dominated feed. |
+| GET | `/api/vdl2/oooi/{icao_hex}` | OOOI block-time summary for a flight window (`since`/`until`). `{dep, arr, dsta, has_oooi}` — latest DEP + ARR parsed from slash-TEI ACARS **bodies**, or synthesized from Q-series QP/QQ/QR/QS (Out/Off/On/In) compact reports; airline-defined label-49 movement reports fill route gaps and the `dsta` fallback. Times are raw HHMM strings. |
 
 ## Enrichment
 
