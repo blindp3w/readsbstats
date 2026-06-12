@@ -1,26 +1,31 @@
 """OOOI (Out/Off/On/In) block-time parsing from ACARS message bodies.
 
-OOOI reports are NOT identified by the ACARS ``label`` (dominantly ``H1`` on a
-European AOC feed). They appear as slash-delimited TEI key-values inside the
-free-text ``body``, e.g.::
+Three formats, in order of what a real air-side VDL2 feed actually carries
+(validated against a 6.4-day live dump, 13.6k msgs, 2026-06):
 
-    DEP / FI JA401/AN CC-AWE/DA SPJC/DS SCEL/OT 0030
+1. **Q-series compact reports** (``parse_qseries``) — labels QP=OUT, QQ=OFF,
+   QR=ON, QS=IN; body ``<dep ICAO×4><arr ICAO×4><HHMM>[…]``, e.g.
+   ``LIRAEPMO2106``. Ryanair/Wizz use these heavily (~122 msgs/6 d). QQ (OFF)
+   bodies append a second HHMM echoing the earlier OUT time
+   (``QP EPMOGCTS1059`` → ``QQ EPMOGCTS11121059``), so one QQ yields both
+   ``t_off`` and ``t_out``.
+2. **Label 49 movement reports** (``parse_label49``) — airline-defined (NOT
+   ARINC-standard); the observed Etihad/LOT form is
+   ``01DCAP    ETD159/090545OMAAEPWA`` = flight/DDHHMM + dep+arr pair. Used as
+   a route source only — no OOOI times are derived from it.
+3. **Slash-delimited TEI** (``parse_oooi``) — e.g.
+   ``DEP / FI JA401/AN CC-AWE/DA SPJC/DS SCEL/OT 0030`` with ``AN``=registration,
+   ``DA``=departure, ``DS``/``AD``=destination, ``FI``=flight, ``OT``/``OFF``/
+   ``ON``/``IN``=times. This is the ARINC-620 *ground-side* Standard Message
+   Text; an air-side receiver near LOT traffic sees ~0 of these (downlinks are
+   proprietary Teledyne ACMS ``#DFB``/``#CFB`` blocks). Kept as the
+   highest-precedence parser for carriers that do emit it.
 
-Verified TEI map (vdl2-research.md §3, OAG ACARS OOOI doc):
-``AN``=registration, ``DA``=departure aerodrome, ``DS``=destination station,
-``AD``=arrival aerodrome, ``FI``=carrier+flight number, and ``OT``/``OFF``/``ON``/
-``IN`` = the four OOOI times.
-
-EXPERIMENTAL — and validated against a real vdlm2dec LOT feed (413 msgs/4.6 h):
-**0 matches.** The slash-TEI form above is the ARINC-620 *ground-side* Standard
-Message Text (what an aggregator/airline host sees). A VDL2 receiver captures the
-raw *air-side* downlink, which for this carrier is proprietary Teledyne ACMS
-(``#DFB``/``#CFB``/``#T1B`` …) — OOOI block times are embedded there, not as
-SMT/TEI. So this parser is correct but commonly empty on air-side feeds; the only
-OOOI-class signal that reliably fires is the ``dsta`` destination from XID frames
-(surfaced as the card's fallback). The parser is deliberately conservative —
-recognises only an exact ``DEP``/``ARR`` lead token and fails SOFT to ``None`` —
-so a noisy free-text feed never produces bogus OOOI cards.
+All parsers are deliberately conservative and fail SOFT to ``None`` so a noisy
+free-text feed never produces bogus OOOI cards. Airport idents are matched as
+strict ``[A-Z]{4}`` on the raw body — NOT via ``cleaners.valid_icao_code``,
+which accepts alphanumerics and case-normalizes (too permissive here: lowercase
+junk must reject, digit-bearing "idents" must reject).
 """
 from __future__ import annotations
 
@@ -38,6 +43,21 @@ from ..cleaners import clean_short_text
 _FIELD = re.compile(r"^([A-Z]{2,3})\s+(\S.*)$")
 _OOOI_KEYS = frozenset({"AN", "FI", "DA", "DS", "AD", "OT", "OFF", "ON", "IN"})
 _ID_CAP = 16   # registration / flight / airport idents are short
+
+# Q-series label → OOOI phase. Public: api/vdl2.py dispatches on membership.
+Q_PHASES = {"QP": "out", "QQ": "off", "QR": "on", "QS": "in"}
+
+_HHMM = r"(?:[01]\d|2[0-3])[0-5]\d"
+# dep+arr ICAO, HHMM, optional second HHMM (QQ carries an OUT-time echo). The
+# tail must be empty or start with whitespace / digit / slash (observed: " 192",
+# "  96", "/FB   71", a newline + position line) — a letter right after the
+# time(s) rejects the whole body.
+_QSERIES_RE = re.compile(rf"^([A-Z]{{4}})([A-Z]{{4}})({_HHMM})({_HHMM})?(?=$|[\s\d/])")
+# Label 49 is airline-defined (not ARINC-standard); this matches the observed
+# Etihad/LOT movement form only — regex strictness is the safety net against
+# other carriers' incompatible label-49 bodies. Flight id allows up to 2
+# trailing letters (DLH4AB-style).
+_LABEL49_RE = re.compile(r"\b([A-Z]{3}\d{1,4}[A-Z]{0,2})/\d{6}([A-Z]{4})([A-Z]{4})(?![A-Z0-9])")
 
 
 def parse_oooi(body: object) -> dict | None:
@@ -81,3 +101,46 @@ def parse_oooi(body: object) -> dict | None:
         "t_in": clean_short_text(fields.get("IN"), _ID_CAP),
     }
     return rec
+
+
+def parse_qseries(label: object, body: object) -> dict | None:
+    """Parse a Q-series compact OOOI body (label QP/QQ/QR/QS) into a phase
+    partial, or return ``None`` when *label* isn't a Q-series OOOI label or
+    *body* doesn't conform.
+
+    Returns ``{"phase": "out"|"off"|"on"|"in", "dep_icao", "dest_icao",
+    "t": HHMM, "t2": HHMM|None}`` — ``t2`` is the OUT-time echo that QQ (OFF)
+    reports append; it is ``None`` for every other label even when a second
+    time group is present (no evidence it means anything there)."""
+    phase = Q_PHASES.get(label) if isinstance(label, str) else None
+    if phase is None or not isinstance(body, str) or not body:
+        return None
+    m = _QSERIES_RE.match(body.strip())
+    if m is None:
+        return None
+    return {
+        "phase": phase,
+        "dep_icao": m.group(1),
+        "dest_icao": m.group(2),
+        "t": m.group(3),
+        "t2": m.group(4) if label == "QQ" else None,
+    }
+
+
+def parse_label49(body: object) -> dict | None:
+    """Parse an airline-defined label-49 movement report into a route record
+    ``{"flight", "dep_icao", "dest_icao"}``, or ``None``.
+
+    Route source only: the DDHHMM group anchors the format but is deliberately
+    unused — its event semantics (ETD? report time?) are unconfirmed, so no
+    OOOI times are invented from it."""
+    if not isinstance(body, str) or not body:
+        return None
+    m = _LABEL49_RE.search(body)
+    if m is None:
+        return None
+    return {
+        "flight": m.group(1),
+        "dep_icao": m.group(2),
+        "dest_icao": m.group(3),
+    }

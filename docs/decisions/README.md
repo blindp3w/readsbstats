@@ -24,6 +24,7 @@ a date-stamped **Revision** note (see ADR-0010).
 | [0013](0013-vdl2-timeseries-reuses-metrics-columnar-contract.md) | VDL2 reception charts reuse the `/api/metrics` columnar contract | Accepted | 2026-06-05 |
 | [0014](0014-daily-rollups-replace-duckdb.md) | Daily rollup tables replace the DuckDB accelerator | Accepted | 2026-06-11 |
 | [0015](0015-scaled-integer-positions-storage.md) | Scaled-integer storage for the positions table (schema v6) | Accepted | 2026-06-11 |
+| [0016](0016-oooi-qseries-parsing.md) | OOOI from Q-series compact reports (and what we deliberately don't parse) | Accepted | 2026-06-12 |
 
 ## Adding an ADR
 

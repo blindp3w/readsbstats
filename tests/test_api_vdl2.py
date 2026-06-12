@@ -481,6 +481,145 @@ class TestOooi:
             assert c.get("/api/vdl2/oooi/zzz").status_code == 404
         vconn.close()
 
+    def test_qseries_synthesizes_dep_and_arr_events(self, monkeypatch):
+        now = int(time.time())
+        vconn, app = self._make(monkeypatch, [
+            {"ts": now - 400, "icao_hex": "4d2228", "label": "QP",
+             "registration": "SP-RZB", "flight": "FR34BB", "body": "EPWAEGLL0930 192"},
+            {"ts": now - 350, "icao_hex": "4d2228", "label": "QQ",
+             "registration": "SP-RZB", "flight": "FR34BB", "body": "EPWAEGLL09420930"},
+            {"ts": now - 120, "icao_hex": "4d2228", "label": "QR",
+             "registration": "SP-RZB", "flight": "FR34BB", "body": "EPWAEGLL1150"},
+            {"ts": now - 60, "icao_hex": "4d2228", "label": "QS",
+             "registration": "SP-RZB", "flight": "FR34BB", "body": "EPWAEGLL1158  96"},
+        ])
+        with TestClient(app) as c:
+            data = c.get("/api/vdl2/oooi/4d2228").json()
+        assert data["has_oooi"] is True
+        assert data["dep"]["type"] == "DEP"
+        assert data["dep"]["t_out"] == "0930" and data["dep"]["t_off"] == "0942"
+        assert data["dep"]["dep_icao"] == "EPWA" and data["dep"]["dest_icao"] == "EGLL"
+        assert data["dep"]["registration"] == "SP-RZB" and data["dep"]["flight"] == "FR34BB"
+        assert data["arr"]["type"] == "ARR"
+        assert data["arr"]["t_on"] == "1150" and data["arr"]["t_in"] == "1158"
+        vconn.close()
+
+    def test_qq_alone_fills_both_off_and_out(self, monkeypatch):
+        now = int(time.time())
+        vconn, app = self._make(monkeypatch, [
+            {"ts": now - 60, "icao_hex": "4d2228", "label": "QQ", "body": "EPMOGCTS11121059"},
+        ])
+        with TestClient(app) as c:
+            data = c.get("/api/vdl2/oooi/4d2228").json()
+        assert data["has_oooi"] is True
+        assert data["dep"]["t_off"] == "1112"
+        assert data["dep"]["t_out"] == "1059"   # OUT echoed in the OFF report
+        assert data["arr"] is None
+        vconn.close()
+
+    def test_qseries_single_phase_still_yields_event(self, monkeypatch):
+        now = int(time.time())
+        vconn, app = self._make(monkeypatch, [
+            {"ts": now - 60, "icao_hex": "4d2228", "label": "QP", "body": "EPMOLIRA1616 192"},
+        ])
+        with TestClient(app) as c:
+            data = c.get("/api/vdl2/oooi/4d2228").json()
+        assert data["has_oooi"] is True
+        assert data["dep"]["t_out"] == "1616" and data["dep"]["t_off"] is None
+        assert data["arr"] is None
+        vconn.close()
+
+    def test_qseries_newest_per_phase_wins(self, monkeypatch):
+        now = int(time.time())
+        vconn, app = self._make(monkeypatch, [
+            {"ts": now - 300, "icao_hex": "4d2228", "label": "QP", "body": "EPMOLIRA1601"},
+            {"ts": now - 60, "icao_hex": "4d2228", "label": "QP", "body": "EPMOLIRA1616"},
+        ])
+        with TestClient(app) as c:
+            data = c.get("/api/vdl2/oooi/4d2228").json()
+        assert data["dep"]["t_out"] == "1616"
+        vconn.close()
+
+    def test_qseries_dominant_pair_excludes_other_leg(self, monkeypatch):
+        # Full OOOI set for leg EPWA→EGLL plus a NEWER stray QP from the return
+        # leg (fits inside the flight-window slack on quick turnarounds). The
+        # dominant city pair must win or the card would show leg-2's t_out with
+        # leg-1's t_on/t_in and a false ✗ route chip.
+        now = int(time.time())
+        vconn, app = self._make(monkeypatch, [
+            {"ts": now - 500, "icao_hex": "4d2228", "label": "QP", "body": "EPWAEGLL0930"},
+            {"ts": now - 450, "icao_hex": "4d2228", "label": "QQ", "body": "EPWAEGLL09420930"},
+            {"ts": now - 200, "icao_hex": "4d2228", "label": "QR", "body": "EPWAEGLL1150"},
+            {"ts": now - 150, "icao_hex": "4d2228", "label": "QS", "body": "EPWAEGLL1158"},
+            {"ts": now - 30, "icao_hex": "4d2228", "label": "QP", "body": "EGLLEPWA1240"},
+        ])
+        with TestClient(app) as c:
+            data = c.get("/api/vdl2/oooi/4d2228").json()
+        assert data["dep"]["dep_icao"] == "EPWA" and data["dep"]["dest_icao"] == "EGLL"
+        assert data["dep"]["t_out"] == "0930"   # NOT 1240 from the return leg
+        assert data["arr"]["t_on"] == "1150" and data["arr"]["t_in"] == "1158"
+        vconn.close()
+
+    def test_qseries_lone_other_leg_partial_still_used(self, monkeypatch):
+        now = int(time.time())
+        vconn, app = self._make(monkeypatch, [
+            {"ts": now - 30, "icao_hex": "4d2228", "label": "QP", "body": "EGLLEPWA1240"},
+        ])
+        with TestClient(app) as c:
+            data = c.get("/api/vdl2/oooi/4d2228").json()
+        assert data["dep"]["t_out"] == "1240"
+        assert data["dep"]["dep_icao"] == "EGLL"
+        vconn.close()
+
+    def test_tei_takes_precedence_over_qseries(self, monkeypatch):
+        now = int(time.time())
+        vconn, app = self._make(monkeypatch, [
+            {"ts": now - 300, "icao_hex": "4d2228", "label": "H1",
+             "body": "DEP / DA EPWA/DS EGLL/OT 0030"},
+            {"ts": now - 60, "icao_hex": "4d2228", "label": "QP", "body": "EPWAEGLL0935"},
+        ])
+        with TestClient(app) as c:
+            data = c.get("/api/vdl2/oooi/4d2228").json()
+        assert data["dep"]["t_out"] == "0030"   # slash-TEI wins over synthetic
+        vconn.close()
+
+    def test_label49_fills_route_on_tei_event_missing_airports(self, monkeypatch):
+        now = int(time.time())
+        vconn, app = self._make(monkeypatch, [
+            {"ts": now - 300, "icao_hex": "4d2228", "label": "H1", "body": "DEP / OT 0030"},
+            {"ts": now - 60, "icao_hex": "4d2228", "label": "49",
+             "body": "01DCAP    ETD159/090545OMAAEPWA"},
+        ])
+        with TestClient(app) as c:
+            data = c.get("/api/vdl2/oooi/4d2228").json()
+        assert data["dep"]["t_out"] == "0030"
+        assert data["dep"]["dep_icao"] == "OMAA"
+        assert data["dep"]["dest_icao"] == "EPWA"
+        vconn.close()
+
+    def test_label49_dsta_fallback_when_no_events(self, monkeypatch):
+        now = int(time.time())
+        vconn, app = self._make(monkeypatch, [
+            {"ts": now - 60, "icao_hex": "4d2228", "label": "49",
+             "body": "01ICCL    LOT15K/111616EPWAKEWR"},
+        ])
+        with TestClient(app) as c:
+            data = c.get("/api/vdl2/oooi/4d2228").json()
+        assert data["has_oooi"] is False
+        assert data["dsta"] == "KEWR"   # destination from the label-49 city pair
+        assert data["dep"] is None and data["arr"] is None
+        vconn.close()
+
+    def test_qseries_window_scoped(self, monkeypatch):
+        now = int(time.time())
+        vconn, app = self._make(monkeypatch, [
+            {"ts": now - 5000, "icao_hex": "4d2228", "label": "QP", "body": "EPMOLIRA1616"},
+        ])
+        with TestClient(app) as c:
+            data = c.get(f"/api/vdl2/oooi/4d2228?since={now - 100}").json()
+        assert data["has_oooi"] is False
+        vconn.close()
+
 
 class TestTimeseries:
     def _make(self, monkeypatch, rows):

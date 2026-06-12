@@ -1,5 +1,7 @@
 import { useFormat } from '@/hooks/useFormat';
 import { Badge } from '@/components/ui/Badge';
+import { SimpleTooltip } from '@/components/ui/Tooltip';
+import { labelName } from '@/lib/vdl2Labels';
 import type { Vdl2Message } from '@/lib/types';
 
 // Shared VDL2 message log rendering, used by the Vdl2 page (filterable feed) and
@@ -12,6 +14,21 @@ interface Props {
   messages: Vdl2Message[];
   onHexClick?: (hex: string) => void;
   onRegClick?: (reg: string) => void;
+}
+
+// Known label codes get a tooltip with the human-readable name; tabIndex makes
+// the badge a focusable trigger (Radix opens on hover OR focus — focus is also
+// the keyboard-a11y path). Unknown codes stay a bare badge.
+function LabelBadge({ code }: { code: string }) {
+  const name = labelName(code);
+  if (!name) return <Badge variant="muted">{code}</Badge>;
+  return (
+    <SimpleTooltip content={name}>
+      <Badge variant="muted" tabIndex={0}>
+        {code}
+      </Badge>
+    </SimpleTooltip>
+  );
 }
 
 export function MessageList({ messages, onHexClick, onRegClick }: Props) {
@@ -52,7 +69,7 @@ export function MessageList({ messages, onHexClick, onRegClick }: Props) {
                 <span className="font-mono">{m.registration}</span>
               ))}
             {m.flight && <span className="font-mono">{m.flight}</span>}
-            {m.label && <Badge variant="muted">{m.label}</Badge>}
+            {m.label && <LabelBadge code={m.label} />}
             {m.dsta && <span className="text-[var(--color-text-dim)]">→ {m.dsta}</span>}
           </div>
           {m.body && (
