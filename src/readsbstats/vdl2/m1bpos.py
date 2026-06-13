@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import re
 
-from ..cleaners import valid_lat, valid_lon
+from ..cleaners import clean_short_text, valid_lat, valid_lon
 
 # #M1BPOS then N/S dd mmm  E/W ddd mmm. Anchored: the body must start with the tag.
 _POS = re.compile(r"#M1BPOS([NS])(\d{2})(\d{3})([EW])(\d{3})(\d{3})")
@@ -42,3 +42,39 @@ def parse_position(body: object) -> dict | None:
     if lat is None or lon is None:
         return None
     return {"lat": lat, "lon": lon}
+
+
+# /RP: TEI → output field. Dict lookup is exact-match, so single-letter 'A'
+# (STAR) never collides with two-letter 'AA'/'DA'/'AP'.
+_RP_KEYS = {
+    "DA": "dep", "AA": "arr", "CR": "company_route",
+    "D": "sid", "A": "star", "AP": "approach",
+}
+_ROUTE_CAP = 200  # company_route strings run ~70 chars; airports/procedures far shorter
+
+
+def parse_route(body: object) -> dict | None:
+    """Extract the filed route from a #M1BPOS ``/RP:`` block. Returns a dict with
+    ``dep``/``arr`` (required) plus any of ``company_route``/``sid``/``star``/
+    ``approach`` present, or ``None`` when there is no parseable route."""
+    if not isinstance(body, str) or not body.startswith("#M1BPOS"):
+        return None
+    i = body.find("/RP:")
+    if i < 0:
+        return None
+    tokens = body[i + 4:].split(":")  # values never contain ':'
+    out: dict[str, str] = {}
+    j = 0
+    while j < len(tokens):
+        key = tokens[j].strip()
+        if key in _RP_KEYS and j + 1 < len(tokens):
+            field = _RP_KEYS[key]
+            value = clean_short_text(tokens[j + 1].strip(), _ROUTE_CAP)
+            if value and field not in out:   # first occurrence wins
+                out[field] = value
+            j += 2
+        else:
+            j += 1  # unknown key or stray token; route-field values never equal a key
+    if "dep" not in out or "arr" not in out:
+        return None
+    return out

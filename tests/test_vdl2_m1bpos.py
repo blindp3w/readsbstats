@@ -40,3 +40,45 @@ class TestParsePosition:
     def test_rejects_empty_and_none(self):
         assert m1bpos.parse_position("") is None
         assert m1bpos.parse_position(None) is None
+
+
+# Real #M1BPOS bodies carrying the full /RP: filed-route block.
+RP_SID_STAR_APP = "#M1BPOSN52147E020507,WA931,134630,64,INRAS,134923,RODEV,M0,29924,106/DTEKCH,04L,64,145001,/PR1303,310,360,106,,0,4,,M56,65,,,M10,P0,36090,,1197,316/RP:DA:EPWA:AA:EKCH:R:29O(04L):D:OLIL6G:A:TIDV3A:AP:ILS04L..INR"
+RP_COMPANY_ROUTE = "#M1BPOSN52081E020135,WA903,104850,155,DIBLO,105348,INDIG,M11,202031,194,73/RP:DA:EPWA:AA:EHAM:CR:OFP519(18R)..DIBLO..INDIG..ALUKA..PITEN..BUMIL..APNOC.Z45.OMEPA.N125.BLUFA:A:BLUF1A:F:ARTIP..SPL01..PEV01..PEVOS:"
+RP_APP_AFTER_ENROUTE = "#M1BPOSN52086E019235,WA903,042142,277,NORKU,052401,SONSA,M37,190082,123,73/RP:DA:EPWA:AA:EHAM:CR:OFP537(27O)..NORKU:A:NORK2A:F:ARTIP..SPL01..TIDVO:AP:ILS 27.ARTIP:F:VECTOR/PR1339,248,400,123,,46,30,225023,M48,6"
+
+
+class TestParseRoute:
+    def test_sid_star_approach_no_company_route(self):
+        assert m1bpos.parse_route(RP_SID_STAR_APP) == {
+            "dep": "EPWA", "arr": "EKCH",
+            "sid": "OLIL6G", "star": "TIDV3A", "approach": "ILS04L..INR",
+        }
+
+    def test_company_route_and_star(self):
+        r = m1bpos.parse_route(RP_COMPANY_ROUTE)
+        assert r["dep"] == "EPWA" and r["arr"] == "EHAM"
+        assert r["company_route"].startswith("OFP519(18R)..DIBLO")
+        assert r["company_route"].endswith("BLUFA")
+        assert r["star"] == "BLUF1A"
+        assert "sid" not in r and "approach" not in r
+
+    def test_approach_after_trailing_enroute_segment(self):
+        assert m1bpos.parse_route(RP_APP_AFTER_ENROUTE) == {
+            "dep": "EPWA", "arr": "EHAM",
+            "company_route": "OFP537(27O)..NORKU", "star": "NORK2A",
+            "approach": "ILS 27.ARTIP",
+        }
+
+    def test_none_without_rp_block(self):
+        assert m1bpos.parse_route(POS1) is None      # plain #M1BPOS, no /RP:
+        assert m1bpos.parse_route("LIMCEPMO1009") is None
+        assert m1bpos.parse_route("") is None
+        assert m1bpos.parse_route(None) is None
+
+    def test_none_when_arr_missing(self):
+        # /RP: block with DA but no AA -> not a usable route
+        assert m1bpos.parse_route("#M1BPOSN52000E020000,x/RP:DA:EPWA:D:OLIL6G") is None
+
+    def test_none_when_dep_missing(self):
+        assert m1bpos.parse_route("#M1BPOSN52000E020000,x/RP:AA:EHAM:A:NORK2A") is None
