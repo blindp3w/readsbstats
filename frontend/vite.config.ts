@@ -70,9 +70,9 @@ const _MANUAL_CHUNK_GROUPS: Record<string, readonly string[]> = {
     '@radix-ui/react-dropdown-menu',
     '@radix-ui/react-tooltip',
   ],
-  // ACARS message decoder (35.5 KB gz + pako). Lazy-loaded only on VDL2 surfaces
-  // (feed page + flight ACARS panel) via hooks/useAcarsDecoder — keep it out of
-  // the shell. Budgeted in _CHUNK_BUDGETS_GZ_KB once a component imports it.
+  // ACARS message decoder — ~39 KB gz chunk (decoder 35.5 KB + pako). Lazy-loaded
+  // only on VDL2 surfaces (feed page + flight ACARS panel) via hooks/useAcarsDecoder
+  // — keep it out of the shell. Budget in _CHUNK_BUDGETS_GZ_KB.
   'vdl2-decoder': ['@airframes/acars-decoder', 'pako'],
 };
 
