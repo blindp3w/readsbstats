@@ -114,7 +114,16 @@ def _like_contains(value: str) -> str:
 
 
 def _rows_to_messages(rows) -> list[dict]:
-    return [dict(r) for r in rows]
+    out: list[dict] = []
+    for r in rows:
+        d = dict(r)
+        body = d.get("body")
+        if body and body.startswith("#M1BPOS"):
+            route = m1bpos.parse_route(body)
+            if route is not None:
+                d["filed_route"] = route   # only set when parseable -> exclude_unset omits it elsewhere
+        out.append(d)
+    return out
 
 
 def _query_messages(

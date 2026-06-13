@@ -287,6 +287,16 @@ class StatsResponse(ApiModel):
 # VDL2 / ACARS (opt-in feature)
 # ---------------------------------------------------------------------------
 
+class Vdl2FiledRoute(ApiModel):
+    """Filed route parsed from a #M1BPOS /RP: block (dep/arr required)."""
+    dep: Optional[str] = None
+    arr: Optional[str] = None
+    company_route: Optional[str] = None
+    sid: Optional[str] = None
+    star: Optional[str] = None
+    approach: Optional[str] = None
+
+
 class Vdl2Message(ApiModel):
     """One VDL2/ACARS message row (the `raw` JSON is excluded from list responses).
     extra="allow" keeps any SELECT column not named here, so the model can't drop
@@ -314,6 +324,7 @@ class Vdl2Message(ApiModel):
     app_ver: Optional[str] = None
     body: Optional[str] = None
     decoder: Optional[str] = None
+    filed_route: Optional[Vdl2FiledRoute] = None
 
 
 class Vdl2MessagesResponse(ApiModel):
