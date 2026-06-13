@@ -931,3 +931,82 @@ class TestEdgeBranches:
         monkeypatch.setattr(_deps, "_db", core)
         assert vdl2_api._flights_overlap_pct() is None
         core.close()
+
+
+class TestM1bposPositions:
+    @pytest.fixture()
+    def m1b_client(self, monkeypatch):
+        monkeypatch.setattr(config, "VDL2_ENABLED", True)
+        conn = make_vdl2_db()
+        base = int(time.time())
+        vdl2_db.insert_messages(conn, [
+            # #M1BPOS with a ddmmm fix: N52081 E020017 -> 52.135, 20.02833
+            {"ts": base - 30, "icao_hex": "48ae21", "label": "H1",
+             "body": "#M1BPOSN52081E020017,N51491E019372,191139,370,BOKSU,M51,19155"},
+            # plain non-position H1 — must NOT yield a point
+            {"ts": base - 25, "icao_hex": "48ae22", "label": "H1",
+             "body": "#DFBABS011DA_S UAAAEPWA2"},
+        ])
+        conn.commit()
+        monkeypatch.setattr(vdl2_db, "_conn", conn)
+        app = FastAPI()
+        web._include_optional_routers(app)
+        with TestClient(app) as c:
+            yield c
+        conn.close()
+
+    def test_m1bpos_position_appears_as_precise_point(self, m1b_client):
+        r = m1b_client.get("/api/vdl2/positions?minutes=60")
+        assert r.status_code == 200
+        pts = r.json()["points"]
+        m1b = [p for p in pts if p["icao_hex"] == "48ae21"]
+        assert len(m1b) == 1
+        assert m1b[0]["precise"] is True
+        assert m1b[0]["label"] == "H1"
+        assert abs(m1b[0]["lat"] - 52.135) < 1e-6
+        assert abs(m1b[0]["lon"] - 20.02833) < 1e-6
+
+    def test_non_position_h1_yields_no_point(self, m1b_client):
+        r = m1b_client.get("/api/vdl2/positions?minutes=60")
+        assert all(p["icao_hex"] != "48ae22" for p in r.json()["points"])
+
+
+class TestFiledRoute:
+    @pytest.fixture()
+    def fr_client(self, monkeypatch):
+        monkeypatch.setattr(config, "VDL2_ENABLED", True)
+        conn = make_vdl2_db()
+        base = int(time.time())
+        vdl2_db.insert_messages(conn, [
+            {"ts": base - 40, "icao_hex": "48ae31", "label": "H1",
+             "body": "#M1BPOSN52086E019235,WA903,042142,277,NORKU,052401,SONSA,M37/RP:DA:EPWA:AA:EHAM:CR:OFP537(27O)..NORKU:A:NORK2A:AP:ILS 27.ARTIP:F:VECTOR"},
+            {"ts": base - 30, "icao_hex": "48ae32", "label": "Q0",
+             "body": "clearance request"},
+            {"ts": base - 35, "icao_hex": "48ae33", "label": "H1",
+             "body": "#M1BPOSN52086E019235,WA903,042142,277,NORKU"},
+        ])
+        conn.commit()
+        monkeypatch.setattr(vdl2_db, "_conn", conn)
+        app = FastAPI()
+        web._include_optional_routers(app)
+        with TestClient(app) as c:
+            yield c
+        conn.close()
+
+    def test_m1bpos_row_carries_filed_route(self, fr_client):
+        msgs = fr_client.get("/api/vdl2/messages").json()["messages"]
+        m1b = [m for m in msgs if m["icao_hex"] == "48ae31"][0]
+        assert m1b["filed_route"]["dep"] == "EPWA"
+        assert m1b["filed_route"]["arr"] == "EHAM"
+        assert m1b["filed_route"]["star"] == "NORK2A"
+        assert m1b["filed_route"]["approach"] == "ILS 27.ARTIP"
+
+    def test_non_m1bpos_row_has_no_filed_route(self, fr_client):
+        msgs = fr_client.get("/api/vdl2/messages").json()["messages"]
+        other = [m for m in msgs if m["icao_hex"] == "48ae32"][0]
+        assert "filed_route" not in other
+
+    def test_m1bpos_without_route_omits_filed_route(self, fr_client):
+        msgs = fr_client.get("/api/vdl2/messages").json()["messages"]
+        row = next(m for m in msgs if m["icao_hex"] == "48ae33")
+        assert "filed_route" not in row

@@ -287,6 +287,16 @@ class StatsResponse(ApiModel):
 # VDL2 / ACARS (opt-in feature)
 # ---------------------------------------------------------------------------
 
+class Vdl2FiledRoute(ApiModel):
+    """Filed route parsed from a #M1BPOS /RP: block (dep/arr required)."""
+    dep: str
+    arr: str
+    company_route: Optional[str] = None
+    sid: Optional[str] = None
+    star: Optional[str] = None
+    approach: Optional[str] = None
+
+
 class Vdl2Message(ApiModel):
     """One VDL2/ACARS message row (the `raw` JSON is excluded from list responses).
     extra="allow" keeps any SELECT column not named here, so the model can't drop
@@ -314,6 +324,7 @@ class Vdl2Message(ApiModel):
     app_ver: Optional[str] = None
     body: Optional[str] = None
     decoder: Optional[str] = None
+    filed_route: Optional[Vdl2FiledRoute] = None
 
 
 class Vdl2MessagesResponse(ApiModel):
@@ -360,7 +371,7 @@ class Vdl2Position(ApiModel):
     icao_hex: Optional[str] = None
     ts: Optional[int] = None
     label: Optional[str] = None
-    # True = precise (~0.001°) position parsed from a Label-16 AUTPOS body;
+    # True = precise (~0.001°) position parsed from a Label-16 AUTPOS body or a #M1BPOS body;
     # False = coarse (~0.1°) VDL2 XID link-frame fix from the lat/lon column.
     precise: Optional[bool] = None
 

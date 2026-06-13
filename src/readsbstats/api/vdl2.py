@@ -18,6 +18,7 @@ from fastapi import APIRouter, HTTPException, Query
 
 from .. import cache, config, schemas
 from ..vdl2 import db as vdl2_db
+from ..vdl2 import m1bpos
 from ..vdl2 import oooi
 from ..vdl2 import positions as vdl2_positions
 from . import _deps
@@ -113,7 +114,16 @@ def _like_contains(value: str) -> str:
 
 
 def _rows_to_messages(rows) -> list[dict]:
-    return [dict(r) for r in rows]
+    out: list[dict] = []
+    for r in rows:
+        d = dict(r)
+        body = d.get("body")
+        if body and body.startswith("#M1BPOS"):
+            route = m1bpos.parse_route(body)
+            if route is not None:
+                d["filed_route"] = route   # only set when parseable -> exclude_unset omits it elsewhere
+        out.append(d)
+    return out
 
 
 def _query_messages(
@@ -650,6 +660,10 @@ _POSITIONS_CAP = 2000
 # newer no-fix AUTPOS rows can't crowd parseable older precise fixes out of the
 # scan before the final cap. Bounded so the scan still terminates.
 _POSITIONS_LABEL16_SCAN_CAP = 8000
+# #M1BPOS bodies are a small fraction of the H1-heavy feed; over-fetch within the
+# window (then parse + discard non-position rows) so the final cap isn't consumed
+# by no-fix rows. Bounded so the scan still terminates.
+_POSITIONS_M1BPOS_SCAN_CAP = 8000
 
 
 @router.get("/api/vdl2/active", response_model=schemas.Vdl2ActiveResponse,
@@ -679,11 +693,11 @@ def api_vdl2_active(minutes: int = Query(10, ge=1, le=120)) -> dict:
             response_model_exclude_unset=True)
 def api_vdl2_positions(minutes: int = Query(60, ge=1, le=1440)) -> dict:
     """VDL2-derived positions from the last `minutes` minutes, for the optional
-    map overlay. Two sources, precise preferred (validated against a real feed):
-    Label-16 AUTPOS bodies carry **precise** (~0.001°) coordinates parsed here;
-    the lat/lon columns hold only **coarse** (~0.1°) VDL2 XID link-frame fixes
-    used as a fallback. Each point carries `precise`. Sparse on an H1-dominated
-    feed. Capped + cached ~30 s."""
+    map overlay. Three sources, precise preferred (validated against a real feed):
+    Label-16 AUTPOS bodies **and** `#M1BPOS` (Honeywell FMS) bodies both carry
+    **precise** (~0.001°) coordinates parsed here; the lat/lon columns hold only
+    **coarse** (~0.1°) VDL2 XID link-frame fixes used as a fallback. Each point
+    carries `precise`. Sparse on an H1-dominated feed. Capped + cached ~30 s."""
     cached = cache._get_cache(f"vdl2-positions-{minutes}")
     if cached is not None:
         return cached
@@ -694,13 +708,12 @@ def api_vdl2_positions(minutes: int = Query(60, ge=1, le=1440)) -> dict:
 
 
 def _compute_positions(minutes: int) -> dict:
-    """Two index-served candidate queries merged in Python (a single OR query
+    """Three index-served candidate queries merged in Python (a single OR query
     full-scans; see idx_vdl2_label_ts_id / idx_vdl2_pos_ts_id). Precise fixes are
-    parsed ONLY from Label-16 AUTPOS bodies (so a coordinate-looking body on a
-    non-16 row can't masquerade as precise); coarse XID column fixes are the
-    fallback. Independent caps + an over-fetched label-16 scan + a final merge/cap
-    so a burst of no-fix Label-16 rows can't starve valid coarse OR older precise
-    points."""
+    parsed from Label-16 AUTPOS bodies and `#M1BPOS` bodies (so a coordinate-looking
+    body on any other row can't masquerade as precise); coarse XID column fixes are
+    the fallback. Independent caps + an over-fetched label-16 scan + a final merge/cap
+    so a burst of no-fix rows can't starve valid coarse OR older precise points."""
     conn = vdl2_db.web_conn()
     cutoff = int(time.time()) - minutes * 60
 
@@ -714,6 +727,11 @@ def _compute_positions(minutes: int) -> dict:
         "WHERE lat IS NOT NULL AND lon IS NOT NULL AND ts >= ? "
         "ORDER BY ts DESC, id DESC LIMIT ?",
         (cutoff, _POSITIONS_CAP),
+    ).fetchall()
+    m1bpos_rows = conn.execute(
+        "SELECT id, icao_hex, ts, label, body FROM vdl2_messages "
+        "WHERE ts >= ? AND body LIKE '#M1BPOS%' ORDER BY ts DESC, id DESC LIMIT ?",
+        (cutoff, _POSITIONS_M1BPOS_SCAN_CAP),
     ).fetchall()
 
     def _point(r, lat, lon, precise) -> dict:
@@ -729,6 +747,14 @@ def _compute_positions(minutes: int) -> dict:
         parsed = vdl2_positions.parse_position(r["body"])
         if parsed is None:
             continue   # no-fix Label-16 body — discarded (does not consume the final cap)
+        seen.add(r["id"])
+        points.append(_point(r, parsed["lat"], parsed["lon"], True))
+    for r in m1bpos_rows:
+        parsed = m1bpos.parse_position(r["body"])
+        if parsed is None:
+            continue   # non-position #M1BPOS body — discarded (does not consume the final cap)
+        if r["id"] in seen:
+            continue
         seen.add(r["id"])
         points.append(_point(r, parsed["lat"], parsed["lon"], True))
     for r in coarse_rows:

@@ -21,6 +21,11 @@ vi.mock('@/components/LiveMap', () => ({
   default: () => null,
 }));
 
+// MessageList calls useAcarsDecoder(), which dynamically imports the ~50 KB
+// decoder chunk. Default it to "not loaded" (null) in tests so no suite triggers
+// the async import; decoded-rendering tests inject a synchronous `decode` prop.
+vi.mock('@/hooks/useAcarsDecoder', () => ({ useAcarsDecoder: () => null }));
+
 // jsdom doesn't implement Element.scrollIntoView / hasPointerCapture, which
 // Radix Select calls when opening its listbox. Stub them so the dropdown
 // can render in test runs.

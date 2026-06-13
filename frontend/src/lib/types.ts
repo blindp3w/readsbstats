@@ -60,6 +60,14 @@ export interface Vdl2Message {
   app_ver: string | null;
   body: string | null;
   decoder: string | null;
+  filed_route?: {
+    dep: string;
+    arr: string;
+    company_route?: string;
+    sid?: string;
+    star?: string;
+    approach?: string;
+  };
 }
 
 export interface Vdl2MessagesResponse {
