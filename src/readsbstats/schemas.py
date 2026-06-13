@@ -360,7 +360,7 @@ class Vdl2Position(ApiModel):
     icao_hex: Optional[str] = None
     ts: Optional[int] = None
     label: Optional[str] = None
-    # True = precise (~0.001°) position parsed from a Label-16 AUTPOS body;
+    # True = precise (~0.001°) position parsed from a Label-16 AUTPOS body or a #M1BPOS body;
     # False = coarse (~0.1°) VDL2 XID link-frame fix from the lat/lon column.
     precise: Optional[bool] = None
 
