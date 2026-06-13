@@ -289,8 +289,8 @@ class StatsResponse(ApiModel):
 
 class Vdl2FiledRoute(ApiModel):
     """Filed route parsed from a #M1BPOS /RP: block (dep/arr required)."""
-    dep: Optional[str] = None
-    arr: Optional[str] = None
+    dep: str
+    arr: str
     company_route: Optional[str] = None
     sid: Optional[str] = None
     star: Optional[str] = None
