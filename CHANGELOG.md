@@ -5,6 +5,27 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+VDL2: client-side decoded message view + #M1BPOS precise positions and filed routes.
+
+### Added
+
+- **VDL2 decoded message view.** The Messages log now shows human-readable decoded
+  ACARS message bodies above the raw text (`@airframes/acars-decoder`, client-side,
+  lazy-loaded as a separate ~39 KB gz chunk; the raw body is always retained as
+  fallback). Covers H1 progress/position/fault messages, OOOI confirmations, and
+  other decodable labels (~9% decode rate on a real LOT H1-dominated feed).
+- **VDL2 #M1BPOS parser.** `vdl2/m1bpos.py` parses `#M1BPOS` bodies for precise
+  ddmmm-encoded positions (added to the `/api/vdl2/positions` map overlay alongside
+  Label-16 AUTPOS points) and filed routes — departure, arrival, company route,
+  SID, STAR, and approach — surfaced as an optional `filed_route` object on
+  `/api/vdl2/messages` rows.
+
+### Dependencies
+
+- frontend: add @airframes/acars-decoder 1.9.0 (MIT).
+
 ## 2.20.0 — 2026-06-12
 
 VDL2 feature release: OOOI block times parsed from the formats real air-side
