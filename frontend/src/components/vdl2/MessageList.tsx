@@ -2,6 +2,7 @@ import { useFormat } from '@/hooks/useFormat';
 import { Badge } from '@/components/ui/Badge';
 import { SimpleTooltip } from '@/components/ui/Tooltip';
 import { labelName } from '@/lib/vdl2Labels';
+import { bodyKind } from '@/lib/vdl2Kinds';
 import { useAcarsDecoder } from '@/hooks/useAcarsDecoder';
 import type { DecodedAcars } from '@/lib/acarsDecode';
 import type { Vdl2Message } from '@/lib/types';
@@ -60,6 +61,9 @@ export function MessageList({ messages, onHexClick, onRegClick, decode: decodePr
     <ul className="divide-y divide-[var(--color-border-default)]" data-testid="vdl2-list">
       {messages.map((m) => {
         const decoded = decode && m.body ? decode(m) : null;
+        // Body-category chip — only when the row has no richer rendering already
+        // (airframes decoded line or a filed_route line).
+        const kind = !decoded && !m.filed_route ? bodyKind(m.body) : null;
         return (
           <li key={m.id} className="py-2" data-testid="vdl2-message-row">
             <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
@@ -93,6 +97,14 @@ export function MessageList({ messages, onHexClick, onRegClick, decode: decodePr
                 ))}
               {m.flight && <span className="font-mono">{m.flight}</span>}
               {m.label && <LabelBadge code={m.label} />}
+              {kind && (
+                <span
+                  className="rounded border border-[var(--color-border-default)] px-1.5 py-0.5 text-[11px] text-[var(--color-text-dim)]"
+                  data-testid="vdl2-kind"
+                >
+                  {kind}
+                </span>
+              )}
               {m.dsta && <span className="text-[var(--color-text-dim)]">→ {m.dsta}</span>}
               {decoded && (
                 <span

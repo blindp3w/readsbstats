@@ -984,6 +984,8 @@ class TestFiledRoute:
              "body": "clearance request"},
             {"ts": base - 35, "icao_hex": "48ae33", "label": "H1",
              "body": "#M1BPOSN52086E019235,WA903,042142,277,NORKU"},
+            {"ts": base - 20, "icao_hex": "48ae34", "label": "H1",
+             "body": "#T1BRTE 1 05JUN26 1306 SP-LVS LOT377 EPWA/EDDF BCG59-U000-08E7 BCG38-0MFC-0017 L 1237 05JUN26"},
         ])
         conn.commit()
         monkeypatch.setattr(vdl2_db, "_conn", conn)
@@ -1010,3 +1012,10 @@ class TestFiledRoute:
         msgs = fr_client.get("/api/vdl2/messages").json()["messages"]
         row = next(m for m in msgs if m["icao_hex"] == "48ae33")
         assert "filed_route" not in row
+
+    def test_rte_row_carries_filed_route(self, fr_client):
+        msgs = fr_client.get("/api/vdl2/messages").json()["messages"]
+        rte_row = next(m for m in msgs if m["icao_hex"] == "48ae34")
+        assert rte_row["filed_route"]["dep"] == "EPWA"
+        assert rte_row["filed_route"]["arr"] == "EDDF"
+        assert rte_row["filed_route"]["company_route"] == "BCG59-U000-08E7 BCG38-0MFC-0017"
