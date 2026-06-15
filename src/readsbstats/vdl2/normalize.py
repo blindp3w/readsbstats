@@ -59,6 +59,18 @@ def _label(value: object) -> str | None:
     return lbl.upper() if lbl else None
 
 
+def _reg(value: object) -> str | None:
+    """Aircraft registration. dumpvdl2's ACARS reg field arrives left-padded with a
+    '.' (e.g. '.TC-NCU'); strip leading dots/spaces so it matches vdlm2dec's clean
+    tail and core flights.registration ('TC-NCU'). No-op for already-clean regs; no
+    registration legitimately starts with a dot or space, so '.9H-WAU' → '9H-WAU'
+    (the digit is kept) and '.' → None."""
+    reg = clean_short_text(value, _SHORT)
+    if not reg:
+        return None
+    return reg.lstrip(". ") or None
+
+
 def _raw_json(raw: dict) -> str:
     """Serialize the full decoder datagram, capped (per-row growth defense)."""
     return json.dumps(raw, separators=(",", ":"), default=str)[: config.VDL2_RAW_MAX]
@@ -101,7 +113,7 @@ def _normalize_vdlm2dec(raw: dict) -> dict | None:
         # valid_icao_hex enforces 6-hex + lowercases to match core
         # flights.icao_hex casing; rejects malformed identifiers outright.
         "icao_hex":     valid_icao_hex(raw.get("hex") or raw.get("icao")),
-        "registration": clean_short_text(raw.get("tail"), _SHORT),
+        "registration": _reg(raw.get("tail")),
         "flight":       clean_short_text(raw.get("flight"), _SHORT),
         "label":        _label(raw.get("label")),
         "mode":         clean_short_text(raw.get("mode"), _SHORT),
@@ -126,12 +138,13 @@ def _normalize_vdlm2dec(raw: dict) -> dict | None:
 
 
 def _normalize_dumpvdl2(raw: dict) -> dict | None:
-    """EXPERIMENTAL — UNVERIFIED against live dumpvdl2 output. dumpvdl2 cannot
-    drive the Airspy Mini (fixed sample rate), so this is the documented swap
-    target, not the running config. Before treating the swap as production,
-    capture real ``--output decoded:json:...`` fixtures and verify the field map.
-    dumpvdl2 nests ACARS under ``vdl2.avlc.acars`` (address in ``vdl2.avlc.src.addr``)
-    and reports ``freq`` in **Hz**, so it is converted to MHz below.
+    """Map a dumpvdl2 frame. The ACARS field map + ``vdl2.station`` key below are
+    verified against real ``--output decoded:json`` captures (2026-06-14/15 overnight
+    run off the Airspy Mini via the iq_tool resample pipe). dumpvdl2 nests ACARS under
+    ``vdl2.avlc.acars`` (address in ``vdl2.avlc.src.addr``), reports ``freq`` in **Hz**
+    (converted to MHz below), and emits the ``--station-id`` value as ``vdl2.station``.
+    TODO: ATN/OSI frames (``vdl2.avlc.x25`` — CPDLC/ADS-C/MIAM, ~72% of frames) are not
+    yet extracted; they currently fall through to bare ``icao_hex`` rows (see #2).
     """
     vdl2 = raw.get("vdl2") if isinstance(raw.get("vdl2"), dict) else {}
     avlc = vdl2.get("avlc") if isinstance(vdl2.get("avlc"), dict) else {}
@@ -142,7 +155,7 @@ def _normalize_dumpvdl2(raw: dict) -> dict | None:
         "ts":           _ts((vdl2.get("t") or {}).get("sec") if isinstance(vdl2.get("t"), dict) else raw.get("timestamp")),
         # valid_icao_hex enforces 6-hex + lowercases; rejects malformed addrs.
         "icao_hex":     valid_icao_hex(src.get("addr")),
-        "registration": clean_short_text(acars.get("reg"), _SHORT),
+        "registration": _reg(acars.get("reg")),
         "flight":       clean_short_text(acars.get("flight"), _SHORT),
         "label":        _label(acars.get("label")),
         "mode":         clean_short_text(acars.get("mode"), _SHORT),
@@ -150,7 +163,7 @@ def _normalize_dumpvdl2(raw: dict) -> dict | None:
         "ack":          clean_short_text(acars.get("ack"), _SHORT),
         "msgno":        clean_short_text(acars.get("msg_num"), _SHORT),
         "freq":         freq_hz / 1e6 if freq_hz else None,   # Hz → MHz (0/None → None)
-        "station_id":   clean_short_text(raw.get("station"), _SHORT),
+        "station_id":   clean_short_text(vdl2.get("station"), _SHORT),  # dumpvdl2: vdl2.station
         "toaddr":       clean_short_text((avlc.get("dst") or {}).get("addr") if isinstance(avlc.get("dst"), dict) else None, _SHORT),
         "dsta":         None,
         "lat":          None,
