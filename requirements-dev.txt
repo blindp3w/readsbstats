@@ -1,5 +1,5 @@
 -r requirements.txt
-pytest==9.0.3
+pytest==9.1.0
 pytest-cov==7.1.0
 # httpx is already pinned (==) by requirements.txt; do not re-declare here.
 # Audit-13 A13-051: a divergent floor here (httpx>=0.27.2) created a path
