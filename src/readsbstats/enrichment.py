@@ -101,10 +101,11 @@ def lookup_airline(conn: sqlite3.Connection, callsign: str | None) -> str | None
     Return the full airline name for a callsign (e.g. 'LOT123' → 'LOT Polish Airlines').
     Uses the first 3 uppercase characters as the ICAO airline code.
     """
-    if not callsign or len(callsign) < 3:
+    code = (callsign or "").strip()
+    if len(code) < 3:
         return None
 
-    code = callsign[:3].upper()
+    code = code[:3].upper()
 
     hit, result = _airline_cache.get_cached(code)
     if hit:
