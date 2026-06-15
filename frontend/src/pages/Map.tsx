@@ -116,7 +116,7 @@ export default function MapPage() {
   // fresh value every render. Hold it in state and refresh on an interval —
   // 10 s matches the live snapshot poll; bounds a few seconds stale are
   // imperceptible against a multi-hour HIST window.
-  const [nowSec, setNowSec] = useState(0);
+  const [nowSec, setNowSec] = useState(() => Math.floor(Date.now() / 1000));
   useEffect(() => {
     const tick = () => setNowSec(Math.floor(Date.now() / 1000));
     tick();

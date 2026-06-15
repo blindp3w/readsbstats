@@ -34,7 +34,7 @@ export function PolarRange({ buckets, size = SIZE_DEFAULT }: Props) {
       </div>
     );
   }
-  const max = Math.max(...buckets.map(bucketDist)) || 1;
+  const max = Math.max(...buckets.map((b) => Math.max(0, bucketDist(b)))) || 1;
   const cx = size / 2;
   const cy = size / 2;
   const radius = size / 2 - 24;
@@ -47,7 +47,7 @@ export function PolarRange({ buckets, size = SIZE_DEFAULT }: Props) {
 
   // Build polygon path through buckets (sorted by bearing).
   const sorted = [...buckets].sort((a, b) => a.bearing - b.bearing);
-  const pathPoints = sorted.map((b) => toXY(b.bearing, bucketDist(b)));
+  const pathPoints = sorted.map((b) => toXY(b.bearing, Math.max(0, bucketDist(b))));
   const polygon = pathPoints.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(' ');
 
   // Concentric rings at 25/50/75/100 % of max

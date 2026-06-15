@@ -618,9 +618,10 @@ function PositionTable({
   loading: boolean;
 }) {
   const { fmtAlt, fmtSpd, fmtTs } = useFormat();
-  // Per-row inline disclosure state — iPhone only. Keyed by ts (positions
-  // sorted by ts and ts is unique-ish per flight).
-  const [expanded, setExpanded] = useState<Set<number>>(() => new Set());
+  // Per-row inline disclosure state — iPhone only. Keyed by `${ts}-${index}`
+  // since 1 Hz polling can emit two fixes with the same ts (audit 2026-06-15) —
+  // a bare-ts key collides in React reconciliation + shares expand state.
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   // Gate the interactive row affordance behind <sm. At md+ all detail
   // columns are visible inline, so the row tap-handler + aria-expanded +
   // role="button" would mislead screen readers ('expanded' but nothing
@@ -650,11 +651,11 @@ function PositionTable({
   const rssi = computeRssiStats(sampled);
   const rssiSpark = rssi.hasAny ? sampled.map((p) => (p.rssi == null ? rssi.median : p.rssi)) : [];
 
-  function toggle(ts: number) {
+  function toggle(key: string) {
     setExpanded((prev) => {
       const next = new Set(prev);
-      if (next.has(ts)) next.delete(ts);
-      else next.add(ts);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
       return next;
     });
   }
@@ -686,10 +687,11 @@ function PositionTable({
           </TR>
         </THead>
         <TBody>
-          {sampled.map((p) => {
-            const isOpen = expanded.has(p.ts);
+          {sampled.map((p, i) => {
+            const rowKey = `${p.ts}-${i}`;
+            const isOpen = expanded.has(rowKey);
             return (
-              <Fragment key={p.ts}>
+              <Fragment key={rowKey}>
                 <TR
                   data-testid={`flight-position-row-${p.ts}`}
                   // Interactive affordances ONLY on <sm. Desktop sees all
@@ -699,11 +701,11 @@ function PositionTable({
                         tabIndex: 0,
                         role: 'button',
                         'aria-expanded': isOpen,
-                        onClick: () => toggle(p.ts),
+                        onClick: () => toggle(rowKey),
                         onKeyDown: (e: React.KeyboardEvent) => {
                           if (e.key === 'Enter' || e.key === ' ') {
                             e.preventDefault();
-                            toggle(p.ts);
+                            toggle(rowKey);
                           }
                         },
                         className: 'cursor-pointer',

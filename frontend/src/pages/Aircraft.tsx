@@ -119,7 +119,7 @@ export default function AircraftPage() {
         </CardHeader>
         <CardContent>
           <div className="grid gap-4 md:grid-cols-[200px_1fr]">
-            <PhotoBox q={photoQ} label={info.registration ?? icao ?? 'Aircraft'} />
+            <PhotoBox q={photoQ} label={info.registration || icao || 'Aircraft'} />
             <dl className="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1.5 text-sm">
               <dt className="text-[var(--color-text-dim)]">Type</dt>
               <dd>

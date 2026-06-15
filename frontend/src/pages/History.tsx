@@ -63,6 +63,15 @@ function localMidnightEpoch(dateStr: string): number | null {
   return Math.floor(new Date(p.y, p.mo, p.d).getTime() / 1000);
 }
 
+// Local-midnight epoch of the day AFTER dateStr — the half-open upper bound for a
+// date range. Uses Date day arithmetic (DST-correct: a transition day's next local
+// midnight is 23 h / 25 h away, not a flat +86400). audit 2026-06-15.
+function nextLocalMidnightEpoch(dateStr: string): number | null {
+  const p = parseYMD(dateStr);
+  if (!p) return null;
+  return Math.floor(new Date(p.y, p.mo, p.d + 1).getTime() / 1000);
+}
+
 // Single source of truth for the Source / Flag dropdown options. Used by
 // the Advanced form Select AND by the chip-display label renderer so
 // `?source=adsb` shows as "Source: ADS-B" in the chip, not "Source: adsb".
@@ -150,9 +159,10 @@ export default function HistoryPage() {
   // returns null) — otherwise a bad `?date_from=foo` would emit `from=0` (a hidden
   // 1970 filter) and silently return no results.
   const fromEpoch = dateFrom ? localMidnightEpoch(String(dateFrom)) : null;
-  const toEpoch = dateTo ? localMidnightEpoch(String(dateTo)) : null;
+  // Half-open upper bound = next local midnight (DST-correct), not toEpoch + 86400.
+  const toEpoch = dateTo ? nextLocalMidnightEpoch(String(dateTo)) : null;
   if (fromEpoch != null) queryParams.set('from', String(fromEpoch));
-  if (toEpoch != null) queryParams.set('to', String(toEpoch + 86400));
+  if (toEpoch != null) queryParams.set('to', String(toEpoch));
   if (icao) queryParams.set('icao', String(icao));
   if (callsign) queryParams.set('callsign', String(callsign));
   if (registration) queryParams.set('registration', String(registration));

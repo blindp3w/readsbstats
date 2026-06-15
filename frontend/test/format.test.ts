@@ -75,6 +75,11 @@ describe('fmtAgo', () => {
     expect(fmtAgo(now - 7200, now)).toBe('2h ago');
     expect(fmtAgo(now - 86400 * 3, now)).toBe('3d ago');
   });
+
+  it('labels a future timestamp instead of negative "ago" (clock skew)', () => {
+    const now = 1_700_000_000;
+    expect(fmtAgo(now + 30, now)).toBe('in 30s');
+  });
 });
 
 describe('fmtTs', () => {

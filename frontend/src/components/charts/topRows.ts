@@ -86,6 +86,8 @@ export function buildRows(view: ViewKey, props: RankingsData, topN = 15): Row[] 
         fullLabel: r.icao_code + (r.name ? ' ' + r.name : ''),
         value: r.appearances ?? r.flights ?? 0,
       }));
+    default:
+      return []; // out-of-enum view (Radix value cast) → empty, never undefined
   }
 }
 
