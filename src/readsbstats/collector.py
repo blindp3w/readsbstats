@@ -1305,7 +1305,14 @@ _SUMMARY_META_KEY = "last_summary_date"
 def _load_last_summary_date(conn: sqlite3.Connection) -> None:
     """Restore ``_last_summary_date`` from the ``meta`` table at startup so a
     restart after the summary time doesn't re-send the daily summary (the global
-    is otherwise in-memory only). audit 2026-06-15."""
+    is otherwise in-memory only). audit 2026-06-15.
+
+    If today's summary window has already passed and there's no record of a send
+    today, seed the gate to today so a mid-day (re)start does NOT *retroactively*
+    fire — matching the pre-fix "no catch-up on restart" behavior. A live
+    collector that merely runs through the target minute still fires, because its
+    gate is yesterday's date and it crosses ``h:m`` while running. (review 2026-06-15)
+    """
     global _last_summary_date
     try:
         row = conn.execute(
@@ -1317,7 +1324,14 @@ def _load_last_summary_date(conn: sqlite3.Connection) -> None:
         try:
             _last_summary_date = datetime.date.fromisoformat(row[0])
         except ValueError:
+            log.warning("ignoring corrupt %s meta value: %r", _SUMMARY_META_KEY, row[0])
             _last_summary_date = None
+
+    parsed = _parse_summary_time()
+    if parsed is not None:
+        now = datetime.datetime.now()
+        if _last_summary_date != now.date() and (now.hour, now.minute) >= parsed:
+            _last_summary_date = now.date()
 
 
 def _save_last_summary_date(conn: sqlite3.Connection, d: datetime.date) -> None:

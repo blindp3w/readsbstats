@@ -3117,6 +3117,42 @@ class TestCheckDailySummary:
         conn.close()
         assert sent == [1]   # NOT re-sent
 
+    def test_no_retroactive_send_on_restart_after_time(self, monkeypatch):
+        """audit 2026-06-15 review: a (re)start with no same-day record, after the
+        configured time, must NOT retroactively send today's summary (matches the
+        pre-fix no-catch-up behavior). It still fires on the next day's crossing,
+        and a live collector busy through the minute still fires (covered above)."""
+        from readsbstats import collector, notifier
+        sent = []
+        monkeypatch.setattr(notifier, "send_daily_summary", lambda c: sent.append(1))
+        monkeypatch.setattr(config, "TELEGRAM_SUMMARY_TIME", "08:00")
+        conn = make_db()  # fresh — no meta row
+        self._patch_now(monkeypatch, _real_dt.datetime(2026, 4, 14, 14, 0))  # already past 08:00
+        collector._load_last_summary_date(conn)   # should seed today → no retroactive send
+        collector._check_daily_summary(conn)
+        assert sent == []
+        self._patch_now(monkeypatch, _real_dt.datetime(2026, 4, 15, 8, 0))
+        collector._check_daily_summary(conn)
+        conn.close()
+        assert sent == [1]   # fires on the next day's crossing
+
+    def test_corrupt_meta_value_logged_and_ignored(self, monkeypatch, caplog):
+        """A corrupt persisted date must be logged (not silently swallowed) and
+        treated as 'no record'. audit 2026-06-15 review #1."""
+        import logging
+        from readsbstats import collector
+        monkeypatch.setattr(config, "TELEGRAM_SUMMARY_TIME", "08:00")
+        self._patch_now(monkeypatch, _real_dt.datetime(2026, 4, 14, 7, 0))  # before time → no seed
+        conn = make_db()
+        conn.execute("INSERT INTO meta(key, value) VALUES('last_summary_date', 'not-a-date')")
+        conn.commit()
+        collector._last_summary_date = _real_dt.date(2020, 1, 1)  # sentinel to prove it's cleared
+        with caplog.at_level(logging.WARNING):
+            collector._load_last_summary_date(conn)
+        conn.close()
+        assert collector._last_summary_date is None
+        assert any("last_summary_date" in r.getMessage() for r in caplog.records)
+
     def test_does_not_send_at_wrong_time(self, monkeypatch):
         from readsbstats import collector, notifier
         sent = []
