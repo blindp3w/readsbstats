@@ -18,6 +18,7 @@ import { Table, THead, TBody, TR, TH, TD } from '@/components/ui/Table';
 import { FlagBadge, SourceBadge } from '@/components/FlagBadge';
 import { useFormat } from '@/hooks/useFormat';
 import { cn } from '@/lib/cn';
+import { parseYMD } from '@/lib/dateParse';
 import { MapCommandBar, type MapWindow } from '@/components/map/MapCommandBar';
 import { useVdl2Available } from '@/hooks/useVdl2Enabled';
 import type { Vdl2ActiveResponse, Vdl2PositionsResponse } from '@/lib/types';
@@ -520,18 +521,10 @@ function unixToHHMM(sec: number): string {
 }
 
 function composeUnix(dateISO: string, timeHHMM: string): number | null {
-  const dm = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateISO);
+  const p = parseYMD(dateISO);
   const tm = /^(\d{1,2}):(\d{2})$/.exec(timeHHMM);
-  if (!dm || !tm) return null;
-  const d = new Date(
-    Number(dm[1]),
-    Number(dm[2]) - 1,
-    Number(dm[3]),
-    Number(tm[1]),
-    Number(tm[2]),
-    0,
-    0,
-  );
+  if (!p || !tm) return null;
+  const d = new Date(p.y, p.mo, p.d, Number(tm[1]), Number(tm[2]), 0, 0);
   return Math.floor(d.getTime() / 1000);
 }
 

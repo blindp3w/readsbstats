@@ -1122,6 +1122,44 @@ class TestHandleUpdate:
         notifier._handle_update(update, db_conn)
         assert not sent
 
+    def test_watch_dispatches_and_inserts_row(self, db_conn, monkeypatch):
+        monkeypatch.setattr(notifier, "_send", lambda txt: None)
+        monkeypatch.setattr(config, "TELEGRAM_CHAT_ID", "99")
+        notifier._handle_update(self._upd("99", "/watch abcdef"), db_conn)
+        row = db_conn.execute(
+            "SELECT match_type, value FROM watchlist WHERE value = 'abcdef'"
+        ).fetchone()
+        assert row is not None
+        assert row["match_type"] == "icao"
+
+    def test_unwatch_dispatches_and_removes_row(self, db_conn, monkeypatch):
+        monkeypatch.setattr(notifier, "_send", lambda txt: None)
+        monkeypatch.setattr(config, "TELEGRAM_CHAT_ID", "99")
+        notifier._handle_update(self._upd("99", "/watch abcdef"), db_conn)
+        notifier._handle_update(self._upd("99", "/unwatch abcdef"), db_conn)
+        assert db_conn.execute("SELECT COUNT(*) FROM watchlist").fetchone()[0] == 0
+
+    def test_watchlist_dispatches(self, db_conn, monkeypatch):
+        called = []
+        monkeypatch.setattr(notifier, "_send_watchlist_list", lambda c: called.append("list"))
+        monkeypatch.setattr(config, "TELEGRAM_CHAT_ID", "99")
+        notifier._handle_update(self._upd("99", "/watchlist"), db_conn)
+        assert called == ["list"]
+
+    def test_unwatch_falls_back_to_callsign_prefix(self, db_conn, monkeypatch):
+        # A callsign_prefix entry (created via the web API) must be removable via
+        # the bot even though /unwatch infers icao/registration first — exercises
+        # the three-tier fallback (icao → registration → callsign_prefix).
+        monkeypatch.setattr(notifier, "_send", lambda txt: None)
+        monkeypatch.setattr(config, "TELEGRAM_CHAT_ID", "99")
+        db_conn.execute(
+            "INSERT INTO watchlist (match_type, value, label, created_at) "
+            "VALUES ('callsign_prefix', 'lot', NULL, strftime('%s','now'))"
+        )
+        db_conn.commit()
+        notifier._watch_remove(db_conn, "lot")
+        assert db_conn.execute("SELECT COUNT(*) FROM watchlist").fetchone()[0] == 0
+
 
 # ---------------------------------------------------------------------------
 # _get_updates

@@ -101,6 +101,13 @@ export function TimePicker({
   const hours = Array.from({ length: 24 }, (_, i) => i);
   const minutes: number[] = [];
   for (let m = 0; m < 60; m += minuteStep) minutes.push(m);
+  // Include the current value's minute even when it's off the step grid (e.g. a
+  // URL-supplied 09:37 with minuteStep=5), so it shows and highlights instead of
+  // vanishing — otherwise the inherited minute is invisible. audit 2026-06-15.
+  if (parsed && !minutes.includes(parsed.m)) {
+    minutes.push(parsed.m);
+    minutes.sort((a, b) => a - b);
+  }
 
   return (
     <Popover open={open} onOpenChange={handleOpenChange}>

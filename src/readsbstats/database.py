@@ -434,6 +434,16 @@ def _migrate(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_flights_max_alt "
         "ON flights(max_alt_baro DESC)"
     )
+    # Squawk history filter (api/_deps._build_flight_filter: WHERE f.squawk = ?)
+    # + default first_seen DESC sort. Partial (squawk IS NOT NULL) since most
+    # flights never broadcast a squawk (audit 2026-06-15). Guarded on the column
+    # existing: real DBs have had `squawk` since v1, but the very-old-schema
+    # migration tests build a minimal flights table without it.
+    if "squawk" in existing:
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_flights_squawk_first "
+            "ON flights(squawk, first_seen DESC) WHERE squawk IS NOT NULL"
+        )
     # F08/SQL-1 (Audit 18, measure-first): flights.last_seen is intentionally
     # NOT indexed. It's UPDATE-ed on every poll for each active flight (index
     # write amplification on the hot path), and its only reader — the default-

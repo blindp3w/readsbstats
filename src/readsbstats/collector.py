@@ -1299,6 +1299,53 @@ def _parse_summary_time() -> tuple[int, int] | None:
     return h, m
 
 
+_SUMMARY_META_KEY = "last_summary_date"
+
+
+def _load_last_summary_date(conn: sqlite3.Connection) -> None:
+    """Restore ``_last_summary_date`` from the ``meta`` table at startup so a
+    restart after the summary time doesn't re-send the daily summary (the global
+    is otherwise in-memory only). audit 2026-06-15.
+
+    If today's summary window has already passed and there's no record of a send
+    today, seed the gate to today so a mid-day (re)start does NOT *retroactively*
+    fire — matching the pre-fix "no catch-up on restart" behavior. A live
+    collector that merely runs through the target minute still fires, because its
+    gate is yesterday's date and it crosses ``h:m`` while running. (review 2026-06-15)
+    """
+    global _last_summary_date
+    try:
+        row = conn.execute(
+            "SELECT value FROM meta WHERE key = ?", (_SUMMARY_META_KEY,)
+        ).fetchone()
+    except sqlite3.Error:
+        return
+    if row and row[0]:
+        try:
+            _last_summary_date = datetime.date.fromisoformat(row[0])
+        except ValueError:
+            log.warning("ignoring corrupt %s meta value: %r", _SUMMARY_META_KEY, row[0])
+            _last_summary_date = None
+
+    parsed = _parse_summary_time()
+    if parsed is not None:
+        now = datetime.datetime.now()
+        if _last_summary_date != now.date() and (now.hour, now.minute) >= parsed:
+            _last_summary_date = now.date()
+
+
+def _save_last_summary_date(conn: sqlite3.Connection, d: datetime.date) -> None:
+    """Persist the last daily-summary date so it survives a collector restart."""
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
+            (_SUMMARY_META_KEY, d.isoformat()),
+        )
+        conn.commit()
+    except sqlite3.Error:
+        log.exception("could not persist last_summary_date")
+
+
 def _check_daily_summary(conn: sqlite3.Connection) -> None:
     global _last_summary_date
     if not notifier.telegram_enabled():
@@ -1308,8 +1355,13 @@ def _check_daily_summary(conn: sqlite3.Connection) -> None:
         return
     h, m = parsed
     now = datetime.datetime.now()
-    if now.hour == h and now.minute == m and now.date() != _last_summary_date:
+    # At-or-past, not exact-minute: the poll loop can be busy through the target
+    # minute (e.g. mid-purge), which would silently drop that day's summary. Fire
+    # on the first poll at/after h:m; the once-per-day gate + meta persistence
+    # (survives restarts) prevent re-sends. audit 2026-06-15.
+    if now.date() != _last_summary_date and (now.hour, now.minute) >= (h, m):
         _last_summary_date = now.date()
+        _save_last_summary_date(conn, now.date())
         try:
             notifier.send_daily_summary(conn)
         except Exception:
@@ -1402,6 +1454,7 @@ def main() -> None:
     _load_active(conn)
     if notifier.telegram_enabled():
         _load_notified(conn)
+        _load_last_summary_date(conn)
         notifier.start_command_listener(config.DB_PATH)
     adsbx_enricher.start_background_enricher()
     # Audit 2026-06-01 W-3: route_enricher used to start in the web process,

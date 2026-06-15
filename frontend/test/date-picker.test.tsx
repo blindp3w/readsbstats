@@ -35,6 +35,26 @@ describe('DatePicker', () => {
     expect(screen.getByTestId('dp').textContent).toMatch(/2026/);
   });
 
+  it('renders the placeholder for an impossible date instead of rolling over', () => {
+    // Feb 31 must not silently become Mar 3 (audit 2026-06-15).
+    setup('2026-02-31');
+    expect(screen.getByTestId('dp')).toHaveTextContent('dd/mm/yyyy');
+  });
+
+  it('reopens when defaultOpen flips to true after mount', () => {
+    // The map's HIST mode flips defaultOpen on a persistent instance; the
+    // popover must follow (audit 2026-06-15).
+    const onChange = vi.fn();
+    const { rerender } = render(
+      <DatePicker value="2026-05-15" onChange={onChange} data-testid="dp" defaultOpen={false} />,
+    );
+    expect(screen.queryByTestId('date-picker-popover')).toBeNull();
+    rerender(
+      <DatePicker value="2026-05-15" onChange={onChange} data-testid="dp" defaultOpen={true} />,
+    );
+    expect(screen.getByTestId('date-picker-popover')).toBeTruthy();
+  });
+
   it('opens the popover and selects a day, calling onChange with ISO date', () => {
     const { onChange } = setup('2026-05-15');
     fireEvent.click(screen.getByTestId('dp'));

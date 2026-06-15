@@ -181,6 +181,9 @@ class TestMigrate:
         }
         assert "idx_flights_dist" in indexes
         assert "idx_flights_icao_first" in indexes
+        # Squawk history filter (?squawk=7700) must be indexed so it doesn't
+        # full-scan + temp-sort as `flights` grows (audit 2026-06-15).
+        assert "idx_flights_squawk_first" in indexes
         conn.close()
 
     def test_backfills_bearing_for_flights_with_positions(self, tmp_path):

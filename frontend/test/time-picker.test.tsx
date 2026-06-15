@@ -53,4 +53,14 @@ describe('TimePicker', () => {
     // No minute picked yet, nothing should commit.
     expect(onChange).not.toHaveBeenCalled();
   });
+
+  it('shows and selects an off-grid minute from the inherited value', () => {
+    // minuteStep defaults to 5, so 37 is off the grid. The inherited value's
+    // minute must still appear and highlight, not vanish (audit 2026-06-15).
+    setup('09:37');
+    fireEvent.click(screen.getByTestId('tp'));
+    const popover = screen.getByTestId('time-picker-popover');
+    const opt = within(popover).getByTestId('tp-m-37');
+    expect(opt).toHaveAttribute('aria-selected', 'true');
+  });
 });

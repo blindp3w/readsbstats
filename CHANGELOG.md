@@ -7,7 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
-Security + data-integrity fixes from the 2026-06-15 codebase audit.
+Security, data-integrity, performance, and UX fixes from the 2026-06-15 codebase
+audit (High + Medium severity).
 
 ### Security
 
@@ -19,6 +20,23 @@ Security + data-integrity fixes from the 2026-06-15 codebase audit.
   text), neutralising the sink by construction. This path was invisible to the
   `no-danger` grep guard, which only flags `dangerouslySetInnerHTML`.
 
+### Performance
+
+- **`/api/metrics` rejects duplicate / over-long metric lists.** The `metrics`
+  query param was allowlisted per name but not deduped or capped, so
+  `?metrics=signal,signal,…` widened the SQL projection and the response without
+  adding data — a resource-amplification vector on the Pi. It now caps the raw
+  length/count and dedupes while preserving order.
+- **Photo fetch no longer blocks the event loop.** The cache-miss write +
+  `commit()` for `/api/flights/{id}/photo` and `/api/aircraft/{icao}/photo` ran
+  inline in the coroutine, so the fsync on the Pi's USB-HDD stalled every
+  concurrent request; the miss-path fetch + write now run in the threadpool.
+- **Indexed the squawk history filter** (`idx_flights_squawk_first`) so
+  emergency-code/squawk history queries avoid a full scan + temp sort.
+- **Flight detail makes one fewer request** — the altitude/speed profile chart
+  reuses the map's already-fetched (and LTTB-sampled) position series instead of
+  fetching a second downsampled copy.
+
 ### Fixed
 
 - **`scripts/purge_ghosts.py` now recomputes `max_distance_bearing` after a
@@ -29,6 +47,21 @@ Security + data-integrity fixes from the 2026-06-15 codebase audit.
   maintains the pair) and clears both to `NULL` when a flight has no surviving
   coordinates; the shared survivor scan also skips coordinate-less rows (fixing a
   latent `haversine` crash on a `NULL`-coordinate position).
+- **Metrics collector no longer logs "row inserted" for an ignored duplicate.**
+  A stalled `last1min.end` (stuck feed) was masked as a successful insert; the
+  ignored duplicate is now reported and debug-logged.
+- **Daily Telegram summary fires reliably.** It only matched the exact configured
+  minute, so a poll loop busy through that minute (mid-purge) dropped the summary;
+  it now fires on the first poll at/after the time and persists the last-sent date
+  in `meta`, so a restart after the time doesn't re-send.
+- **VDL2 ingest cleans up on a bind failure** (no leaked socket/connection, no
+  stale dirty-shutdown sentinel) and rejects an out-of-range `RSBS_VDL2_UDP_PORT`
+  cleanly instead of crashing with an uncaught `OverflowError`.
+- **Date/time pickers.** TimePicker keeps an off-grid inherited minute visible;
+  DatePicker follows `defaultOpen` changes after mount; impossible dates such as
+  `2026-02-31` are rejected (shared `parseYMD`) instead of rolling over to March.
+- **Live map auto-fit** now centres on the receiver even when its location
+  resolves before the map finishes loading.
 
 ## 2.24.1 — 2026-06-15
 

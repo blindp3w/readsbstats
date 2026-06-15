@@ -188,20 +188,27 @@ def main() -> int:
             pass
 
     vdl2_db.ensure_schema(conn)
-    try:
-        open(sentinel, "w").close()   # mark this run in-progress
-    except OSError as exc:
-        log.warning("vdl2: could not write dirty-shutdown sentinel: %s", exc)
     if not vdl2_db.has_fts(conn):
         log.warning("FTS5 unavailable in this SQLite build — search will use LIKE fallback")
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         sock.bind((config.VDL2_UDP_HOST, config.VDL2_UDP_PORT))
-    except OSError as exc:
+    except (OSError, OverflowError) as exc:
+        # Bind BEFORE marking the run dirty: a port conflict or out-of-range
+        # port (OverflowError, which the old `except OSError` missed) must not
+        # leak the socket/connection or leave a dirty sentinel that forces an
+        # unnecessary quick_check on the next start. audit 2026-06-15.
         log.error("cannot bind UDP %s:%d — %s", config.VDL2_UDP_HOST, config.VDL2_UDP_PORT, exc)
+        sock.close()
+        conn.close()
         return 1
     sock.settimeout(_RECV_TIMEOUT_SEC)
+
+    try:
+        open(sentinel, "w").close()   # mark this run in-progress (only after a clean bind)
+    except OSError as exc:
+        log.warning("vdl2: could not write dirty-shutdown sentinel: %s", exc)
     log.info("VDL2 ingest listening on udp://%s:%d (decoder=%s, db=%s)",
              config.VDL2_UDP_HOST, config.VDL2_UDP_PORT, config.VDL2_DECODER, config.VDL2_DB_PATH)
 

@@ -142,7 +142,10 @@ describe('Flight detail split endpoints (BE-10 / FE-1)', () => {
     const calls = (globalThis.fetch as unknown as { mock: { calls: unknown[][] } }).mock.calls;
     const urls = calls.map((c) => String(c[0]));
     expect(urls.some((u) => u.includes('/positions/chart?target=2000'))).toBe(true);
-    expect(urls.some((u) => u.includes('/positions/chart?target=500'))).toBe(true);
+    // audit 2026-06-15: the profile chart now reuses the target=2000 series
+    // (ECharts lttb-samples it at render), so the redundant target=500 fetch
+    // is gone — one fewer request per flight view.
+    expect(urls.some((u) => u.includes('/positions/chart?target=500'))).toBe(false);
     expect(urls.some((u) => /\/positions\?limit=\d+/.test(u))).toBe(true);
     // Count derives from the /positions `total`, not an embedded array.
     const card = container.querySelector('[data-testid="flight-positions-card"]')!;

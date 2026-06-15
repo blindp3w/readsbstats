@@ -117,16 +117,12 @@ export default function FlightPage() {
     enabled: Number.isFinite(flightId),
   });
 
-  // Chart + map consume the LTTB-downsampled endpoint so long flights
-  // (>5k positions) stay responsive; the detail payload no longer embeds
-  // the timeline (BE-10). The header's at-max sublabels derive from the
-  // finer map series (target=2000), which carries baro_rate/track/lat/lon.
-  const chartQ = useQuery<PositionChartResp>({
-    queryKey: ['flight-chart', flightId],
-    queryFn: () => apiJson<PositionChartResp>(`flights/${flightId}/positions/chart?target=500`),
-    enabled: Number.isFinite(flightId),
-    staleTime: 300_000,
-  });
+  // The profile chart and the map both consume the LTTB-downsampled endpoint
+  // (target=2000) so long flights (>5k positions) stay responsive; the detail
+  // payload no longer embeds the timeline (BE-10). The chart thins this series
+  // further at render via ECharts `sampling: 'lttb'`, so a separate target=500
+  // fetch is redundant (audit 2026-06-15). The header's at-max sublabels also
+  // derive from this series (baro_rate/track/lat/lon).
   const mapPositionsQ = useQuery<PositionChartResp>({
     queryKey: ['flight-chart', flightId, 'map'],
     queryFn: () => apiJson<PositionChartResp>(`flights/${flightId}/positions/chart?target=2000`),
@@ -204,7 +200,7 @@ export default function FlightPage() {
               <CardTitle>Altitude + speed</CardTitle>
             </CardHeader>
             <CardContent>
-              <FlightProfileChart positions={chartQ.data?.positions ?? []} />
+              <FlightProfileChart positions={mapPositionsQ.data?.positions ?? []} />
             </CardContent>
           </Card>
           <Card data-testid="flight-positions-card">
