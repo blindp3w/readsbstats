@@ -5,6 +5,7 @@ import { apiJson, apiUrl } from '@/lib/api';
 import { useSearchParam, useSearchParamBatch } from '@/hooks/useSearchParam';
 import { useVdl2AttachAvailable } from '@/hooks/useVdl2Enabled';
 import { cn } from '@/lib/cn';
+import { parseYMD } from '@/lib/dateParse';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Input } from '@/components/ui/Input';
 import { DatePicker } from '@/components/ui/DatePicker';
@@ -57,9 +58,9 @@ function isSortKey(s: string): s is SortKey {
 // from/to param on null — returning 0 would emit a hidden "from 1970" filter
 // for a malformed/edited URL (e.g. `?date_from=foo`), yielding empty results.
 function localMidnightEpoch(dateStr: string): number | null {
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateStr);
-  if (!m) return null;
-  return Math.floor(new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])).getTime() / 1000);
+  const p = parseYMD(dateStr);
+  if (!p) return null;
+  return Math.floor(new Date(p.y, p.mo, p.d).getTime() / 1000);
 }
 
 // Single source of truth for the Source / Flag dropdown options. Used by

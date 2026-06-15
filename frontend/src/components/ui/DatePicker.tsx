@@ -3,6 +3,7 @@ import { CalendarIcon, ChevronLeftIcon, ChevronRightIcon } from '@radix-ui/react
 import { DayPicker, type Matcher } from 'react-day-picker';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/Popover';
 import { cn } from '@/lib/cn';
+import { parseYMD } from '@/lib/dateParse';
 
 // Themed date picker replacing native `<input type="date">`. The native popup
 // can't be styled (only a `-webkit-calendar-picker-indicator` pseudo-element);
@@ -40,13 +41,10 @@ function parseISO(v: string): Date | undefined {
   if (!v) return undefined;
   // Anchor parsing at local midnight so the displayed date doesn't shift
   // backwards in negative-offset timezones (UTC parse + local display).
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(v);
-  if (!m) return undefined;
-  const y = Number(m[1]);
-  const mo = Number(m[2]) - 1;
-  const d = Number(m[3]);
-  const dt = new Date(y, mo, d);
-  return Number.isNaN(dt.getTime()) ? undefined : dt;
+  // parseYMD round-trip-rejects impossible dates (2026-02-31) rather than
+  // rolling them over to the next month.
+  const p = parseYMD(v);
+  return p ? new Date(p.y, p.mo, p.d) : undefined;
 }
 
 function toISO(d: Date): string {
@@ -78,6 +76,16 @@ export function DatePicker({
   popoverSide = 'bottom',
 }: DatePickerProps) {
   const [open, setOpen] = useState(defaultOpen);
+  // Follow defaultOpen changes after mount (the map's HIST mode flips it on a
+  // persistent instance) without a set-state-in-effect (lint-forbidden): adjust
+  // during render via the previous-prop pattern. Manual open/close via
+  // onOpenChange still works — this only fires when the prop itself changes.
+  // audit 2026-06-15.
+  const [prevDefaultOpen, setPrevDefaultOpen] = useState(defaultOpen);
+  if (defaultOpen !== prevDefaultOpen) {
+    setPrevDefaultOpen(defaultOpen);
+    setOpen(defaultOpen);
+  }
   const selected = parseISO(value);
 
   return (
