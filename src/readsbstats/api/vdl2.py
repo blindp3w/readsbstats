@@ -21,6 +21,7 @@ from ..vdl2 import db as vdl2_db
 from ..vdl2 import m1bpos
 from ..vdl2 import oooi
 from ..vdl2 import positions as vdl2_positions
+from ..vdl2 import rte
 from . import _deps
 
 log = logging.getLogger("vdl2.api")
@@ -118,10 +119,17 @@ def _rows_to_messages(rows) -> list[dict]:
     for r in rows:
         d = dict(r)
         body = d.get("body")
-        if body and body.startswith("#M1BPOS"):
-            route = m1bpos.parse_route(body)
+        if body:
+            # Filed route from the two body shapes that carry one: #M1BPOS /RP:
+            # blocks and Teledyne RTE messages. Only set when parseable ->
+            # exclude_unset omits it elsewhere.
+            route = None
+            if body.startswith("#M1BPOS"):
+                route = m1bpos.parse_route(body)
+            elif body.startswith("RTE ") or body.startswith("#T1BRTE"):
+                route = rte.parse_route(body)
             if route is not None:
-                d["filed_route"] = route   # only set when parseable -> exclude_unset omits it elsewhere
+                d["filed_route"] = route
         out.append(d)
     return out
 

@@ -5,6 +5,23 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 2.23.0 — 2026-06-15
+
+VDL2: message-log readability — body-kind category chips + RTE filed routes. Both
+apply to all VDL2 traffic (decoder-agnostic — these are ACARS body patterns).
+
+### Added
+
+- **VDL2 body-kind chips.** Each message row is tagged with a heuristic category chip
+  derived from the body prefix (ACMS / engine / maintenance / AID / performance /
+  position / Boeing OHMA / …), so the H1-dominated feed (which the client ACARS decoder
+  mostly can't decode) is readable at a glance. Pure client-side lookup
+  (`lib/vdl2Kinds.ts`), fail-soft (unknown → no chip), and suppressed when a row already
+  has a richer rendering (a decoded line or a filed route).
+- **VDL2 RTE filed routes.** Teledyne `RTE` route messages (and `#T1BRTE`) are parsed
+  server-side (`vdl2/rte.py`, query-time) into the existing `filed_route` object, so the
+  message log shows their filed departure→arrival + company route alongside `#M1BPOS`.
+
 ## 2.22.0 — 2026-06-15
 
 VDL2: dumpvdl2 decoder support — ATN CPDLC messages plus ingest fixes. All changes
