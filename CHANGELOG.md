@@ -5,7 +5,7 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## 2.24.2 — 2026-06-15
 
 Security, data-integrity, performance, and UX fixes from the 2026-06-15 codebase
 audit (High + Medium severity).
@@ -25,8 +25,8 @@ audit (High + Medium severity).
 - **`/api/metrics` rejects duplicate / over-long metric lists.** The `metrics`
   query param was allowlisted per name but not deduped or capped, so
   `?metrics=signal,signal,…` widened the SQL projection and the response without
-  adding data — a resource-amplification vector on the Pi. It now caps the raw
-  length/count and dedupes while preserving order.
+  adding data — a resource-amplification vector on the Pi. It now caps the query
+  length and dedupes to distinct columns (order preserved).
 - **Photo fetch no longer blocks the event loop.** The cache-miss write +
   `commit()` for `/api/flights/{id}/photo` and `/api/aircraft/{icao}/photo` ran
   inline in the coroutine, so the fsync on the Pi's USB-HDD stalled every
