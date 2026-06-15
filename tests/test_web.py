@@ -853,10 +853,24 @@ class TestApiMetricsQueryValidation:
         assert r.status_code == 200
         assert r.json()["metrics"] == ["signal"]
 
-    def test_too_many_metrics_rejected(self, client):
-        # Listing more names than columns exist is a resource-amplification
-        # attempt — reject before building the projection (OWASP API4).
+    def test_many_duplicates_dedupe_and_pass(self, client):
+        # Regression (review 2026-06-15 #2): 100 repeats of one valid name dedupe
+        # to a 1-column projection — harmless, so 200 not 400. The cap counts
+        # distinct names, not raw comma-parts (no false-reject on trailing commas).
         many = ",".join(["signal"] * 100)
+        r = client.get(f"/api/metrics?from=1000000&to=1000100&metrics={many}")
+        assert r.status_code == 200
+        assert r.json()["metrics"] == ["signal"]
+
+    def test_too_many_distinct_metrics_rejected(self, client):
+        # More distinct names than columns exist → reject before the projection.
+        many = ",".join(f"col{i}" for i in range(50))  # 50 distinct > 44 columns
+        r = client.get(f"/api/metrics?from=1000000&to=1000100&metrics={many}")
+        assert r.status_code == 400
+
+    def test_overlong_metrics_query_rejected(self, client):
+        # The char cap bounds the parse work regardless of dedupe.
+        many = ",".join(["signal"] * 400)  # ~2800 chars > 2048
         r = client.get(f"/api/metrics?from=1000000&to=1000100&metrics={many}")
         assert r.status_code == 400
 

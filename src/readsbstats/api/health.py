@@ -51,11 +51,14 @@ def api_metrics(
     # Cap + dedupe before building the projection: repeated valid names
     # (?metrics=signal,signal,…) would otherwise widen the SQL SELECT and the
     # response arrays without adding information — a resource-amplification
-    # vector on the Pi (OWASP API4). Bound the work before validating.
-    raw = metrics.split(",")
-    if len(metrics) > 2048 or len(raw) > len(_deps._METRICS_COLS):
+    # vector on the Pi (OWASP API4). The char cap bounds the parse work; dedupe
+    # bounds the projection to distinct columns, so the count cap is checked on
+    # the deduped list (a trailing comma / repeats no longer false-reject).
+    if len(metrics) > 2048:
+        return JSONResponse(status_code=400, content={"error": "metrics query too long"})
+    requested = list(dict.fromkeys(c.strip() for c in metrics.split(",") if c.strip()))
+    if len(requested) > len(_deps._METRICS_COLS):
         return JSONResponse(status_code=400, content={"error": "too many metrics"})
-    requested = list(dict.fromkeys(c.strip() for c in raw if c.strip()))
     invalid = [c for c in requested if c not in _deps._METRICS_COLS]
     if invalid:
         return JSONResponse(
