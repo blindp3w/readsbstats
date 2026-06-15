@@ -63,7 +63,7 @@ export function MessageList({ messages, onHexClick, onRegClick, decode: decodePr
         const decoded = decode && m.body ? decode(m) : null;
         // Body-category chip — only when the row has no richer rendering already
         // (airframes decoded line or a filed_route line).
-        const kind = !decoded && !m.filed_route ? bodyKind(m.body) : null;
+        const kind = !decoded && !m.filed_route ? bodyKind(m.body, m.label) : null;
         return (
           <li key={m.id} className="py-2" data-testid="vdl2-message-row">
             <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">

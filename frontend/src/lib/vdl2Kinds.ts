@@ -27,11 +27,18 @@ export const VDL2_BODY_KINDS: Record<string, string> = {
   OHMA: 'Boeing OHMA',
   '01IC': 'Performance report',
   '01 W': 'Weather request',
-  '59,G,': 'Position report',
+  // NB: 59,G is intentionally NOT here — its prefix conflates two message types
+  // that split by label (36 = airborne position, 37 = airport/runway status), so
+  // bodyKind() disambiguates it via the label argument rather than the prefix.
 };
 
-export function bodyKind(body: string | null | undefined): string | null {
+export function bodyKind(body: string | null | undefined, label?: string | null): string | null {
   if (!body) return null;
+  if (body.startsWith('59,G,')) {
+    // Ambiguous prefix: label 37 is the airport/runway status sub-form; label 36
+    // (and anything else/unknown) is the airborne position telemetry.
+    return (label ?? '').toUpperCase() === '37' ? 'Ground report' : 'Position report';
+  }
   for (const [prefix, kind] of Object.entries(VDL2_BODY_KINDS)) {
     if (body.startsWith(prefix)) return kind;
   }

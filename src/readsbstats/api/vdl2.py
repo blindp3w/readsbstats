@@ -672,6 +672,9 @@ _POSITIONS_LABEL16_SCAN_CAP = 8000
 # window (then parse + discard non-position rows) so the final cap isn't consumed
 # by no-fix rows. Bounded so the scan still terminates.
 _POSITIONS_M1BPOS_SCAN_CAP = 8000
+# LOT `59,G` ground-telemetry positions (label 36); same over-fetch+parse+discard
+# rationale (the label-37 status sub-form shares the prefix and is parsed out).
+_POSITIONS_59G_SCAN_CAP = 8000
 
 
 @router.get("/api/vdl2/active", response_model=schemas.Vdl2ActiveResponse,
@@ -716,12 +719,15 @@ def api_vdl2_positions(minutes: int = Query(60, ge=1, le=1440)) -> dict:
 
 
 def _compute_positions(minutes: int) -> dict:
-    """Three index-served candidate queries merged in Python (a single OR query
-    full-scans; see idx_vdl2_label_ts_id / idx_vdl2_pos_ts_id). Precise fixes are
-    parsed from Label-16 AUTPOS bodies and `#M1BPOS` bodies (so a coordinate-looking
-    body on any other row can't masquerade as precise); coarse XID column fixes are
-    the fallback. Independent caps + an over-fetched label-16 scan + a final merge/cap
-    so a burst of no-fix rows can't starve valid coarse OR older precise points."""
+    """Four candidate queries merged in Python (a single OR query full-scans). The
+    label-16 and coarse queries are index-served (idx_vdl2_label_ts_id /
+    idx_vdl2_pos_ts_id); the `#M1BPOS` and `59,G` queries are time-window-bounded row
+    scans (idx_vdl2_ts bounds `ts >=`, then a `body LIKE` filter), capped so they still
+    terminate. Precise fixes are parsed from Label-16 AUTPOS, `#M1BPOS`, and LOT `59,G`
+    bodies (so a coordinate-looking body on any other row can't masquerade as precise);
+    coarse XID column fixes are the fallback. Independent caps + over-fetched scans + a
+    final merge/cap so a burst of no-fix rows can't starve valid coarse OR older precise
+    points."""
     conn = vdl2_db.web_conn()
     cutoff = int(time.time()) - minutes * 60
 
@@ -740,6 +746,11 @@ def _compute_positions(minutes: int) -> dict:
         "SELECT id, icao_hex, ts, label, body FROM vdl2_messages "
         "WHERE ts >= ? AND body LIKE '#M1BPOS%' ORDER BY ts DESC, id DESC LIMIT ?",
         (cutoff, _POSITIONS_M1BPOS_SCAN_CAP),
+    ).fetchall()
+    g59_rows = conn.execute(
+        "SELECT id, icao_hex, ts, label, body FROM vdl2_messages "
+        "WHERE ts >= ? AND body LIKE '59,G,%' ORDER BY ts DESC, id DESC LIMIT ?",
+        (cutoff, _POSITIONS_59G_SCAN_CAP),
     ).fetchall()
 
     def _point(r, lat, lon, precise) -> dict:
@@ -761,6 +772,14 @@ def _compute_positions(minutes: int) -> dict:
         parsed = m1bpos.parse_position(r["body"])
         if parsed is None:
             continue   # non-position #M1BPOS body — discarded (does not consume the final cap)
+        if r["id"] in seen:
+            continue
+        seen.add(r["id"])
+        points.append(_point(r, parsed["lat"], parsed["lon"], True))
+    for r in g59_rows:
+        parsed = vdl2_positions.parse_59g(r["body"])
+        if parsed is None:
+            continue   # non-position 59,G (label-37 status) — discarded, no cap consumed
         if r["id"] in seen:
             continue
         seen.add(r["id"])

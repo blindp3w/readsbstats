@@ -946,6 +946,12 @@ class TestM1bposPositions:
             # plain non-position H1 — must NOT yield a point
             {"ts": base - 25, "icao_hex": "48ae22", "label": "H1",
              "body": "#DFBABS011DA_S UAAAEPWA2"},
+            # 59,G position sub-form (label 36) — yields a precise point at 52.15,20.59
+            {"ts": base - 20, "icao_hex": "48ae23", "label": "36",
+             "body": "59,G,0542,1,1,EPWA,52.15,20.59,52.15,20.61,10,269013,0,32.1,10586"},
+            # 59,G status sub-form (label 37) — same prefix, NOT a position
+            {"ts": base - 15, "icao_hex": "48ae24", "label": "37",
+             "body": "59,G,EPGD,EPWA,33/-,,1,,0,,6,145,04,,"},
         ])
         conn.commit()
         monkeypatch.setattr(vdl2_db, "_conn", conn)
@@ -969,6 +975,18 @@ class TestM1bposPositions:
     def test_non_position_h1_yields_no_point(self, m1b_client):
         r = m1b_client.get("/api/vdl2/positions?minutes=60")
         assert all(p["icao_hex"] != "48ae22" for p in r.json()["points"])
+
+    def test_59g_position_appears_as_precise_point(self, m1b_client):
+        r = m1b_client.get("/api/vdl2/positions?minutes=60")
+        pts = [p for p in r.json()["points"] if p["icao_hex"] == "48ae23"]
+        assert len(pts) == 1
+        assert pts[0]["precise"] is True
+        assert abs(pts[0]["lat"] - 52.15) < 1e-6
+        assert abs(pts[0]["lon"] - 20.59) < 1e-6
+
+    def test_59g_status_subform_yields_no_point(self, m1b_client):
+        r = m1b_client.get("/api/vdl2/positions?minutes=60")
+        assert all(p["icao_hex"] != "48ae24" for p in r.json()["points"])
 
 
 class TestFiledRoute:
