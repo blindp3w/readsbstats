@@ -126,7 +126,8 @@ Point it at the same port:
 readsbstats code change is required (a per-decoder normalizer handles the JSON).
 `dumpvdl2` needs a sample rate that is a multiple of 105000 sym/s, so it requires
 either a compatible SDR or an external resampler ahead of the Airspy Mini's fixed
-rates.
+rates — see [Running dumpvdl2 on an Airspy Mini](dumpvdl2-airspy-mini.md) for a
+tested IQ‑resampling recipe.
 
 **Retention.** The ingest service prunes messages older than
 `RSBS_VDL2_RETENTION_DAYS` (default 90) every hour. Message volume is modest
