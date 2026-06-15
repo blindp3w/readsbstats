@@ -13,7 +13,7 @@ from readsbstats import config, web
 from readsbstats.api import _deps
 from readsbstats.api import vdl2 as vdl2_api
 from readsbstats.vdl2 import db as vdl2_db
-from tests._helpers import make_db, make_vdl2_db
+from tests._helpers import iter_api_routes, make_db, make_vdl2_db
 
 
 @pytest.fixture(autouse=True)
@@ -762,7 +762,7 @@ class TestGating:
         monkeypatch.setattr(config, "VDL2_ENABLED", False)
         app = FastAPI()
         web._include_optional_routers(app)
-        paths = {r.path for r in app.routes}
+        paths = {r.path for r in iter_api_routes(app.routes)}
         assert not any(p.startswith("/api/vdl2") for p in paths)
         with TestClient(app) as c:
             assert c.get("/api/vdl2/messages").status_code == 404
@@ -771,7 +771,7 @@ class TestGating:
         monkeypatch.setattr(config, "VDL2_ENABLED", True)
         app = FastAPI()
         web._include_optional_routers(app)
-        paths = {r.path for r in app.routes}
+        paths = {r.path for r in iter_api_routes(app.routes)}
         assert "/api/vdl2/messages" in paths
 
 

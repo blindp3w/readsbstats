@@ -11,7 +11,6 @@ from unittest.mock import patch
 
 import pytest
 from fastapi import FastAPI
-from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
 from readsbstats import config, database, enrichment, geo, photo_sources, web
@@ -29,7 +28,7 @@ from readsbstats.photo_sources import PhotoResult
 # Shared DB fixture
 # ---------------------------------------------------------------------------
 
-from tests._helpers import insert_position, make_db  # noqa: E402 — kept under section header
+from tests._helpers import insert_position, iter_api_routes, make_db  # noqa: E402 — kept under section header
 
 
 @pytest.fixture()
@@ -3756,10 +3755,13 @@ _MUTATING_METHODS = {"POST", "PUT", "DELETE", "PATCH"}
 
 
 def _mutating_api_routes(app_):
-    """Yield (method, route) for every mutating method on every APIRoute."""
-    for route in app_.routes:
-        if not isinstance(route, APIRoute):
-            continue
+    """Yield (method, route) for every mutating method on every APIRoute.
+
+    Walks included sub-routers via iter_api_routes(): FastAPI 0.137 no longer
+    flattens include_router() routes into app.routes (they nest under
+    _IncludedRouter), so a flat walk would find zero mutating routes and the
+    CSRF/auth guard below would pass vacuously."""
+    for route in iter_api_routes(app_.routes):
         for method in sorted((route.methods or set()) & _MUTATING_METHODS):
             yield method, route
 

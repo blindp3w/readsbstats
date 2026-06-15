@@ -18,7 +18,29 @@ from __future__ import annotations
 
 import sqlite3
 
+from fastapi.routing import APIRoute
+
 from readsbstats import database
+
+
+def iter_api_routes(routes):
+    """Yield every leaf ``APIRoute``, descending into included sub-routers.
+
+    FastAPI 0.137 stopped flattening ``include_router()`` routes into
+    ``app.routes``: each include is now an ``_IncludedRouter`` wrapper that holds
+    the original ``APIRouter`` on ``.original_router`` (so the route/router
+    instances are preserved). Older FastAPI kept flat ``APIRoute`` objects. This
+    walk handles both — and recurses, so nested includes are covered too. Used by
+    the route-guard / gating tests, which must see the real leaf routes (under the
+    flat assumption they silently found *none* on 0.137 — a false-green for the
+    mutating-route CSRF/auth guard)."""
+    for route in routes:
+        if isinstance(route, APIRoute):
+            yield route
+            continue
+        included = getattr(route, "original_router", None)  # _IncludedRouter (0.137+)
+        if included is not None and hasattr(included, "routes"):
+            yield from iter_api_routes(included.routes)
 
 
 def make_db() -> sqlite3.Connection:
