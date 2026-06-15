@@ -79,4 +79,12 @@ describe('Vdl2ReceptionCard', () => {
     expect(screen.queryByTestId('metrics-vdl2-reception')).toBeNull();
     expect(container.firstChild).toBeNull();
   });
+
+  it('shows an error alert when the timeseries query fails (no silent blank)', async () => {
+    globalThis.fetch = vi.fn(
+      async () => new Response('err', { status: 500 }),
+    ) as unknown as typeof fetch;
+    renderCard();
+    await waitFor(() => screen.getByTestId('vdl2-reception-error'));
+  });
 });

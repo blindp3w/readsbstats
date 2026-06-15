@@ -1,6 +1,8 @@
 import { useQuery } from '@tanstack/react-query';
 import { apiJson } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
+import { Alert } from '@/components/ui/Alert';
+import { Skeleton } from '@/components/ui/Skeleton';
 import { KpiCard } from '@/components/stats/KpiCard';
 import { labelName } from '@/lib/vdl2Labels';
 import type { Vdl2StatsResponse } from '@/lib/types';
@@ -10,12 +12,28 @@ import type { Vdl2StatsResponse } from '@/lib/types';
 // `enabled` prop so an accidental render outside the Stats gate makes no
 // /api/vdl2/stats call.
 export function Vdl2StatsCard({ enabled = true }: { enabled?: boolean }) {
-  const { data } = useQuery({
+  const { data, isError, isLoading } = useQuery({
     queryKey: ['vdl2-stats'],
     queryFn: () => apiJson<Vdl2StatsResponse>('vdl2/stats'),
     enabled,
     staleTime: 120_000,
   });
+
+  // Don't render '—' KPIs indistinguishably on a failed/loading query (audit 2026-06-15).
+  if (isError)
+    return (
+      <div className="space-y-4" data-testid="stats-vdl2">
+        <Alert variant="warn" data-testid="vdl2-stats-error">
+          Couldn't load VDL2 stats.
+        </Alert>
+      </div>
+    );
+  if (isLoading)
+    return (
+      <div className="space-y-4" data-testid="stats-vdl2">
+        <Skeleton className="h-40 w-full" data-testid="vdl2-stats-loading" />
+      </div>
+    );
 
   // With the optional overlap tile there are 4 KPIs (balance 2×2 / 1×4);
   // without it, 3 (1×3). Avoids a lone 4th tile wrapping under a 3-col grid.
