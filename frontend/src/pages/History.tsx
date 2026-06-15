@@ -810,9 +810,9 @@ function formatDateRange(from: string, to: string): string {
 }
 
 function shortDate(yyyyMmDd: string): string {
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(yyyyMmDd);
-  if (!m) return yyyyMmDd;
-  return `${Number(m[2])}/${Number(m[3])}`;
+  const p = parseYMD(yyyyMmDd);
+  if (!p) return yyyyMmDd;
+  return `${p.mo + 1}/${p.d}`; // parseYMD's month is zero-based
 }
 
 function Field({
