@@ -118,11 +118,15 @@ vdlm2dec -g 14 -j 127.0.0.1:5556 136.725 136.775 136.875 136.975
 > output — flags have drifted across versions. Only one process may hold the
 > Airspy at a time (no SpyServer/SDR++ against the same device concurrently).
 
-**Switching decoders.** `dumpvdl2` cannot drive the Airspy Mini (fixed sample
-rate), but if you move to a compatible SDR, set `RSBS_VDL2_DECODER=dumpvdl2` and
-point it at the same port:
+**Switching decoders.** Set `RSBS_VDL2_DECODER=dumpvdl2` to ingest from
+[dumpvdl2](https://github.com/szpajder/dumpvdl2) instead — it decodes the same ACARS
+plus the ATN/OSI classes vdlm2dec can't (notably **CPDLC** controller–pilot messages).
+Point it at the same port:
 `dumpvdl2 --output decoded:json:udp:address=127.0.0.1,port=5556 …`. No
 readsbstats code change is required (a per-decoder normalizer handles the JSON).
+`dumpvdl2` needs a sample rate that is a multiple of 105000 sym/s, so it requires
+either a compatible SDR or an external resampler ahead of the Airspy Mini's fixed
+rates.
 
 **Retention.** The ingest service prunes messages older than
 `RSBS_VDL2_RETENTION_DAYS` (default 90) every hour. Message volume is modest

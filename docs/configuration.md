@@ -272,7 +272,7 @@ decoder runbook and the two-switch enablement model.
 | `RSBS_VDL2_RETENTION_DAYS` | `90` | Prune messages older than this. `0` = keep forever. |
 | `RSBS_VDL2_UDP_HOST` | `127.0.0.1` | Bind address for the JSON-over-UDP listener. |
 | `RSBS_VDL2_UDP_PORT` | `5556` | UDP port the decoder feeds. (5555 left free for SpyServer.) |
-| `RSBS_VDL2_DECODER` | `vdlm2dec` | JSON dialect to expect: `vdlm2dec` or `dumpvdl2` (dumpvdl2 mapping is experimental/unverified). |
+| `RSBS_VDL2_DECODER` | `vdlm2dec` | JSON dialect to expect: `vdlm2dec` (ACARS) or `dumpvdl2` (also decodes ATN CPDLC into the message log). |
 | `RSBS_VDL2_PURGE_INTERVAL` | `3600` | Seconds between retention prunes (batched). |
 | `RSBS_VDL2_BODY_MAX` | `4096` | Max stored message-body length (chars; floor 256). |
 | `RSBS_VDL2_RAW_MAX` | `8192` | Max stored verbatim `raw` decoder JSON (chars; floor 256). |
