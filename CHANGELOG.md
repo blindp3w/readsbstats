@@ -5,6 +5,31 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+Security + data-integrity fixes from the 2026-06-15 codebase audit.
+
+### Security
+
+- **Stats "Top" chart tooltip XSS hardening.** The ECharts tooltip in
+  `buildTopChartOption` rendered its formatter output in the default `html` mode
+  (assigned via `el.innerHTML`). The tooltip label is built from upstream-derived
+  fields (registration, type description, airport name, …), so crafted markup
+  could execute on hover. The tooltip now uses `renderMode: 'richText'` (canvas
+  text), neutralising the sink by construction. This path was invisible to the
+  `no-danger` grep guard, which only flags `dangerouslySetInnerHTML`.
+
+### Fixed
+
+- **`scripts/purge_ghosts.py` now recomputes `max_distance_bearing` after a
+  purge.** It updated `max_distance_nm` from the surviving positions but left
+  `max_distance_bearing` pointing at the deleted ghost, so the polar/range plot
+  rendered a max-distance marker at a bearing no surviving fix supported. The
+  purge now recomputes distance and bearing together (mirroring how the collector
+  maintains the pair) and clears both to `NULL` when a flight has no surviving
+  coordinates; the shared survivor scan also skips coordinate-less rows (fixing a
+  latent `haversine` crash on a `NULL`-coordinate position).
+
 ## 2.24.1 — 2026-06-15
 
 Dependency maintenance — no runtime or user-facing change.

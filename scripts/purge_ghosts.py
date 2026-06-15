@@ -112,6 +112,49 @@ def find_ghost_ids(
     return ghosts
 
 
+def _farthest_after_purge(
+    conn: sqlite3.Connection,
+    flight_id: int,
+    ghost_ids: list[int],
+    rlat: float,
+    rlon: float,
+) -> tuple[float, float] | None:
+    """Return ``(max_distance_nm, bearing_deg)`` of the farthest SURVIVING
+    position of a flight, or ``None`` when no surviving position has coordinates.
+
+    The bearing is the receiver→point initial bearing of the position that set
+    the max distance — keeping the two ``flights`` columns in lockstep exactly as
+    the collector does (``collector.py:866`` on insert and ``:1149-1154`` in the
+    ``_purge`` crossing recompute). The ``lat/lon IS NOT NULL`` filter also avoids
+    a ``haversine_nm(None, …)`` crash on a coordinate-less position row.
+    """
+    # SQLite accepts `NOT IN ()` but the standard SQL grammar forbids it —
+    # use a plain WHERE when there are no exclusions (also clearer to read).
+    if ghost_ids:
+        placeholders = ",".join("?" * len(ghost_ids))
+        rows = conn.execute(
+            f"SELECT lat / 100000.0 AS lat, lon / 100000.0 AS lon "
+            f"FROM positions "
+            f"WHERE flight_id = ? AND id NOT IN ({placeholders}) "
+            f"AND lat IS NOT NULL AND lon IS NOT NULL",
+            [flight_id] + ghost_ids,
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT lat / 100000.0 AS lat, lon / 100000.0 AS lon "
+            "FROM positions "
+            "WHERE flight_id = ? AND lat IS NOT NULL AND lon IS NOT NULL",
+            (flight_id,),
+        ).fetchall()
+    if not rows:
+        return None
+    dist, far = max(
+        ((haversine_nm(rlat, rlon, r["lat"], r["lon"]), r) for r in rows),
+        key=lambda t: t[0],
+    )
+    return dist, geo.bearing(rlat, rlon, far["lat"], far["lon"])
+
+
 def max_distance_after_purge(
     conn: sqlite3.Connection,
     flight_id: int,
@@ -119,25 +162,14 @@ def max_distance_after_purge(
     rlat: float,
     rlon: float,
 ) -> float | None:
-    """Compute the new max_distance_nm excluding the ghost positions."""
-    # SQLite accepts `NOT IN ()` but the standard SQL grammar forbids it —
-    # use a plain WHERE when there are no exclusions (also clearer to read).
-    if ghost_ids:
-        placeholders = ",".join("?" * len(ghost_ids))
-        rows = conn.execute(
-            f"SELECT lat / 100000.0 AS lat, lon / 100000.0 AS lon "
-            f"FROM positions WHERE flight_id = ? AND id NOT IN ({placeholders})",
-            [flight_id] + ghost_ids,
-        ).fetchall()
-    else:
-        rows = conn.execute(
-            "SELECT lat / 100000.0 AS lat, lon / 100000.0 AS lon "
-            "FROM positions WHERE flight_id = ?",
-            (flight_id,),
-        ).fetchall()
-    if not rows:
-        return None
-    return max(haversine_nm(rlat, rlon, r["lat"], r["lon"]) for r in rows)
+    """Compute the new max_distance_nm excluding the ghost positions.
+
+    Thin wrapper over :func:`_farthest_after_purge` (the single source of truth
+    for the surviving-position scan); kept for the dry-run report and callers
+    that only need the distance.
+    """
+    pair = _farthest_after_purge(conn, flight_id, ghost_ids, rlat, rlon)
+    return pair[0] if pair is not None else None
 
 
 # Commit every N flights so a multi-thousand-flight purge doesn't hold the
@@ -176,9 +208,15 @@ def apply_purge(
         conn.execute(
             f"DELETE FROM positions WHERE id IN ({placeholders})", ghost_ids
         )
-        new_max = max_distance_after_purge(conn, fid, [], rlat, rlon)
+        # Ghosts are already deleted, so pass ghost_ids=[]. Recompute distance
+        # AND bearing together so the polar/range plot never points at a deleted
+        # position (audit 2026-06-15); mirrors the collector's paired update.
+        pair = _farthest_after_purge(conn, fid, [], rlat, rlon)
+        new_max, new_bearing = pair if pair is not None else (None, None)
         conn.execute(
-            "UPDATE flights SET max_distance_nm = ? WHERE id = ?", (new_max, fid)
+            "UPDATE flights SET max_distance_nm = ?, max_distance_bearing = ? "
+            "WHERE id = ?",
+            (new_max, new_bearing, fid),
         )
         pending += 1
         if pending >= _BATCH_SIZE:
