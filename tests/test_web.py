@@ -861,6 +861,39 @@ class TestApiMetricsQueryValidation:
         assert r.status_code == 400
 
 
+class TestApiMetricsBucketing:
+    """The >24h downsample path (bucket > 0) runs _deps._metrics_agg per column;
+    earlier tests only used ≤100s windows (the raw branch), so the aggregate
+    selection was untested (audit 2026-06-15)."""
+
+    def test_buckets_and_aggregates_over_a_long_window(self, client, db_conn):
+        # Two rows in the same 300s bucket; a >24h window forces bucket=300.
+        db_conn.execute(
+            "INSERT INTO receiver_stats (ts, signal, messages, peak_signal) VALUES (?,?,?,?)",
+            (1000, -10.0, 5, -3.0),
+        )
+        db_conn.execute(
+            "INSERT INTO receiver_stats (ts, signal, messages, peak_signal) VALUES (?,?,?,?)",
+            (1100, -20.0, 7, -1.0),
+        )
+        db_conn.commit()
+        r = client.get("/api/metrics?from=0&to=200000&metrics=signal,messages,peak_signal")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["bucket_seconds"] == 300
+        assert body["metrics"] == ["signal", "messages", "peak_signal"]
+        data = body["data"]
+        assert data[0] == [900]      # bucket_ts = floor(1000/300)*300
+        assert data[1] == [-15.0]    # AVG(signal): continuous measurement
+        assert data[2] == [12]       # SUM(messages): per-interval counter
+        assert data[3] == [-1.0]     # MAX(peak_signal): peak/extreme
+
+    def test_metrics_agg_selects_expected_aggregate(self):
+        assert _deps._metrics_agg("peak_signal") == "MAX(peak_signal)"
+        assert _deps._metrics_agg("signal") == "AVG(signal)"
+        assert _deps._metrics_agg("messages") == "SUM(messages)"
+
+
 # ---------------------------------------------------------------------------
 # Helper: _fmt_ts
 # ---------------------------------------------------------------------------
