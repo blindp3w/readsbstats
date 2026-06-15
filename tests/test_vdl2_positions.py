@@ -36,6 +36,40 @@ class TestParsePosition:
         assert abs(rec["lat"] + 33.900) < 1e-6 and abs(rec["lon"] + 18.600) < 1e-6
 
 
+class TestParse59g:
+    # Real LOT 59,G ground-telemetry bodies from the live feed.
+    POS = "59,G,0542,1,1,EPWA,52.15,20.59,52.15,20.61,10,269013,0,32.1,10586,13,38,276,290,451B76A"
+    STATUS = "59,G,EPGD,EPWA,33/-,,1,,0,,6,145,04,,"
+
+    def test_position_form(self):
+        rec = positions.parse_59g(self.POS)
+        assert rec is not None
+        assert abs(rec["lat"] - 52.15) < 1e-6
+        assert abs(rec["lon"] - 20.59) < 1e-6
+
+    def test_status_subform_rejected(self):
+        # label-37 runway/status form: fields[6/7] aren't coordinates.
+        assert positions.parse_59g(self.STATUS) is None
+
+    def test_integer_coded_fields_rejected(self):
+        # A status-style row with numeric, in-range BUT non-decimal fields 6/7 must
+        # NOT plot a bogus point — the decimal-fraction requirement is the structural
+        # discriminator, not the incidental empty field in self.STATUS.
+        assert positions.parse_59g("59,G,EPGD,EPWA,33/-,,12,34,x") is None
+        assert positions.parse_59g("59,G,0542,1,1,EPWA,52,20,...") is None  # integer degrees
+
+    def test_out_of_range_rejected(self):
+        assert positions.parse_59g("59,G,0542,1,1,EPWA,95.0,20.59,...") is None
+
+    def test_too_few_fields(self):
+        assert positions.parse_59g("59,G,0542,1,1") is None
+
+    def test_non_59g_and_non_string(self):
+        assert positions.parse_59g("#M1BPOSN52081E020017") is None
+        assert positions.parse_59g("") is None
+        assert positions.parse_59g(None) is None
+
+
 class TestRejects:
     def test_blank_fix_marker_returns_none(self):
         # Real "no fix" body: 'N   .    MMMM.MMM' — must not parse.

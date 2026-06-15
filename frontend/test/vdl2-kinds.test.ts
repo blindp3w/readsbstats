@@ -14,7 +14,6 @@ describe('bodyKind', () => {
     expect(bodyKind('#T1BCKFk4f3x...')).toBe('AID report');
     expect(bodyKind('#EIBRPT12;PG1;REAL')).toBe('Brake/system report');
     expect(bodyKind('01ICCL     LOT71/051422EPWAVIDP')).toBe('Performance report');
-    expect(bodyKind('59,G,0542,1,1,EPWA,52.15,20.59')).toBe('Position report');
     expect(bodyKind('OHMAeJydU01v...')).toBe('Boeing OHMA');
   });
 
@@ -25,9 +24,11 @@ describe('bodyKind', () => {
     expect(bodyKind(undefined)).toBeNull();
   });
 
-  it('does not categorize 59, unless it is the 59,G, position form', () => {
+  it('disambiguates 59,G by label (36 = airborne position, 37 = ground/airport)', () => {
+    expect(bodyKind('59,G,0542,1,1,EPWA,52.15,20.59', '36')).toBe('Position report');
+    expect(bodyKind('59,G,EPGD,EPWA,33/-', '37')).toBe('Ground report');
+    expect(bodyKind('59,G,1')).toBe('Position report'); // unknown label → default position
     expect(bodyKind('59,X,whatever')).toBeNull();
-    expect(bodyKind('59,G,1')).toBe('Position report');
   });
 
   it('has no key that is a prefix of another (first-match is unambiguous)', () => {

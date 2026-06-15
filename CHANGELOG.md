@@ -5,6 +5,26 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 2.24.0 — 2026-06-15
+
+VDL2: more map positions + a body-kind chip accuracy fix.
+
+### Added
+
+- **VDL2 `59,G` ground-telemetry positions.** LOT `59,G,` bodies (ACARS label 36) carry
+  a precise lat/lon that wasn't on the map; `vdl2/positions.py::parse_59g` extracts them
+  (query-time, read-only) and `/api/vdl2/positions` now plots them as precise points
+  alongside Label-16 AUTPOS and `#M1BPOS`. The label-37 runway/status sub-form that
+  shares the `59,G,` prefix is rejected structurally (its fields aren't decimal-degree
+  coordinates).
+
+### Fixed
+
+- **VDL2 body-kind chip for `59,G` is now label-aware.** v2.23.0 labeled all `59,G` rows
+  "Position report", but the prefix conflates two message types; the chip now shows
+  "Position report" for the airborne position sub-form (label 36) and "Ground report" for
+  the airport/runway status sub-form (label 37).
+
 ## 2.23.0 — 2026-06-15
 
 VDL2: message-log readability — body-kind category chips + RTE filed routes. Both
