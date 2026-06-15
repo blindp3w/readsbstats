@@ -35,7 +35,7 @@ CREATE TABLE IF NOT EXISTS vdl2_messages (
     icao_hex     TEXT,                      -- 24-bit Mode-S address, lowercase; joins core flights.icao_hex
     registration TEXT,
     flight       TEXT,                      -- callsign / flight id
-    label        TEXT,                      -- 2-char ACARS message label
+    label        TEXT,                      -- 2-char ACARS message label (or 'CPDLC' for ATN frames)
     mode         TEXT,
     block_id     TEXT,
     ack          TEXT,

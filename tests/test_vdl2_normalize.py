@@ -228,6 +228,37 @@ class TestNormalizeDumpvdl2:
         rec = normalize.normalize(raw, decoder="dumpvdl2")
         assert rec["station_id"] is None
 
+    def test_bare_cpdlc_frame_gets_label_and_body(self):
+        # A pure-ATN CPDLC frame (no acars) → label='CPDLC' + intent body, so it is
+        # no longer a content-free bare row. reg/flight stay None (no ACARS wrapper).
+        raw = {"vdl2": {"freq": 136725000, "t": {"sec": 1781477820}, "avlc": {
+            "src": {"addr": "48C233"},
+            "x25": {"clnp": {"cotp": {"cpdlc": {"atc_downlink_message": {
+                "msg_data": {"msg_elements": [
+                    {"msg_element": {"choice_label": "WILCO"}}]}}}}}},
+        }}}
+        rec = normalize.normalize(raw, decoder="dumpvdl2")
+        assert rec is not None
+        assert rec["label"] == "CPDLC"
+        assert rec["body"] == "WILCO"
+        assert rec["icao_hex"] == "48c233"
+        assert rec["registration"] is None
+        assert rec["flight"] is None
+        assert rec["freq"] == 136.725
+
+    def test_bare_transport_frame_stays_bare(self):
+        # Content-free ATN transport/routing (x25, no cpdlc, no acars) keeps NULL
+        # label/body but survives on icao_hex — "keep bare" is intentional.
+        raw = {"vdl2": {"avlc": {
+            "src": {"addr": "896622"},
+            "x25": {"clnp": {"idrp": {"err": False}}},
+        }}}
+        rec = normalize.normalize(raw, decoder="dumpvdl2")
+        assert rec is not None
+        assert rec["label"] is None
+        assert rec["body"] is None
+        assert rec["icao_hex"] == "896622"
+
 
 class TestHelperCoercion:
     """Residual branches of the _ts / _num field coercers."""

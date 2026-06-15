@@ -26,6 +26,7 @@ from ..cleaners import (
     valid_lat,
     valid_lon,
 )
+from . import atn
 
 _SHORT = 64        # identifier-field cap (reg/flight/label/etc.)
 
@@ -143,21 +144,31 @@ def _normalize_dumpvdl2(raw: dict) -> dict | None:
     run off the Airspy Mini via the iq_tool resample pipe). dumpvdl2 nests ACARS under
     ``vdl2.avlc.acars`` (address in ``vdl2.avlc.src.addr``), reports ``freq`` in **Hz**
     (converted to MHz below), and emits the ``--station-id`` value as ``vdl2.station``.
-    TODO: ATN/OSI frames (``vdl2.avlc.x25`` — CPDLC/ADS-C/MIAM, ~72% of frames) are not
-    yet extracted; they currently fall through to bare ``icao_hex`` rows (see #2).
+    ATN/OSI frames (``vdl2.avlc.x25``) carry no ACARS body; CPDLC is lifted into
+    ``label``/``body`` via :func:`atn.summarize_cpdlc`. ADS-C is still deferred (no
+    real fixture yet); MIAM arrives over-ACARS so the ACARS branch handles it. Other
+    ATN transport/routing frames fall through to bare ``icao_hex`` rows by design.
     """
     vdl2 = raw.get("vdl2") if isinstance(raw.get("vdl2"), dict) else {}
     avlc = vdl2.get("avlc") if isinstance(vdl2.get("avlc"), dict) else {}
     src = avlc.get("src") if isinstance(avlc.get("src"), dict) else {}
     acars = avlc.get("acars") if isinstance(avlc.get("acars"), dict) else {}
     freq_hz = _float_or_none(vdl2.get("freq"))
+    # label/body: ACARS text, else an ATN/CPDLC summary for bare ATN frames.
+    if acars:
+        label = _label(acars.get("label"))
+        body = clean_short_text(acars.get("msg_text"), config.VDL2_BODY_MAX)
+    else:
+        summary = atn.summarize_cpdlc(avlc)
+        label = _label(summary[0]) if summary else None
+        body = clean_short_text(summary[1], config.VDL2_BODY_MAX) if summary else None
     rec = {
         "ts":           _ts((vdl2.get("t") or {}).get("sec") if isinstance(vdl2.get("t"), dict) else raw.get("timestamp")),
         # valid_icao_hex enforces 6-hex + lowercases; rejects malformed addrs.
         "icao_hex":     valid_icao_hex(src.get("addr")),
         "registration": _reg(acars.get("reg")),
         "flight":       clean_short_text(acars.get("flight"), _SHORT),
-        "label":        _label(acars.get("label")),
+        "label":        label,
         "mode":         clean_short_text(acars.get("mode"), _SHORT),
         "block_id":     clean_short_text(acars.get("blk_id"), _SHORT),
         "ack":          clean_short_text(acars.get("ack"), _SHORT),
@@ -172,7 +183,7 @@ def _normalize_dumpvdl2(raw: dict) -> dict | None:
         "epu":          None,
         "app_name":     None,
         "app_ver":      None,
-        "body":         clean_short_text(acars.get("msg_text"), config.VDL2_BODY_MAX),
+        "body":         body,
         "raw":          _raw_json(raw),
         "decoder":      "dumpvdl2",
     }
