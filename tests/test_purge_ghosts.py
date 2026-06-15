@@ -5,7 +5,7 @@ import sqlite3
 
 import pytest
 
-from readsbstats import database
+from readsbstats import database, geo
 from purge_ghosts import apply_purge, find_ghost_ids, haversine_nm, max_distance_after_purge
 
 RLAT = 52.24199
@@ -226,6 +226,66 @@ class TestApplyPurge:
             "SELECT max_distance_nm FROM flights WHERE id = ?", (fid,)
         ).fetchone()["max_distance_nm"]
         assert new_max < 100  # real position is ~23 nm, not 449 nm
+
+    def test_recomputes_max_distance_bearing_from_survivors(self):
+        """BUG (audit 2026-06-15): apply_purge updated max_distance_nm but left
+        max_distance_bearing pointing at the deleted ghost, so the polar/range
+        plot rendered a max-distance marker at a bearing no surviving position
+        supports. The collector updates both columns in lockstep
+        (collector.py:866 / :1152) — the purge must too."""
+        fid = insert_flight(self.conn)
+        # Surviving fixes due NORTH of the receiver (bearing ~0°).
+        surv_lat, surv_lon = RLAT + 0.5, RLON
+        insert_pos(self.conn, fid, 1000, surv_lat, surv_lon)      # ~30 nm N, anchor survivor
+        # Ghost far due EAST (bearing ~90°), 5 s later → huge implied speed →
+        # flagged AND the farthest point.
+        ghost_lat, ghost_lon = RLAT, RLON + 8.0
+        gid = insert_pos(self.conn, fid, 1005, ghost_lat, ghost_lon)
+        insert_pos(self.conn, fid, 1070, RLAT + 0.4, RLON)        # ~24 nm N, survivor
+
+        # Simulate the collector having recorded the GHOST as the max-distance point.
+        ghost_bearing = geo.bearing(RLAT, RLON, ghost_lat, ghost_lon)  # ~90°
+        self.conn.execute(
+            "UPDATE flights SET max_distance_nm = ?, max_distance_bearing = ? WHERE id = ?",
+            (geo.haversine_nm(RLAT, RLON, ghost_lat, ghost_lon), ghost_bearing, fid),
+        )
+        self.conn.commit()
+
+        ghosts = find_ghost_ids(self.conn, MAX_SPEED)
+        assert ghosts.get(fid) == [gid]   # precondition: ghost detected
+        apply_purge(self.conn, ghosts, RLAT, RLON)
+
+        row = self.conn.execute(
+            "SELECT max_distance_nm, max_distance_bearing FROM flights WHERE id = ?",
+            (fid,),
+        ).fetchone()
+        expected_bearing = geo.bearing(RLAT, RLON, surv_lat, surv_lon)      # ~0° (due N)
+        expected_dist = geo.haversine_nm(RLAT, RLON, surv_lat, surv_lon)    # ~30 nm
+        # pytest.approx: lat/lon round-trip through posenc ×1e5 scaling (~1 m).
+        assert row["max_distance_bearing"] == pytest.approx(expected_bearing, abs=0.1)
+        assert row["max_distance_nm"] == pytest.approx(expected_dist, abs=0.1)
+        # And specifically NOT the stale ghost bearing.
+        assert abs(row["max_distance_bearing"] - ghost_bearing) > 1.0
+
+    def test_all_positions_deleted_nulls_distance_and_bearing(self):
+        """No survivors → both max_distance_nm and max_distance_bearing clear to NULL."""
+        fid = insert_flight(self.conn)
+        p1 = insert_pos(self.conn, fid, 1000, 52.6, 20.75)
+        p2 = insert_pos(self.conn, fid, 1010, 52.5, 20.6)
+        self.conn.execute(
+            "UPDATE flights SET max_distance_nm = 50, max_distance_bearing = 123 WHERE id = ?",
+            (fid,),
+        )
+        self.conn.commit()
+
+        apply_purge(self.conn, {fid: [p1, p2]}, RLAT, RLON)   # every position removed
+
+        row = self.conn.execute(
+            "SELECT max_distance_nm, max_distance_bearing FROM flights WHERE id = ?",
+            (fid,),
+        ).fetchone()
+        assert row["max_distance_nm"] is None
+        assert row["max_distance_bearing"] is None
 
     def test_empty_ghosts_dict_is_noop(self):
         fid = insert_flight(self.conn)
