@@ -3075,6 +3075,48 @@ class TestCheckDailySummary:
         assert sent == [1]
         assert collector._last_summary_date == _real_dt.date(2026, 4, 14)
 
+    def test_sends_after_matching_time_same_day(self, monkeypatch):
+        """audit 2026-06-15: fire on the first poll AT OR AFTER the configured
+        time, not only on the exact minute — a busy poll loop (mid-purge) can
+        skip the target minute entirely and drop that day's summary."""
+        from readsbstats import collector, notifier
+        sent = []
+        monkeypatch.setattr(notifier, "send_daily_summary", lambda c: sent.append(1))
+        monkeypatch.setattr(config, "TELEGRAM_SUMMARY_TIME", "09:30")
+        self._patch_now(monkeypatch, _real_dt.datetime(2026, 4, 14, 9, 33))  # 3 min past
+
+        conn = make_db()
+        collector._check_daily_summary(conn)
+        conn.close()
+
+        assert sent == [1]
+
+    def test_does_not_resend_after_restart_same_day(self, monkeypatch):
+        """audit 2026-06-15: the last-summary date persists in `meta`, so a
+        restart after the summary time (which resets the in-memory global)
+        does not re-send that day's summary."""
+        from readsbstats import collector, notifier
+        sent = []
+        monkeypatch.setattr(notifier, "send_daily_summary", lambda c: sent.append(1))
+        monkeypatch.setattr(config, "TELEGRAM_SUMMARY_TIME", "09:30")
+
+        conn = make_db()
+        self._patch_now(monkeypatch, _real_dt.datetime(2026, 4, 14, 9, 30))
+        collector._check_daily_summary(conn)
+        assert sent == [1]
+        row = conn.execute(
+            "SELECT value FROM meta WHERE key='last_summary_date'"
+        ).fetchone()
+        assert row is not None and row[0] == "2026-04-14"
+
+        # Simulate a restart: in-memory global resets, reload from meta.
+        collector._last_summary_date = None
+        collector._load_last_summary_date(conn)
+        self._patch_now(monkeypatch, _real_dt.datetime(2026, 4, 14, 14, 0))  # later same day
+        collector._check_daily_summary(conn)
+        conn.close()
+        assert sent == [1]   # NOT re-sent
+
     def test_does_not_send_at_wrong_time(self, monkeypatch):
         from readsbstats import collector, notifier
         sent = []
