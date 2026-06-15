@@ -18,6 +18,7 @@ what you're trying to do.
 | [Operations](operations.md) | Updating code, the aircraft/airline DB, backups, retention sizing, VDL2/ACARS ingest, deployment security, crash recovery |
 | [Integrations](integrations.md) | Telegram bot setup + commands, ghost-position and ground-speed filtering |
 | [Development](development.md) | Local setup, running the collector, tests, building the SPA, deploying to the Pi |
+| [dumpvdl2 on an Airspy Mini](dumpvdl2-airspy-mini.md) | Driving dumpvdl2 (ATN CPDLC/ADS-C/MIAM) from an Airspy Mini via external IQ resampling |
 
 ## Explanation — understand the why
 
