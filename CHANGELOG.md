@@ -5,6 +5,19 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 2.24.1 — 2026-06-15
+
+Dependency maintenance — no runtime or user-facing change.
+
+### Changed
+
+- Bump `fastapi` 0.136.3 → 0.137.1 and `pytest` 9.0.3 → 9.1.0. fastapi 0.137's
+  refactor to preserve `APIRouter`/`APIRoute` instances nests `include_router()`
+  routes under an `_IncludedRouter` wrapper instead of flattening them into
+  `app.routes`; the route-guard and gating tests were updated to walk it via a
+  shared `tests/_helpers.py::iter_api_routes()` recursion (the app itself does no
+  route introspection, so it was unaffected).
+
 ## 2.24.0 — 2026-06-15
 
 VDL2: more map positions + a body-kind chip accuracy fix.
