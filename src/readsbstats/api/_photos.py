@@ -18,11 +18,26 @@ owns the request-side orchestration:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 from collections import OrderedDict as _OrderedDict
 
 from .. import config, database, photo_sources
 from . import _deps
+
+
+@contextlib.contextmanager
+def _worker_conn():
+    """Per-thread SQLite connection for executor workers (``run_in_executor``):
+    reuse the test-injected ``_deps._db`` when present, else open a fresh
+    ``database.connect()`` and close it on exit. A worker must never reuse the
+    event-loop thread's ``_deps.db()`` connection cross-thread."""
+    conn = _deps._db if _deps._db is not None else database.connect()
+    try:
+        yield conn
+    finally:
+        if conn is not _deps._db:
+            conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -104,13 +119,10 @@ def _resolve_and_cache_photo_miss(icao_hex: str) -> dict | None:
     """Synchronous cache-miss worker (run via ``run_in_executor``): fetch the
     photo and persist the positive/negative cache row off the event loop.
 
-    Opens its OWN connection (per-thread) like ``_fetch_type_photo._resolve`` —
-    it must never reuse the event-loop thread's ``_deps.db()`` from this worker
-    thread. When a test injects ``_deps._db`` (in-memory, ``check_same_thread=
-    False``) that shared connection is reused and left open.
+    Runs on its OWN connection (per-thread) via ``_worker_conn`` — it must never
+    reuse the event-loop thread's ``_deps.db()`` from this worker thread.
     """
-    conn = _deps._db if _deps._db is not None else database.connect()
-    try:
+    with _worker_conn() as conn:
         cache_seconds = config.PHOTO_CACHE_DAYS * 86400
         # PY-5: pick the status-aware path only when fetch_photo hasn't been
         # monkey-patched away. Identity check mirrors photo_sources.resolve_photo.
@@ -174,9 +186,6 @@ def _resolve_and_cache_photo_miss(icao_hex: str) -> dict | None:
                 )
         conn.commit()
         return result
-    finally:
-        if conn is not _deps._db:
-            conn.close()
 
 
 async def _fetch_type_photo(type_code: str | None) -> dict | None:
@@ -212,24 +221,17 @@ async def _fetch_type_photo(type_code: str | None) -> dict | None:
             # icao_hex="" is the documented type-only mode: resolve_photo skips
             # the specific-aircraft cache check (step 1) and the specific fetch
             # (step 4) so we don't pollute the ``photos`` table with an
-            # empty-key row.  BE-13 (Audit 2026-05-31): open a dedicated
-            # connection for this executor worker rather than sharing the
-            # request thread's connection — resolve_photo can hold the
-            # connection across a slow HTTP probe, and serialising every
-            # gallery request on one connection's sqlite mutex defeats the
-            # threadpool.  When a test injects ``_deps._db`` (in-memory,
-            # unreopenable) we must reuse it; only a real per-thread
-            # connection is closed.
-            worker_conn = _deps._db if _deps._db is not None else database.connect()
-            try:
+            # empty-key row.  BE-13 (Audit 2026-05-31): use a dedicated worker
+            # connection (via _worker_conn) rather than sharing the request
+            # thread's connection — resolve_photo can hold it across a slow HTTP
+            # probe, and serialising every gallery request on one connection's
+            # sqlite mutex would defeat the threadpool.
+            with _worker_conn() as worker_conn:
                 result, _is_type = photo_sources.resolve_photo(
                     worker_conn, "", type_code,
                     cache_seconds=config.PHOTO_CACHE_DAYS * 86400,
                 )
                 return result
-            finally:
-                if worker_conn is not _deps._db:
-                    worker_conn.close()
 
         return await asyncio.get_running_loop().run_in_executor(None, _resolve)
 
