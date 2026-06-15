@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Map,
   Source,
@@ -175,16 +175,21 @@ export default function LiveMap({
   // center first arrived. <Map initialViewState> only applies on mount —
   // if the receiver location arrives late, mirror the prior behavior with
   // an effect + `done` ref guard.
+  // mapReady gates the first-fit on the map's load event: the effect must not
+  // bail-and-give-up when mapRef isn't attached yet (the old code returned
+  // early and never retried, leaving the map at the fallback view if the
+  // receiver location resolved before the map mounted). audit 2026-06-15.
+  const [mapReady, setMapReady] = useState(false);
   const firstFitDone = useRef(false);
   useEffect(() => {
-    if (firstFitDone.current || !initialCenter) return;
+    if (firstFitDone.current || !initialCenter || !mapReady) return;
     const map = mapRef.current;
     if (!map) return;
     // initialCenter is [lat, lon] (Leaflet convention); MapLibre wants
     // [lng, lat] for jumpTo.
     map.jumpTo({ center: [initialCenter[1], initialCenter[0]], zoom: 8 });
     firstFitDone.current = true;
-  }, [initialCenter]);
+  }, [initialCenter, mapReady]);
 
   // ─── Heatmap source (GeoJSON Points with weight property) ──────────────
   const heatmapGeoJSON = useMemo<GeoJSON.FeatureCollection>(() => {
@@ -338,6 +343,7 @@ export default function LiveMap({
       ref={mapRef}
       mapStyle={DARK_STYLE}
       initialViewState={initialView}
+      onLoad={() => setMapReady(true)}
       style={{ width: '100%', height: '100%' }}
       attributionControl={false}
     >
