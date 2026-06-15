@@ -5,6 +5,37 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 2.22.0 — 2026-06-15
+
+VDL2: dumpvdl2 decoder support — ATN CPDLC messages plus ingest fixes. All changes
+are scoped to the opt-in `dumpvdl2` decoder (`RSBS_VDL2_DECODER=dumpvdl2`); the
+default `vdlm2dec` path is unaffected.
+
+### Added
+
+- **VDL2 ATN CPDLC.** Controller–pilot data link (CPDLC) messages carried over the
+  ATN/OSI stack (X.25/CLNP/COTP) — which vdlm2dec cannot decode — are now surfaced as
+  normal messages. `vdl2/atn.py` lifts the CPDLC message-element intents (e.g. `WILCO`,
+  `CURRENT DATA AUTHORITY`) into `label='CPDLC'` and the body at ingest, so they appear
+  in the Messages log and are full-text searchable. Content-free ATN transport/routing
+  frames (IDRP/COTP) are intentionally left bare.
+
+### Fixed
+
+- **VDL2 dumpvdl2 registration.** The ACARS registration's leading dot/space pad
+  (`.TC-NCU`) is now stripped at ingest so it matches vdlm2dec and core
+  `flights.registration` (`TC-NCU`); a shared helper keeps the column canonical across
+  decoders. Leading-digit (`9H-…`) and interior dots are preserved.
+- **VDL2 dumpvdl2 station id.** `station_id` is now read from dumpvdl2's `vdl2.station`
+  field — previously read from the wrong key, so it was always empty.
+
+### Docs
+
+- Document `dumpvdl2` as a supported decoder (adds ATN CPDLC) and that it needs a
+  sample rate that is a multiple of 105000 sym/s (a compatible SDR or an external
+  resampler); removed the stale "experimental/unverified" and "cannot drive the Airspy
+  Mini" notes.
+
 ## 2.21.0 — 2026-06-13
 
 VDL2: client-side decoded message view + #M1BPOS precise positions and filed routes.
