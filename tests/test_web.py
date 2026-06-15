@@ -847,6 +847,19 @@ class TestApiMetricsQueryValidation:
         r = client.get("/api/metrics?from=1000000&to=1000000&metrics=signal")
         assert r.status_code == 200
 
+    def test_duplicate_metrics_are_deduped(self, client):
+        # Repeated valid names must not widen the SQL projection / response arrays.
+        r = client.get("/api/metrics?from=1000000&to=1000100&metrics=signal,signal,signal")
+        assert r.status_code == 200
+        assert r.json()["metrics"] == ["signal"]
+
+    def test_too_many_metrics_rejected(self, client):
+        # Listing more names than columns exist is a resource-amplification
+        # attempt — reject before building the projection (OWASP API4).
+        many = ",".join(["signal"] * 100)
+        r = client.get(f"/api/metrics?from=1000000&to=1000100&metrics={many}")
+        assert r.status_code == 400
+
 
 # ---------------------------------------------------------------------------
 # Helper: _fmt_ts

@@ -48,8 +48,14 @@ def api_metrics(
             content={"error": "'from' must be <= 'to'"},
         )
 
-    # Validate requested columns against allowlist
-    requested = [c.strip() for c in metrics.split(",") if c.strip()]
+    # Cap + dedupe before building the projection: repeated valid names
+    # (?metrics=signal,signal,…) would otherwise widen the SQL SELECT and the
+    # response arrays without adding information — a resource-amplification
+    # vector on the Pi (OWASP API4). Bound the work before validating.
+    raw = metrics.split(",")
+    if len(metrics) > 2048 or len(raw) > len(_deps._METRICS_COLS):
+        return JSONResponse(status_code=400, content={"error": "too many metrics"})
+    requested = list(dict.fromkeys(c.strip() for c in raw if c.strip()))
     invalid = [c for c in requested if c not in _deps._METRICS_COLS]
     if invalid:
         return JSONResponse(
