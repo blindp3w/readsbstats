@@ -420,6 +420,15 @@ class TestPollStats:
         ).fetchone()[0]
         assert count == 1
 
+    def test_duplicate_ts_returns_false(self):
+        # A silently-ignored duplicate (INSERT OR IGNORE on the ts PK) must
+        # report False so the loop doesn't log "row inserted" for a no-op —
+        # which would mask a stalled last1min.end (stuck feed).
+        path = self.tmp / "stats.json"
+        path.write_text(json.dumps(SAMPLE_STATS))
+        assert self.mc._poll_stats(self.conn, str(path)) is True   # fresh insert
+        assert self.mc._poll_stats(self.conn, str(path)) is False  # duplicate ts ignored
+
 
 # ---------------------------------------------------------------------------
 # start_metrics_collector

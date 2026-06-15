@@ -173,11 +173,18 @@ def _read_stats_file(path: str) -> dict | None:
 # DB helpers
 # ---------------------------------------------------------------------------
 
-def _insert_row(conn: sqlite3.Connection, ts: int, row: dict) -> None:
-    """INSERT OR IGNORE a single metrics row."""
+def _insert_row(conn: sqlite3.Connection, ts: int, row: dict) -> bool:
+    """INSERT OR IGNORE a single metrics row.
+
+    Returns True if a row was actually written, False if the ts already existed
+    (the INSERT OR IGNORE was a no-op). A silently-ignored duplicate means the
+    upstream last1min.end hasn't advanced (stuck feed), so callers should not
+    report it as a fresh insert.
+    """
     values = tuple(row.get(c) for c in _COLS)
-    conn.execute(_INSERT_SQL, (ts, *values))
+    cur = conn.execute(_INSERT_SQL, (ts, *values))
     conn.commit()
+    return cur.rowcount > 0
 
 
 # ---------------------------------------------------------------------------
@@ -202,8 +209,10 @@ def _poll_stats(conn: sqlite3.Connection, path: str) -> bool:
         log.debug("No last1min data in %s", path)
         return False
 
-    _insert_row(conn, ts, row)
-    return True
+    inserted = _insert_row(conn, ts, row)
+    if not inserted:
+        log.debug("Duplicate ts %d ignored (last1min.end not advanced)", ts)
+    return inserted
 
 
 # ---------------------------------------------------------------------------
