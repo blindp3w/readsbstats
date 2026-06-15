@@ -365,6 +365,51 @@ def test_main_sentinel_write_failure_logs_and_continues(monkeypatch, tmp_path, c
     assert any("FTS5 unavailable" in r.getMessage() for r in caplog.records)
 
 
+class _BindFailSock:
+    """Socket whose bind() raises, to exercise main()'s bind-failure cleanup."""
+    def __init__(self, exc):
+        self._exc = exc
+        self.closed = False
+
+    def bind(self, addr):
+        raise self._exc
+
+    def settimeout(self, t):
+        pass
+
+    def recvfrom(self, n):  # pragma: no cover — never reached on a bind failure
+        raise AssertionError("recv should not run after a bind failure")
+
+    def close(self):
+        self.closed = True
+
+
+def test_main_bind_failure_cleans_up_and_returns_1(monkeypatch, tmp_path, caplog):
+    # audit 2026-06-15: a bind failure must NOT leave a dirty sentinel (which
+    # forces an unnecessary quick_check next start) or leak the socket.
+    _scaffold_main(monkeypatch, tmp_path)
+    sentinel = tmp_path / ".vdl2_dirty_shutdown"
+    sock = _BindFailSock(OSError("address already in use"))
+    monkeypatch.setattr(socket, "socket", lambda *a, **k: sock)
+    with caplog.at_level("ERROR", logger="vdl2"):
+        rc = vdl2_collector.main()
+    assert rc == 1
+    assert not sentinel.exists()   # bind failed before marking the run dirty
+    assert sock.closed             # socket not leaked
+    assert any("cannot bind" in r.getMessage() for r in caplog.records)
+
+
+def test_main_bind_overflow_port_is_handled(monkeypatch, tmp_path):
+    # An out-of-range RSBS_VDL2_UDP_PORT makes bind() raise OverflowError, which
+    # the old `except OSError` did not catch → uncaught crash. Now handled.
+    _scaffold_main(monkeypatch, tmp_path)
+    sock = _BindFailSock(OverflowError("port must be 0-65535"))
+    monkeypatch.setattr(socket, "socket", lambda *a, **k: sock)
+    rc = vdl2_collector.main()
+    assert rc == 1
+    assert sock.closed
+
+
 def test_main_bind_failure_returns_1(monkeypatch, tmp_path, caplog):
     _scaffold_main(monkeypatch, tmp_path)
 
