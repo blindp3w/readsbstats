@@ -137,6 +137,18 @@ describe('buildTopChartOption', () => {
     expect(tt.formatter({ data: rows[0] })).toContain('AAA — full');
   });
 
+  it('renders the tooltip as richText so untrusted labels cannot inject HTML (XSS guard)', () => {
+    // fullLabel is built from upstream-derived fields (registration, type_desc,
+    // airport name, …). With the default renderMode 'html' ECharts assigns the
+    // formatter's return via el.innerHTML, executing any markup on hover.
+    // 'richText' draws the tooltip as canvas text, neutralising the sink.
+    const malicious: Row[] = [
+      { label: 'X', fullLabel: '<img src=x onerror=alert(1)>', value: 1 },
+    ];
+    const opt = buildTopChartOption(malicious, false);
+    expect((opt.tooltip as any).renderMode).toBe('richText');
+  });
+
   it('reflects clickable flag in series.cursor', () => {
     expect(((buildTopChartOption(rows, true).series as any)[0]).cursor).toBe('pointer');
     expect(((buildTopChartOption(rows, false).series as any)[0]).cursor).toBe('default');

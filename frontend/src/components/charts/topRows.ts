@@ -96,6 +96,12 @@ export function buildTopChartOption(rows: Row[], clickable: boolean): EChartsOpt
     ...baseOption(),
     tooltip: {
       trigger: 'item',
+      // renderMode 'richText' draws the tooltip as canvas text instead of via
+      // el.innerHTML, so the formatter below — which interpolates upstream-derived
+      // fields (registration, type_desc, airport name, …) into `fullLabel` — cannot
+      // inject HTML. (The no-danger grep guard only flags React's inner-HTML
+      // escape-hatch prop, not this ECharts sink.) See audit 2026-06-15 §Security.
+      renderMode: 'richText',
       backgroundColor: CHART_COLORS.surface,
       borderColor: CHART_COLORS.grid,
       textStyle: { color: CHART_COLORS.text, fontSize: 12 },
