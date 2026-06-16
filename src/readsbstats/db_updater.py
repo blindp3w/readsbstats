@@ -352,6 +352,14 @@ def backfill_flights(conn: sqlite3.Connection) -> int:
     """
     log.info("Backfilling flights with missing registration/type…")
 
+    # One UPDATE, one pass. EXPLAIN QUERY PLAN shows this WHERE is a single
+    # `SCAN flights` (SQLite does not turn `a IS NULL OR b IS NULL` into a
+    # multi-index OR here), and `result.rowcount` already reports distinct rows
+    # touched (a both-NULL row counts once). An earlier attempt to "index" this
+    # by splitting into two single-column UPDATEs needed a COUNT to keep that
+    # rowcount contract — but the COUNT carries the *same* OR predicate, so it
+    # re-introduced the very scan it was meant to avoid and did strictly more
+    # work. This is a rare maintenance op (db_updater run), so one scan is fine.
     result = conn.execute(
         """
         UPDATE flights

@@ -277,6 +277,22 @@ class TestPruneFine:
         assert cutoff_day in days
         assert cutoff_day - 1 not in days
 
+    def test_retention_zero_still_keeps_yesterday(self, monkeypatch):
+        # Defensive (audit 2026-06-15 Low): even if the config clamp were ever
+        # relaxed to 0, the live 24h window (today + yesterday) must survive.
+        monkeypatch.setattr(config, "GRID_FINE_RETENTION_DAYS", 0)
+        now = int(time.time())
+        today = now // 86400
+        self.conn.executemany(
+            "INSERT INTO grid_daily(scale, day, lat_b, lon_b, w) VALUES (?,?,?,?,1)",
+            [(100, today, 1, 1), (100, today - 1, 1, 2)],
+        )
+        rollups.prune_fine(self.conn, now)
+        days = {r[0] for r in self.conn.execute(
+            "SELECT day FROM grid_daily WHERE scale = 100")}
+        assert today in days
+        assert today - 1 in days  # yesterday survives via the max(1, …) floor
+
 
     def test_backfill_is_idempotent(self, tmp_path):
         path = str(tmp_path / "bf2.db")

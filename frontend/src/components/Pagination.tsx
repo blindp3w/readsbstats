@@ -11,10 +11,11 @@ interface Props {
 // Touch targets are 40px+ via Button size='sm'; "Prev"/"Next" mean
 // previous/next page of `limit`.
 export function Pagination({ total, limit, offset, onOffsetChange }: Props) {
-  const page = Math.floor(offset / limit) + 1;
-  const pageCount = Math.max(1, Math.ceil(total / limit));
+  const safeLimit = Math.max(1, limit); // guard a 0 page size → no NaN/∞ in page math
+  const page = Math.floor(offset / safeLimit) + 1;
+  const pageCount = Math.max(1, Math.ceil(total / safeLimit));
   const canPrev = offset > 0;
-  const canNext = offset + limit < total;
+  const canNext = offset + safeLimit < total;
 
   return (
     <div
@@ -30,7 +31,7 @@ export function Pagination({ total, limit, offset, onOffsetChange }: Props) {
           size="sm"
           variant="secondary"
           disabled={!canPrev}
-          onClick={() => onOffsetChange(Math.max(0, offset - limit))}
+          onClick={() => onOffsetChange(Math.max(0, offset - safeLimit))}
           data-testid="pagination-prev"
         >
           ‹ Prev
@@ -42,7 +43,7 @@ export function Pagination({ total, limit, offset, onOffsetChange }: Props) {
           size="sm"
           variant="secondary"
           disabled={!canNext}
-          onClick={() => onOffsetChange(offset + limit)}
+          onClick={() => onOffsetChange(offset + safeLimit)}
           data-testid="pagination-next"
         >
           Next ›

@@ -22,6 +22,14 @@ class TestParsePosition:
         # N52084 -> 52 + 8.4/60 = 52.14 ; E020525 -> 20 + 52.5/60 = 20.875
         assert m1bpos.parse_position(POS2) == {"lat": 52.14, "lon": 20.875}
 
+    def test_accepts_minute_field_599_boundary(self):
+        # 599 = 59.9' is the largest valid ddmmm minute value (600 is rejected
+        # by the test below). Lock the boundary: N52599 -> 52 + 59.9/60.
+        assert m1bpos.parse_position("#M1BPOSN52599E020017,REST") == {
+            "lat": round(52 + 59.9 / 60, 5),
+            "lon": round(20 + 1.7 / 60, 5),
+        }
+
     def test_rejects_minute_field_over_599(self):
         # 60.0' is not valid ddmmm — reject rather than mislocate.
         assert m1bpos.parse_position("#M1BPOSN52600E020017,REST") is None

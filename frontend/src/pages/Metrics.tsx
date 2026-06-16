@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import type { EChartsOption } from 'echarts';
 import { apiJson } from '@/lib/api';
+import { errMsg } from '@/lib/errMsg';
 import { RangePicker, type RangeValue } from '@/components/RangePicker';
 import { useRange } from '@/components/useRange';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
@@ -191,7 +192,7 @@ export default function MetricsPage() {
       {vdl2Available && <Vdl2ReceptionCard enabled={vdl2Available} from={from} to={to} />}
 
       {metricsQ.isError && (
-        <Alert variant="error">Failed to load metrics: {(metricsQ.error as Error).message}</Alert>
+        <Alert variant="error">Failed to load metrics: {errMsg(metricsQ.error)}</Alert>
       )}
 
       {metricsQ.data && !hasData && !metricsQ.isLoading && (
@@ -241,19 +242,11 @@ export default function MetricsPage() {
   );
 }
 
-// statusColor / StatusIcon / HealthBanner moved to
-// `frontend/src/components/metrics/HealthStripe.tsx` in v2.7.0.
-
 // ---------------------------------------------------------------------------
 // Metric chart — converts the columnar /api/metrics response into one ECharts
 // option object. The option builders (`buildPanelOption`,
 // `buildSignalSmallMultiplesOption`) live in ./metricsCharts.
 // ---------------------------------------------------------------------------
-
-// Inline builder bodies removed in Audit-15 — they now live in
-// ./metricsCharts. Existing tests in
-// frontend/test/echarts-option-builders.test.ts import directly from
-// the new module.
 
 function SignalSmallMultiples({
   resp,

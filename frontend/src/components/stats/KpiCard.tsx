@@ -23,6 +23,14 @@ function classifyDelta(value: number | string, prev: number | null | undefined) 
   return { delta, pct };
 }
 
+// Signed delta text (e.g. "−5 (−12%)"), shared by the inline line and the
+// tooltip so they can't drift — both use the U+2212 minus for either sign.
+function formatDelta(cmp: { delta: number; pct: number | null }): string {
+  const pct =
+    cmp.pct != null ? ` (${cmp.pct >= 0 ? '+' : '−'}${Math.abs(cmp.pct).toFixed(0)}%)` : '';
+  return `${cmp.delta >= 0 ? '+' : '−'}${Math.abs(cmp.delta).toLocaleString()}${pct}`;
+}
+
 export function KpiCard({ label, value, prev, series, sublabel, testid }: Props) {
   const cmp = classifyDelta(value, prev);
   const ArrowIcon =
@@ -46,11 +54,7 @@ export function KpiCard({ label, value, prev, series, sublabel, testid }: Props)
     ) : (
       <span className={`inline-flex items-center gap-1 ${tone}`}>
         {ArrowIcon ? <ArrowIcon aria-hidden="true" /> : null}
-        <span>
-          {cmp.delta >= 0 ? '+' : '−'}
-          {Math.abs(cmp.delta).toLocaleString()}
-          {cmp.pct != null ? ` (${cmp.pct >= 0 ? '+' : ''}${cmp.pct.toFixed(0)}%)` : ''}
-        </span>
+        <span>{formatDelta(cmp)}</span>
       </span>
     );
 
@@ -60,11 +64,7 @@ export function KpiCard({ label, value, prev, series, sublabel, testid }: Props)
     ) : (
       <span className="inline-flex items-center gap-1">
         {ArrowIcon ? <ArrowIcon aria-hidden="true" /> : null}
-        <span className={tone}>
-          {cmp.delta >= 0 ? '+' : '−'}
-          {Math.abs(cmp.delta).toLocaleString()}
-          {cmp.pct != null ? ` (${cmp.pct >= 0 ? '+' : ''}${cmp.pct.toFixed(0)}%)` : ''}
-        </span>
+        <span className={tone}>{formatDelta(cmp)}</span>
         <span className="text-[var(--color-text-dim)]">vs previous period</span>
       </span>
     );
@@ -76,8 +76,6 @@ export function KpiCard({ label, value, prev, series, sublabel, testid }: Props)
       : `${label} ${valueText}, ${cmp.delta >= 0 ? 'up' : 'down'} ${Math.abs(cmp.delta).toLocaleString()}${
           cmp.pct != null ? ` (${Math.abs(cmp.pct).toFixed(0)} percent)` : ''
         } vs previous period`;
-
-  const hasSparkline = !!series && series.length >= 7;
 
   return (
     <SimpleTooltip content={tooltipContent} delayDuration={300}>
@@ -106,8 +104,8 @@ export function KpiCard({ label, value, prev, series, sublabel, testid }: Props)
                 line-wrap so every card in the row aligns to the same
                 visual baseline. */}
             <div className="mt-auto flex h-6 items-center pt-1">
-              {hasSparkline ? (
-                <KpiSparkline data={series!} ariaLabel={`${label} trend`} />
+              {series && series.length >= 7 ? (
+                <KpiSparkline data={series} ariaLabel={`${label} trend`} />
               ) : (
                 <span
                   aria-hidden="true"

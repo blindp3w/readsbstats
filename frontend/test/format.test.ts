@@ -1,5 +1,14 @@
 import { describe, it, expect } from 'vitest';
-import { fmtAlt, fmtSpd, fmtDist, fmtDur, fmtBytes, fmtAgo, fmtTs } from '@/lib/format';
+import {
+  fmtAlt,
+  fmtSpd,
+  fmtDist,
+  fmtDur,
+  fmtBytes,
+  fmtAgo,
+  fmtTs,
+  fmtAxisDate,
+} from '@/lib/format';
 
 describe('fmtAlt', () => {
   it('returns — for null/undefined', () => {
@@ -75,6 +84,11 @@ describe('fmtAgo', () => {
     expect(fmtAgo(now - 7200, now)).toBe('2h ago');
     expect(fmtAgo(now - 86400 * 3, now)).toBe('3d ago');
   });
+
+  it('labels a future timestamp instead of negative "ago" (clock skew)', () => {
+    const now = 1_700_000_000;
+    expect(fmtAgo(now + 30, now)).toBe('in 30s');
+  });
 });
 
 describe('fmtTs', () => {
@@ -125,5 +139,22 @@ describe('fmtTs clockFormat', () => {
     // Negative assertion: 24h should NOT have a single-digit hour followed by colon.
     const s = fmtTs(AFTERNOON_EPOCH, '24h');
     expect(s).not.toMatch(/(^|\s)[1-9]:[0-5]\d/);
+  });
+});
+
+describe('fmtAxisDate', () => {
+  it('returns empty string for null/undefined', () => {
+    expect(fmtAxisDate(null)).toBe('');
+    expect(fmtAxisDate(undefined)).toBe('');
+  });
+
+  it('formats a real epoch as a 2-digit day/month pair, no time component', () => {
+    // 2023-11-14 12:00:00 UTC — noon keeps the calendar date stable across
+    // CI's UTC and local dev timezones. Locale picks the dd/mm vs mm/dd order,
+    // so assert the shape + the month rather than a fixed string.
+    const s = fmtAxisDate(1_699_963_200);
+    expect(s).toMatch(/^\d{2}\D\d{2}$/);
+    expect(s).toContain('11');
+    expect(s).not.toContain(':');
   });
 });

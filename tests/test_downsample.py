@@ -23,6 +23,20 @@ def test_target_zero_or_one_short_circuits():
     assert lttb_indices(points, 1) == list(range(100))
 
 
+def test_empty_input_returns_empty():
+    # n == 0 hits the `target >= n` short-circuit (range(0)) — no IndexError,
+    # no division by zero.
+    assert lttb_indices([], 500) == []
+
+
+def test_negative_target_returns_all_indices():
+    # A negative target trips the `target <= 2` guard and degrades to "no
+    # downsampling" rather than computing a negative bucket_size and crashing.
+    points = [(i, i) for i in range(20)]
+    assert lttb_indices(points, -5) == list(range(20))
+    assert lttb_indices([], -5) == []
+
+
 def test_target_equals_input_size_returns_all():
     points = [(i, i) for i in range(50)]
     assert lttb_indices(points, 50) == list(range(50))

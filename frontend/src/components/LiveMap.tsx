@@ -9,9 +9,10 @@ import {
   type MapRef,
   type MarkerEvent,
 } from 'react-map-gl/maplibre';
-import type { StyleSpecification } from 'maplibre-gl';
+import type { StyleSpecification, HeatmapLayerSpecification } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { aircraftIconSvg, getIconType } from '@/lib/aircraftIcon';
+import { dedupeFreshestByIcao } from '@/lib/mapData';
 
 // Live aircraft layer for /v2/map. Receives the latest snapshot from the
 // parent; renders aircraft as HTML <Marker>s with inline SVG, plus
@@ -127,8 +128,8 @@ const DARK_STYLE: StyleSpecification = {
 // increasing luminance — colorblind-safe (encodes density via brightness
 // not hue alone, per CLAUDE_DESIGN_BRIEF.md §M4.2 / §M1.2). Replaces today's
 // near-monochromatic blue ramp from leaflet.heat.
-const HEATMAP_PAINT = {
-  'heatmap-weight': ['coalesce', ['get', 'weight'], 1] as unknown as number,
+const HEATMAP_PAINT: HeatmapLayerSpecification['paint'] = {
+  'heatmap-weight': ['coalesce', ['get', 'weight'], 1],
   'heatmap-color': [
     'interpolate',
     ['linear'],
@@ -145,10 +146,10 @@ const HEATMAP_PAINT = {
     '#ed6925',
     1,
     '#fcffa4',
-  ] as unknown as string,
+  ],
   'heatmap-radius': 18,
-  'heatmap-intensity': ['interpolate', ['linear'], ['zoom'], 0, 1, 9, 3] as unknown as number,
-  'heatmap-opacity': ['interpolate', ['linear'], ['zoom'], 7, 0.85, 15, 0.4] as unknown as number,
+  'heatmap-intensity': ['interpolate', ['linear'], ['zoom'], 0, 1, 9, 3],
+  'heatmap-opacity': ['interpolate', ['linear'], ['zoom'], 7, 0.85, 15, 0.4],
 };
 
 const RECEIVER_COLOR = '#5b9af9';
@@ -233,18 +234,7 @@ export default function LiveMap({
   // and opened a new one for the same icao_hex inside that window, both
   // would render as separate markers at potentially-different positions.
   // Keep only the freshest row per icao_hex.
-  const dedupedAircraft = useMemo<Aircraft[]>(() => {
-    // Plain object instead of `new Map(...)`: the `Map` identifier is
-    // shadowed at the top of this file by the `Map` component from
-    // react-map-gl/maplibre, and aliasing the global just for this
-    // micro-optimization isn't worth it.
-    const byIcao: Record<string, Aircraft> = {};
-    for (const ac of aircraft) {
-      const prev = byIcao[ac.icao_hex];
-      if (!prev || ac.ts > prev.ts) byIcao[ac.icao_hex] = ac;
-    }
-    return Object.values(byIcao);
-  }, [aircraft]);
+  const dedupedAircraft = useMemo<Aircraft[]>(() => dedupeFreshestByIcao(aircraft), [aircraft]);
 
   // ─── VDL2 position overlay ─────────────────────────────────────────────
   // Structured ACARS positions from /api/vdl2/positions ([lat, lon]); swap to
@@ -353,7 +343,6 @@ export default function LiveMap({
       {/* Heatmap below all other overlays so polygons + markers paint on top. */}
       {heatmapGeoJSON.features.length > 0 && (
         <Source id="heatmap" type="geojson" data={heatmapGeoJSON}>
-          {/* @ts-expect-error MapLibre paint expression types are looser than our tuples */}
           <Layer id="heatmap-layer" type="heatmap" paint={HEATMAP_PAINT} />
         </Source>
       )}

@@ -239,10 +239,10 @@ COUNTRY_SQL_CASE = country_sql_case()
 def is_anonymous_icao(icao_hex: str | None) -> bool:
     """True if *icao_hex* falls outside every ICAO state-allocated block.
 
-    Such addresses (commonly in the 0xDDxxxx / 0xF0xxxx ranges, plus gaps
-    between national blocks) are usually broadcast by military aircraft on
-    OPSEC, TIS-B / ADS-R rebroadcasts, or test / non-state operations.  A
-    sighting of one is interesting on a civilian ADS-B receiver.
+    Such addresses sit in the unallocated gaps between national blocks. On a
+    civilian ADS-B receiver they're most often synthetic TIS-B / ADS-R
+    rebroadcast targets or other non-state / test transmissions rather than a
+    real state-registered airframe, so a sighting is worth flagging.
 
     Returns False on malformed input — invalid hex is not the same as
     intentionally anonymous, and we don't want to noise-flag parser errors.

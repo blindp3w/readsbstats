@@ -19,7 +19,9 @@ describe('KpiCard', () => {
     renderKpi(<KpiCard label="Flights" value={80} prev={100} testid="kpi-flights" />);
     const card = screen.getByTestId('kpi-flights');
     expect(card.textContent).toContain('20');
-    expect(card.textContent).toContain('(-20%)');
+    // Negative pct uses the U+2212 minus sign (matching the delta value's
+    // glyph), not the ASCII hyphen-minus, so the two signs render consistently.
+    expect(card.textContent).toContain('(−20%)');
   });
 
   it('renders an em-dash when prev is null', () => {

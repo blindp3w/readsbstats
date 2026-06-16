@@ -5,6 +5,87 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 2.24.3 — 2026-06-16
+
+Low-severity findings from the 2026-06-15 codebase audit: small correctness/UX
+fixes, dead-code and type cleanups, a security-posture warning, test-coverage
+for the audit's gaps, and behaviour-preserving extraction of the map transforms.
+No schema or API changes. (The larger function-split refactors and message-list
+virtualization from the audit are deferred to a dedicated follow-up.)
+
+### Security
+
+- **Startup warning when mutating endpoints are unauthenticated.** With
+  `RSBS_API_TOKEN` unset (the default trusted-LAN posture), the web server now
+  logs a one-line WARNING at boot so the open posture is never silent. The
+  warning mirrors `_auth_check`'s token resolution, so the two can't disagree.
+  `RSBS_API_TOKEN` docs (README + `docs/configuration.md`) now state it gates
+  *every* mutating `/api/*` endpoint, not just `/api/watchlist`.
+- **Dev dependency:** bump `@babel/core` 7.29.0 → 7.29.7 (GHSA-4x5r-pxfx-6jf8);
+  `npm audit` clean.
+
+### Fixed
+
+- **VDL2 Metrics/Stats cards** show a loading skeleton and an error alert instead
+  of a silent blank when their `/api/vdl2/*` query is pending or fails (a cached
+  result still survives a transient refetch error).
+- **History date range** computes its upper bound as the next **local** midnight
+  (`new Date(y, mo, d+1)`), fixing a one-hour DST off-by-one on the Warsaw-TZ Pi
+  that could clip or over-include the last day's flights.
+- **`fmtAgo`** renders a clock-skew-future timestamp as `in Ns` instead of
+  `-Ns ago`.
+- **Aircraft lightbox title** falls back through `registration || icao || 'Aircraft'`
+  (`||`, not `??`) so an empty `:icao` can't yield a blank title.
+- **Live map scrubber** initialises "now" from the real clock, removing a
+  one-frame 1970 window on first paint.
+- **Flight position table** keys rows (and the mobile-expand set) by `ts+index`,
+  so duplicate timestamps from 1 Hz polling can't collide.
+- Defensive guards: `lookup_airline` strips/validates the callsign before slicing;
+  `rollups.prune_fine` floors its cutoff independently of the config clamp;
+  `Pagination` guards a zero/NaN page size; `PolarRange` clamps negative
+  distances out of the plot; the Stats "Top" chart row-builder returns `[]` for
+  an out-of-enum view.
+- Display polish: KpiCard uses the U+2212 minus consistently in negative deltas;
+  the Gallery type/country line hides its bare `·` when both are empty; the
+  "About this receiver" source split now shows the `other` %; the VDL2 nav link
+  is inserted before Settings by route lookup, not a magic index.
+
+### Performance
+
+- **`scripts/migrate_v6.py`** runs `PRAGMA wal_checkpoint(TRUNCATE)` after
+  `VACUUM` so the reclaimed space is returned to the filesystem.
+
+### Internal
+
+- **Hardened `_metrics_agg`** to reject any column outside `_METRICS_COLS`
+  (mirrors `_assert_top1_column`), so the allowlist check travels with the SQL.
+- **Extracted the map transforms to pure, unit-tested `lib/` functions:**
+  `lib/routeSegments` (RouteMap position→GeoJSON segmentation + coordinate swap)
+  and `lib/mapData.dedupeFreshestByIcao` (LiveMap's freshest-per-airframe
+  collapse) — previously inline and untestable behind the jsdom map mock.
+- Typed `LiveMap`'s heatmap paint as `HeatmapLayerSpecification['paint']`
+  (dropping four `as unknown as` casts and an obsolete `@ts-expect-error`);
+  removed `Flight.computeAtMax`/`KpiCard` non-null assertions via narrowing;
+  dropped unused type fields and stale relocated-code comments; aligned the
+  Telegram help/command docstrings.
+- Added `lib/errMsg(e)` and routed every query-error boundary through it
+  (Settings, Gallery, Watchlist, Flight, Map, Stats, Feeders, Vdl2, Metrics,
+  AcarsPanel, LiveCountBadge), so a non-`Error` rejection can't render
+  `undefined`. Extracted `KpiCard`'s signed-delta text into one `formatDelta`
+  shared by the inline line and the tooltip.
+
+### Tests
+
+- Backend boundary/coverage: `#M1BPOS` minute `599` accepted; `lttb_indices`
+  empty/negative-target; `posenc.enc1/enc5` exact int64 straddle; `"NaN"`/`"inf"`
+  as text rejected; `/api/aircraft/flagged` suppresses *and* caches an
+  off-allowlist photo URL; the `_metrics_agg` guard; the startup auth warning
+  plus structural guards that `_lifespan` is the async-CM factory.
+- Frontend: render coverage for `CardDescription`/`DialogHeader`/`DialogFooter`/
+  `SheetHeader`; `fmtAxisDate`; `errMsg`; VDL2 card loading skeletons; the
+  extracted route/map transforms; corrected the `/api/feeders` smoke mock to the
+  real `{ feeders, has_feeders }` shape.
+
 ## 2.24.2 — 2026-06-15
 
 Security, data-integrity, performance, and UX fixes from the 2026-06-15 codebase

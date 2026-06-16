@@ -232,6 +232,18 @@ class TestLookupAirline:
         db_conn.commit()
         assert enrichment.lookup_airline(db_conn, "LOT123") == "LOT Polish Airlines"
 
+    def test_strips_whitespace_before_lookup(self, db_conn):
+        # A leading/trailing space used to yield code=" LO" → no match
+        # (audit 2026-06-15 Low — defensive).
+        db_conn.execute(
+            "INSERT INTO airlines (icao_code, name, iata_code, country, active) "
+            "VALUES (?,?,?,?,?)",
+            ("LOT", "LOT Polish Airlines", "LO", "Poland", 1),
+        )
+        db_conn.commit()
+        assert enrichment.lookup_airline(db_conn, " LOT123") == "LOT Polish Airlines"
+        assert enrichment.lookup_airline(db_conn, "AB ") is None  # stripped len < 3
+
     def test_short_callsign_returns_none(self, db_conn):
         assert enrichment.lookup_airline(db_conn, "AB") is None
         assert enrichment.lookup_airline(db_conn, "") is None

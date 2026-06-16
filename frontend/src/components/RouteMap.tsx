@@ -12,10 +12,17 @@ import { LngLatBounds } from 'maplibre-gl';
 import type { StyleSpecification } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { routeFitKey } from '@/lib/routeFitKey';
+import {
+  buildRouteSegments,
+  routePoints,
+  ROUTE_ADSB_COLOR,
+  type RoutePosition,
+} from '@/lib/routeSegments';
 
 // Flight route map. Each position becomes a vertex of a polyline; ADS-B vs
 // MLAT segments are colored differently so users can spot multilateration
-// gaps. Receiver location shown as a fixed marker.
+// gaps. Receiver location shown as a fixed marker. The pure position→GeoJSON
+// transforms live in lib/routeSegments (unit-tested there).
 //
 // This module is lazy-loaded by Flight.tsx so other pages don't pull in
 // MapLibre (~200 KB gz).
@@ -25,12 +32,7 @@ import { routeFitKey } from '@/lib/routeFitKey';
 //   - CartoDB Dark Matter raster tiles (native dark, no CSS filter chain)
 //   - GeoJSON line layer with data-driven color per segment
 
-interface Position {
-  ts: number;
-  lat: number | null;
-  lon: number | null;
-  source_type: string | null;
-}
+type Position = RoutePosition;
 
 interface Props {
   positions: Position[];
@@ -38,22 +40,12 @@ interface Props {
   receiverLon: number | null;
 }
 
-const ADSB_COLOR = '#22c55e';
-const MLAT_COLOR = '#eab308';
-const MIXED_COLOR = '#5b9af9';
 const RECEIVER_COLOR = '#5b9af9';
 // Route start matches the ADS-B track colour so the start marker
 // visually 'belongs' to the dominant line colour. Aliased (not a fresh
 // literal) so a future ADS-B colour tweak propagates here automatically.
-const START_COLOR = ADSB_COLOR;
+const START_COLOR = ROUTE_ADSB_COLOR;
 const END_COLOR = '#ef4444'; // danger red — "terminate"
-
-function colorForSource(src: string | null | undefined): string {
-  if (!src) return MIXED_COLOR;
-  if (src.startsWith('adsb')) return ADSB_COLOR;
-  if (src === 'mlat') return MLAT_COLOR;
-  return MIXED_COLOR;
-}
 
 // CartoDB Dark Matter raster basemap — free, no API key, CC-BY 4.0.
 // MapLibre does not expand Leaflet's `{s}` subdomain placeholder; list
@@ -101,54 +93,12 @@ const DARK_STYLE: StyleSpecification = {
 export default function RouteMap({ positions, receiverLat, receiverLon }: Props) {
   const mapRef = useRef<MapRef | null>(null);
 
-  // Split positions into contiguous segments where source_type is constant —
-  // gives per-segment color via one GeoJSON FeatureCollection rather than one
-  // Source per pair-of-points. The line layer reads the color from each
-  // feature's `properties.color` (data-driven expression below).
-  //
-  // Coordinate-order swap: backend returns `[lat, lon]`, MapLibre/GeoJSON
-  // uses `[lng, lat]`. Apply here, exactly once, at the API boundary.
-  const segmentsGeoJSON = useMemo(() => {
-    const features: GeoJSON.Feature[] = [];
-    let curCoords: [number, number][] = [];
-    let curColor: string | null = null;
-    for (const p of positions) {
-      if (p.lat == null || p.lon == null) continue;
-      const color = colorForSource(p.source_type);
-      if (curColor === null) curColor = color;
-      if (color !== curColor) {
-        if (curCoords.length >= 2) {
-          features.push({
-            type: 'Feature',
-            properties: { color: curColor },
-            geometry: { type: 'LineString', coordinates: curCoords },
-          });
-        }
-        curCoords = [curCoords[curCoords.length - 1] ?? [p.lon, p.lat]];
-        curColor = color;
-      }
-      curCoords.push([p.lon, p.lat]);
-    }
-    if (curColor && curCoords.length >= 2) {
-      features.push({
-        type: 'Feature',
-        properties: { color: curColor },
-        geometry: { type: 'LineString', coordinates: curCoords },
-      });
-    }
-    return { type: 'FeatureCollection' as const, features };
-  }, [positions]);
-
-  // Flat [lng, lat] array used for both the initial view center and the
-  // post-load fitBounds. Computed once, then referenced.
-  const allPoints = useMemo(() => {
-    const out: [number, number][] = [];
-    for (const p of positions) {
-      if (p.lat == null || p.lon == null) continue;
-      out.push([p.lon, p.lat]);
-    }
-    return out;
-  }, [positions]);
+  // Per-segment coloured GeoJSON + the flat [lng, lat] point list. Both are
+  // pure transforms in lib/routeSegments (coordinate-swap + segmentation live
+  // there, unit-tested); memoised here only to keep referential stability for
+  // the fitBounds effect and the <Source> data prop.
+  const segmentsGeoJSON = useMemo(() => buildRouteSegments(positions), [positions]);
+  const allPoints = useMemo(() => routePoints(positions), [positions]);
 
   // fitBounds replaces today's react-leaflet `FitBounds` useEffect. Runs
   // whenever the track changes shape; a key derived from length + endpoints

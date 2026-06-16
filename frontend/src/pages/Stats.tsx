@@ -2,6 +2,7 @@ import { useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { apiJson } from '@/lib/api';
+import { errMsg } from '@/lib/errMsg';
 import { fmtDur } from '@/lib/format';
 import { RangePicker, type RangeValue } from '@/components/RangePicker';
 import { useRange } from '@/components/useRange';
@@ -33,12 +34,9 @@ import { buildBarOption, type StatsResponse } from './statsCharts';
 
 interface PolarResponse {
   buckets: { bucket: number; bearing: number; max_distance_nm: number }[];
-  window?: string;
-  count?: number;
 }
 
 interface RecordEntry {
-  id?: number;
   icao_hex: string;
   callsign: string | null;
   aircraft_type: string | null;
@@ -122,7 +120,7 @@ export default function StatsPage() {
       <SectionAnchors sections={sections} />
 
       {statsQ.isError && (
-        <Alert variant="error">Failed to load stats: {(statsQ.error as Error).message}</Alert>
+        <Alert variant="error">Failed to load stats: {errMsg(statsQ.error)}</Alert>
       )}
 
       <section id="overview" className="space-y-3" aria-labelledby="overview-heading">

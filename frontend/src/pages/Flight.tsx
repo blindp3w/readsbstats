@@ -3,6 +3,7 @@ import { Link, useParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { ArrowLeftIcon } from '@radix-ui/react-icons';
 import { apiJson } from '@/lib/api';
+import { errMsg } from '@/lib/errMsg';
 import { safeUrl } from '@/lib/safeUrl';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Skeleton } from '@/components/ui/Skeleton';
@@ -166,7 +167,7 @@ export default function FlightPage() {
       </header>
 
       {detailQ.isError && (
-        <Alert variant="error">Failed to load flight: {(detailQ.error as Error).message}</Alert>
+        <Alert variant="error">Failed to load flight: {errMsg(detailQ.error)}</Alert>
       )}
       {detailQ.isLoading && <Skeleton className="h-40 w-full" />}
 
@@ -309,7 +310,11 @@ function computeAtMax(positions: Position[], recLat: number | null, recLon: numb
   let maxAlt = -Infinity;
   let maxGsIdx = -1;
   let maxGs = -Infinity;
-  let maxDistIdx = -1;
+  // Track the farthest fix's coords directly (not its index) so the bearing
+  // computation needs no non-null assertion — these are only ever set inside
+  // the lat/lon != null guard below.
+  let maxDistLat: number | null = null;
+  let maxDistLon: number | null = null;
   let maxDist = -Infinity;
   for (let i = 0; i < positions.length; i++) {
     const p = positions[i];
@@ -325,7 +330,8 @@ function computeAtMax(positions: Position[], recLat: number | null, recLon: numb
       const d = haversineNm(recLat, recLon, p.lat, p.lon);
       if (d > maxDist) {
         maxDist = d;
-        maxDistIdx = i;
+        maxDistLat = p.lat;
+        maxDistLon = p.lon;
       }
     }
   }
@@ -333,13 +339,8 @@ function computeAtMax(positions: Position[], recLat: number | null, recLon: numb
     altRate: maxAltIdx >= 0 ? positions[maxAltIdx].baro_rate : null,
     speedTrack: maxGsIdx >= 0 ? positions[maxGsIdx].track : null,
     distBearing:
-      maxDistIdx >= 0 && recLat != null && recLon != null
-        ? bearingFromReceiver(
-            recLat,
-            recLon,
-            positions[maxDistIdx].lat!,
-            positions[maxDistIdx].lon!,
-          )
+      maxDistLat != null && maxDistLon != null && recLat != null && recLon != null
+        ? bearingFromReceiver(recLat, recLon, maxDistLat, maxDistLon)
         : null,
   };
 }
@@ -618,9 +619,10 @@ function PositionTable({
   loading: boolean;
 }) {
   const { fmtAlt, fmtSpd, fmtTs } = useFormat();
-  // Per-row inline disclosure state — iPhone only. Keyed by ts (positions
-  // sorted by ts and ts is unique-ish per flight).
-  const [expanded, setExpanded] = useState<Set<number>>(() => new Set());
+  // Per-row inline disclosure state — iPhone only. Keyed by `${ts}-${index}`
+  // since 1 Hz polling can emit two fixes with the same ts (audit 2026-06-15) —
+  // a bare-ts key collides in React reconciliation + shares expand state.
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   // Gate the interactive row affordance behind <sm. At md+ all detail
   // columns are visible inline, so the row tap-handler + aria-expanded +
   // role="button" would mislead screen readers ('expanded' but nothing
@@ -650,11 +652,11 @@ function PositionTable({
   const rssi = computeRssiStats(sampled);
   const rssiSpark = rssi.hasAny ? sampled.map((p) => (p.rssi == null ? rssi.median : p.rssi)) : [];
 
-  function toggle(ts: number) {
+  function toggle(key: string) {
     setExpanded((prev) => {
       const next = new Set(prev);
-      if (next.has(ts)) next.delete(ts);
-      else next.add(ts);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
       return next;
     });
   }
@@ -686,10 +688,11 @@ function PositionTable({
           </TR>
         </THead>
         <TBody>
-          {sampled.map((p) => {
-            const isOpen = expanded.has(p.ts);
+          {sampled.map((p, i) => {
+            const rowKey = `${p.ts}-${i}`;
+            const isOpen = expanded.has(rowKey);
             return (
-              <Fragment key={p.ts}>
+              <Fragment key={rowKey}>
                 <TR
                   data-testid={`flight-position-row-${p.ts}`}
                   // Interactive affordances ONLY on <sm. Desktop sees all
@@ -699,11 +702,11 @@ function PositionTable({
                         tabIndex: 0,
                         role: 'button',
                         'aria-expanded': isOpen,
-                        onClick: () => toggle(p.ts),
+                        onClick: () => toggle(rowKey),
                         onKeyDown: (e: React.KeyboardEvent) => {
                           if (e.key === 'Enter' || e.key === ' ') {
                             e.preventDefault();
-                            toggle(p.ts);
+                            toggle(rowKey);
                           }
                         },
                         className: 'cursor-pointer',

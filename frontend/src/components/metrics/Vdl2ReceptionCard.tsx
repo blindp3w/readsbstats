@@ -3,6 +3,8 @@ import { useQuery } from '@tanstack/react-query';
 import type { EChartsOption } from 'echarts';
 import { apiJson } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
+import { Alert } from '@/components/ui/Alert';
+import { Skeleton } from '@/components/ui/Skeleton';
 import { EChart } from '@/components/charts/EChart';
 import { CHART_COLORS } from '@/components/charts/theme';
 import { useFormat } from '@/hooks/useFormat';
@@ -50,7 +52,11 @@ export function Vdl2ReceptionCard({
   to: number;
 }) {
   const { fmtTs, fmtAxisTime, fmtAxisDate } = useFormat();
-  const { data: resp } = useQuery<Vdl2TimeseriesResp>({
+  const {
+    data: resp,
+    isError,
+    isLoading,
+  } = useQuery<Vdl2TimeseriesResp>({
     queryKey: ['vdl2-timeseries', from, to],
     enabled,
     queryFn: () => apiJson<Vdl2TimeseriesResp>(`vdl2/timeseries?from=${from}&to=${to}`),
@@ -87,6 +93,21 @@ export function Vdl2ReceptionCard({
   );
 
   if (!enabled) return null;
+  // Don't render a silent blank on a failed/loading query (audit 2026-06-15).
+  if (isError && resp == null)
+    return (
+      <div className="grid gap-4 xl:grid-cols-2" data-testid="metrics-vdl2-reception">
+        <Alert variant="warn" data-testid="vdl2-reception-error">
+          Couldn't load VDL2 reception data.
+        </Alert>
+      </div>
+    );
+  if (isLoading)
+    return (
+      <div className="grid gap-4 xl:grid-cols-2" data-testid="metrics-vdl2-reception">
+        <Skeleton className="h-56 w-full" data-testid="vdl2-reception-loading" />
+      </div>
+    );
 
   const ageSec = resp?.newest_age_sec ?? null;
   const stale = resp != null && (ageSec == null || ageSec > STALE_SEC);

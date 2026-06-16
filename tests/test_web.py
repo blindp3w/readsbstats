@@ -4,6 +4,7 @@ Uses an in-memory SQLite database injected by patching _deps._db.
 """
 
 import json
+import logging
 import math
 import sqlite3
 import time
@@ -906,6 +907,58 @@ class TestApiMetricsBucketing:
         assert _deps._metrics_agg("peak_signal") == "MAX(peak_signal)"
         assert _deps._metrics_agg("signal") == "AVG(signal)"
         assert _deps._metrics_agg("messages") == "SUM(messages)"
+
+    def test_metrics_agg_rejects_off_allowlist_column(self):
+        # Self-guard mirrors _assert_top1_column: the membership check travels
+        # with the SQL builder so a future caller that skips validation can't
+        # interpolate an arbitrary column name into GROUP BY.
+        with pytest.raises(ValueError):
+            _deps._metrics_agg("ts); DROP TABLE receiver_stats--")
+
+
+# ---------------------------------------------------------------------------
+# Startup auth-posture warning (_warn_if_auth_disabled)
+# ---------------------------------------------------------------------------
+
+class TestAuthDisabledWarning:
+    def test_warns_when_token_unset(self, monkeypatch, caplog):
+        monkeypatch.setattr(_deps, "_API_TOKEN", None)
+        monkeypatch.delenv("RSBS_API_TOKEN", raising=False)
+        with caplog.at_level(logging.WARNING, logger="web"):
+            web._warn_if_auth_disabled()
+        assert any("RSBS_API_TOKEN is unset" in r.message for r in caplog.records)
+
+    def test_silent_when_token_set_via_env(self, monkeypatch, caplog):
+        monkeypatch.setattr(_deps, "_API_TOKEN", None)
+        monkeypatch.setenv("RSBS_API_TOKEN", "secret")
+        with caplog.at_level(logging.WARNING, logger="web"):
+            web._warn_if_auth_disabled()
+        assert not any("RSBS_API_TOKEN is unset" in r.message for r in caplog.records)
+
+    def test_silent_when_token_set_via_module_override(self, monkeypatch, caplog):
+        # _auth_check honours the _API_TOKEN module override; the warning must too.
+        monkeypatch.setattr(_deps, "_API_TOKEN", "secret")
+        monkeypatch.delenv("RSBS_API_TOKEN", raising=False)
+        with caplog.at_level(logging.WARNING, logger="web"):
+            web._warn_if_auth_disabled()
+        assert not any("RSBS_API_TOKEN is unset" in r.message for r in caplog.records)
+
+    # --- Structural regression guards (the decorator-placement bug) ---------
+    # A plain `_warn_if_auth_disabled()` call worked "by accident" even when the
+    # @asynccontextmanager decorator was mistakenly on it (the body ran eagerly
+    # during CM construction), so a behavioural test can't catch the mix-up.
+    # Pin the structure directly: the helper is a plain function and _lifespan
+    # is the async-context-manager factory.
+    def test_warn_helper_is_plain_function_not_context_manager(self, monkeypatch):
+        monkeypatch.setattr(_deps, "_API_TOKEN", "tok")  # suppress the warning side effect
+        assert web._warn_if_auth_disabled() is None
+
+    def test_lifespan_is_async_context_manager_factory(self):
+        # Decorated -> calling it builds a context manager (un-started async gen
+        # inside, never entered here, GC'd cleanly). Bare async-gen would lack
+        # __aenter__.
+        cm = web._lifespan(web.app)
+        assert hasattr(cm, "__aenter__") and hasattr(cm, "__aexit__")
 
 
 # ---------------------------------------------------------------------------
@@ -4089,6 +4142,31 @@ class TestApiFlaggedAircraft:
         ac = r.json()["aircraft"][0]
         assert ac["thumbnail_url"] == "https://plnspttrs.net/t.jpg"
         assert ac["photographer"] == "Bob"
+
+    def test_off_allowlist_photo_suppressed_and_cached(self, client, db_conn):
+        # PY-6 (Audit 2026-05-31): a cached off-allowlist thumbnail_url must be
+        # nulled at the API boundary, and the SUPPRESSED result cached (the
+        # suppression runs before cache._set_cache) — so a stale bad URL can
+        # never reach the SPA, even on a cache hit.
+        _insert_aircraft_db(db_conn, "aabbcc", flags=1)
+        insert_flight(db_conn, icao="aabbcc")
+        db_conn.execute(
+            "INSERT INTO photos VALUES (?,?,?,?,?,?)",
+            ("aabbcc", "https://evil.example.com/t.jpg",
+             "https://evil.example.com/l.jpg", "https://evil.example.com/link",
+             "Mallory", int(time.time())),
+        )
+        db_conn.commit()
+        ac = client.get("/api/aircraft/flagged").json()["aircraft"][0]
+        assert ac["thumbnail_url"] is None
+        assert ac["large_url"] is None
+        assert ac["link_url"] is None
+        assert ac["photographer"] is None
+        assert ac["is_type_photo"] is False
+        # The cached entry itself must hold the suppressed value, not the raw URL.
+        cached = cache._get_cache(f"flagged:None:None:None:{config.DEFAULT_PAGE_SIZE}:0")
+        assert cached is not None
+        assert cached["aircraft"][0]["thumbnail_url"] is None
 
     def test_grouped_metadata_is_deterministic_latest_flight(self, client, db_conn):
         # BE-15 (Audit 2026-05-31): two flights for one ICAO with conflicting

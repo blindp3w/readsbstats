@@ -68,9 +68,14 @@ const VDL2_LINK: NavItem = { to: '/vdl2', label: 'VDL2' };
 // arrays to render. When VDL2 is disabled the lists are identical to before.
 function useNavLinks(): { inlineLinks: NavItem[]; overflowLinks: NavItem[] } {
   const vdl2Enabled = useVdl2Enabled();
-  const overflowLinks = vdl2Enabled
-    ? [...OVERFLOW_LINKS.slice(0, 3), VDL2_LINK, OVERFLOW_LINKS[3]]
-    : OVERFLOW_LINKS;
+  let overflowLinks = OVERFLOW_LINKS;
+  if (vdl2Enabled) {
+    // Insert VDL2 immediately before Settings (found by route, not a magic
+    // index) so Settings stays last even if OVERFLOW_LINKS is reordered.
+    const i = OVERFLOW_LINKS.findIndex((l) => l.to === '/settings');
+    const at = i === -1 ? OVERFLOW_LINKS.length : i;
+    overflowLinks = [...OVERFLOW_LINKS.slice(0, at), VDL2_LINK, ...OVERFLOW_LINKS.slice(at)];
+  }
   return { inlineLinks: INLINE_LINKS, overflowLinks };
 }
 

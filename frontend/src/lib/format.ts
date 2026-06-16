@@ -136,6 +136,7 @@ export function fmtBytes(n: number | null | undefined): string {
 export function fmtAgo(epoch: number | null | undefined, now: number = Date.now() / 1000): string {
   if (epoch == null || Number.isNaN(epoch)) return '—';
   const dt = now - epoch;
+  if (dt < 0) return `in ${Math.round(-dt)}s`; // future (clock skew) — not "-30s ago"
   if (dt < 60) return `${Math.round(dt)}s ago`;
   if (dt < 3600) return `${Math.round(dt / 60)}m ago`;
   if (dt < 86400) return `${Math.round(dt / 3600)}h ago`;

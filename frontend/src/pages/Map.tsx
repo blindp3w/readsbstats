@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { ArrowRightIcon } from '@radix-ui/react-icons';
 import { apiJson } from '@/lib/api';
+import { errMsg } from '@/lib/errMsg';
 import { Button } from '@/components/ui/Button';
 import { Alert } from '@/components/ui/Alert';
 import { Skeleton } from '@/components/ui/Skeleton';
@@ -116,7 +117,7 @@ export default function MapPage() {
   // fresh value every render. Hold it in state and refresh on an interval —
   // 10 s matches the live snapshot poll; bounds a few seconds stale are
   // imperceptible against a multi-hour HIST window.
-  const [nowSec, setNowSec] = useState(0);
+  const [nowSec, setNowSec] = useState(() => Math.floor(Date.now() / 1000));
   useEffect(() => {
     const tick = () => setNowSec(Math.floor(Date.now() / 1000));
     tick();
@@ -397,9 +398,7 @@ export default function MapPage() {
 
       {snapshot.isError && (
         <div className="pointer-events-auto absolute inset-x-3 top-3 z-[10]">
-          <Alert variant="error">
-            Failed to load snapshot: {(snapshot.error as Error).message}
-          </Alert>
+          <Alert variant="error">Failed to load snapshot: {errMsg(snapshot.error)}</Alert>
         </div>
       )}
 

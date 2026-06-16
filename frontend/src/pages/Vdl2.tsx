@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import { apiJson } from '@/lib/api';
+import { errMsg } from '@/lib/errMsg';
 import { useSearchParam, useSearchParamBatch } from '@/hooks/useSearchParam';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Input } from '@/components/ui/Input';
@@ -94,9 +95,7 @@ export default function Vdl2Page() {
   if (settingsQ.isError) {
     return (
       <div className="mx-auto max-w-5xl px-4 py-6" data-testid="page-vdl2">
-        <Alert variant="error">
-          Failed to load runtime settings: {(settingsQ.error as Error).message}
-        </Alert>
+        <Alert variant="error">Failed to load runtime settings: {errMsg(settingsQ.error)}</Alert>
       </div>
     );
   }
@@ -232,9 +231,7 @@ export default function Vdl2Page() {
           <CardTitle>Messages</CardTitle>
         </CardHeader>
         <CardContent>
-          {feed.isError && (
-            <Alert variant="error">Failed to load: {(feed.error as Error).message}</Alert>
-          )}
+          {feed.isError && <Alert variant="error">Failed to load: {errMsg(feed.error)}</Alert>}
           {feed.isLoading && <Skeleton className="h-40 w-full" />}
           {feed.isSuccess && messages.length === 0 && (
             <p

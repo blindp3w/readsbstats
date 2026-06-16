@@ -80,7 +80,7 @@ const FETCH_STUBS: Record<string, unknown> = {
     // clockFormat-seeding effect never ran during smoke tests.
     time_format: '24h',
   },
-  '/stats/api/feeders': [],
+  '/stats/api/feeders': { feeders: [], has_feeders: false },
   '/stats/api/watchlist': { entries: [] },
   // Map endpoints — LiveMap itself is globally mocked (see test/setup.ts),
   // but the surrounding page still issues these fetches.

@@ -3,8 +3,14 @@ import { describe, it, expect, vi } from 'vitest';
 import { buildPanelOption, buildSignalSmallMultiplesOption } from '@/pages/metricsCharts';
 import { buildBarOption } from '@/pages/statsCharts';
 import { buildFlightProfileOption } from '@/pages/flightCharts';
-import { buildTopChartOption, type Row } from '@/components/charts/topRows';
+import { buildTopChartOption, buildRows, type Row, type ViewKey } from '@/components/charts/topRows';
 import { abbreviateAxis } from '@/components/charts/topRows';
+
+describe('buildRows', () => {
+  it('returns [] for an out-of-enum view (Radix value cast), never undefined', () => {
+    expect(buildRows('bogus' as unknown as ViewKey, {})).toEqual([]);
+  });
+});
 
 const fakeFmtTs = (epoch: number) => new Date(epoch * 1000).toISOString();
 const fakeFmtAxisTime = (epoch: number) =>

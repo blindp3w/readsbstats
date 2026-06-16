@@ -63,4 +63,20 @@ describe('Vdl2StatsCard top-label names', () => {
     // No " · " separator after the unknown code — i.e. no invented name.
     expect(screen.getByTestId('vdl2-top-labels').textContent).not.toContain('ZZ ·');
   });
+
+  it('shows an error alert when the stats query fails (no silent —/empty)', async () => {
+    globalThis.fetch = vi.fn(
+      async () => new Response('err', { status: 500 }),
+    ) as unknown as typeof fetch;
+    renderCard();
+    await waitFor(() => screen.getByTestId('vdl2-stats-error'));
+  });
+
+  it('shows a loading skeleton while the query is pending', async () => {
+    // A never-resolving fetch keeps react-query in isLoading, so the skeleton
+    // path renders instead of a row of indistinguishable '—' KPIs.
+    globalThis.fetch = vi.fn(() => new Promise<Response>(() => {})) as unknown as typeof fetch;
+    renderCard();
+    await waitFor(() => screen.getByTestId('vdl2-stats-loading'));
+  });
 });

@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { MixerHorizontalIcon, CheckIcon } from '@radix-ui/react-icons';
 import { apiJson } from '@/lib/api';
+import { errMsg } from '@/lib/errMsg';
 import { useSearchParam, useSearchParamBatch } from '@/hooks/useSearchParam';
 import { safeUrl } from '@/lib/safeUrl';
 import { Card, CardContent } from '@/components/ui/Card';
@@ -126,7 +127,7 @@ export default function GalleryPage() {
         />
       </div>
 
-      {q.isError && <Alert variant="error">Failed to load: {(q.error as Error).message}</Alert>}
+      {q.isError && <Alert variant="error">Failed to load: {errMsg(q.error)}</Alert>}
 
       {q.isLoading && (
         <div
@@ -178,7 +179,8 @@ export default function GalleryPage() {
                     <FlagBadge flags={a.flags} />
                   </div>
                   <div className="text-xs text-[var(--color-text-dim)]">
-                    {a.aircraft_type ?? '—'} · {a.type_desc || a.country || ''}
+                    {a.aircraft_type ?? '—'}
+                    {a.type_desc || a.country ? <> · {a.type_desc || a.country}</> : null}
                   </div>
                   <div className="text-xs text-[var(--color-text-dim)] tabnum">
                     {a.flight_count} flights · last {fmtTs(a.last_seen)}
