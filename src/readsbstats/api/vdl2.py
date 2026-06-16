@@ -597,6 +597,20 @@ def api_vdl2_timeseries(
         return result
 
 
+def _bucket_fill(rows, n: int) -> list[int]:
+    """Scatter ``(bi, c)`` rows into a zero-filled list of length ``n``.
+
+    ``rows`` is any iterable of mappings with a ``bi`` bucket index and a ``c``
+    count. Out-of-range indices are ignored; buckets with no row stay 0.
+    """
+    out = [0] * n
+    for r in rows:
+        i = r["bi"]
+        if 0 <= i < n:
+            out[i] = r["c"]
+    return out
+
+
 def _compute_timeseries(from_ts: int, to_ts: int) -> dict:
     conn = vdl2_db.web_conn()
     bucket = _timeseries_bucket(to_ts - from_ts)
@@ -620,16 +634,18 @@ def _compute_timeseries(from_ts: int, to_ts: int) -> dict:
     buckets = [from_ts + i * bucket for i in range(n)]
     n = len(buckets)
 
-    rate = [0] * n
-    for r in conn.execute(
-        "SELECT CAST((ts - ?) / ? AS INT) AS bi, COUNT(*) AS c FROM vdl2_messages "
-        "WHERE ts >= ? AND ts < ? GROUP BY bi",
-        (from_ts, bucket, from_ts, to_ts),
-    ).fetchall():
-        i = r["bi"]
-        if 0 <= i < n:
-            rate[i] = r["c"]
+    rate = _bucket_fill(
+        conn.execute(
+            "SELECT CAST((ts - ?) / ? AS INT) AS bi, COUNT(*) AS c FROM vdl2_messages "
+            "WHERE ts >= ? AND ts < ? GROUP BY bi",
+            (from_ts, bucket, from_ts, to_ts),
+        ).fetchall(),
+        n,
+    )
 
+    # Per-frequency columns: a single O(rows) scatter into pre-zeroed columns
+    # (one per top freq). _bucket_fill is 1-D so it can't fold the grouped scatter
+    # in without re-scanning per freq; the inline pass keeps it O(rows).
     cols = {f: [0] * n for f in top}
     if top:
         topset = set(top)

@@ -43,9 +43,13 @@ export function AcarsPanel({ icao, firstSeen, lastSeen, context = 'flight' }: Pr
         {messages.length > 0 && (
           // Cap the height and scroll, matching the position log, so a chatty
           // flight's ACARS log doesn't push the rest of the page far down.
-          <div className="max-h-[480px] overflow-y-auto" data-testid={`${context}-acars-scroll`}>
-            <MessageList messages={messages} />
-          </div>
+          // MessageList owns (and virtualizes) the scroll viewport, so the
+          // height/overflow + testid are passed to it directly.
+          <MessageList
+            messages={messages}
+            scrollClassName="max-h-[480px] overflow-y-auto"
+            scrollTestId={`${context}-acars-scroll`}
+          />
         )}
       </CardContent>
     </Card>

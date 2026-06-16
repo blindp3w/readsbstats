@@ -49,6 +49,10 @@ RSBS_AIRCRAFT_JSON=/tmp/rsbs_sim.json RSBS_DB_PATH=./db/history.db \
 # Coverage (CI gates the backend at 93%; frontend report is informational)
 .venv/bin/pytest --cov=readsbstats --cov-report=term-missing
 ( cd frontend && npm run test:coverage )
+
+# Refresh the /api/stats value-identity golden after an INTENTIONAL stats-output
+# change, then review the diff to tests/fixtures/stats_identity_golden.json:
+RSBS_RECORD_GOLDEN=1 .venv/bin/pytest tests/test_stats_compute_identity.py
 ```
 
 > **Run the linter before pushing.** CI runs `eslint . --max-warnings 0` as a

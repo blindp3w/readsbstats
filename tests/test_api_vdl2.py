@@ -621,6 +621,22 @@ class TestOooi:
         vconn.close()
 
 
+class TestBucketFill:
+    """_bucket_fill — the zero-fill+scatter helper shared by the rate and
+    per-frequency timeseries columns."""
+
+    def test_scatters_in_range_and_zero_fills_gaps(self):
+        rows = [{"bi": 0, "c": 5}, {"bi": 2, "c": 3}]
+        assert vdl2_api._bucket_fill(rows, 4) == [5, 0, 3, 0]
+
+    def test_ignores_out_of_range_indices(self):
+        rows = [{"bi": -1, "c": 9}, {"bi": 1, "c": 7}, {"bi": 5, "c": 9}]
+        assert vdl2_api._bucket_fill(rows, 3) == [0, 7, 0]
+
+    def test_empty_rows_all_zero(self):
+        assert vdl2_api._bucket_fill([], 3) == [0, 0, 0]
+
+
 class TestTimeseries:
     def _make(self, monkeypatch, rows):
         monkeypatch.setattr(config, "VDL2_ENABLED", True)
