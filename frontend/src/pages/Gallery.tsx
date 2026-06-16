@@ -178,7 +178,8 @@ export default function GalleryPage() {
                     <FlagBadge flags={a.flags} />
                   </div>
                   <div className="text-xs text-[var(--color-text-dim)]">
-                    {a.aircraft_type ?? '—'} · {a.type_desc || a.country || ''}
+                    {a.aircraft_type ?? '—'}
+                    {a.type_desc || a.country ? <> · {a.type_desc || a.country}</> : null}
                   </div>
                   <div className="text-xs text-[var(--color-text-dim)] tabnum">
                     {a.flight_count} flights · last {fmtTs(a.last_seen)}

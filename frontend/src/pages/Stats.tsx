@@ -33,12 +33,9 @@ import { buildBarOption, type StatsResponse } from './statsCharts';
 
 interface PolarResponse {
   buckets: { bucket: number; bearing: number; max_distance_nm: number }[];
-  window?: string;
-  count?: number;
 }
 
 interface RecordEntry {
-  id?: number;
   icao_hex: string;
   callsign: string | null;
   aircraft_type: string | null;

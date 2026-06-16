@@ -309,7 +309,11 @@ function computeAtMax(positions: Position[], recLat: number | null, recLon: numb
   let maxAlt = -Infinity;
   let maxGsIdx = -1;
   let maxGs = -Infinity;
-  let maxDistIdx = -1;
+  // Track the farthest fix's coords directly (not its index) so the bearing
+  // computation needs no non-null assertion — these are only ever set inside
+  // the lat/lon != null guard below.
+  let maxDistLat: number | null = null;
+  let maxDistLon: number | null = null;
   let maxDist = -Infinity;
   for (let i = 0; i < positions.length; i++) {
     const p = positions[i];
@@ -325,7 +329,8 @@ function computeAtMax(positions: Position[], recLat: number | null, recLon: numb
       const d = haversineNm(recLat, recLon, p.lat, p.lon);
       if (d > maxDist) {
         maxDist = d;
-        maxDistIdx = i;
+        maxDistLat = p.lat;
+        maxDistLon = p.lon;
       }
     }
   }
@@ -333,13 +338,8 @@ function computeAtMax(positions: Position[], recLat: number | null, recLon: numb
     altRate: maxAltIdx >= 0 ? positions[maxAltIdx].baro_rate : null,
     speedTrack: maxGsIdx >= 0 ? positions[maxGsIdx].track : null,
     distBearing:
-      maxDistIdx >= 0 && recLat != null && recLon != null
-        ? bearingFromReceiver(
-            recLat,
-            recLon,
-            positions[maxDistIdx].lat!,
-            positions[maxDistIdx].lon!,
-          )
+      maxDistLat != null && maxDistLon != null && recLat != null && recLon != null
+        ? bearingFromReceiver(recLat, recLon, maxDistLat, maxDistLon)
         : null,
   };
 }

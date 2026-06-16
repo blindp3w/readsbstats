@@ -9,7 +9,7 @@ import {
   type MapRef,
   type MarkerEvent,
 } from 'react-map-gl/maplibre';
-import type { StyleSpecification } from 'maplibre-gl';
+import type { StyleSpecification, HeatmapLayerSpecification } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { aircraftIconSvg, getIconType } from '@/lib/aircraftIcon';
 
@@ -127,8 +127,8 @@ const DARK_STYLE: StyleSpecification = {
 // increasing luminance — colorblind-safe (encodes density via brightness
 // not hue alone, per CLAUDE_DESIGN_BRIEF.md §M4.2 / §M1.2). Replaces today's
 // near-monochromatic blue ramp from leaflet.heat.
-const HEATMAP_PAINT = {
-  'heatmap-weight': ['coalesce', ['get', 'weight'], 1] as unknown as number,
+const HEATMAP_PAINT: HeatmapLayerSpecification['paint'] = {
+  'heatmap-weight': ['coalesce', ['get', 'weight'], 1],
   'heatmap-color': [
     'interpolate',
     ['linear'],
@@ -145,10 +145,10 @@ const HEATMAP_PAINT = {
     '#ed6925',
     1,
     '#fcffa4',
-  ] as unknown as string,
+  ],
   'heatmap-radius': 18,
-  'heatmap-intensity': ['interpolate', ['linear'], ['zoom'], 0, 1, 9, 3] as unknown as number,
-  'heatmap-opacity': ['interpolate', ['linear'], ['zoom'], 7, 0.85, 15, 0.4] as unknown as number,
+  'heatmap-intensity': ['interpolate', ['linear'], ['zoom'], 0, 1, 9, 3],
+  'heatmap-opacity': ['interpolate', ['linear'], ['zoom'], 7, 0.85, 15, 0.4],
 };
 
 const RECEIVER_COLOR = '#5b9af9';
@@ -353,7 +353,6 @@ export default function LiveMap({
       {/* Heatmap below all other overlays so polygons + markers paint on top. */}
       {heatmapGeoJSON.features.length > 0 && (
         <Source id="heatmap" type="geojson" data={heatmapGeoJSON}>
-          {/* @ts-expect-error MapLibre paint expression types are looser than our tuples */}
           <Layer id="heatmap-layer" type="heatmap" paint={HEATMAP_PAINT} />
         </Source>
       )}

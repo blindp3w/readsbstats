@@ -3,6 +3,7 @@ import { Skeleton } from '@/components/ui/Skeleton';
 import { Alert } from '@/components/ui/Alert';
 import { MessageList } from '@/components/vdl2/MessageList';
 import { useVdl2FlightMessages } from '@/hooks/useVdl2Enabled';
+import { errMsg } from '@/lib/errMsg';
 
 // Opt-in: ACARS messages received during one flight, shown on the flight-detail
 // page. Renders nothing unless VDL2 is available. The slack-widened flight window
@@ -37,7 +38,7 @@ export function AcarsPanel({ icao, firstSeen, lastSeen, context = 'flight' }: Pr
         <CardTitle>ACARS ({countLabel})</CardTitle>
       </CardHeader>
       <CardContent>
-        {isError && <Alert variant="error">Failed to load ACARS: {(error as Error).message}</Alert>}
+        {isError && <Alert variant="error">Failed to load ACARS: {errMsg(error)}</Alert>}
         {isLoading && <Skeleton className="h-24 w-full" />}
         {messages.length > 0 && (
           // Cap the height and scroll, matching the position log, so a chatty

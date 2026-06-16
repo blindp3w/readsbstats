@@ -58,7 +58,7 @@ export function AboutReceiverFooter({
               label="Sources"
               value={
                 sourceBreakdown
-                  ? `${sourceBreakdown.adsb}% ADS-B · ${sourceBreakdown.mlat}% MLAT`
+                  ? `${sourceBreakdown.adsb}% ADS-B · ${sourceBreakdown.mlat}% MLAT · ${sourceBreakdown.other}% other`
                   : '—'
               }
             />

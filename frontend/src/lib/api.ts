@@ -7,14 +7,13 @@
 // The Vite `base` is the same prefix where the API lives, so apiUrl is just
 // BASE_URL + 'api/' + path.
 //
-// CSRF: web.py _csrf_check requires X-Requested-With on POST/DELETE under
-// /api/watchlist. apiFetch attaches it to every mutating request — over-
+// CSRF: web.py _csrf_check requires X-Requested-With on every mutating
+// (POST/DELETE) /api/* request. apiFetch attaches it to all of them — over-
 // attachment is safe and stops the test matrix from drifting per endpoint.
 
 const BASE = import.meta.env.BASE_URL;
 
-export const apiUrl = (path: string): string =>
-  BASE + 'api/' + path.replace(/^\//, '');
+export const apiUrl = (path: string): string => BASE + 'api/' + path.replace(/^\//, '');
 
 export class ApiError extends Error {
   status: number;

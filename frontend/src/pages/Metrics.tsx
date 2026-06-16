@@ -241,19 +241,11 @@ export default function MetricsPage() {
   );
 }
 
-// statusColor / StatusIcon / HealthBanner moved to
-// `frontend/src/components/metrics/HealthStripe.tsx` in v2.7.0.
-
 // ---------------------------------------------------------------------------
 // Metric chart — converts the columnar /api/metrics response into one ECharts
 // option object. The option builders (`buildPanelOption`,
 // `buildSignalSmallMultiplesOption`) live in ./metricsCharts.
 // ---------------------------------------------------------------------------
-
-// Inline builder bodies removed in Audit-15 — they now live in
-// ./metricsCharts. Existing tests in
-// frontend/test/echarts-option-builders.test.ts import directly from
-// the new module.
 
 function SignalSmallMultiples({
   resp,
