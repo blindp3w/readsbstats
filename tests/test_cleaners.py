@@ -138,6 +138,11 @@ class TestCoerceMetricScalar:
         # schema is numeric-only.
         assert coerce_metric_scalar("42") is None
         assert coerce_metric_scalar("") is None
+        # "NaN"/"inf" as TEXT must stay rejected — never coerced to float nan/inf
+        # (which the float branch would then drop, but the string must not even
+        # reach a float() parse).
+        assert coerce_metric_scalar("NaN") is None
+        assert coerce_metric_scalar("inf") is None
 
 
 # ---------------------------------------------------------------------------

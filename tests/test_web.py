@@ -4097,6 +4097,31 @@ class TestApiFlaggedAircraft:
         assert ac["thumbnail_url"] == "https://plnspttrs.net/t.jpg"
         assert ac["photographer"] == "Bob"
 
+    def test_off_allowlist_photo_suppressed_and_cached(self, client, db_conn):
+        # PY-6 (Audit 2026-05-31): a cached off-allowlist thumbnail_url must be
+        # nulled at the API boundary, and the SUPPRESSED result cached (the
+        # suppression runs before cache._set_cache) — so a stale bad URL can
+        # never reach the SPA, even on a cache hit.
+        _insert_aircraft_db(db_conn, "aabbcc", flags=1)
+        insert_flight(db_conn, icao="aabbcc")
+        db_conn.execute(
+            "INSERT INTO photos VALUES (?,?,?,?,?,?)",
+            ("aabbcc", "https://evil.example.com/t.jpg",
+             "https://evil.example.com/l.jpg", "https://evil.example.com/link",
+             "Mallory", int(time.time())),
+        )
+        db_conn.commit()
+        ac = client.get("/api/aircraft/flagged").json()["aircraft"][0]
+        assert ac["thumbnail_url"] is None
+        assert ac["large_url"] is None
+        assert ac["link_url"] is None
+        assert ac["photographer"] is None
+        assert ac["is_type_photo"] is False
+        # The cached entry itself must hold the suppressed value, not the raw URL.
+        cached = cache._get_cache(f"flagged:None:None:None:{config.DEFAULT_PAGE_SIZE}:0")
+        assert cached is not None
+        assert cached["aircraft"][0]["thumbnail_url"] is None
+
     def test_grouped_metadata_is_deterministic_latest_flight(self, client, db_conn):
         # BE-15 (Audit 2026-05-31): two flights for one ICAO with conflicting
         # reg/type and the SAME last_seen (a tie on the grouping max). GROUP BY

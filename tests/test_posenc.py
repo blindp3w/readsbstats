@@ -61,6 +61,23 @@ class TestOverflowGuard:
         # 1e13 * 100000 = 1e18, well within INT64_MAX
         assert posenc.enc5(1e13) == 1_000_000_000_000_000_000
 
+    def test_enc5_straddles_int64_boundary(self):
+        # _INT64_MAX ≈ 9.2233720e18, so the enc5 input boundary is ≈9.2233720e13.
+        # 9.22e13 ×1e5 = 9.22e18 fits; 9.23e13 ×1e5 = 9.23e18 overflows. The
+        # 9.22/9.23 gap (~1e16) dwarfs float ULP at this magnitude, so the
+        # straddle is deterministic.
+        assert posenc.enc5(9.22e13) is not None
+        assert posenc.enc5(9.23e13) is None
+        assert posenc.enc5(-9.22e13) is not None
+        assert posenc.enc5(-9.23e13) is None
+
+    def test_enc1_straddles_int64_boundary(self):
+        # ×10 codec → input boundary ≈9.2233720e17.
+        assert posenc.enc1(9.22e17) is not None
+        assert posenc.enc1(9.23e17) is None
+        assert posenc.enc1(-9.22e17) is not None
+        assert posenc.enc1(-9.23e17) is None
+
 
 class TestSourceCodec:
     def test_known_round_trip(self):
