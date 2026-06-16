@@ -71,4 +71,12 @@ describe('Vdl2StatsCard top-label names', () => {
     renderCard();
     await waitFor(() => screen.getByTestId('vdl2-stats-error'));
   });
+
+  it('shows a loading skeleton while the query is pending', async () => {
+    // A never-resolving fetch keeps react-query in isLoading, so the skeleton
+    // path renders instead of a row of indistinguishable '—' KPIs.
+    globalThis.fetch = vi.fn(() => new Promise<Response>(() => {})) as unknown as typeof fetch;
+    renderCard();
+    await waitFor(() => screen.getByTestId('vdl2-stats-loading'));
+  });
 });

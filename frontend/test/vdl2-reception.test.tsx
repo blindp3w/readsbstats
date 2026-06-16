@@ -87,4 +87,12 @@ describe('Vdl2ReceptionCard', () => {
     renderCard();
     await waitFor(() => screen.getByTestId('vdl2-reception-error'));
   });
+
+  it('shows a loading skeleton while the query is pending', async () => {
+    // A never-resolving fetch keeps react-query in isLoading, so the
+    // skeleton path (not a silent blank) is what renders.
+    globalThis.fetch = vi.fn(() => new Promise<Response>(() => {})) as unknown as typeof fetch;
+    renderCard();
+    await waitFor(() => screen.getByTestId('vdl2-reception-loading'));
+  });
 });
