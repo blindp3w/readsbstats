@@ -52,10 +52,6 @@ virtualization from the audit are deferred to a dedicated follow-up.)
 
 ### Performance
 
-- **`db_updater.backfill_flights`** replaces an un-indexable
-  `registration IS NULL OR aircraft_type IS NULL` scan with two single-column
-  UPDATEs (one per index), preserving its "rows backfilled" return value via an
-  up-front count.
 - **`scripts/migrate_v6.py`** runs `PRAGMA wal_checkpoint(TRUNCATE)` after
   `VACUUM` so the reclaimed space is returned to the filesystem.
 
@@ -70,19 +66,25 @@ virtualization from the audit are deferred to a dedicated follow-up.)
 - Typed `LiveMap`'s heatmap paint as `HeatmapLayerSpecification['paint']`
   (dropping four `as unknown as` casts and an obsolete `@ts-expect-error`);
   removed `Flight.computeAtMax`/`KpiCard` non-null assertions via narrowing;
-  added `lib/errMsg`; dropped unused type fields and stale relocated-code
-  comments; aligned the Telegram help/command docstrings.
+  dropped unused type fields and stale relocated-code comments; aligned the
+  Telegram help/command docstrings.
+- Added `lib/errMsg(e)` and routed every query-error boundary through it
+  (Settings, Gallery, Watchlist, Flight, Map, Stats, Feeders, Vdl2, Metrics,
+  AcarsPanel, LiveCountBadge), so a non-`Error` rejection can't render
+  `undefined`. Extracted `KpiCard`'s signed-delta text into one `formatDelta`
+  shared by the inline line and the tooltip.
 
 ### Tests
 
 - Backend boundary/coverage: `#M1BPOS` minute `599` accepted; `lttb_indices`
   empty/negative-target; `posenc.enc1/enc5` exact int64 straddle; `"NaN"`/`"inf"`
   as text rejected; `/api/aircraft/flagged` suppresses *and* caches an
-  off-allowlist photo URL; the `_metrics_agg` guard; the startup auth warning.
+  off-allowlist photo URL; the `_metrics_agg` guard; the startup auth warning
+  plus structural guards that `_lifespan` is the async-CM factory.
 - Frontend: render coverage for `CardDescription`/`DialogHeader`/`DialogFooter`/
-  `SheetHeader`; `fmtAxisDate`; VDL2 card loading skeletons; the extracted
-  route/map transforms; corrected the `/api/feeders` smoke mock to the real
-  `{ feeders, has_feeders }` shape.
+  `SheetHeader`; `fmtAxisDate`; `errMsg`; VDL2 card loading skeletons; the
+  extracted route/map transforms; corrected the `/api/feeders` smoke mock to the
+  real `{ feeders, has_feeders }` shape.
 
 ## 2.24.2 — 2026-06-15
 
