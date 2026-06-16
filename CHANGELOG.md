@@ -5,6 +5,46 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 2.25.0 — 2026-06-16
+
+Maintainability refactors (audit D1) and VDL2 message-list virtualization
+(audit D2), deferred from v2.24.3. No API or schema changes; the only
+user-visible change is the VDL2 feed's inner scroll.
+
+### Changed
+
+- **The VDL2 message feed is virtualized.** It accumulates unbounded via "Load
+  older", so `MessageList` now windows its rows with `@tanstack/react-virtual`
+  (only the visible rows are in the DOM, with dynamic per-row measurement for the
+  variable heights). The Vdl2 feed gains an inner scroll area (previously
+  full-page scroll); the flight ACARS panel looks unchanged.
+
+### Internal
+
+- **`api/stats._compute_stats_sync` split** into a thin orchestrator + 12
+  per-section helpers (the tightly-coupled aggregation core stays inline); the
+  shared ~17 aggregate columns are dedup'd into one constant. Verified
+  value-identical by a new golden test.
+- **`api/vdl2._compute_timeseries`** — the two zero-fill blocks extracted to a
+  pure `_bucket_fill` helper.
+- **`Flight.tsx` (780 → 263 LoC)** — `FlightHeader` + `PositionTable` (and their
+  helpers/types) extracted to `components/flight/`.
+- **`Map.tsx` (687 → 273 LoC)** — playback + data-query logic extracted to
+  `useMapPlaybackState` / `useMapDataQueries` / `useMapSettings` hooks; the pure
+  date/time helpers moved to `lib/mapTime`.
+
+### Dependencies
+
+- Add `@tanstack/react-virtual` 3.14.3 (same vendor as `@tanstack/react-query`;
+  tree-shaken, lazy on VDL2 surfaces). `npm audit` clean.
+
+### Tests
+
+- Value-identity golden for `_compute_stats_sync` (refresh via
+  `RSBS_RECORD_GOLDEN=1`); unit tests for `_bucket_fill`, `lib/mapTime`, the
+  extracted route/map transforms, and the Flight components. The virtualizer is
+  mocked in `test/setup.ts` so the message-list suite runs unchanged.
+
 ## 2.24.3 — 2026-06-16
 
 Low-severity findings from the 2026-06-15 codebase audit: small correctness/UX
