@@ -158,6 +158,7 @@ export interface Vdl2OooiSummary {
 export interface Settings {
   time_format?: string;
   vdl2_enabled?: boolean;
+  map_history_hours?: number;
 }
 
 // Subset of /api/health the SPA reads for runtime VDL2 availability bits.

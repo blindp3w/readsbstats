@@ -643,17 +643,22 @@ def _compute_timeseries(from_ts: int, to_ts: int) -> dict:
         n,
     )
 
-    cols: dict = {}
+    # Per-frequency columns: a single O(rows) scatter into pre-zeroed columns
+    # (one per top freq). _bucket_fill is 1-D so it can't fold the grouped scatter
+    # in without re-scanning per freq; the inline pass keeps it O(rows).
+    cols = {f: [0] * n for f in top}
     if top:
-        freq_rows = conn.execute(
+        topset = set(top)
+        for r in conn.execute(
             "SELECT CAST((ts - ?) / ? AS INT) AS bi, ROUND(freq, 3) AS f, COUNT(*) AS c "
             "FROM vdl2_messages "
             "WHERE freq IS NOT NULL AND ts >= ? AND ts < ? GROUP BY bi, f",
             (from_ts, bucket, from_ts, to_ts),
-        ).fetchall()
-        # One zero-filled column per top frequency (a freq with no rows in the
-        # window still gets an all-zero column).
-        cols = {f: _bucket_fill([r for r in freq_rows if r["f"] == f], n) for f in top}
+        ).fetchall():
+            if r["f"] in topset:
+                i = r["bi"]
+                if 0 <= i < n:
+                    cols[r["f"]][i] = r["c"]
 
     per_min = 60.0 / bucket
 

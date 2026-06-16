@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { apiJson } from '@/lib/api';
+import type { Settings } from '@/lib/types';
 
 // Tiny settings read for the map: `map_history_hours` → max rewind window.
 //
@@ -15,7 +16,7 @@ import { apiJson } from '@/lib/api';
 export function useMapSettings(): { maxRewindHours: number; maxRewindSec: number } {
   const { data } = useQuery({
     queryKey: ['settings'],
-    queryFn: () => apiJson<{ map_history_hours?: number }>('settings'),
+    queryFn: () => apiJson<Settings>('settings'),
     staleTime: 60_000,
   });
   const maxRewindHours = data?.map_history_hours ?? 24;

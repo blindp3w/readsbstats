@@ -64,10 +64,8 @@ export interface PhotoResp {
   is_type_photo: boolean;
 }
 
-// At-max position lookups for the M3.1 header sub-labels. Computed
-// client-side from `positions` (NOT via equality against the flight-level
-// aggregates) because `max_gs` is REAL and `max_distance_nm` requires
-// per-position haversine. Single pass, O(n).
+// Shape of the at-max header sub-labels; see `computeAtMax` in FlightHeader.tsx
+// for how each value is derived.
 export interface AtMax {
   altRate: number | null;
   speedTrack: number | null;

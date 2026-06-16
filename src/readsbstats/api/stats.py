@@ -546,21 +546,10 @@ def _compute_stats_sync(from_ts: int | None, to_ts: int | None) -> dict:
         lifetime_adsb_pct         = adsb_pct
         lifetime_mlat_pct         = mlat_pct
     else:
-        life = conn.execute(
-            """
-            SELECT
-                COUNT(*)                                                          AS total_flights,
-                SUM(total_positions)                                              AS total_positions,
-                COUNT(DISTINCT icao_hex)                                          AS unique_aircraft,
-                COUNT(DISTINCT CASE
-                    WHEN callsign IS NOT NULL AND callsign != '' AND length(callsign) >= 3
-                    THEN substr(callsign,1,3) END)                                AS unique_airlines,
-                MIN(first_seen)                                                   AS oldest_flight,
-                ROUND(100.0 * SUM(adsb_positions) / NULLIF(SUM(total_positions),0), 1) AS adsb_pct,
-                ROUND(100.0 * SUM(mlat_positions) / NULLIF(SUM(total_positions),0), 1) AS mlat_pct
-            FROM flights
-            """,
-        ).fetchone()
+        # Reuse the shared aggregate columns (the lifetime block reads only the
+        # first 7; the extra alt/squawk CASE sums are cheap and ignored) so the
+        # column expressions live in exactly one place.
+        life = conn.execute(f"SELECT {_STATS_AGG_COLS} FROM flights").fetchone()
         lifetime_total_flights    = life["total_flights"]
         # See note in the unfiltered branch — SUM() can return NULL.
         lifetime_total_positions  = life["total_positions"] or 0
