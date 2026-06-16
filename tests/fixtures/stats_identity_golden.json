@@ -1,0 +1,911 @@
+{
+  "filtered": {
+    "altitude_distribution": [
+      {
+        "band": "Ground / <1k",
+        "count": 0
+      },
+      {
+        "band": "1k\u20135k",
+        "count": 1
+      },
+      {
+        "band": "5k\u201310k",
+        "count": 1
+      },
+      {
+        "band": "10k\u201320k",
+        "count": 1
+      },
+      {
+        "band": "20k\u201330k",
+        "count": 1
+      },
+      {
+        "band": "30k\u201340k",
+        "count": 1
+      },
+      {
+        "band": "40k+",
+        "count": 0
+      }
+    ],
+    "anonymous_flights": 1,
+    "daily_unique_aircraft": [
+      {
+        "day": "2023-11-09",
+        "flights": 1,
+        "unique_aircraft": 1
+      },
+      {
+        "day": "2023-11-11",
+        "flights": 1,
+        "unique_aircraft": 1
+      },
+      {
+        "day": "2023-11-12",
+        "flights": 1,
+        "unique_aircraft": 1
+      },
+      {
+        "day": "2023-11-14",
+        "flights": 2,
+        "unique_aircraft": 2
+      }
+    ],
+    "db_size_bytes": null,
+    "flights_last_24h": 2,
+    "flights_last_7d": 5,
+    "frequent_aircraft": [
+      {
+        "aircraft_type": null,
+        "flags": 16,
+        "flights": 1,
+        "icao_hex": "f00001",
+        "last_seen": 1699741700,
+        "registration": null,
+        "type_desc": ""
+      },
+      {
+        "aircraft_type": "B738",
+        "flags": 0,
+        "flights": 1,
+        "icao_hex": "48400b",
+        "last_seen": 1699568900,
+        "registration": "EI-DAB",
+        "type_desc": ""
+      },
+      {
+        "aircraft_type": "B738",
+        "flags": 2,
+        "flights": 1,
+        "icao_hex": "48400a",
+        "last_seen": 1699828100,
+        "registration": "EI-DAA",
+        "type_desc": "Boeing 737"
+      },
+      {
+        "aircraft_type": "A321",
+        "flags": 0,
+        "flights": 1,
+        "icao_hex": "3c6445",
+        "last_seen": 1699997000,
+        "registration": "D-AIAB",
+        "type_desc": ""
+      },
+      {
+        "aircraft_type": "A320",
+        "flags": 0,
+        "flights": 1,
+        "icao_hex": "3c6444",
+        "last_seen": 1699998200,
+        "registration": "D-AIAA",
+        "type_desc": "Airbus A320"
+      }
+    ],
+    "furthest_aircraft": {
+      "adsb_positions": 80,
+      "aircraft_type": "B738",
+      "callsign": "RYR66",
+      "category": null,
+      "dest_country": null,
+      "dest_icao": null,
+      "dest_name": null,
+      "duration_sec": 900,
+      "flags": 0,
+      "icao_hex": "48400b",
+      "id": 4,
+      "last_seen": 1699568900,
+      "lat_max": 0.0,
+      "lat_min": 0.0,
+      "lon_max": 0.0,
+      "lon_min": 0.0,
+      "max_alt_baro": 25000,
+      "max_distance_nm": 300.9,
+      "max_gs": 400.0,
+      "mlat_positions": 0,
+      "origin_country": null,
+      "origin_icao": null,
+      "origin_name": null,
+      "primary_source": "adsb",
+      "record_set_at": 1699568000,
+      "registration": "EI-DAB",
+      "squawk": "7600",
+      "total_positions": 80,
+      "type_desc": ""
+    },
+    "heatmap": [
+      {
+        "count": 1,
+        "dow": 0,
+        "hour": 22
+      },
+      {
+        "count": 1,
+        "dow": 2,
+        "hour": 20
+      },
+      {
+        "count": 1,
+        "dow": 2,
+        "hour": 21
+      },
+      {
+        "count": 1,
+        "dow": 4,
+        "hour": 22
+      },
+      {
+        "count": 1,
+        "dow": 6,
+        "hour": 22
+      }
+    ],
+    "hourly_distribution": [
+      {
+        "count": 0,
+        "hour": 0
+      },
+      {
+        "count": 0,
+        "hour": 1
+      },
+      {
+        "count": 0,
+        "hour": 2
+      },
+      {
+        "count": 0,
+        "hour": 3
+      },
+      {
+        "count": 0,
+        "hour": 4
+      },
+      {
+        "count": 0,
+        "hour": 5
+      },
+      {
+        "count": 0,
+        "hour": 6
+      },
+      {
+        "count": 0,
+        "hour": 7
+      },
+      {
+        "count": 0,
+        "hour": 8
+      },
+      {
+        "count": 0,
+        "hour": 9
+      },
+      {
+        "count": 0,
+        "hour": 10
+      },
+      {
+        "count": 0,
+        "hour": 11
+      },
+      {
+        "count": 0,
+        "hour": 12
+      },
+      {
+        "count": 0,
+        "hour": 13
+      },
+      {
+        "count": 0,
+        "hour": 14
+      },
+      {
+        "count": 0,
+        "hour": 15
+      },
+      {
+        "count": 0,
+        "hour": 16
+      },
+      {
+        "count": 0,
+        "hour": 17
+      },
+      {
+        "count": 0,
+        "hour": 18
+      },
+      {
+        "count": 0,
+        "hour": 19
+      },
+      {
+        "count": 1,
+        "hour": 20
+      },
+      {
+        "count": 1,
+        "hour": 21
+      },
+      {
+        "count": 3,
+        "hour": 22
+      },
+      {
+        "count": 0,
+        "hour": 23
+      }
+    ],
+    "interesting_flights": 1,
+    "lifetime": {
+      "db_size_bytes": null,
+      "oldest_flight": 1696544000,
+      "source_breakdown": {
+        "adsb": 96.8,
+        "mlat": 3.2,
+        "other": 0.0
+      },
+      "total_flights": 7,
+      "total_positions": 770,
+      "unique_aircraft": 7,
+      "unique_airlines": 5
+    },
+    "military_flights": 0,
+    "new_aircraft": {
+      "items": [
+        {
+          "aircraft_type": "A320",
+          "first_seen_ever": 1699996400,
+          "flags": 0,
+          "icao_hex": "3c6444",
+          "registration": "D-AIAA",
+          "type_desc": "Airbus A320"
+        },
+        {
+          "aircraft_type": "A321",
+          "first_seen_ever": 1699992800,
+          "flags": 0,
+          "icao_hex": "3c6445",
+          "registration": "D-AIAB",
+          "type_desc": ""
+        },
+        {
+          "aircraft_type": "B738",
+          "first_seen_ever": 1699827200,
+          "flags": 2,
+          "icao_hex": "48400a",
+          "registration": "EI-DAA",
+          "type_desc": "Boeing 737"
+        },
+        {
+          "aircraft_type": null,
+          "first_seen_ever": 1699740800,
+          "flags": 16,
+          "icao_hex": "f00001",
+          "registration": null,
+          "type_desc": ""
+        },
+        {
+          "aircraft_type": "B738",
+          "first_seen_ever": 1699568000,
+          "flags": 0,
+          "icao_hex": "48400b",
+          "registration": "EI-DAB",
+          "type_desc": ""
+        }
+      ],
+      "total": 5
+    },
+    "oldest_flight": 1699568000,
+    "previous_window": {
+      "from_ts": 1698272000,
+      "to_ts": 1699136000,
+      "total_flights": 1,
+      "total_positions": 200,
+      "unique_aircraft": 1
+    },
+    "range": {
+      "from": 1699136000,
+      "to": 1700000000
+    },
+    "receiver_lat": 52.2,
+    "receiver_lon": 21.0,
+    "source_breakdown": {
+      "adsb": 90.7,
+      "mlat": 9.3,
+      "other": -0.0
+    },
+    "squawk_counts": {
+      "7500": 0,
+      "7600": 1,
+      "7700": 1
+    },
+    "top_aircraft_types": [
+      {
+        "flights": 2,
+        "type": "B738",
+        "type_desc": "Boeing 737",
+        "unique_aircraft": 2
+      },
+      {
+        "flights": 1,
+        "type": "A321",
+        "type_desc": "",
+        "unique_aircraft": 1
+      },
+      {
+        "flights": 1,
+        "type": "A320",
+        "type_desc": "Airbus A320",
+        "unique_aircraft": 1
+      }
+    ],
+    "top_airlines": [
+      {
+        "airline": "RYR",
+        "airline_name": "Ryanair",
+        "flights": 2,
+        "unique_aircraft": 2
+      },
+      {
+        "airline": "DLH",
+        "airline_name": "Lufthansa",
+        "flights": 2,
+        "unique_aircraft": 2
+      },
+      {
+        "airline": "TES",
+        "airline_name": null,
+        "flights": 1,
+        "unique_aircraft": 1
+      }
+    ],
+    "top_airports": [
+      {
+        "appearances": 2,
+        "country": "Netherlands",
+        "icao_code": "EHAM",
+        "name": "Schiphol"
+      },
+      {
+        "appearances": 2,
+        "country": "Germany",
+        "icao_code": "EDDF",
+        "name": "Frankfurt"
+      }
+    ],
+    "top_countries": [
+      {
+        "country": "Netherlands",
+        "flights": 2,
+        "unique_aircraft": 2
+      },
+      {
+        "country": "Germany",
+        "flights": 2,
+        "unique_aircraft": 2
+      },
+      {
+        "country": "Unknown",
+        "flights": 1,
+        "unique_aircraft": 1
+      }
+    ],
+    "top_routes": [
+      {
+        "dest_icao": "EHAM",
+        "dest_name": "Schiphol",
+        "flights": 1,
+        "origin_icao": "EDDF",
+        "origin_name": "Frankfurt"
+      },
+      {
+        "dest_icao": "EDDF",
+        "dest_name": "Frankfurt",
+        "flights": 1,
+        "origin_icao": "EHAM",
+        "origin_name": "Schiphol"
+      }
+    ],
+    "total_flights": 5,
+    "total_positions": 270,
+    "trends": {
+      "flights_24h_prev": 1,
+      "flights_7d_prev": 0
+    },
+    "unique_aircraft": 5,
+    "unique_airlines": 3
+  },
+  "unfiltered": {
+    "altitude_distribution": [
+      {
+        "band": "Ground / <1k",
+        "count": 0
+      },
+      {
+        "band": "1k\u20135k",
+        "count": 1
+      },
+      {
+        "band": "5k\u201310k",
+        "count": 1
+      },
+      {
+        "band": "10k\u201320k",
+        "count": 1
+      },
+      {
+        "band": "20k\u201330k",
+        "count": 1
+      },
+      {
+        "band": "30k\u201340k",
+        "count": 2
+      },
+      {
+        "band": "40k+",
+        "count": 1
+      }
+    ],
+    "anonymous_flights": 1,
+    "daily_unique_aircraft": [
+      {
+        "day": "2023-10-25",
+        "flights": 1,
+        "unique_aircraft": 1
+      },
+      {
+        "day": "2023-11-09",
+        "flights": 1,
+        "unique_aircraft": 1
+      },
+      {
+        "day": "2023-11-11",
+        "flights": 1,
+        "unique_aircraft": 1
+      },
+      {
+        "day": "2023-11-12",
+        "flights": 1,
+        "unique_aircraft": 1
+      },
+      {
+        "day": "2023-11-14",
+        "flights": 2,
+        "unique_aircraft": 2
+      }
+    ],
+    "db_size_bytes": null,
+    "flights_last_24h": 2,
+    "flights_last_7d": 5,
+    "frequent_aircraft": [
+      {
+        "aircraft_type": "A320",
+        "flags": 0,
+        "flights": 1,
+        "icao_hex": "3c6444",
+        "last_seen": 1699998200,
+        "registration": "D-AIAA",
+        "type_desc": "Airbus A320"
+      },
+      {
+        "aircraft_type": "A321",
+        "flags": 0,
+        "flights": 1,
+        "icao_hex": "3c6445",
+        "last_seen": 1699997000,
+        "registration": "D-AIAB",
+        "type_desc": ""
+      },
+      {
+        "aircraft_type": "A319",
+        "flags": 1,
+        "flights": 1,
+        "icao_hex": "400abc",
+        "last_seen": 1698272900,
+        "registration": "G-ABCD",
+        "type_desc": "Airbus A319"
+      },
+      {
+        "aircraft_type": "B738",
+        "flags": 2,
+        "flights": 1,
+        "icao_hex": "48400a",
+        "last_seen": 1699828100,
+        "registration": "EI-DAA",
+        "type_desc": "Boeing 737"
+      },
+      {
+        "aircraft_type": "B738",
+        "flags": 0,
+        "flights": 1,
+        "icao_hex": "48400b",
+        "last_seen": 1699568900,
+        "registration": "EI-DAB",
+        "type_desc": ""
+      },
+      {
+        "aircraft_type": "B772",
+        "flags": 0,
+        "flights": 1,
+        "icao_hex": "a12345",
+        "last_seen": 1696544900,
+        "registration": "N12345",
+        "type_desc": ""
+      },
+      {
+        "aircraft_type": null,
+        "flags": 16,
+        "flights": 1,
+        "icao_hex": "f00001",
+        "last_seen": 1699741700,
+        "registration": null,
+        "type_desc": ""
+      }
+    ],
+    "furthest_aircraft": {
+      "adsb_positions": 80,
+      "aircraft_type": "B738",
+      "callsign": "RYR66",
+      "category": null,
+      "dest_country": null,
+      "dest_icao": null,
+      "dest_name": null,
+      "duration_sec": 900,
+      "flags": 0,
+      "icao_hex": "48400b",
+      "id": 4,
+      "last_seen": 1699568900,
+      "lat_max": 0.0,
+      "lat_min": 0.0,
+      "lon_max": 0.0,
+      "lon_min": 0.0,
+      "max_alt_baro": 25000,
+      "max_distance_nm": 300.9,
+      "max_gs": 400.0,
+      "mlat_positions": 0,
+      "origin_country": null,
+      "origin_icao": null,
+      "origin_name": null,
+      "primary_source": "adsb",
+      "record_set_at": 1699568000,
+      "registration": "EI-DAB",
+      "squawk": "7600",
+      "total_positions": 80,
+      "type_desc": ""
+    },
+    "heatmap": [
+      {
+        "count": 1,
+        "dow": 0,
+        "hour": 22
+      },
+      {
+        "count": 1,
+        "dow": 2,
+        "hour": 20
+      },
+      {
+        "count": 1,
+        "dow": 2,
+        "hour": 21
+      },
+      {
+        "count": 1,
+        "dow": 3,
+        "hour": 22
+      },
+      {
+        "count": 2,
+        "dow": 4,
+        "hour": 22
+      },
+      {
+        "count": 1,
+        "dow": 6,
+        "hour": 22
+      }
+    ],
+    "hourly_distribution": [
+      {
+        "count": 0,
+        "hour": 0
+      },
+      {
+        "count": 0,
+        "hour": 1
+      },
+      {
+        "count": 0,
+        "hour": 2
+      },
+      {
+        "count": 0,
+        "hour": 3
+      },
+      {
+        "count": 0,
+        "hour": 4
+      },
+      {
+        "count": 0,
+        "hour": 5
+      },
+      {
+        "count": 0,
+        "hour": 6
+      },
+      {
+        "count": 0,
+        "hour": 7
+      },
+      {
+        "count": 0,
+        "hour": 8
+      },
+      {
+        "count": 0,
+        "hour": 9
+      },
+      {
+        "count": 0,
+        "hour": 10
+      },
+      {
+        "count": 0,
+        "hour": 11
+      },
+      {
+        "count": 0,
+        "hour": 12
+      },
+      {
+        "count": 0,
+        "hour": 13
+      },
+      {
+        "count": 0,
+        "hour": 14
+      },
+      {
+        "count": 0,
+        "hour": 15
+      },
+      {
+        "count": 0,
+        "hour": 16
+      },
+      {
+        "count": 0,
+        "hour": 17
+      },
+      {
+        "count": 0,
+        "hour": 18
+      },
+      {
+        "count": 0,
+        "hour": 19
+      },
+      {
+        "count": 1,
+        "hour": 20
+      },
+      {
+        "count": 1,
+        "hour": 21
+      },
+      {
+        "count": 5,
+        "hour": 22
+      },
+      {
+        "count": 0,
+        "hour": 23
+      }
+    ],
+    "interesting_flights": 1,
+    "lifetime": {
+      "db_size_bytes": null,
+      "oldest_flight": 1696544000,
+      "source_breakdown": {
+        "adsb": 96.8,
+        "mlat": 3.2,
+        "other": 0.0
+      },
+      "total_flights": 7,
+      "total_positions": 770,
+      "unique_aircraft": 7,
+      "unique_airlines": 5
+    },
+    "military_flights": 1,
+    "new_aircraft": {
+      "items": [
+        {
+          "aircraft_type": "A320",
+          "first_seen_ever": 1699996400,
+          "flags": 0,
+          "icao_hex": "3c6444",
+          "registration": "D-AIAA",
+          "type_desc": "Airbus A320"
+        },
+        {
+          "aircraft_type": "A321",
+          "first_seen_ever": 1699992800,
+          "flags": 0,
+          "icao_hex": "3c6445",
+          "registration": "D-AIAB",
+          "type_desc": ""
+        }
+      ],
+      "total": 2
+    },
+    "oldest_flight": 1696544000,
+    "previous_window": null,
+    "range": null,
+    "receiver_lat": 52.2,
+    "receiver_lon": 21.0,
+    "source_breakdown": {
+      "adsb": 96.8,
+      "mlat": 3.2,
+      "other": 0.0
+    },
+    "squawk_counts": {
+      "7500": 1,
+      "7600": 1,
+      "7700": 1
+    },
+    "top_aircraft_types": [
+      {
+        "flights": 2,
+        "type": "B738",
+        "type_desc": "Boeing 737",
+        "unique_aircraft": 2
+      },
+      {
+        "flights": 1,
+        "type": "B772",
+        "type_desc": "",
+        "unique_aircraft": 1
+      },
+      {
+        "flights": 1,
+        "type": "A321",
+        "type_desc": "",
+        "unique_aircraft": 1
+      },
+      {
+        "flights": 1,
+        "type": "A320",
+        "type_desc": "Airbus A320",
+        "unique_aircraft": 1
+      },
+      {
+        "flights": 1,
+        "type": "A319",
+        "type_desc": "Airbus A319",
+        "unique_aircraft": 1
+      }
+    ],
+    "top_airlines": [
+      {
+        "airline": "RYR",
+        "airline_name": "Ryanair",
+        "flights": 2,
+        "unique_aircraft": 2
+      },
+      {
+        "airline": "DLH",
+        "airline_name": "Lufthansa",
+        "flights": 2,
+        "unique_aircraft": 2
+      },
+      {
+        "airline": "UAL",
+        "airline_name": null,
+        "flights": 1,
+        "unique_aircraft": 1
+      },
+      {
+        "airline": "TES",
+        "airline_name": null,
+        "flights": 1,
+        "unique_aircraft": 1
+      },
+      {
+        "airline": "BAW",
+        "airline_name": null,
+        "flights": 1,
+        "unique_aircraft": 1
+      }
+    ],
+    "top_airports": [
+      {
+        "appearances": 2,
+        "country": "Netherlands",
+        "icao_code": "EHAM",
+        "name": "Schiphol"
+      },
+      {
+        "appearances": 2,
+        "country": "Germany",
+        "icao_code": "EDDF",
+        "name": "Frankfurt"
+      }
+    ],
+    "top_countries": [
+      {
+        "country": "Netherlands",
+        "flights": 2,
+        "unique_aircraft": 2
+      },
+      {
+        "country": "Germany",
+        "flights": 2,
+        "unique_aircraft": 2
+      },
+      {
+        "country": "Unknown",
+        "flights": 1,
+        "unique_aircraft": 1
+      },
+      {
+        "country": "United States",
+        "flights": 1,
+        "unique_aircraft": 1
+      },
+      {
+        "country": "United Kingdom",
+        "flights": 1,
+        "unique_aircraft": 1
+      }
+    ],
+    "top_routes": [
+      {
+        "dest_icao": "EHAM",
+        "dest_name": "Schiphol",
+        "flights": 1,
+        "origin_icao": "EDDF",
+        "origin_name": "Frankfurt"
+      },
+      {
+        "dest_icao": "EDDF",
+        "dest_name": "Frankfurt",
+        "flights": 1,
+        "origin_icao": "EHAM",
+        "origin_name": "Schiphol"
+      }
+    ],
+    "total_flights": 7,
+    "total_positions": 770,
+    "trends": {
+      "flights_24h_prev": 1,
+      "flights_7d_prev": 0
+    },
+    "unique_aircraft": 7,
+    "unique_airlines": 5
+  }
+}

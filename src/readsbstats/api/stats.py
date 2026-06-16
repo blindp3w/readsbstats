@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import time
+from typing import NamedTuple
 
 from fastapi import APIRouter, Query
 
@@ -45,223 +46,78 @@ def api_stats(
         return result
 
 
-def _compute_stats_sync(from_ts: int | None, to_ts: int | None) -> dict:
-    """Build the full ``/api/stats`` payload (every sub-query).
+# ---------------------------------------------------------------------------
+# Shared aggregate-column SQL for the main /api/stats aggregation, referenced by
+# BOTH the unfiltered (all-time) and filtered (windowed) queries so the ~17
+# columns can't drift between them. Static SQL — no interpolation, no params.
+# ---------------------------------------------------------------------------
+_STATS_AGG_COLS = """
+    COUNT(*)                                                          AS total_flights,
+    SUM(total_positions)                                              AS total_positions,
+    COUNT(DISTINCT icao_hex)                                          AS unique_aircraft,
+    COUNT(DISTINCT CASE
+        WHEN callsign IS NOT NULL AND callsign != '' AND length(callsign) >= 3
+        THEN substr(callsign,1,3) END)                                AS unique_airlines,
+    MIN(first_seen)                                                   AS oldest_flight,
+    ROUND(100.0 * SUM(adsb_positions) / NULLIF(SUM(total_positions),0), 1) AS adsb_pct,
+    ROUND(100.0 * SUM(mlat_positions) / NULLIF(SUM(total_positions),0), 1) AS mlat_pct,
+    SUM(CASE WHEN max_alt_baro >= 0     AND max_alt_baro < 1000  THEN 1 ELSE 0 END) AS alt_0_1k,
+    SUM(CASE WHEN max_alt_baro >= 1000  AND max_alt_baro < 5000  THEN 1 ELSE 0 END) AS alt_1k_5k,
+    SUM(CASE WHEN max_alt_baro >= 5000  AND max_alt_baro < 10000 THEN 1 ELSE 0 END) AS alt_5k_10k,
+    SUM(CASE WHEN max_alt_baro >= 10000 AND max_alt_baro < 20000 THEN 1 ELSE 0 END) AS alt_10k_20k,
+    SUM(CASE WHEN max_alt_baro >= 20000 AND max_alt_baro < 30000 THEN 1 ELSE 0 END) AS alt_20k_30k,
+    SUM(CASE WHEN max_alt_baro >= 30000 AND max_alt_baro < 40000 THEN 1 ELSE 0 END) AS alt_30k_40k,
+    SUM(CASE WHEN max_alt_baro >= 40000 THEN 1 ELSE 0 END)           AS alt_40k_plus,
+    SUM(CASE WHEN squawk = '7700' THEN 1 ELSE 0 END)                 AS squawk_7700,
+    SUM(CASE WHEN squawk = '7600' THEN 1 ELSE 0 END)                 AS squawk_7600,
+    SUM(CASE WHEN squawk = '7500' THEN 1 ELSE 0 END)                 AS squawk_7500
+"""
 
-    Extracted from ``api_stats`` so the cache prewarmer can warm the all-time
-    payload (``from_ts=to_ts=None``) on a background thread. Pure reads plus
-    ``os.path.getsize`` — never writes ``history.db``; only the caller mutates
-    the in-memory response cache.
+# Relative-window flight counts — appended to the UNFILTERED aggregation only
+# (the filtered path reads these from a separate `live` query over all flights).
+# Six bound params, in order:
+#   cutoff_24h, cutoff_7d, cutoff_prev_24h, cutoff_24h, cutoff_prev_7d, cutoff_7d
+# Audit 2026-06-01 S: half-open [lo, hi) — matches _build_date_filter and avoids
+# double-counting at the per-second cutoff boundary.
+_STATS_REL_COLS = """
+    SUM(CASE WHEN first_seen >= ? THEN 1 ELSE 0 END)                    AS flights_24h,
+    SUM(CASE WHEN first_seen >= ? THEN 1 ELSE 0 END)                    AS flights_7d,
+    SUM(CASE WHEN first_seen >= ? AND first_seen < ? THEN 1 ELSE 0 END) AS flights_prev_24h,
+    SUM(CASE WHEN first_seen >= ? AND first_seen < ? THEN 1 ELSE 0 END) AS flights_prev_7d
+"""
 
-    The unfiltered (all-time) payload embeds ``now``-relative fields
-    (``flights_last_24h``, ``trends``, the 24 h new-aircraft cutoff) computed at
-    call time; when served from the prewarmed cache they reflect warm time
-    (up to ~1 h stale at the prewarm cadence). Acceptable — all-time is an
-    opt-in lifetime view and the page defaults to 7d.
+
+class _StatsCtx(NamedTuple):
+    """Window context threaded into the per-section helpers below.
+
+    Holds the half-open date-filter fragments (built from `_build_date_filter`)
+    plus the relative cutoffs / window bounds. **Helpers must read time-derived
+    values FROM here** — never recompute `now`/cutoffs inside a helper, or the
+    relative-window counts drift from the rest of the payload.
     """
-    filtered = from_ts is not None or to_ts is not None
-    conn = _deps.db()
-    now = int(time.time())
-    cutoff_24h      = now - 86400
-    cutoff_7d       = now - 7 * 86400
-    cutoff_30d      = now - 30 * 86400
-    cutoff_prev_24h = now - 2 * 86400
-    cutoff_prev_7d  = now - 14 * 86400
+    filtered: bool
+    fw: str       # "WHERE first_seen >= ? AND first_seen < ?" (unaliased) or ""
+    fjw: str      # "WHERE f.first_seen ..." (aliased) or ""
+    fjwa: str     # "AND f.first_seen ..." (aliased, appended to a WHERE) or ""
+    fp: tuple     # bound params for the fragments
+    ts_lo: int    # window bounds (meaningful only when filtered)
+    ts_hi: int
+    cutoff_24h: int
+    cutoff_30d: int
 
-    # WHERE fragments injected into all range-aware queries. BE-16: built from
-    # the shared half-open _build_date_filter so stats match history/export
-    # ([from, to) — a flight at exactly `to` is excluded).
-    if filtered:
-        ts_lo = from_ts if from_ts is not None else 0
-        ts_hi = to_ts   if to_ts   is not None else now
-        _dc,  _fp_list = _deps._build_date_filter(ts_lo, ts_hi, col="first_seen")
-        _djc, _        = _deps._build_date_filter(ts_lo, ts_hi, col="f.first_seen")
-        _dsql  = " AND ".join(_dc)    # first_seen >= ? AND first_seen < ?
-        _djsql = " AND ".join(_djc)   # f.first_seen >= ? AND f.first_seen < ?
-        _fw   = "WHERE " + _dsql      # standalone, unaliased
-        _fwa  = "AND "   + _dsql      # appended to existing WHERE, unaliased
-        _fjw  = "WHERE " + _djsql     # standalone, aliased table
-        _fjwa = "AND "   + _djsql     # appended to existing WHERE, aliased table
-        _fp   = tuple(_fp_list)
-    else:
-        _fw = _fwa = _fjw = _fjwa = ""
-        _fp = ()
 
-    # --- Main aggregation ---
-    if not filtered:
-        # Single pass including relative-window CASE WHENs
-        agg = conn.execute(
-            """
-            SELECT
-                COUNT(*)                                                          AS total_flights,
-                SUM(total_positions)                                              AS total_positions,
-                COUNT(DISTINCT icao_hex)                                          AS unique_aircraft,
-                COUNT(DISTINCT CASE
-                    WHEN callsign IS NOT NULL AND callsign != '' AND length(callsign) >= 3
-                    THEN substr(callsign,1,3) END)                                AS unique_airlines,
-                MIN(first_seen)                                                   AS oldest_flight,
-                -- Audit 2026-06-01 S: half-open [lo, hi) — matches
-                -- _build_date_filter and excludes double-counting at the
-                -- per-second cutoff boundary.
-                SUM(CASE WHEN first_seen >= ? THEN 1 ELSE 0 END)                  AS flights_24h,
-                SUM(CASE WHEN first_seen >= ? THEN 1 ELSE 0 END)                  AS flights_7d,
-                SUM(CASE WHEN first_seen >= ? AND first_seen < ? THEN 1 ELSE 0 END) AS flights_prev_24h,
-                SUM(CASE WHEN first_seen >= ? AND first_seen < ? THEN 1 ELSE 0 END) AS flights_prev_7d,
-                ROUND(100.0 * SUM(adsb_positions) / NULLIF(SUM(total_positions),0), 1) AS adsb_pct,
-                ROUND(100.0 * SUM(mlat_positions) / NULLIF(SUM(total_positions),0), 1) AS mlat_pct,
-                SUM(CASE WHEN max_alt_baro >= 0     AND max_alt_baro < 1000  THEN 1 ELSE 0 END) AS alt_0_1k,
-                SUM(CASE WHEN max_alt_baro >= 1000  AND max_alt_baro < 5000  THEN 1 ELSE 0 END) AS alt_1k_5k,
-                SUM(CASE WHEN max_alt_baro >= 5000  AND max_alt_baro < 10000 THEN 1 ELSE 0 END) AS alt_5k_10k,
-                SUM(CASE WHEN max_alt_baro >= 10000 AND max_alt_baro < 20000 THEN 1 ELSE 0 END) AS alt_10k_20k,
-                SUM(CASE WHEN max_alt_baro >= 20000 AND max_alt_baro < 30000 THEN 1 ELSE 0 END) AS alt_20k_30k,
-                SUM(CASE WHEN max_alt_baro >= 30000 AND max_alt_baro < 40000 THEN 1 ELSE 0 END) AS alt_30k_40k,
-                SUM(CASE WHEN max_alt_baro >= 40000 THEN 1 ELSE 0 END)           AS alt_40k_plus,
-                SUM(CASE WHEN squawk = '7700' THEN 1 ELSE 0 END)                 AS squawk_7700,
-                SUM(CASE WHEN squawk = '7600' THEN 1 ELSE 0 END)                 AS squawk_7600,
-                SUM(CASE WHEN squawk = '7500' THEN 1 ELSE 0 END)                 AS squawk_7500
-            FROM flights
-            """,
-            (cutoff_24h, cutoff_7d, cutoff_prev_24h, cutoff_24h, cutoff_prev_7d, cutoff_7d),
-        ).fetchone()
-        flights_24h      = agg["flights_24h"]
-        flights_7d       = agg["flights_7d"]
-        flights_prev_24h = agg["flights_prev_24h"] or 0
-        flights_prev_7d  = agg["flights_prev_7d"]  or 0
-    else:
-        # Filtered: agg over selected range; live window stats from separate query
-        agg = conn.execute(
-            f"""
-            SELECT
-                COUNT(*)                                                          AS total_flights,
-                SUM(total_positions)                                              AS total_positions,
-                COUNT(DISTINCT icao_hex)                                          AS unique_aircraft,
-                COUNT(DISTINCT CASE
-                    WHEN callsign IS NOT NULL AND callsign != '' AND length(callsign) >= 3
-                    THEN substr(callsign,1,3) END)                                AS unique_airlines,
-                MIN(first_seen)                                                   AS oldest_flight,
-                ROUND(100.0 * SUM(adsb_positions) / NULLIF(SUM(total_positions),0), 1) AS adsb_pct,
-                ROUND(100.0 * SUM(mlat_positions) / NULLIF(SUM(total_positions),0), 1) AS mlat_pct,
-                SUM(CASE WHEN max_alt_baro >= 0     AND max_alt_baro < 1000  THEN 1 ELSE 0 END) AS alt_0_1k,
-                SUM(CASE WHEN max_alt_baro >= 1000  AND max_alt_baro < 5000  THEN 1 ELSE 0 END) AS alt_1k_5k,
-                SUM(CASE WHEN max_alt_baro >= 5000  AND max_alt_baro < 10000 THEN 1 ELSE 0 END) AS alt_5k_10k,
-                SUM(CASE WHEN max_alt_baro >= 10000 AND max_alt_baro < 20000 THEN 1 ELSE 0 END) AS alt_10k_20k,
-                SUM(CASE WHEN max_alt_baro >= 20000 AND max_alt_baro < 30000 THEN 1 ELSE 0 END) AS alt_20k_30k,
-                SUM(CASE WHEN max_alt_baro >= 30000 AND max_alt_baro < 40000 THEN 1 ELSE 0 END) AS alt_30k_40k,
-                SUM(CASE WHEN max_alt_baro >= 40000 THEN 1 ELSE 0 END)           AS alt_40k_plus,
-                SUM(CASE WHEN squawk = '7700' THEN 1 ELSE 0 END)                 AS squawk_7700,
-                SUM(CASE WHEN squawk = '7600' THEN 1 ELSE 0 END)                 AS squawk_7600,
-                SUM(CASE WHEN squawk = '7500' THEN 1 ELSE 0 END)                 AS squawk_7500
-            FROM flights {_fw}
-            """,
-            _fp,
-        ).fetchone()
-        live = conn.execute(
-            """
-            SELECT
-                -- Audit 2026-06-01 S: half-open [lo, hi) — see main block above.
-                SUM(CASE WHEN first_seen >= ? THEN 1 ELSE 0 END)                     AS flights_24h,
-                SUM(CASE WHEN first_seen >= ? THEN 1 ELSE 0 END)                     AS flights_7d,
-                SUM(CASE WHEN first_seen >= ? AND first_seen < ? THEN 1 ELSE 0 END) AS flights_prev_24h,
-                SUM(CASE WHEN first_seen >= ? AND first_seen < ? THEN 1 ELSE 0 END) AS flights_prev_7d
-            FROM flights
-            """,
-            (cutoff_24h, cutoff_7d, cutoff_prev_24h, cutoff_24h, cutoff_prev_7d, cutoff_7d),
-        ).fetchone()
-        flights_24h      = live["flights_24h"]
-        flights_7d       = live["flights_7d"]
-        flights_prev_24h = live["flights_prev_24h"] or 0
-        flights_prev_7d  = live["flights_prev_7d"]  or 0
+# ---------------------------------------------------------------------------
+# Per-section helpers — each runs one independent sub-query and returns its
+# slice of the /api/stats payload. Kept module-private and split out of the
+# 500-LoC _compute_stats_sync orchestrator (the tightly-coupled aggregation
+# core stays inline in the orchestrator). Convention mirrors api/map.py's
+# _compute_*_sync helpers.
+# ---------------------------------------------------------------------------
 
-    adsb_pct  = agg["adsb_pct"]  or 0
-    mlat_pct  = agg["mlat_pct"]  or 0
-    other_pct = round(100.0 - adsb_pct - mlat_pct, 1)
-
-    # Previous-window deltas. Frontend KPI cards have a `prev` slot that
-    # was previously only fed by `trends.flights_*_prev` (24h/7d only),
-    # leaving every other range with empty em-dashes. Compute totals over
-    # `[ts_lo - D, ts_lo]` where D = current window length so Flights /
-    # Unique aircraft / Position fixes all show a real comparison. Skipped
-    # for unfiltered (all-time) since there's no equivalent prior window.
-    previous_window: dict | None = None
-    if filtered:
-        window_seconds = ts_hi - ts_lo
-        if window_seconds > 0:
-            prev_lo = ts_lo - window_seconds
-            prev_hi = ts_lo
-            # Half-open `[prev_lo, prev_hi)` (BE-16): the upper bound is
-            # exclusive so a flight whose first_seen lands on the boundary
-            # second `ts_lo` belongs to the current window only, never to
-            # both. This matches the current-window filter, which is also
-            # half-open via `_build_date_filter()`.
-            prev_agg = conn.execute(
-                """
-                SELECT
-                    COUNT(*)                  AS total_flights,
-                    SUM(total_positions)      AS total_positions,
-                    COUNT(DISTINCT icao_hex)  AS unique_aircraft
-                FROM flights
-                WHERE first_seen >= ? AND first_seen < ?
-                """,
-                (prev_lo, prev_hi),
-            ).fetchone()
-            previous_window = {
-                "from_ts":         prev_lo,
-                "to_ts":           prev_hi,
-                "total_flights":   prev_agg["total_flights"] or 0,
-                "total_positions": prev_agg["total_positions"] or 0,
-                "unique_aircraft": prev_agg["unique_aircraft"] or 0,
-            }
-
-    try:
-        db_size = os.path.getsize(config.DB_PATH)
-    except OSError:
-        db_size = None
-
-    # Lifetime block — receiver-wide totals that are NOT scoped to the
-    # selected window. The Statistics page's "About this receiver" footer
-    # reads from this so it stays stable when the user changes the range
-    # picker. When `filtered=False` the main `agg` query is ALREADY over
-    # all flights, so we reuse those values; when filtered, a small
-    # extra aggregation runs.
-    if not filtered:
-        lifetime_total_flights    = agg["total_flights"]
-        # COALESCE NULL → 0: SUM() returns NULL on an empty `flights`
-        # table; the StatsResponse TS interface declares this as `number`
-        # (not nullable), so coerce here rather than lie about the type.
-        lifetime_total_positions  = agg["total_positions"] or 0
-        lifetime_unique_aircraft  = agg["unique_aircraft"]
-        lifetime_unique_airlines  = agg["unique_airlines"]
-        lifetime_oldest_flight    = agg["oldest_flight"]
-        lifetime_adsb_pct         = adsb_pct
-        lifetime_mlat_pct         = mlat_pct
-    else:
-        life = conn.execute(
-            """
-            SELECT
-                COUNT(*)                                                          AS total_flights,
-                SUM(total_positions)                                              AS total_positions,
-                COUNT(DISTINCT icao_hex)                                          AS unique_aircraft,
-                COUNT(DISTINCT CASE
-                    WHEN callsign IS NOT NULL AND callsign != '' AND length(callsign) >= 3
-                    THEN substr(callsign,1,3) END)                                AS unique_airlines,
-                MIN(first_seen)                                                   AS oldest_flight,
-                ROUND(100.0 * SUM(adsb_positions) / NULLIF(SUM(total_positions),0), 1) AS adsb_pct,
-                ROUND(100.0 * SUM(mlat_positions) / NULLIF(SUM(total_positions),0), 1) AS mlat_pct
-            FROM flights
-            """,
-        ).fetchone()
-        lifetime_total_flights    = life["total_flights"]
-        # See note in the unfiltered branch — SUM() can return NULL.
-        lifetime_total_positions  = life["total_positions"] or 0
-        lifetime_unique_aircraft  = life["unique_aircraft"]
-        lifetime_unique_airlines  = life["unique_airlines"]
-        lifetime_oldest_flight    = life["oldest_flight"]
-        lifetime_adsb_pct         = life["adsb_pct"] or 0
-        lifetime_mlat_pct         = life["mlat_pct"] or 0
-    lifetime_other_pct = round(100.0 - lifetime_adsb_pct - lifetime_mlat_pct, 1)
-
-    # Military + interesting — one JOIN pass (OR-merge tar1090-db + ADSBx flags)
-    flags_row = conn.execute(
+def _stats_flags(conn, ctx: _StatsCtx) -> dict:
+    """Military / interesting / anonymous flight counts (one JOIN pass,
+    OR-merging tar1090-db + ADSBx flags)."""
+    row = conn.execute(
         f"""
         SELECT
             SUM(CASE WHEN ({_deps._FLAGS_EXPR_F} & 1) = 1 THEN 1 ELSE 0 END) AS military,
@@ -272,13 +128,19 @@ def _compute_stats_sync(from_ts: int | None, to_ts: int | None) -> dict:
         FROM flights f
         LEFT JOIN aircraft_db     adb ON adb.icao_hex = f.icao_hex
         LEFT JOIN adsbx_overrides axo ON axo.icao_hex = f.icao_hex
-        {_fjw}
+        {ctx.fjw}
         """,
-        _fp,
+        ctx.fp,
     ).fetchone()
+    return {
+        "military":    row["military"]    or 0,
+        "interesting": row["interesting"] or 0,
+        "anonymous":   row["anonymous"]   or 0,
+    }
 
-    # Top airlines
-    top_airlines = conn.execute(
+
+def _stats_top_airlines(conn, ctx: _StatsCtx) -> list[dict]:
+    rows = conn.execute(
         f"""
         SELECT
             substr(f.callsign,1,3)      AS airline,
@@ -287,20 +149,21 @@ def _compute_stats_sync(from_ts: int | None, to_ts: int | None) -> dict:
             COUNT(DISTINCT f.icao_hex)  AS unique_aircraft
         FROM flights f
         LEFT JOIN airlines al ON al.icao_code = substr(f.callsign,1,3)
-        WHERE f.callsign IS NOT NULL AND length(f.callsign) >= 3 {_fjwa}
+        WHERE f.callsign IS NOT NULL AND length(f.callsign) >= 3 {ctx.fjwa}
         GROUP BY airline
         ORDER BY flights DESC
         LIMIT 20
         """,
-        _fp,
+        ctx.fp,
     ).fetchall()
+    return [dict(r) for r in rows]
 
-    # Top aircraft types
-    # PY-2 (Audit 2026-05-31): include adsbx_overrides so types known only
-    # via adsbx still appear in the stats panel and match what /api/flights
-    # displays. The flight-row → aircraft_db → adsbx_overrides priority
-    # mirrors _ENRICH_TYPE used everywhere else.
-    top_types = conn.execute(
+
+def _stats_top_aircraft_types(conn, ctx: _StatsCtx) -> list[dict]:
+    # PY-2 (Audit 2026-05-31): include adsbx_overrides so types known only via
+    # adsbx still appear and match /api/flights. flight-row → aircraft_db →
+    # adsbx_overrides priority mirrors _ENRICH_TYPE used everywhere else.
+    rows = conn.execute(
         f"""
         SELECT
             {_deps._ENRICH_TYPE}  AS type,
@@ -310,16 +173,18 @@ def _compute_stats_sync(from_ts: int | None, to_ts: int | None) -> dict:
         FROM flights f
         LEFT JOIN aircraft_db     adb ON adb.icao_hex = f.icao_hex
         LEFT JOIN adsbx_overrides axo ON axo.icao_hex = f.icao_hex
-        WHERE {_deps._ENRICH_TYPE} IS NOT NULL {_fjwa}
+        WHERE {_deps._ENRICH_TYPE} IS NOT NULL {ctx.fjwa}
         GROUP BY type
         ORDER BY flights DESC
         LIMIT 20
         """,
-        _fp,
+        ctx.fp,
     ).fetchall()
+    return [dict(r) for r in rows]
 
-    # Top routes (origin → destination, by flight count)
-    top_routes = conn.execute(
+
+def _stats_top_routes(conn, ctx: _StatsCtx) -> list[dict]:
+    rows = conn.execute(
         f"""
         SELECT cr.origin_icao,
                cr.dest_icao,
@@ -330,16 +195,18 @@ def _compute_stats_sync(from_ts: int | None, to_ts: int | None) -> dict:
         JOIN callsign_routes cr ON cr.callsign = f.callsign
         LEFT JOIN airports ap_o ON ap_o.icao_code = cr.origin_icao
         LEFT JOIN airports ap_d ON ap_d.icao_code = cr.dest_icao
-        WHERE cr.origin_icao IS NOT NULL AND cr.dest_icao IS NOT NULL {_fjwa}
+        WHERE cr.origin_icao IS NOT NULL AND cr.dest_icao IS NOT NULL {ctx.fjwa}
         GROUP BY cr.origin_icao, cr.dest_icao
         ORDER BY flights DESC
         LIMIT 20
         """,
-        _fp,
+        ctx.fp,
     ).fetchall()
+    return [dict(r) for r in rows]
 
-    # Top airports (combined origin + destination appearances)
-    top_airports = conn.execute(
+
+def _stats_top_airports(conn, ctx: _StatsCtx) -> list[dict]:
+    rows = conn.execute(
         f"""
         SELECT icao_code, name, country, SUM(cnt) AS appearances
         FROM (
@@ -347,40 +214,43 @@ def _compute_stats_sync(from_ts: int | None, to_ts: int | None) -> dict:
             FROM flights f
             JOIN callsign_routes cr ON cr.callsign = f.callsign
             JOIN airports ap_o ON ap_o.icao_code = cr.origin_icao
-            WHERE cr.origin_icao IS NOT NULL {_fjwa}
+            WHERE cr.origin_icao IS NOT NULL {ctx.fjwa}
             GROUP BY ap_o.icao_code
             UNION ALL
             SELECT ap_d.icao_code, ap_d.name, ap_d.country, COUNT(*) AS cnt
             FROM flights f
             JOIN callsign_routes cr ON cr.callsign = f.callsign
             JOIN airports ap_d ON ap_d.icao_code = cr.dest_icao
-            WHERE cr.dest_icao IS NOT NULL {_fjwa}
+            WHERE cr.dest_icao IS NOT NULL {ctx.fjwa}
             GROUP BY ap_d.icao_code
         )
         GROUP BY icao_code
         ORDER BY appearances DESC
         LIMIT 20
         """,
-        _fp + _fp,
+        ctx.fp + ctx.fp,
     ).fetchall()
+    return [dict(r) for r in rows]
 
-    # Hourly distribution
-    hourly = conn.execute(
+
+def _stats_hourly_distribution(conn, ctx: _StatsCtx) -> list[dict]:
+    rows = conn.execute(
         f"""
         SELECT CAST(strftime('%H', first_seen, 'unixepoch') AS INTEGER) AS hour,
                COUNT(*) AS count
-        FROM flights {_fw}
+        FROM flights {ctx.fw}
         GROUP BY hour
         ORDER BY hour
         """,
-        _fp,
+        ctx.fp,
     ).fetchall()
-    hourly_map = {r["hour"]: r["count"] for r in hourly}
-    hourly_dist = [{"hour": h, "count": hourly_map.get(h, 0)} for h in range(24)]
+    hourly_map = {r["hour"]: r["count"] for r in rows}
+    return [{"hour": h, "count": hourly_map.get(h, 0)} for h in range(24)]
 
-    # Daily unique aircraft
-    if not filtered:
-        daily = conn.execute(
+
+def _stats_daily_unique(conn, ctx: _StatsCtx) -> list[dict]:
+    if not ctx.filtered:
+        rows = conn.execute(
             """
             SELECT date(first_seen, 'unixepoch') AS day,
                    COUNT(DISTINCT icao_hex) AS unique_aircraft,
@@ -391,39 +261,40 @@ def _compute_stats_sync(from_ts: int | None, to_ts: int | None) -> dict:
             ORDER BY day ASC
             LIMIT 31
             """,
-            # LIMIT 31 not 30: cutoff_30d is `now - 30*86400` (an instant,
-            # not a day boundary), so the WHERE typically straddles 31
-            # distinct UTC date strings (partial start day + 30 full days
-            # ending today). With ASC ordering, LIMIT 30 would truncate
-            # today's bar — the most user-relevant one.
-            (cutoff_30d,),
+            # LIMIT 31 not 30: cutoff_30d is `now - 30*86400` (an instant, not a
+            # day boundary), so the WHERE typically straddles 31 distinct UTC
+            # date strings (partial start day + 30 full days ending today). With
+            # ASC ordering, LIMIT 30 would truncate today's bar.
+            (ctx.cutoff_30d,),
         ).fetchall()
     else:
-        daily = conn.execute(
+        rows = conn.execute(
             f"""
             SELECT date(first_seen, 'unixepoch') AS day,
                    COUNT(DISTINCT icao_hex) AS unique_aircraft,
                    COUNT(*) AS flights
             FROM flights
-            {_fw}
+            {ctx.fw}
             GROUP BY day
             ORDER BY day ASC
             """,
-            _fp,
+            ctx.fp,
         ).fetchall()
+    return [dict(r) for r in rows]
 
-    # New aircraft — first seen within the window
-    if not filtered:
-        new_having   = "HAVING MIN(f.first_seen) > ?"
-        new_cnt_sql  = "SELECT COUNT(*) FROM (SELECT icao_hex FROM flights GROUP BY icao_hex HAVING MIN(first_seen) > ?)"
-        new_params   = (cutoff_24h,)
+
+def _stats_new_aircraft(conn, ctx: _StatsCtx) -> dict:
+    if not ctx.filtered:
+        new_having  = "HAVING MIN(f.first_seen) > ?"
+        new_cnt_sql = "SELECT COUNT(*) FROM (SELECT icao_hex FROM flights GROUP BY icao_hex HAVING MIN(first_seen) > ?)"
+        new_params  = (ctx.cutoff_24h,)
     else:
         # BE-16: half-open [ts_lo, ts_hi) to match the rest of the stats range.
-        new_having   = "HAVING MIN(f.first_seen) >= ? AND MIN(f.first_seen) < ?"
-        new_cnt_sql  = "SELECT COUNT(*) FROM (SELECT icao_hex FROM flights GROUP BY icao_hex HAVING MIN(first_seen) >= ? AND MIN(first_seen) < ?)"
-        new_params   = (ts_lo, ts_hi)
+        new_having  = "HAVING MIN(f.first_seen) >= ? AND MIN(f.first_seen) < ?"
+        new_cnt_sql = "SELECT COUNT(*) FROM (SELECT icao_hex FROM flights GROUP BY icao_hex HAVING MIN(first_seen) >= ? AND MIN(first_seen) < ?)"
+        new_params  = (ctx.ts_lo, ctx.ts_hi)
 
-    new_aircraft_rows = conn.execute(
+    rows = conn.execute(
         f"""
         SELECT sub.icao_hex,
                COALESCE(f2.registration, adb.registration, axo.registration) AS registration,
@@ -456,10 +327,12 @@ def _compute_stats_sync(from_ts: int | None, to_ts: int | None) -> dict:
         """,
         new_params,
     ).fetchall()
-    new_aircraft_total = conn.execute(new_cnt_sql, new_params).fetchone()[0] or 0
+    total = conn.execute(new_cnt_sql, new_params).fetchone()[0] or 0
+    return {"total": total, "items": [dict(r) for r in rows]}
 
-    # Most frequent aircraft
-    frequent_aircraft = conn.execute(
+
+def _stats_frequent_aircraft(conn, ctx: _StatsCtx) -> list[dict]:
+    rows = conn.execute(
         f"""
         SELECT f.icao_hex,
                COALESCE(f.registration, adb.registration, axo.registration)  AS registration,
@@ -471,66 +344,239 @@ def _compute_stats_sync(from_ts: int | None, to_ts: int | None) -> dict:
         FROM flights f
         LEFT JOIN aircraft_db     adb ON adb.icao_hex = f.icao_hex
         LEFT JOIN adsbx_overrides axo ON axo.icao_hex = f.icao_hex
-        {_fjw}
+        {ctx.fjw}
         GROUP BY f.icao_hex
         ORDER BY flights DESC
         LIMIT 15
         """,
-        _fp,
+        ctx.fp,
     ).fetchall()
+    return [dict(r) for r in rows]
 
-    # Country breakdown — aggregated entirely in SQL using pre-built CASE expression
-    top_countries = [dict(r) for r in conn.execute(
+
+def _stats_top_countries(conn, ctx: _StatsCtx) -> list[dict]:
+    # Aggregated entirely in SQL via the pre-built CASE expression.
+    return [dict(r) for r in conn.execute(
         f"""
         SELECT {icao_ranges.COUNTRY_SQL_CASE} AS country,
                COUNT(*)                        AS flights,
                COUNT(DISTINCT icao_hex)        AS unique_aircraft
-        FROM flights {_fw}
+        FROM flights {ctx.fw}
         GROUP BY country
         ORDER BY flights DESC
         LIMIT 15
         """,
-        _fp,
+        ctx.fp,
     ).fetchall()]
 
-    # Activity heatmap
-    heatmap_rows = conn.execute(
+
+def _stats_heatmap(conn, ctx: _StatsCtx) -> list[dict]:
+    rows = conn.execute(
         f"""
         SELECT CAST(strftime('%w', first_seen, 'unixepoch') AS INT) AS dow,
                CAST(strftime('%H', first_seen, 'unixepoch') AS INT) AS hour,
                COUNT(*) AS count
-        FROM flights {_fw}
+        FROM flights {ctx.fw}
         GROUP BY dow, hour
         ORDER BY dow, hour
         """,
-        _fp,
+        ctx.fp,
     ).fetchall()
+    return [dict(r) for r in rows]
 
-    # Furthest detected aircraft. Sprint 1 #4: surface the record-set
-    # timestamp under the explicit `record_set_at` key so the frontend
-    # MaxRangeCard sublabel can render `{callsign} · set {date}`. This is
-    # the `first_seen` of the flight that holds the max-distance record
-    # (the flight could span hours; `first_seen` is when it started).
-    furthest_row = conn.execute(
+
+def _stats_furthest(conn, ctx: _StatsCtx) -> dict | None:
+    # Sprint 1 #4: surface the record-set timestamp under `record_set_at` so the
+    # frontend MaxRangeCard sublabel can render `{callsign} · set {date}`.
+    row = conn.execute(
         f"""
         SELECT {_deps._FLIGHT_COLS}
         FROM flights f {_deps._FLIGHT_JOIN}
-        WHERE f.max_distance_nm IS NOT NULL {_fjwa}
+        WHERE f.max_distance_nm IS NOT NULL {ctx.fjwa}
         ORDER BY f.max_distance_nm DESC
         LIMIT 1
         """,
-        _fp,
+        ctx.fp,
     ).fetchone()
-    if furthest_row:
-        furthest = dict(furthest_row)
-        # Rename, don't duplicate: keep a single timestamp key in the
-        # response so a future cleanup of `first_seen` from the projection
-        # doesn't leave a stale alias behind. No external consumer reads
-        # the original `first_seen` from `furthest_aircraft` — the
-        # Personal Records section uses `/api/stats/records` instead.
-        furthest["record_set_at"] = furthest.pop("first_seen", None)
+    if not row:
+        return None
+    furthest = dict(row)
+    # Rename, don't duplicate: keep a single timestamp key so a future cleanup of
+    # `first_seen` from the projection doesn't leave a stale alias behind.
+    furthest["record_set_at"] = furthest.pop("first_seen", None)
+    return furthest
+
+
+def _compute_stats_sync(from_ts: int | None, to_ts: int | None) -> dict:
+    """Build the full ``/api/stats`` payload (every sub-query).
+
+    Extracted from ``api_stats`` so the cache prewarmer can warm the all-time
+    payload (``from_ts=to_ts=None``) on a background thread. Pure reads plus
+    ``os.path.getsize`` — never writes ``history.db``; only the caller mutates
+    the in-memory response cache.
+
+    Structure: the tightly-coupled aggregation core (filter setup, main `agg`/
+    `live` queries, percentages, previous-window, lifetime) stays inline here;
+    each independent tail section is a ``_stats_*`` helper above, fed a
+    ``_StatsCtx``.
+
+    The unfiltered (all-time) payload embeds ``now``-relative fields
+    (``flights_last_24h``, ``trends``, the 24 h new-aircraft cutoff) computed at
+    call time; when served from the prewarmed cache they reflect warm time
+    (up to ~1 h stale at the prewarm cadence). Acceptable — all-time is an
+    opt-in lifetime view and the page defaults to 7d.
+    """
+    filtered = from_ts is not None or to_ts is not None
+    conn = _deps.db()
+    now = int(time.time())
+    cutoff_24h      = now - 86400
+    cutoff_7d       = now - 7 * 86400
+    cutoff_30d      = now - 30 * 86400
+    cutoff_prev_24h = now - 2 * 86400
+    cutoff_prev_7d  = now - 14 * 86400
+
+    # WHERE fragments injected into all range-aware queries. BE-16: built from
+    # the shared half-open _build_date_filter so stats match history/export
+    # ([from, to) — a flight at exactly `to` is excluded).
+    if filtered:
+        ts_lo = from_ts if from_ts is not None else 0
+        ts_hi = to_ts   if to_ts   is not None else now
+        _dc,  _fp_list = _deps._build_date_filter(ts_lo, ts_hi, col="first_seen")
+        _djc, _        = _deps._build_date_filter(ts_lo, ts_hi, col="f.first_seen")
+        _dsql  = " AND ".join(_dc)    # first_seen >= ? AND first_seen < ?
+        _djsql = " AND ".join(_djc)   # f.first_seen >= ? AND f.first_seen < ?
+        _fw   = "WHERE " + _dsql      # standalone, unaliased
+        _fjw  = "WHERE " + _djsql     # standalone, aliased table
+        _fjwa = "AND "   + _djsql     # appended to existing WHERE, aliased table
+        _fp   = tuple(_fp_list)
     else:
-        furthest = None
+        ts_lo = 0
+        ts_hi = now
+        _fw = _fjw = _fjwa = ""
+        _fp = ()
+
+    # --- Main aggregation (coupled core — stays inline) ---
+    if not filtered:
+        # Single pass: shared columns + the relative-window CASE WHENs.
+        agg = conn.execute(
+            f"SELECT {_STATS_AGG_COLS}, {_STATS_REL_COLS} FROM flights",
+            (cutoff_24h, cutoff_7d, cutoff_prev_24h, cutoff_24h, cutoff_prev_7d, cutoff_7d),
+        ).fetchone()
+        flights_24h      = agg["flights_24h"]
+        flights_7d       = agg["flights_7d"]
+        flights_prev_24h = agg["flights_prev_24h"] or 0
+        flights_prev_7d  = agg["flights_prev_7d"]  or 0
+    else:
+        # Filtered: agg over selected range; live window stats from separate query.
+        agg = conn.execute(
+            f"SELECT {_STATS_AGG_COLS} FROM flights {_fw}",
+            _fp,
+        ).fetchone()
+        live = conn.execute(
+            """
+            SELECT
+                -- Audit 2026-06-01 S: half-open [lo, hi) — see _STATS_REL_COLS.
+                SUM(CASE WHEN first_seen >= ? THEN 1 ELSE 0 END)                     AS flights_24h,
+                SUM(CASE WHEN first_seen >= ? THEN 1 ELSE 0 END)                     AS flights_7d,
+                SUM(CASE WHEN first_seen >= ? AND first_seen < ? THEN 1 ELSE 0 END) AS flights_prev_24h,
+                SUM(CASE WHEN first_seen >= ? AND first_seen < ? THEN 1 ELSE 0 END) AS flights_prev_7d
+            FROM flights
+            """,
+            (cutoff_24h, cutoff_7d, cutoff_prev_24h, cutoff_24h, cutoff_prev_7d, cutoff_7d),
+        ).fetchone()
+        flights_24h      = live["flights_24h"]
+        flights_7d       = live["flights_7d"]
+        flights_prev_24h = live["flights_prev_24h"] or 0
+        flights_prev_7d  = live["flights_prev_7d"]  or 0
+
+    adsb_pct  = agg["adsb_pct"]  or 0
+    mlat_pct  = agg["mlat_pct"]  or 0
+    other_pct = round(100.0 - adsb_pct - mlat_pct, 1)
+
+    # Previous-window deltas. Frontend KPI cards have a `prev` slot that was
+    # previously only fed by `trends.flights_*_prev` (24h/7d only), leaving every
+    # other range with empty em-dashes. Compute totals over `[ts_lo - D, ts_lo)`
+    # where D = current window length so Flights / Unique aircraft / Position
+    # fixes all show a real comparison. Skipped for unfiltered (no prior window).
+    previous_window: dict | None = None
+    if filtered:
+        window_seconds = ts_hi - ts_lo
+        if window_seconds > 0:
+            prev_lo = ts_lo - window_seconds
+            prev_hi = ts_lo
+            # Half-open `[prev_lo, prev_hi)` (BE-16): the upper bound is exclusive
+            # so a flight whose first_seen lands on the boundary second `ts_lo`
+            # belongs to the current window only, never to both.
+            prev_agg = conn.execute(
+                """
+                SELECT
+                    COUNT(*)                  AS total_flights,
+                    SUM(total_positions)      AS total_positions,
+                    COUNT(DISTINCT icao_hex)  AS unique_aircraft
+                FROM flights
+                WHERE first_seen >= ? AND first_seen < ?
+                """,
+                (prev_lo, prev_hi),
+            ).fetchone()
+            previous_window = {
+                "from_ts":         prev_lo,
+                "to_ts":           prev_hi,
+                "total_flights":   prev_agg["total_flights"] or 0,
+                "total_positions": prev_agg["total_positions"] or 0,
+                "unique_aircraft": prev_agg["unique_aircraft"] or 0,
+            }
+
+    try:
+        db_size = os.path.getsize(config.DB_PATH)
+    except OSError:
+        db_size = None
+
+    # Lifetime block — receiver-wide totals NOT scoped to the selected window
+    # (the "About this receiver" footer reads these so they stay stable across
+    # range changes). When unfiltered the main `agg` is already all-time, so we
+    # reuse it; when filtered, a small extra aggregation runs.
+    if not filtered:
+        lifetime_total_flights    = agg["total_flights"]
+        # COALESCE NULL → 0: SUM() returns NULL on an empty `flights` table; the
+        # StatsResponse TS interface declares this as `number` (not nullable).
+        lifetime_total_positions  = agg["total_positions"] or 0
+        lifetime_unique_aircraft  = agg["unique_aircraft"]
+        lifetime_unique_airlines  = agg["unique_airlines"]
+        lifetime_oldest_flight    = agg["oldest_flight"]
+        lifetime_adsb_pct         = adsb_pct
+        lifetime_mlat_pct         = mlat_pct
+    else:
+        life = conn.execute(
+            """
+            SELECT
+                COUNT(*)                                                          AS total_flights,
+                SUM(total_positions)                                              AS total_positions,
+                COUNT(DISTINCT icao_hex)                                          AS unique_aircraft,
+                COUNT(DISTINCT CASE
+                    WHEN callsign IS NOT NULL AND callsign != '' AND length(callsign) >= 3
+                    THEN substr(callsign,1,3) END)                                AS unique_airlines,
+                MIN(first_seen)                                                   AS oldest_flight,
+                ROUND(100.0 * SUM(adsb_positions) / NULLIF(SUM(total_positions),0), 1) AS adsb_pct,
+                ROUND(100.0 * SUM(mlat_positions) / NULLIF(SUM(total_positions),0), 1) AS mlat_pct
+            FROM flights
+            """,
+        ).fetchone()
+        lifetime_total_flights    = life["total_flights"]
+        # See note in the unfiltered branch — SUM() can return NULL.
+        lifetime_total_positions  = life["total_positions"] or 0
+        lifetime_unique_aircraft  = life["unique_aircraft"]
+        lifetime_unique_airlines  = life["unique_airlines"]
+        lifetime_oldest_flight    = life["oldest_flight"]
+        lifetime_adsb_pct         = life["adsb_pct"] or 0
+        lifetime_mlat_pct         = life["mlat_pct"] or 0
+    lifetime_other_pct = round(100.0 - lifetime_adsb_pct - lifetime_mlat_pct, 1)
+
+    # --- Independent tail sections (each its own helper) ---
+    ctx = _StatsCtx(
+        filtered=filtered, fw=_fw, fjw=_fjw, fjwa=_fjwa, fp=_fp,
+        ts_lo=ts_lo, ts_hi=ts_hi, cutoff_24h=cutoff_24h, cutoff_30d=cutoff_30d,
+    )
+    flags = _stats_flags(conn, ctx)
 
     result = {
         "total_flights":           agg["total_flights"],
@@ -542,10 +588,10 @@ def _compute_stats_sync(from_ts: int | None, to_ts: int | None) -> dict:
         "flights_last_24h":        flights_24h,
         "flights_last_7d":         flights_7d,
         "source_breakdown":        {"adsb": adsb_pct, "mlat": mlat_pct, "other": other_pct},
-        "top_airlines":            [dict(r) for r in top_airlines],
-        "top_aircraft_types":      [dict(r) for r in top_types],
-        "hourly_distribution":     hourly_dist,
-        "daily_unique_aircraft":   [dict(r) for r in daily],
+        "top_airlines":            _stats_top_airlines(conn, ctx),
+        "top_aircraft_types":      _stats_top_aircraft_types(conn, ctx),
+        "hourly_distribution":     _stats_hourly_distribution(conn, ctx),
+        "daily_unique_aircraft":   _stats_daily_unique(conn, ctx),
         "altitude_distribution":   [
             {"band": "Ground / <1k", "count": agg["alt_0_1k"]   or 0},
             {"band": "1k–5k",        "count": agg["alt_1k_5k"]  or 0},
@@ -555,16 +601,16 @@ def _compute_stats_sync(from_ts: int | None, to_ts: int | None) -> dict:
             {"band": "30k–40k",      "count": agg["alt_30k_40k"] or 0},
             {"band": "40k+",         "count": agg["alt_40k_plus"] or 0},
         ],
-        "military_flights":        flags_row["military"]     or 0,
-        "interesting_flights":     flags_row["interesting"]  or 0,
-        "anonymous_flights":       flags_row["anonymous"]    or 0,
+        "military_flights":        flags["military"],
+        "interesting_flights":     flags["interesting"],
+        "anonymous_flights":       flags["anonymous"],
         "squawk_counts":           {
             "7700": agg["squawk_7700"] or 0,
             "7600": agg["squawk_7600"] or 0,
             "7500": agg["squawk_7500"] or 0,
         },
-        "new_aircraft":            {"total": new_aircraft_total, "items": [dict(r) for r in new_aircraft_rows]},
-        "furthest_aircraft":       furthest,
+        "new_aircraft":            _stats_new_aircraft(conn, ctx),
+        "furthest_aircraft":       _stats_furthest(conn, ctx),
         "receiver_lat":            config.RECEIVER_LAT,
         "receiver_lon":            config.RECEIVER_LON,
         "trends": {
@@ -585,11 +631,11 @@ def _compute_stats_sync(from_ts: int | None, to_ts: int | None) -> dict:
                 "other": lifetime_other_pct,
             },
         },
-        "heatmap": [dict(r) for r in heatmap_rows],
-        "top_countries": top_countries,
-        "frequent_aircraft": [dict(r) for r in frequent_aircraft],
-        "top_routes":   [dict(r) for r in top_routes],
-        "top_airports": [dict(r) for r in top_airports],
+        "heatmap": _stats_heatmap(conn, ctx),
+        "top_countries": _stats_top_countries(conn, ctx),
+        "frequent_aircraft": _stats_frequent_aircraft(conn, ctx),
+        "top_routes":   _stats_top_routes(conn, ctx),
+        "top_airports": _stats_top_airports(conn, ctx),
         "range":  {"from": from_ts, "to": to_ts} if filtered else None,
     }
     return result
