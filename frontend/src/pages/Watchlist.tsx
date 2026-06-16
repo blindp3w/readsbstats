@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { apiFetch, apiJson, ApiError } from '@/lib/api';
+import { errMsg } from '@/lib/errMsg';
 import type {
   WatchlistEntry,
   WatchlistMatchType as MatchType,
@@ -237,9 +238,7 @@ export default function WatchlistPage() {
           <CardTitle>Entries</CardTitle>
         </CardHeader>
         <CardContent>
-          {list.isError && (
-            <Alert variant="error">Failed to load: {(list.error as Error).message}</Alert>
-          )}
+          {list.isError && <Alert variant="error">Failed to load: {errMsg(list.error)}</Alert>}
           {list.isLoading && <Skeleton className="h-24 w-full" />}
           {list.data && list.data.entries.length === 0 && (
             <p

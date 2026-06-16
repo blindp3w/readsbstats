@@ -1,5 +1,6 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiJson } from '@/lib/api';
+import { errMsg } from '@/lib/errMsg';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Table, THead, TBody, TR, TH, TD } from '@/components/ui/Table';
 import { Button } from '@/components/ui/Button';
@@ -67,7 +68,7 @@ export default function FeedersPage() {
         </Button>
       </header>
 
-      {q.isError && <Alert variant="error">Failed to load: {(q.error as Error).message}</Alert>}
+      {q.isError && <Alert variant="error">Failed to load: {errMsg(q.error)}</Alert>}
 
       {q.data && !q.data.has_feeders && (
         <Alert variant="info" data-testid="feeders-not-configured">

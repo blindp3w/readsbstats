@@ -3,6 +3,7 @@ import { Link, useParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { ArrowLeftIcon } from '@radix-ui/react-icons';
 import { apiJson } from '@/lib/api';
+import { errMsg } from '@/lib/errMsg';
 import { safeUrl } from '@/lib/safeUrl';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Skeleton } from '@/components/ui/Skeleton';
@@ -166,7 +167,7 @@ export default function FlightPage() {
       </header>
 
       {detailQ.isError && (
-        <Alert variant="error">Failed to load flight: {(detailQ.error as Error).message}</Alert>
+        <Alert variant="error">Failed to load flight: {errMsg(detailQ.error)}</Alert>
       )}
       {detailQ.isLoading && <Skeleton className="h-40 w-full" />}
 

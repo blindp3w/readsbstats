@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { apiJson } from '@/lib/api';
 import { cn } from '@/lib/cn';
+import { errMsg } from '@/lib/errMsg';
 import { SimpleTooltip } from '@/components/ui/Tooltip';
 import { useFormat } from '@/hooks/useFormat';
 
@@ -35,7 +36,7 @@ export function LiveCountBadge() {
   // default toLocaleTimeString() picks the OS locale, which gives 12h on
   // macOS even when the project setting is 24h.
   const title = q.isError
-    ? `Live poll failed: ${q.error instanceof Error ? q.error.message : String(q.error)}`
+    ? `Live poll failed: ${errMsg(q.error)}`
     : ts
       ? `Active aircraft — updated ${new Date(ts * 1000).toLocaleTimeString(undefined, {
           hour12: clockFormat === '12h',

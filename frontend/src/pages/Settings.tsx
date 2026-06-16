@@ -3,6 +3,7 @@ import { toast } from 'sonner';
 import { CopyIcon } from '@radix-ui/react-icons';
 import { apiJson } from '@/lib/api';
 import { copyToClipboard } from '@/lib/clipboard';
+import { errMsg } from '@/lib/errMsg';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { Alert } from '@/components/ui/Alert';
@@ -338,7 +339,7 @@ export default function SettingsPage() {
 
       {q.isError && (
         <Alert variant="error" data-testid="settings-error">
-          Failed to load settings: {(q.error as Error).message}
+          Failed to load settings: {errMsg(q.error)}
         </Alert>
       )}
 
