@@ -26,6 +26,27 @@ vi.mock('@/components/LiveMap', () => ({
 // the async import; decoded-rendering tests inject a synchronous `decode` prop.
 vi.mock('@/hooks/useAcarsDecoder', () => ({ useAcarsDecoder: () => null }));
 
+// jsdom has no layout (getBoundingClientRect / offsetHeight → 0), so a real
+// @tanstack/react-virtual computes an empty window and MessageList would render
+// zero rows — failing every message-list assertion. Mock useVirtualizer to a
+// pass-through that yields ALL rows at fixed offsets, so tests see the full list
+// (windowing is a runtime DOM-size concern, not a behaviour the suite asserts).
+vi.mock('@tanstack/react-virtual', () => ({
+  useVirtualizer: ({ count }: { count: number }) => ({
+    getTotalSize: () => count * 100,
+    getVirtualItems: () =>
+      Array.from({ length: count }, (_, index) => ({
+        index,
+        key: index,
+        start: index * 100,
+        size: 100,
+        end: (index + 1) * 100,
+        lane: 0,
+      })),
+    measureElement: () => {},
+  }),
+}));
+
 // jsdom doesn't implement Element.scrollIntoView / hasPointerCapture, which
 // Radix Select calls when opening its listbox. Stub them so the dropdown
 // can render in test runs.
