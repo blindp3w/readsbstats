@@ -91,6 +91,11 @@ export function MessageList({
     getScrollElement: () => parentRef.current,
     estimateSize: () => 96, // corrected per-row by measureElement
     overscan: 8,
+    // Key the measured-height cache by message id, not the default array index.
+    // The feed live-refetches its newest page every 15 s (ORDER BY id DESC), so
+    // a new message shifts every row to index+1; an index-keyed cache would then
+    // apply stale heights to the wrong messages until each re-measures.
+    getItemKey: (index) => messages[index].id,
   });
 
   return (

@@ -16,8 +16,10 @@ user-visible change is the VDL2 feed's inner scroll.
 - **The VDL2 message feed is virtualized.** It accumulates unbounded via "Load
   older", so `MessageList` now windows its rows with `@tanstack/react-virtual`
   (only the visible rows are in the DOM, with dynamic per-row measurement for the
-  variable heights). The Vdl2 feed gains an inner scroll area (previously
-  full-page scroll); the flight ACARS panel looks unchanged.
+  variable heights, keyed by message id so the feed's 15 s live-refresh — which
+  prepends new messages — doesn't apply stale heights to shifted rows). The Vdl2
+  feed gains an inner scroll area (previously full-page scroll); the flight ACARS
+  panel looks unchanged.
 
 ### Internal
 
