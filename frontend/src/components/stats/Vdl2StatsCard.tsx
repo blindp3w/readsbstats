@@ -20,7 +20,9 @@ export function Vdl2StatsCard({ enabled = true }: { enabled?: boolean }) {
   });
 
   // Don't render '—' KPIs indistinguishably on a failed/loading query (audit 2026-06-15).
-  if (isError)
+  // Guard on `data == null` (like Vdl2ReceptionCard) so a transient refetch error
+  // keeps showing cached stats instead of flipping to the alert.
+  if (isError && data == null)
     return (
       <div className="space-y-4" data-testid="stats-vdl2">
         <Alert variant="warn" data-testid="vdl2-stats-error">
