@@ -352,38 +352,29 @@ def backfill_flights(conn: sqlite3.Connection) -> int:
     """
     log.info("Backfilling flights with missing registration/type…")
 
-    # Count distinct rows touched up front so the return value keeps its
-    # "flight rows backfilled" contract (a row with both fields NULL is one
-    # backfilled row, not two). The two single-column UPDATEs below mirror the
-    # canonical correlated-subquery shape in
-    # ``database._backfill_flights_enrichment`` — each filters on a single
-    # column so the NULL lookup can use idx_flights_registration /
-    # idx_flights_type instead of the un-indexable ``a IS NULL OR b IS NULL``.
-    updated = conn.execute(
+    # One UPDATE, one pass. EXPLAIN QUERY PLAN shows this WHERE is a single
+    # `SCAN flights` (SQLite does not turn `a IS NULL OR b IS NULL` into a
+    # multi-index OR here), and `result.rowcount` already reports distinct rows
+    # touched (a both-NULL row counts once). An earlier attempt to "index" this
+    # by splitting into two single-column UPDATEs needed a COUNT to keep that
+    # rowcount contract — but the COUNT carries the *same* OR predicate, so it
+    # re-introduced the very scan it was meant to avoid and did strictly more
+    # work. This is a rare maintenance op (db_updater run), so one scan is fine.
+    result = conn.execute(
         """
-        SELECT COUNT(*) FROM flights
+        UPDATE flights
+        SET
+            registration  = COALESCE(registration,
+                                (SELECT registration FROM aircraft_db
+                                 WHERE icao_hex = flights.icao_hex)),
+            aircraft_type = COALESCE(aircraft_type,
+                                (SELECT type_code FROM aircraft_db
+                                 WHERE icao_hex = flights.icao_hex))
         WHERE (registration IS NULL OR aircraft_type IS NULL)
           AND EXISTS (SELECT 1 FROM aircraft_db WHERE icao_hex = flights.icao_hex)
         """
-    ).fetchone()[0]
-    conn.execute(
-        """
-        UPDATE flights SET registration = (
-            SELECT registration FROM aircraft_db WHERE icao_hex = flights.icao_hex
-        )
-        WHERE registration IS NULL
-          AND EXISTS (SELECT 1 FROM aircraft_db WHERE icao_hex = flights.icao_hex)
-        """
     )
-    conn.execute(
-        """
-        UPDATE flights SET aircraft_type = (
-            SELECT type_code FROM aircraft_db WHERE icao_hex = flights.icao_hex
-        )
-        WHERE aircraft_type IS NULL
-          AND EXISTS (SELECT 1 FROM aircraft_db WHERE icao_hex = flights.icao_hex)
-        """
-    )
+    updated = result.rowcount
     conn.commit()
     log.info("Backfilled %d flight rows", updated)
     return updated
