@@ -12,6 +12,7 @@ import {
 import type { StyleSpecification, HeatmapLayerSpecification } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { aircraftIconSvg, getIconType } from '@/lib/aircraftIcon';
+import { dedupeFreshestByIcao } from '@/lib/mapData';
 
 // Live aircraft layer for /v2/map. Receives the latest snapshot from the
 // parent; renders aircraft as HTML <Marker>s with inline SVG, plus
@@ -233,18 +234,7 @@ export default function LiveMap({
   // and opened a new one for the same icao_hex inside that window, both
   // would render as separate markers at potentially-different positions.
   // Keep only the freshest row per icao_hex.
-  const dedupedAircraft = useMemo<Aircraft[]>(() => {
-    // Plain object instead of `new Map(...)`: the `Map` identifier is
-    // shadowed at the top of this file by the `Map` component from
-    // react-map-gl/maplibre, and aliasing the global just for this
-    // micro-optimization isn't worth it.
-    const byIcao: Record<string, Aircraft> = {};
-    for (const ac of aircraft) {
-      const prev = byIcao[ac.icao_hex];
-      if (!prev || ac.ts > prev.ts) byIcao[ac.icao_hex] = ac;
-    }
-    return Object.values(byIcao);
-  }, [aircraft]);
+  const dedupedAircraft = useMemo<Aircraft[]>(() => dedupeFreshestByIcao(aircraft), [aircraft]);
 
   // ─── VDL2 position overlay ─────────────────────────────────────────────
   // Structured ACARS positions from /api/vdl2/positions ([lat, lon]); swap to
