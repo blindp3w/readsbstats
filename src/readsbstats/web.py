@@ -101,7 +101,6 @@ def _ensure_vdl2_schema() -> None:
         log.warning("VDL2 schema unavailable; continuing without VDL2 DB: %s", exc)
 
 
-@asynccontextmanager
 def _warn_if_auth_disabled() -> None:
     """One-line startup warning when mutating endpoints are unauthenticated.
 
@@ -120,6 +119,7 @@ def _warn_if_auth_disabled() -> None:
         )
 
 
+@asynccontextmanager
 async def _lifespan(app_: FastAPI) -> AsyncIterator[None]:
     log.info("Starting web server — DB: %s", config.DB_PATH)
     _warn_if_auth_disabled()

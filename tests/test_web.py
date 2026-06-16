@@ -943,6 +943,23 @@ class TestAuthDisabledWarning:
             web._warn_if_auth_disabled()
         assert not any("RSBS_API_TOKEN is unset" in r.message for r in caplog.records)
 
+    # --- Structural regression guards (the decorator-placement bug) ---------
+    # A plain `_warn_if_auth_disabled()` call worked "by accident" even when the
+    # @asynccontextmanager decorator was mistakenly on it (the body ran eagerly
+    # during CM construction), so a behavioural test can't catch the mix-up.
+    # Pin the structure directly: the helper is a plain function and _lifespan
+    # is the async-context-manager factory.
+    def test_warn_helper_is_plain_function_not_context_manager(self, monkeypatch):
+        monkeypatch.setattr(_deps, "_API_TOKEN", "tok")  # suppress the warning side effect
+        assert web._warn_if_auth_disabled() is None
+
+    def test_lifespan_is_async_context_manager_factory(self):
+        # Decorated -> calling it builds a context manager (un-started async gen
+        # inside, never entered here, GC'd cleanly). Bare async-gen would lack
+        # __aenter__.
+        cm = web._lifespan(web.app)
+        assert hasattr(cm, "__aenter__") and hasattr(cm, "__aexit__")
+
 
 # ---------------------------------------------------------------------------
 # Helper: _fmt_ts
