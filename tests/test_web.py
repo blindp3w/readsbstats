@@ -907,6 +907,13 @@ class TestApiMetricsBucketing:
         assert _deps._metrics_agg("signal") == "AVG(signal)"
         assert _deps._metrics_agg("messages") == "SUM(messages)"
 
+    def test_metrics_agg_rejects_off_allowlist_column(self):
+        # Self-guard mirrors _assert_top1_column: the membership check travels
+        # with the SQL builder so a future caller that skips validation can't
+        # interpolate an arbitrary column name into GROUP BY.
+        with pytest.raises(ValueError):
+            _deps._metrics_agg("ts); DROP TABLE receiver_stats--")
+
 
 # ---------------------------------------------------------------------------
 # Helper: _fmt_ts

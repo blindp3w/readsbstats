@@ -336,7 +336,16 @@ _METRICS_AVG = frozenset({
 
 
 def _metrics_agg(col: str) -> str:
-    """Return the SQL aggregate function for a metrics column."""
+    """Return the SQL aggregate function for a metrics column.
+
+    Raises ``ValueError`` for any column outside ``_METRICS_COLS``. The caller
+    (``api/health.py``) already rejects off-allowlist names, but mirroring
+    ``_assert_top1_column`` keeps the membership check travelling with the SQL
+    so a future caller that forgets to validate can't interpolate an arbitrary
+    column into the GROUP BY projection.
+    """
+    if col not in _METRICS_COLS:
+        raise ValueError(f"unsupported metrics column: {col!r}")
     if col in _METRICS_MAX:
         return f"MAX({col})"
     if col in _METRICS_AVG:

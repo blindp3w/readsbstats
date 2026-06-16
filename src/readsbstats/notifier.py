@@ -7,9 +7,12 @@ Sends alerts for:
   - Daily summary at a configurable local time
 
 Also runs an interactive command listener (long polling) in a daemon thread:
-  /summary  — on-demand daily summary
-  /status   — currently tracked aircraft + today's flight count
-  /help     — list commands
+  /summary   — on-demand daily summary
+  /status    — currently tracked aircraft + today's flight count
+  /watchlist — show watchlist entries
+  /watch     — add an icao/reg to the watchlist
+  /unwatch   — remove an icao/reg from the watchlist
+  /help      — list commands (/start is an alias)
 
 All functions are no-ops when RSBS_TELEGRAM_TOKEN / RSBS_TELEGRAM_CHAT_ID
 are not set, so the feature is fully opt-in.
@@ -139,7 +142,7 @@ def _fmt_spd(kts: float | None) -> str:
 # Telegram transport
 # ---------------------------------------------------------------------------
 
-def _describe_exc(exc: BaseException) -> str:
+def _describe_exc(exc: Exception) -> str:
     """Format a urllib exception for logging without ever revealing the
     request URL (which would expose the bot token in the path).  Current
     stdlib `str()` formatting on HTTPError/URLError does not leak the URL,
@@ -790,7 +793,7 @@ def _send_help() -> None:
         "/watchlist — show watchlist entries\n"
         "/watch &lt;icao|reg&gt; — add to watchlist\n"
         "/unwatch &lt;icao|reg&gt; — remove from watchlist\n"
-        "/help — this message"
+        "/help (or /start) — this message"
     )
 
 

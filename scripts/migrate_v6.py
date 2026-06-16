@@ -51,6 +51,10 @@ def migrate(path: str) -> dict:
         t1 = time.monotonic()
         conn.execute("VACUUM")
         print(f"VACUUM done in {time.monotonic() - t1:.0f}s")
+        # VACUUM in WAL mode leaves the rewritten pages in the WAL; truncate it
+        # so the freed space is actually returned to the filesystem, not parked
+        # in a large -wal alongside the slimmed main db.
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         return {"skipped": False, "rows": n}
     finally:
         conn.close()

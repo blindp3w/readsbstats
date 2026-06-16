@@ -352,21 +352,38 @@ def backfill_flights(conn: sqlite3.Connection) -> int:
     """
     log.info("Backfilling flights with missing registration/type…")
 
-    result = conn.execute(
+    # Count distinct rows touched up front so the return value keeps its
+    # "flight rows backfilled" contract (a row with both fields NULL is one
+    # backfilled row, not two). The two single-column UPDATEs below mirror the
+    # canonical correlated-subquery shape in
+    # ``database._backfill_flights_enrichment`` — each filters on a single
+    # column so the NULL lookup can use idx_flights_registration /
+    # idx_flights_type instead of the un-indexable ``a IS NULL OR b IS NULL``.
+    updated = conn.execute(
         """
-        UPDATE flights
-        SET
-            registration  = COALESCE(registration,
-                                (SELECT registration FROM aircraft_db
-                                 WHERE icao_hex = flights.icao_hex)),
-            aircraft_type = COALESCE(aircraft_type,
-                                (SELECT type_code FROM aircraft_db
-                                 WHERE icao_hex = flights.icao_hex))
+        SELECT COUNT(*) FROM flights
         WHERE (registration IS NULL OR aircraft_type IS NULL)
           AND EXISTS (SELECT 1 FROM aircraft_db WHERE icao_hex = flights.icao_hex)
         """
+    ).fetchone()[0]
+    conn.execute(
+        """
+        UPDATE flights SET registration = (
+            SELECT registration FROM aircraft_db WHERE icao_hex = flights.icao_hex
+        )
+        WHERE registration IS NULL
+          AND EXISTS (SELECT 1 FROM aircraft_db WHERE icao_hex = flights.icao_hex)
+        """
     )
-    updated = result.rowcount
+    conn.execute(
+        """
+        UPDATE flights SET aircraft_type = (
+            SELECT type_code FROM aircraft_db WHERE icao_hex = flights.icao_hex
+        )
+        WHERE aircraft_type IS NULL
+          AND EXISTS (SELECT 1 FROM aircraft_db WHERE icao_hex = flights.icao_hex)
+        """
+    )
     conn.commit()
     log.info("Backfilled %d flight rows", updated)
     return updated
