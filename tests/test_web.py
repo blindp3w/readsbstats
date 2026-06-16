@@ -4,6 +4,7 @@ Uses an in-memory SQLite database injected by patching _deps._db.
 """
 
 import json
+import logging
 import math
 import sqlite3
 import time
@@ -913,6 +914,34 @@ class TestApiMetricsBucketing:
         # interpolate an arbitrary column name into GROUP BY.
         with pytest.raises(ValueError):
             _deps._metrics_agg("ts); DROP TABLE receiver_stats--")
+
+
+# ---------------------------------------------------------------------------
+# Startup auth-posture warning (_warn_if_auth_disabled)
+# ---------------------------------------------------------------------------
+
+class TestAuthDisabledWarning:
+    def test_warns_when_token_unset(self, monkeypatch, caplog):
+        monkeypatch.setattr(_deps, "_API_TOKEN", None)
+        monkeypatch.delenv("RSBS_API_TOKEN", raising=False)
+        with caplog.at_level(logging.WARNING, logger="web"):
+            web._warn_if_auth_disabled()
+        assert any("RSBS_API_TOKEN is unset" in r.message for r in caplog.records)
+
+    def test_silent_when_token_set_via_env(self, monkeypatch, caplog):
+        monkeypatch.setattr(_deps, "_API_TOKEN", None)
+        monkeypatch.setenv("RSBS_API_TOKEN", "secret")
+        with caplog.at_level(logging.WARNING, logger="web"):
+            web._warn_if_auth_disabled()
+        assert not any("RSBS_API_TOKEN is unset" in r.message for r in caplog.records)
+
+    def test_silent_when_token_set_via_module_override(self, monkeypatch, caplog):
+        # _auth_check honours the _API_TOKEN module override; the warning must too.
+        monkeypatch.setattr(_deps, "_API_TOKEN", "secret")
+        monkeypatch.delenv("RSBS_API_TOKEN", raising=False)
+        with caplog.at_level(logging.WARNING, logger="web"):
+            web._warn_if_auth_disabled()
+        assert not any("RSBS_API_TOKEN is unset" in r.message for r in caplog.records)
 
 
 # ---------------------------------------------------------------------------

@@ -102,8 +102,27 @@ def _ensure_vdl2_schema() -> None:
 
 
 @asynccontextmanager
+def _warn_if_auth_disabled() -> None:
+    """One-line startup warning when mutating endpoints are unauthenticated.
+
+    RSBS_API_TOKEN unset is the default trusted-LAN posture (CSRF still applies),
+    so this is informational — but an operator who exposes the app beyond a
+    trusted LAN should set the token so ``_auth_check`` requires a bearer token.
+    Mirrors ``_auth_check``'s token resolution (module override OR env) so the
+    two can never disagree about whether auth is on.
+    """
+    if not (_deps._API_TOKEN or _deps._get_api_token()):
+        log.warning(
+            "RSBS_API_TOKEN is unset — mutating endpoints (POST/DELETE) are "
+            "unauthenticated (the CSRF header is still required). Safe on a "
+            "trusted LAN; set RSBS_API_TOKEN to require a bearer token if the "
+            "app is reachable more widely. See docs/configuration.md."
+        )
+
+
 async def _lifespan(app_: FastAPI) -> AsyncIterator[None]:
     log.info("Starting web server — DB: %s", config.DB_PATH)
+    _warn_if_auth_disabled()
     await asyncio.to_thread(_startup_migrate)
     # Audit 2026-06-01 W-3: background migrations AND route enrichment are
     # owned by the collector so two processes don't fight on the SQLite write

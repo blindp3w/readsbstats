@@ -189,7 +189,7 @@ Thresholds for the nine receiver-health checks. All effective values are also re
 | `RSBS_WEB_HOST` | `0.0.0.0` | Uvicorn bind address. The systemd unit overrides this to `127.0.0.1`; nginx fronts the port. |
 | `RSBS_WEB_PORT` | `8080` | Internal uvicorn port |
 | `RSBS_ROOT_PATH` | `/stats` | URL prefix for the nginx reverse proxy (trailing slash stripped) |
-| `RSBS_API_TOKEN` | _(empty)_ | Optional bearer-token gate on mutating endpoints (POST/DELETE `/api/watchlist`). Empty = no auth (default trusted-LAN posture). When set, every mutating call must carry `Authorization: Bearer <token>`. Read endpoints are not gated. See [README — Security model](../README.md#security-model). |
+| `RSBS_API_TOKEN` | _(empty)_ | Optional bearer-token gate on every mutating (POST/DELETE) `/api/*` endpoint. Empty = no auth (default trusted-LAN posture; the web server logs a one-line startup warning so the posture is never silent). When set, every mutating call must carry `Authorization: Bearer <token>` (the CSRF `X-Requested-With` header is required either way). Read endpoints are not gated. See [README — Security model](../README.md#security-model). |
 
 ### Database updaters
 
