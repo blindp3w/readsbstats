@@ -26,6 +26,7 @@ COLUMNS = (
     "ts", "icao_hex", "registration", "flight", "label", "mode",
     "block_id", "ack", "msgno", "freq", "station_id", "toaddr", "dsta",
     "lat", "lon", "alt", "epu", "app_name", "app_ver", "body", "raw", "decoder",
+    "sig_level", "noise_level",
 )
 
 _DDL_MESSAGES = """
@@ -52,7 +53,9 @@ CREATE TABLE IF NOT EXISTS vdl2_messages (
     app_ver      TEXT,
     body         TEXT,                      -- decoded message text (capped at ingest)
     raw          TEXT,                      -- full decoder JSON, verbatim (fidelity / re-parse)
-    decoder      TEXT                       -- which decoder produced it
+    decoder      TEXT,                      -- which decoder produced it
+    sig_level    REAL,                      -- dumpvdl2 per-frame signal level (dBFS); NULL on vdlm2dec
+    noise_level  REAL                       -- dumpvdl2 per-frame noise floor (dBFS); NULL on vdlm2dec
 );
 """
 
@@ -145,10 +148,33 @@ def ensure_schema(conn: sqlite3.Connection, *, build_fts: bool = True) -> None:
     migrate(conn, build_fts=build_fts)
 
 
+# Columns added after the initial release reach already-created DBs through
+# migrate() (idempotent, like the indexes — NOT gated by user_version). ALTER ADD
+# COLUMN with no default is O(1) metadata-only in SQLite, so it's cheap on every
+# open; the PRAGMA check skips it once present.
+_ADDED_COLUMNS = (("sig_level", "REAL"), ("noise_level", "REAL"))
+
+
+def _add_missing_columns(conn: sqlite3.Connection) -> None:
+    """Add any post-release columns absent from this DB. Race-safe: the collector
+    and every web reader thread run migrate() on first open, and ALTER takes a
+    write lock — so a second connection can read 'absent', block on the first's
+    lock, then have its ALTER raise 'duplicate column name' once the first commits.
+    The try/except treats that as already-present (SQLite has no ADD COLUMN IF NOT
+    EXISTS)."""
+    have = {r[1] for r in conn.execute("PRAGMA table_info(vdl2_messages)")}
+    for name, decl in _ADDED_COLUMNS:
+        if name not in have:
+            try:
+                conn.execute(f"ALTER TABLE vdl2_messages ADD COLUMN {name} {decl}")
+            except sqlite3.OperationalError:
+                pass  # lost the add race to another connection — column now exists
+
+
 def migrate(conn: sqlite3.Connection, *, build_fts: bool = True) -> None:
     """Idempotent upgrades NOT gated by user_version, so they reach already-created
-    DBs: create any missing indexes, and create FTS if FTS5 is available but the
-    index is absent.
+    DBs: add any missing columns, create any missing indexes, and create FTS if
+    FTS5 is available but the index is absent.
 
     The only slow case is the FTS *rebuild* that populates the index from existing
     rows (the "DB created on a no-FTS build, reopened with FTS5" skew). That scan
@@ -156,6 +182,7 @@ def migrate(conn: sqlite3.Connection, *, build_fts: bool = True) -> None:
     runs it; the web path passes ``build_fts=False`` and, when rows already exist,
     leaves FTS absent so search falls back to LIKE instead of MATCHing a
     half-populated index (which would silently miss old rows)."""
+    _add_missing_columns(conn)
     conn.executescript(_DDL_INDEXES)
     if fts5_available(conn) and not has_fts(conn):
         has_rows = conn.execute("SELECT 1 FROM vdl2_messages LIMIT 1").fetchone() is not None

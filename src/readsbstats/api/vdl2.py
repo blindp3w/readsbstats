@@ -677,6 +677,108 @@ def _compute_timeseries(from_ts: int, to_ts: int) -> dict:
     }
 
 
+@router.get("/api/vdl2/signal", response_model=schemas.Vdl2SignalResponse,
+            response_model_exclude_unset=True)
+def api_vdl2_signal(
+    from_ts: int | None = Query(None, alias="from", ge=0, le=10_000_000_000),
+    to_ts: int | None = Query(None, alias="to", ge=0, le=10_000_000_000),
+) -> dict:
+    """Per-frequency reception quality (avg signal level dBFS + SNR dB) for the
+    Metrics page's two per-channel charts, over the picker's [from, to] window.
+    **dumpvdl2-only**: vdlm2dec rows carry no `sig_level`, so a vdlm2dec feed (or a
+    window with no signal-bearing rows) returns empty `metrics` and the frontend
+    hides both charts. Same window handling/cap as /timeseries; not cached (the SPA
+    holds a 30 s staleTime)."""
+    now = int(time.time())
+    if to_ts is None:
+        to_ts = now
+    if from_ts is None:
+        from_ts = to_ts - 86_400
+    if to_ts <= from_ts:
+        raise HTTPException(400, "to must be greater than from")
+    if to_ts - from_ts > _TIMESERIES_MAX_SPAN:
+        raise HTTPException(400, "window too large")
+    with _vdl2_guard():
+        t0 = time.perf_counter()
+        result = _compute_signal(from_ts, to_ts)
+        elapsed_ms = (time.perf_counter() - t0) * 1000
+        if elapsed_ms > 250:
+            log.warning("vdl2 signal query slow: %.0f ms", elapsed_ms)
+        return result
+
+
+def _compute_signal(from_ts: int, to_ts: int) -> dict:
+    conn = vdl2_db.web_conn()
+    bucket = _timeseries_bucket(to_ts - from_ts)
+
+    # samples/newest use the same sig+noise filter as the series below, so the
+    # count and freshness describe exactly the rows that feed the two charts (a
+    # sig-only row produces no SNR and is excluded everywhere).
+    newest = conn.execute(
+        "SELECT MAX(ts) AS newest FROM vdl2_messages "
+        "WHERE sig_level IS NOT NULL AND noise_level IS NOT NULL"
+    ).fetchone()["newest"]
+    samples = conn.execute(
+        "SELECT COUNT(*) AS n FROM vdl2_messages "
+        "WHERE sig_level IS NOT NULL AND noise_level IS NOT NULL AND ts >= ? AND ts < ?",
+        (from_ts, to_ts),
+    ).fetchone()["n"]
+
+    # Top channels by signal-bearing count; both matrices use this order so the
+    # shared `metrics` array indexes signal[i+1] and snr[i+1] alike.
+    top = [
+        r["f"] for r in conn.execute(
+            "SELECT ROUND(freq, 3) AS f, COUNT(*) AS c FROM vdl2_messages "
+            "WHERE sig_level IS NOT NULL AND noise_level IS NOT NULL AND freq IS NOT NULL "
+            "AND ts >= ? AND ts < ? "
+            "GROUP BY f ORDER BY c DESC, f LIMIT ?",
+            (from_ts, to_ts, _TIMESERIES_TOP_FREQS),
+        ).fetchall()
+    ]
+
+    n = max(1, (to_ts - from_ts + bucket - 1) // bucket)
+    buckets = [from_ts + i * bucket for i in range(n)]
+    n = len(buckets)
+    newest_age = (int(time.time()) - newest) if newest is not None else None
+
+    if not top:
+        return {
+            "bucket_seconds": bucket, "metrics": [], "freqs": [], "samples": samples,
+            "newest_ts": newest, "newest_age_sec": newest_age, "signal": [], "snr": [],
+        }
+
+    # Empty buckets stay None (a gap in the line) — 0 dBFS is a real, very-strong
+    # value, so the rate chart's zero-fill would distort signal/SNR.
+    sig_cols = {f: [None] * n for f in top}
+    snr_cols = {f: [None] * n for f in top}
+    topset = set(top)
+    for r in conn.execute(
+        "SELECT CAST((ts - ?) / ? AS INT) AS bi, ROUND(freq, 3) AS f, "
+        "AVG(sig_level) AS avg_sig, AVG(sig_level - noise_level) AS avg_snr "
+        "FROM vdl2_messages "
+        "WHERE sig_level IS NOT NULL AND noise_level IS NOT NULL AND freq IS NOT NULL "
+        "AND ts >= ? AND ts < ? GROUP BY bi, f",
+        (from_ts, bucket, from_ts, to_ts),
+    ).fetchall():
+        if r["f"] in topset:
+            i = r["bi"]
+            if 0 <= i < n:
+                sig_cols[r["f"]][i] = round(r["avg_sig"], 1)
+                snr_cols[r["f"]][i] = round(r["avg_snr"], 1)
+
+    ts_col = [float(b) for b in buckets]
+    return {
+        "bucket_seconds": bucket,
+        "metrics": [_fmt_freq(f) for f in top],
+        "freqs": top,
+        "samples": samples,
+        "newest_ts": newest,
+        "newest_age_sec": newest_age,
+        "signal": [ts_col] + [sig_cols[f] for f in top],
+        "snr": [ts_col] + [snr_cols[f] for f in top],
+    }
+
+
 # Map-overlay caps. Positions are sampled to avoid shipping a huge GeoJSON to the
 # map when a chatty position-reporting fleet is in range.
 _POSITIONS_CAP = 2000

@@ -5,6 +5,32 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 2.25.0 — 2026-06-17
+
+Per-channel VDL2 signal-level metrics on the Metrics page — the long-deferred
+reception-quality vision, unblocked now that `dumpvdl2` (which reports per-frame
+signal) is the live decoder.
+
+### Added
+
+- **VDL2 per-channel signal level + SNR on the Metrics page.** The reception card
+  gains a second row of charts: **signal level (dBFS)** and **SNR (dB)** per VDL2
+  frequency (136.725/.775/.875/.975), in the same small-multiples style as the
+  per-frequency activity chart. Served by a new read-only `GET /api/vdl2/signal`
+  (per-bucket `AVG(sig_level)` and `AVG(sig_level − noise_level)`; empty buckets are
+  `null`, not 0, so a gap can't masquerade as a strong `0 dBFS` reading). **dumpvdl2
+  only** — `vdlm2dec` emits no signal field, so on a vdlm2dec feed the endpoint
+  returns empty series and the charts self-hide. Gated by the existing
+  `RSBS_VDL2_ENABLED`; no new env var.
+
+### Changed
+
+- **`vdl2_messages` gains `sig_level` / `noise_level` columns** (per-frame dBFS),
+  captured from `dumpvdl2` frames at ingest (`NULL` under `vdlm2dec`). Added to
+  existing `vdl2.db` files idempotently on open (race-safe `ALTER`, no
+  schema-version bump). Capture is forward-only — rows stored before this release
+  have no signal level.
+
 ## 2.24.4 — 2026-06-17
 
 Maintainability refactors (audit D1) and VDL2 message-list virtualization

@@ -55,7 +55,7 @@ readsb and tar1090 give you a great live view — readsbstats adds the other hal
   - Human-readable decoded ACARS message bodies in the Messages log (client-side [`@airframes/acars-decoder`](https://github.com/airframes/acars-decoder), lazy-loaded; raw body always retained as fallback)
   - `#M1BPOS` precise positions added to the map overlay; filed routes (departure/arrival/company route/SID/STAR/approach) surfaced on the message log
   - Each message row is tagged with a category chip (ACMS / engine / maintenance / route / …) so the H1-dominated feed is readable at a glance; `RTE` route messages also surface their filed departure→arrival
-  - Selectable decoder (`RSBS_VDL2_DECODER`): `vdlm2dec` (ACARS) or `dumpvdl2`, which additionally decodes ATN **CPDLC** controller–pilot messages
+  - Selectable decoder (`RSBS_VDL2_DECODER`): `vdlm2dec` (ACARS) or `dumpvdl2`, which additionally decodes ATN **CPDLC** controller–pilot messages and reports per-frame signal level, surfaced as per-channel **signal (dBFS)** and **SNR (dB)** charts on the Metrics page (the charts self-hide on a vdlm2dec feed, which has no signal field)
 - Unit switching: Aeronautical / Metric / Imperial — persisted in browser
 - SQLite crash-safety (WAL + `synchronous=NORMAL`, `RSBS_DB_SYNCHRONOUS=FULL` for per-commit durability) with dirty-shutdown detection (fail-closed on corruption — see [Operations](docs/operations.md#database-integrity--startup-recovery)) and weekly/monthly integrity checks via systemd timers
 

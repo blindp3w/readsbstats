@@ -134,6 +134,10 @@ def _normalize_vdlm2dec(raw: dict) -> dict | None:
         "body":         clean_short_text(raw.get("text"), config.VDL2_BODY_MAX),
         "raw":          _raw_json(raw),
         "decoder":      "vdlm2dec",
+        # vdlm2dec's JSON carries no signal field — always NULL (the Metrics
+        # signal/SNR row self-hides when no rows have a sig_level).
+        "sig_level":    None,
+        "noise_level":  None,
     }
     return rec if _has_content(rec) else None
 
@@ -186,6 +190,10 @@ def _normalize_dumpvdl2(raw: dict) -> dict | None:
         "body":         body,
         "raw":          _raw_json(raw),
         "decoder":      "dumpvdl2",
+        # Per-frame signal/noise (dBFS), at the vdl2 level alongside freq. Present
+        # on every dumpvdl2 frame; feeds the Metrics per-channel signal + SNR charts.
+        "sig_level":    _float_or_none(vdl2.get("sig_level")),
+        "noise_level":  _float_or_none(vdl2.get("noise_level")),
     }
     return rec if _has_content(rec) else None
 

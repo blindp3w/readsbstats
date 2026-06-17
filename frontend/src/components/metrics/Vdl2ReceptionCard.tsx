@@ -15,7 +15,7 @@ import {
   smallMultHeight,
   type MetricsResp,
 } from '@/pages/metricsCharts';
-import type { Vdl2TimeseriesResp } from '@/lib/types';
+import type { Vdl2SignalResp, Vdl2TimeseriesResp } from '@/lib/types';
 
 // A feed quiet for longer than this reads as "stale" — VDL2/ACARS is bursty, so
 // keep it lenient to avoid false alarms during genuine quiet spells.
@@ -36,12 +36,13 @@ function fmtFreshness(ts: number | null, ageSec: number | null): string {
   return fmtAgo(ts, ts + ageSec);
 }
 
-// VDL2 reception: two range-driven ECharts — total message rate (msgs/min) and
-// per-frequency small multiples (signal-panel style) — over the Metrics page's
-// [from, to] window. Rendered as two side-by-side panels matching the rest of the
-// Metrics grid. vdlm2dec-only; NO signal level. Self-gating: renders nothing and
-// makes no request when `enabled` is false (the page only mounts it when the
-// VDL2 feature is on AND vdl2.db is available — see useVdl2Available).
+// VDL2 reception: range-driven ECharts over the Metrics page's [from, to] window,
+// in the shared small-multiples style. Row 1 is decoder-agnostic — total message
+// rate (msgs/min) + per-frequency activity. Row 2 is the per-channel signal level
+// (dBFS) and SNR (dB); it is dumpvdl2-only and self-hides when the feed carries no
+// signal level (vdlm2dec emits none → empty metrics → no cards). Self-gating:
+// renders nothing and makes no request when `enabled` is false (the page only
+// mounts it when the VDL2 feature is on AND vdl2.db is available — useVdl2Available).
 export function Vdl2ReceptionCard({
   enabled = true,
   from,
@@ -90,6 +91,58 @@ export function Vdl2ReceptionCard({
         fmtTs,
       ),
     [resp, freqKeys, fmtAxisTime, fmtAxisDate, fmtTs],
+  );
+
+  // Per-frequency signal level + SNR (separate dumpvdl2-only endpoint). Empty
+  // `metrics` (vdlm2dec feed / no signal rows) → both cards self-hide below.
+  const { data: sig } = useQuery<Vdl2SignalResp>({
+    queryKey: ['vdl2-signal', from, to],
+    enabled,
+    queryFn: () => apiJson<Vdl2SignalResp>(`vdl2/signal?from=${from}&to=${to}`),
+    placeholderData: (prev) => prev,
+    staleTime: 30_000,
+  });
+  const sigKeys = useMemo(() => sig?.metrics ?? [], [sig]);
+  // Slice each matrix into a MetricsResp for the shared small-multiples builder.
+  // The builder already renders null buckets as gaps; the freq-key list indexes
+  // both `signal` and `snr` (column 0 is ts).
+  const sigOption = useMemo<EChartsOption>(
+    () =>
+      buildSignalSmallMultiplesOption(
+        sig
+          ? ({
+              bucket_seconds: sig.bucket_seconds,
+              metrics: sig.metrics,
+              data: sig.signal,
+            } as MetricsResp)
+          : undefined,
+        sigKeys,
+        FREQ_COLORS,
+        sigKeys,
+        fmtAxisTime,
+        fmtAxisDate,
+        fmtTs,
+      ),
+    [sig, sigKeys, fmtAxisTime, fmtAxisDate, fmtTs],
+  );
+  const snrOption = useMemo<EChartsOption>(
+    () =>
+      buildSignalSmallMultiplesOption(
+        sig
+          ? ({
+              bucket_seconds: sig.bucket_seconds,
+              metrics: sig.metrics,
+              data: sig.snr,
+            } as MetricsResp)
+          : undefined,
+        sigKeys,
+        FREQ_COLORS,
+        sigKeys,
+        fmtAxisTime,
+        fmtAxisDate,
+        fmtTs,
+      ),
+    [sig, sigKeys, fmtAxisTime, fmtAxisDate, fmtTs],
   );
 
   if (!enabled) return null;
@@ -154,6 +207,26 @@ export function Vdl2ReceptionCard({
                 No per-frequency data in this window.
               </p>
             )}
+          </CardContent>
+        </Card>
+      )}
+      {sigKeys.length > 0 && (
+        <Card data-testid="vdl2-signal-chart">
+          <CardHeader>
+            <CardTitle>VDL2 signal level (dBFS)</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <EChart option={sigOption} group="metrics" height={smallMultHeight(sigKeys.length)} />
+          </CardContent>
+        </Card>
+      )}
+      {sigKeys.length > 0 && (
+        <Card data-testid="vdl2-snr-chart">
+          <CardHeader>
+            <CardTitle>VDL2 SNR (dB)</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <EChart option={snrOption} group="metrics" height={smallMultHeight(sigKeys.length)} />
           </CardContent>
         </Card>
       )}

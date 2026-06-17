@@ -104,7 +104,9 @@ More plumbing, same principle — use only if iq_tool misbehaves.
 dumpvdl2 + libacars is a **strict superset** of an ACARS‑only decoder: the same
 ACARS‑over‑VDL2 frames **plus** ATN‑B1 CPDLC (mandated in European continental
 airspace), ADS‑C, X.25/CLNP, and MIAM — none of which ACARS‑only decoders surface. It
-also reports per‑frame `sig_level` / `noise_level`. Note: one Airspy = one decoder, so
+also reports per‑frame `sig_level` / `noise_level`, which drive the per‑channel **signal
+level (dBFS)** and **SNR (dB)** charts on the Metrics page (vdlm2dec has no signal field,
+so those charts are present only on a dumpvdl2 feed). Note: one Airspy = one decoder, so
 dumpvdl2 **replaces** (not augments) `vdlm2dec` unless you add a second SDR.
 
 ---

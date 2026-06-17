@@ -112,6 +112,21 @@ export interface Vdl2TimeseriesResp {
   newest_age_sec: number | null;
 }
 
+// Per-frequency signal level (dBFS) + SNR (dB) for the Metrics page. dumpvdl2-only:
+// `metrics` is empty on a vdlm2dec feed → the charts self-hide. `metrics` indexes
+// both matrices (column 0 is ts; signal[i+1]/snr[i+1] align with metrics[i]). null
+// = an empty bucket (gap). Each matrix is sliced into a MetricsResp for the builder.
+export interface Vdl2SignalResp {
+  bucket_seconds: number;
+  metrics: string[];
+  freqs: number[];
+  samples: number;
+  newest_ts: number | null;
+  newest_age_sec: number | null;
+  signal: (number | null)[][];
+  snr: (number | null)[][];
+}
+
 // Map overlay: airframes that transmitted ACARS recently ("transmitting now").
 export interface Vdl2ActiveResponse {
   icao_hex: string[];
