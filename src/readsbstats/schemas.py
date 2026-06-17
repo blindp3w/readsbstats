@@ -397,6 +397,22 @@ class Vdl2TimeseriesResponse(ApiModel):
     data: list[list[float]] = Field(default_factory=list)  # [[ts...], [rate...], [freq1...], ...]
 
 
+class Vdl2SignalResponse(ApiModel):
+    """Per-frequency reception quality for the Metrics page: average signal level
+    (dBFS) and SNR (dB) per channel, bucketed over the window. dumpvdl2-only — a
+    vdlm2dec feed has no sig_level, so `metrics` is empty and the charts self-hide.
+    Empty buckets are `null` (gaps), never 0. `metrics` (freq keys) indexes BOTH
+    matrices: `signal[i+1]`/`snr[i+1]` align with `metrics[i]` (column 0 is ts)."""
+    bucket_seconds: int = 0
+    metrics: list[str] = Field(default_factory=list)    # ["<freq>", ...], shared by both matrices
+    freqs: list[float] = Field(default_factory=list)
+    samples: int = 0                                    # rows with a signal level in the window
+    newest_ts: Optional[int] = None
+    newest_age_sec: Optional[int] = None
+    signal: list[list[Optional[float]]] = Field(default_factory=list)  # [[ts...], [sig_f1...], ...] dBFS
+    snr: list[list[Optional[float]]] = Field(default_factory=list)     # [[ts...], [snr_f1...], ...] dB
+
+
 class Vdl2OooiEvent(ApiModel):
     """One parsed OOOI (Out/Off/On/In) block-time report. Times are raw HHMM
     strings as transmitted; the frontend formats/compares them."""

@@ -710,6 +710,105 @@ class TestTimeseries:
             assert c.get("/api/vdl2/timeseries").status_code == 503
 
 
+class TestSignal:
+    """Per-frequency signal + SNR reception charts (dumpvdl2-only)."""
+
+    def _make(self, monkeypatch, rows):
+        monkeypatch.setattr(config, "VDL2_ENABLED", True)
+        vconn = make_vdl2_db()
+        vdl2_db.insert_messages(vconn, rows)
+        vconn.commit()
+        monkeypatch.setattr(vdl2_db, "_conn", vconn)
+        monkeypatch.setattr(_deps, "_db", make_db())
+        app = FastAPI()
+        web._include_optional_routers(app)
+        return vconn, app
+
+    @staticmethod
+    def _nonnull(col):
+        return [v for v in col if v is not None]
+
+    def test_per_freq_signal_and_snr(self, monkeypatch):
+        now = int(time.time())
+        vconn, app = self._make(monkeypatch, [
+            {"ts": now - 90, "icao_hex": "48e95d", "freq": 136.725,
+             "sig_level": -45.0, "noise_level": -53.0, "body": "a", "decoder": "dumpvdl2"},
+            {"ts": now - 80, "icao_hex": "48af11", "freq": 136.725,
+             "sig_level": -47.0, "noise_level": -53.0, "body": "b", "decoder": "dumpvdl2"},
+            {"ts": now - 70, "icao_hex": "48af12", "freq": 136.975,
+             "sig_level": -50.0, "noise_level": -52.0, "body": "c", "decoder": "dumpvdl2"},
+        ])
+        with TestClient(app) as c:
+            data = c.get(f"/api/vdl2/signal?from={now - 180}&to={now}").json()
+        vconn.close()
+        assert data["bucket_seconds"] == 60
+        # top freq first (2 rows on 136.725 vs 1 on 136.975); shared by both matrices
+        assert data["metrics"] == ["136.725", "136.975"]
+        assert data["freqs"] == [136.725, 136.975]
+        assert data["samples"] == 3
+        # signal[0] is the ts column; signal[i+1] aligns with metrics[i]
+        assert self._nonnull(data["signal"][1]) == [-46.0]   # avg(-45, -47)
+        assert self._nonnull(data["signal"][2]) == [-50.0]
+        # SNR = avg(sig - noise): 136.725 → avg(8, 6) = 7; 136.975 → 2
+        assert self._nonnull(data["snr"][1]) == [7.0]
+        assert self._nonnull(data["snr"][2]) == [2.0]
+        # empty buckets are null (gap), NOT 0 — 0 dBFS is a real, very-strong value
+        assert None in data["signal"][1]
+
+    def test_sig_without_noise_excluded(self, monkeypatch):
+        # A row with sig_level but no noise_level yields no SNR, so it's excluded
+        # from the series AND from samples/newest — all describe the same rows.
+        now = int(time.time())
+        vconn, app = self._make(monkeypatch, [
+            {"ts": now - 50, "icao_hex": "48e95d", "freq": 136.725,
+             "sig_level": -45.0, "noise_level": -53.0, "body": "a", "decoder": "dumpvdl2"},
+            {"ts": now - 40, "icao_hex": "48af11", "freq": 136.725,
+             "sig_level": -44.0, "body": "b", "decoder": "dumpvdl2"},  # no noise_level
+        ])
+        with TestClient(app) as c:
+            data = c.get(f"/api/vdl2/signal?from={now - 180}&to={now}").json()
+        vconn.close()
+        assert data["samples"] == 1                       # only the sig+noise row
+        assert self._nonnull(data["signal"][1]) == [-45.0]  # noise-less row excluded
+
+    def test_empty_when_no_signal_rows(self, monkeypatch):
+        # vdlm2dec-style rows carry no sig_level → the charts self-hide (empty).
+        now = int(time.time())
+        vconn, app = self._make(monkeypatch, [
+            {"ts": now - 30, "icao_hex": "48e95d", "freq": 136.725, "body": "x"},
+        ])
+        with TestClient(app) as c:
+            data = c.get(f"/api/vdl2/signal?from={now - 180}&to={now}").json()
+        vconn.close()
+        assert data["metrics"] == []
+        assert data["freqs"] == []
+        assert data["signal"] == []
+        assert data["snr"] == []
+        assert data["samples"] == 0
+
+    def test_window_validation_and_span_cap(self, monkeypatch):
+        now = int(time.time())
+        vconn, app = self._make(monkeypatch, [])
+        with TestClient(app) as c:
+            assert c.get(f"/api/vdl2/signal?from={now}&to={now}").status_code == 400
+            assert c.get(f"/api/vdl2/signal?from=0&to={now}").status_code == 400
+            ok = c.get(f"/api/vdl2/signal?from={now - 366 * 86400 + 100}&to={now}")
+            assert ok.status_code == 200
+        vconn.close()
+
+    def test_503_when_db_unavailable(self, monkeypatch):
+        monkeypatch.setattr(config, "VDL2_ENABLED", True)
+
+        def boom(*a, **k):
+            raise sqlite3.OperationalError("unable to open database file")
+
+        monkeypatch.setattr(vdl2_db, "web_conn", boom)
+        app = FastAPI()
+        web._include_optional_routers(app)
+        with TestClient(app) as c:
+            assert c.get("/api/vdl2/signal").status_code == 503
+
+
 class TestFailureModes:
     def test_endpoints_503_when_db_unavailable(self, monkeypatch):
         monkeypatch.setattr(config, "VDL2_ENABLED", True)
@@ -727,6 +826,7 @@ class TestFailureModes:
             assert c.get("/api/vdl2/active").status_code == 503
             assert c.get("/api/vdl2/positions").status_code == 503
             assert c.get("/api/vdl2/oooi/48e95d").status_code == 503
+            assert c.get("/api/vdl2/signal").status_code == 503
 
     def test_until_le_since_400(self, monkeypatch):
         monkeypatch.setattr(config, "VDL2_ENABLED", True)
@@ -789,6 +889,7 @@ class TestGating:
         web._include_optional_routers(app)
         paths = {r.path for r in iter_api_routes(app.routes)}
         assert "/api/vdl2/messages" in paths
+        assert "/api/vdl2/signal" in paths
 
 
 # ---------------------------------------------------------------------------

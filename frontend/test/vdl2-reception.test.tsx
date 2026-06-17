@@ -24,6 +24,29 @@ const FIXTURE = {
   ],
 };
 
+// Per-frequency signal + SNR payload (dumpvdl2). metrics indexes both matrices;
+// column 0 is the ts row; null = an empty bucket (gap). The default stubFetch
+// returns {ok:true} for /api/vdl2/signal, so the existing tests see no signal
+// row (the vdlm2dec / no-data case) — only the tests below opt into this fixture.
+const SIGNAL_FIXTURE = {
+  bucket_seconds: 60,
+  metrics: ['136.725', '136.975'],
+  freqs: [136.725, 136.975],
+  samples: 42,
+  newest_ts: 1000,
+  newest_age_sec: 8,
+  signal: [
+    [1000, 1060],
+    [-46.0, -47.0],
+    [-50.0, null],
+  ],
+  snr: [
+    [1000, 1060],
+    [7.0, 6.0],
+    [2.0, null],
+  ],
+};
+
 let fixture: Record<string, unknown> = FIXTURE;
 let fetchSpy: ReturnType<typeof vi.fn>;
 
@@ -94,5 +117,31 @@ describe('Vdl2ReceptionCard', () => {
     globalThis.fetch = vi.fn(() => new Promise<Response>(() => {})) as unknown as typeof fetch;
     renderCard();
     await waitFor(() => screen.getByTestId('vdl2-reception-loading'));
+  });
+
+  it('renders the per-frequency signal + SNR charts when signal data is present', async () => {
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      const body = url.includes('/api/vdl2/signal')
+        ? SIGNAL_FIXTURE
+        : url.includes('/api/vdl2/timeseries')
+          ? FIXTURE
+          : { ok: true };
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }) as unknown as typeof fetch;
+    renderCard();
+    await waitFor(() => screen.getByTestId('vdl2-signal-chart'));
+    expect(screen.getByTestId('vdl2-snr-chart')).toBeTruthy();
+  });
+
+  it('hides the signal + SNR charts when there is no signal data (vdlm2dec feed)', async () => {
+    // Default stubFetch returns {ok:true} for /api/vdl2/signal → empty metrics.
+    renderCard();
+    await waitFor(() => screen.getByTestId('vdl2-rate-chart'));
+    expect(screen.queryByTestId('vdl2-signal-chart')).toBeNull();
+    expect(screen.queryByTestId('vdl2-snr-chart')).toBeNull();
   });
 });

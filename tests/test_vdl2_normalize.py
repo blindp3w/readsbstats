@@ -131,6 +131,13 @@ class TestNormalizeVdlm2dec:
         assert rec["lat"] == 52.2
         assert rec["lon"] == 21.0
 
+    def test_no_signal_levels(self):
+        # vdlm2dec's JSON carries no signal field — both must be NULL so the
+        # Metrics signal/SNR row self-hides on a vdlm2dec feed.
+        rec = normalize.normalize(SAMPLE_VDLM2DEC)
+        assert rec["sig_level"] is None
+        assert rec["noise_level"] is None
+
 
 class TestNormalizeDumpvdl2:
     def test_basic_acars_mapping(self):
@@ -258,6 +265,33 @@ class TestNormalizeDumpvdl2:
         assert rec["label"] is None
         assert rec["body"] is None
         assert rec["icao_hex"] == "896622"
+
+    def test_signal_levels_captured(self):
+        # dumpvdl2 emits per-frame sig_level/noise_level (dBFS) at the vdl2 level,
+        # siblings of freq — confirmed against real --output decoded:json captures.
+        raw = {"vdl2": {"freq": 136725000, "sig_level": -47.6, "noise_level": -52.8,
+                        "avlc": {"src": {"addr": "4bb875"},
+                                 "acars": {"msg_text": "x"}}}}
+        rec = normalize.normalize(raw, decoder="dumpvdl2")
+        assert rec["sig_level"] == -47.6
+        assert rec["noise_level"] == -52.8
+
+    def test_signal_levels_absent_are_none(self):
+        # A frame without the fields (older dumpvdl2 / partial frame) → NULL, no crash.
+        raw = {"vdl2": {"avlc": {"src": {"addr": "4bb875"},
+                                 "acars": {"msg_text": "x"}}}}
+        rec = normalize.normalize(raw, decoder="dumpvdl2")
+        assert rec["sig_level"] is None
+        assert rec["noise_level"] is None
+
+    def test_signal_levels_numeric_strings_parsed(self):
+        # _float_or_none tolerates quoted numerics, consistent with freq/lat/lon.
+        raw = {"vdl2": {"sig_level": "-47.6", "noise_level": "-52.8",
+                        "avlc": {"src": {"addr": "4bb875"},
+                                 "acars": {"msg_text": "x"}}}}
+        rec = normalize.normalize(raw, decoder="dumpvdl2")
+        assert rec["sig_level"] == -47.6
+        assert rec["noise_level"] == -52.8
 
 
 class TestHelperCoercion:

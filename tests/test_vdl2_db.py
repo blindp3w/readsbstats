@@ -140,6 +140,78 @@ class TestMigrate:
         assert len(hits) == 1   # 'rebuild' populated the index from existing rows
 
 
+class TestSignalColumns:
+    """sig_level / noise_level columns (dumpvdl2 per-frame dBFS) — added to an
+    existing DB via the idempotent migrate() ALTER, like the indexes."""
+
+    # vdl2_messages exactly as it existed BEFORE sig_level/noise_level — simulates
+    # a real prod DB so migrate() must ALTER the two columns in (the current
+    # _DDL_MESSAGES already has them, so it can't exercise the upgrade path).
+    _LEGACY_DDL = """
+    CREATE TABLE vdl2_messages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, icao_hex TEXT,
+        registration TEXT, flight TEXT, label TEXT, mode TEXT, block_id TEXT,
+        ack TEXT, msgno TEXT, freq REAL, station_id TEXT, toaddr TEXT, dsta TEXT,
+        lat REAL, lon REAL, alt INTEGER, epu REAL, app_name TEXT, app_ver TEXT,
+        body TEXT, raw TEXT, decoder TEXT
+    );
+    """
+
+    def _legacy_db(self):
+        conn = vdl2_db.connect(":memory:")
+        conn.executescript(self._LEGACY_DDL)
+        conn.execute(f"PRAGMA user_version = {vdl2_db.VDL2_SCHEMA_VERSION}")
+        conn.commit()
+        return conn
+
+    def test_migrate_adds_signal_columns_to_existing_db(self):
+        conn = self._legacy_db()
+        before = {r[1] for r in conn.execute("PRAGMA table_info(vdl2_messages)")}
+        assert "sig_level" not in before and "noise_level" not in before
+        vdl2_db.migrate(conn)
+        after = {r[1] for r in conn.execute("PRAGMA table_info(vdl2_messages)")}
+        assert "sig_level" in after and "noise_level" in after
+
+    def test_migrate_signal_columns_idempotent(self):
+        conn = self._legacy_db()
+        vdl2_db.migrate(conn)
+        vdl2_db.migrate(conn)  # second run must not raise (already-present is a no-op)
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(vdl2_messages)")}
+        assert "sig_level" in cols and "noise_level" in cols
+
+    def test_fresh_db_has_signal_columns(self):
+        conn = make_vdl2_db()
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(vdl2_messages)")}
+        assert "sig_level" in cols and "noise_level" in cols
+
+    def test_insert_and_readback_signal(self):
+        conn = make_vdl2_db()
+        vdl2_db.insert_messages(conn, [_msg(sig_level=-45.7, noise_level=-52.8)])
+        conn.commit()
+        row = conn.execute(
+            "SELECT sig_level, noise_level FROM vdl2_messages"
+        ).fetchone()
+        assert row["sig_level"] == -45.7 and row["noise_level"] == -52.8
+
+    def test_add_missing_columns_swallows_duplicate_on_race(self):
+        # The race: another connection added the columns AFTER our table_info
+        # snapshot, so our ALTER hits 'duplicate column name' (SQLite has no ADD
+        # COLUMN IF NOT EXISTS). The try/except must swallow it. Simulate the
+        # stale snapshot by reporting the columns absent while the real table
+        # already has them — the ALTER then raises a genuine SQLite error.
+        real = make_vdl2_db()  # already has sig_level + noise_level
+
+        class StalePrecheckConn:
+            def execute(self, sql, *a):
+                if "table_info" in sql:
+                    return iter([])           # stale: columns look absent
+                return real.execute(sql, *a)  # real ALTER → real duplicate error
+
+        vdl2_db._add_missing_columns(StalePrecheckConn())   # must not raise
+        cols = {r[1] for r in real.execute("PRAGMA table_info(vdl2_messages)")}
+        assert "sig_level" in cols and "noise_level" in cols
+
+
 class TestBatchedPrune:
     def test_prune_batches_delete_all_old(self):
         conn = make_vdl2_db()
