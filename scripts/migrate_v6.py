@@ -36,13 +36,20 @@ def migrate(path: str) -> dict:
         t0 = time.monotonic()
         with conn:
             database.rebuild_positions_v6(conn)
+            # Verify FK integrity *inside* the transaction so a detected break
+            # rolls back instead of persisting a corrupt v6 (which would then
+            # block a re-run at the `ver >= 6` short-circuit above). With
+            # foreign_keys=ON the INSERT…SELECT in rebuild_positions_v6 already
+            # rejects orphans; running the check here keeps the gate able to roll
+            # back if the rebuild is ever run with foreign_keys=OFF (SQLite's
+            # documented bulk-rebuild pattern). (Audit 2026-06-20)
+            bad = conn.execute("PRAGMA foreign_key_check").fetchall()
+            if bad:
+                raise RuntimeError(f"foreign_key_check failed: {bad[:5]}")
             conn.execute(
                 "INSERT OR IGNORE INTO schema_version "
                 "VALUES (6, strftime('%s','now'))"
             )
-        bad = conn.execute("PRAGMA foreign_key_check").fetchall()
-        if bad:
-            raise RuntimeError(f"foreign_key_check failed: {bad[:5]}")
         print(f"rebuild done in {time.monotonic() - t0:.0f}s; ANALYZE …")
         conn.execute("PRAGMA analysis_limit = 1000")
         conn.execute("ANALYZE")

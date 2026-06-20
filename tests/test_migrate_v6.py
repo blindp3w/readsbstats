@@ -80,6 +80,86 @@ def test_migrate_v6_is_idempotent(tmp_path):
     assert migrate(path) == {"skipped": True}
 
 
+def test_migrate_v6_rolls_back_on_orphan_fk(tmp_path):
+    """A v5 positions row whose flight_id has no matching flights row must NOT
+    leave a committed, half-built v6 behind: migrate() aborts and the DB stays
+    v5 with the original positions intact.
+
+    Regression guard (Audit 2026-06-20): under foreign_keys=ON it is the
+    INSERT…SELECT that raises and rolls back, so this passes before and after
+    moving the explicit PRAGMA foreign_key_check inside the transaction — the
+    reorder keeps the gate able to roll back if FK enforcement is ever disabled
+    during the bulk rebuild (SQLite's documented rebuild pattern)."""
+    path = str(tmp_path / "orphan.db")
+    _make_v5(path)
+    conn = database.connect(path)
+    conn.execute("PRAGMA foreign_keys=OFF")   # let the orphan in past enforcement
+    conn.execute(
+        "INSERT INTO positions (flight_id, ts, lat, lon, source_type) "
+        "VALUES (9999, 200, 52.0, 21.0, 'adsb_icao')"   # 9999 = no such flight
+    )
+    conn.commit()
+    conn.close()
+
+    with pytest.raises(Exception):
+        migrate(path)
+
+    conn = database.connect(path)
+    try:
+        # Schema stayed v5 and the original v5 layout is intact (rolled back) —
+        # i.e. no committed v6 that would block a re-run at `ver >= 6`.
+        assert conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0] == 5
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(positions)")}
+        assert "source_type" in cols
+    finally:
+        conn.close()
+
+
+def test_migrate_v6_fk_check_rolls_back_under_fk_off(tmp_path, monkeypatch):
+    """Directly exercises the relocated PRAGMA foreign_key_check. Forces migrate()'s
+    rebuild to run with foreign_keys=OFF (SQLite's documented bulk-rebuild pattern),
+    so an orphan is *copied* into the new table and only the explicit
+    foreign_key_check — now INSIDE `with conn:` — catches it and rolls back.
+
+    Fails if the check is moved back outside the transaction: there the rebuild +
+    schema_version=6 stamp would already be committed before the check raised,
+    leaving a corrupt v6 that blocks re-runs at `ver >= 6`."""
+    path = str(tmp_path / "fkoff.db")
+    _make_v5(path)
+    seed = database.connect(path)
+    seed.execute("PRAGMA foreign_keys=OFF")
+    seed.execute(
+        "INSERT INTO positions (flight_id, ts, lat, lon, source_type) "
+        "VALUES (9999, 200, 52.0, 21.0, 'adsb_icao')"   # 9999 = no such flight
+    )
+    seed.commit()
+    seed.close()
+
+    # Force migrate()'s connection to run the rebuild with FK enforcement OFF, so
+    # the orphan slips past INSERT…SELECT and only foreign_key_check finds it.
+    real_connect = database.connect
+
+    def _fk_off_connect(p, **kw):
+        c = real_connect(p, **kw)
+        c.execute("PRAGMA foreign_keys=OFF")
+        return c
+
+    monkeypatch.setattr(database, "connect", _fk_off_connect)
+
+    with pytest.raises(RuntimeError, match="foreign_key_check"):
+        migrate(path)
+
+    monkeypatch.setattr(database, "connect", real_connect)
+    conn = database.connect(path)
+    try:
+        # Rolled back: still v5, original layout intact, no half-built v6.
+        assert conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0] == 5
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(positions)")}
+        assert "source_type" in cols
+    finally:
+        conn.close()
+
+
 def test_combined_deploy_path_v5_to_rollups(tmp_path):
     """The real Pi upgrade: v5 DB with all legacy indexes → offline migration
     → background migrations → rollups built, final index set, heatmap math.
