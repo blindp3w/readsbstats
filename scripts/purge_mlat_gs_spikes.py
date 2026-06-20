@@ -28,9 +28,10 @@ import statistics
 
 from readsbstats import config, database, posenc
 
-# Audit-12 #199 — `_new_max_gs` was duplicated here and in
-# purge_bad_gs.py. Aliased to the shared helper.
-from _purge_helpers import new_max_gs as _new_max_gs
+# Audit-12 #199 — `_new_max_gs` was duplicated here and in purge_bad_gs.py.
+# Aliased to the shared helper. _BATCH_SIZE (A13-084) is the single source of
+# truth for the batch-commit cadence shared by the three purge scripts.
+from _purge_helpers import new_max_gs as _new_max_gs, BATCH_SIZE as _BATCH_SIZE
 
 
 # Absolute floor (kts) for the statistical-outlier pass. A GS sample is only
@@ -125,6 +126,9 @@ def scan_statistical_outliers(
 
     Returns {flight_id: [position_ids with outlier gs]}.
     """
+    # statistics.quantiles(n=4) raises for <2 values; floor here (not only in the
+    # CLI) so a non-CLI caller passing min_readings<2 can't crash. (Audit 2026-06-20)
+    min_readings = max(2, min_readings)
     # improvements.md #126: stream one ordered query through
     # ``itertools.groupby`` instead of one SELECT per flight.
     cursor = conn.execute(
@@ -177,10 +181,6 @@ def scan_orphan_max_gs(conn: sqlite3.Connection) -> dict[int, float | None]:
         "HAVING max_stored_gs IS NULL OR f.max_gs - max_stored_gs > 1"
     ).fetchall()
     return {r["id"]: r["max_stored_gs"] for r in rows}
-
-
-# Audit-13 A13-084: single source of truth in `_purge_helpers.BATCH_SIZE`.
-from _purge_helpers import BATCH_SIZE as _BATCH_SIZE
 
 
 def apply_purge(

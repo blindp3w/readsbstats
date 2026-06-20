@@ -212,3 +212,18 @@ def test_combined_deploy_path_v5_to_rollups(tmp_path):
         ).fetchone()[0] == 3
     finally:
         conn.close()
+
+
+def test_migrate_v6_main_rejects_missing_db(tmp_path, monkeypatch):
+    """main() with a non-existent db_path exits 1 and creates no stray DB file,
+    instead of auto-creating it and raising an opaque 'no such table'.
+    Audit 2026-06-20."""
+    import os
+    import sys
+    from migrate_v6 import main
+    missing = str(tmp_path / "does_not_exist.db")
+    monkeypatch.setattr(sys, "argv", ["migrate_v6.py", missing])
+    with pytest.raises(SystemExit) as exc:
+        main()
+    assert exc.value.code == 1
+    assert not os.path.exists(missing)

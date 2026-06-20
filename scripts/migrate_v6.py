@@ -16,6 +16,7 @@ everything Phases 1-2 left on the freelist. ~10-20 min on the Pi for a
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import time
 
@@ -74,6 +75,11 @@ def main() -> int:
     )
     ap.add_argument("db_path")
     args = ap.parse_args()
+    # database.connect() would silently create a missing file (then fail with an
+    # opaque "no such table" + leave a stray .db/-wal/-shm). Reject up front.
+    if not os.path.exists(args.db_path):
+        print(f"error: database not found: {args.db_path}", file=sys.stderr)
+        sys.exit(1)
     migrate(args.db_path)
     return 0
 

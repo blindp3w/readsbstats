@@ -564,3 +564,17 @@ class TestMain:
         # Orphan section must NOT list this flight with the pre-purge 724.0 target —
         # apply_purge recomputes it to 75.0 via the bad-loop, so 724.0 never lands.
         assert "→ 724.0" not in out
+
+
+def test_scan_statistical_outliers_floors_min_readings():
+    """min_readings < 2 must not reach statistics.quantiles with <2 points
+    (StatisticsError); the function floors it to 2 internally, not just the CLI.
+    Audit 2026-06-20."""
+    from purge_mlat_gs_spikes import scan_statistical_outliers
+    conn = make_db()
+    try:
+        fid = insert_flight(conn)
+        insert_pos(conn, fid, 1000, 90.0)   # a single MLAT reading
+        assert scan_statistical_outliers(conn, 2.0, min_readings=1) == {}
+    finally:
+        conn.close()
