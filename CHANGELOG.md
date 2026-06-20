@@ -5,6 +5,36 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 2.25.2 — 2026-06-20
+
+Audit follow-up batch 2 (2026-06-20 audit) — remaining Medium findings plus
+test-coverage gaps. Test-first; no API, schema, or dependency changes.
+
+### Fixed
+
+- **`purge_mlat_gs_spikes` dry-run report** no longer lists a flight that is both a
+  GS spike and an orphan `max_gs` with a pre-purge target that `apply_purge` won't
+  actually write — the orphan section now mirrors apply's `fid not in bad` guard,
+  so the dry-run preview matches the committed result.
+- **`http_safe` (SSRF guard)** now rejects an httpx response that arrived via a
+  followed redirect chain, in both the streaming and fallback paths — a
+  defence-in-depth mirror of the urllib path's final-URL re-validation.
+- **`import_rrd`** ensures only the `receiver_stats` table instead of running the
+  full schema migration (a metrics-only import no longer rebuilds `positions` on a
+  pre-v6 DB), and `--dry-run` now reports the true net-new row count (it reads
+  through a read-only connection and writes nothing).
+- **Receiver-health signal-drop check**: the degenerate-baseline message now notes
+  a ≥ 0 dBFS baseline may also indicate a saturated front-end, not only degenerate
+  history.
+- **Metrics/History time picker** scrolls the selected hour/minute into view once
+  when the popover opens, instead of re-centring the column on every tap.
+
+### Tests
+
+- Interrupted-run resumability tests for all three `purge_*` scripts (proving a
+  crashed run is finished cleanly by a re-run), and new interaction tests for the
+  `IsolationPills`, `MapRewindControls`, and `MapHistDatePicker` components.
+
 ## 2.25.1 — 2026-06-20
 
 Audit follow-up (2026-06-20 codebase audit) — five small, test-first
