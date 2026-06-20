@@ -10,8 +10,8 @@ from __future__ import annotations
 
 # readsb addrtype values (tar1090/readsb "type" field). Codes are stored in
 # positions.source — append new types, NEVER renumber existing codes.
-# Must cover every type collector._is_adsb()/_is_mlat() classify:
-# _is_adsb → ("adsb_icao", "adsb_icao_nt", "adsr_icao", "adsc"); _is_mlat → "mlat".
+# Must cover every type collector._is_adsb()/_is_mlat() classify
+# (see ADSB_SOURCE_TYPES below — the canonical ADS-B set; _is_mlat → "mlat").
 SOURCE_TO_CODE: dict[str, int] = {
     "adsb_icao": 0,
     "mlat": 1,
@@ -30,6 +30,18 @@ SOURCE_TO_CODE: dict[str, int] = {
 OTHER_CODE = 99
 CODE_TO_SOURCE: dict[int, str] = {v: k for k, v in SOURCE_TO_CODE.items()}
 CODE_TO_SOURCE[OTHER_CODE] = "other"
+
+# Canonical ADS-B addrtype set — the single source of truth shared by
+# collector._is_adsb() and the offline purge scripts. Keeping it here (rather
+# than duplicating a literal tuple or a `startswith("adsb")` heuristic at each
+# call site) is what prevents drift: a prefix test silently excludes the
+# non-`adsb`-prefixed ADS-B types `adsr_icao` and `adsc` (Audit 2026-06-20).
+ADSB_SOURCE_TYPES: tuple[str, ...] = ("adsb_icao", "adsb_icao_nt", "adsr_icao", "adsc")
+
+
+def is_adsb_source(source_type: str | None) -> bool:
+    """True if ``source_type`` is one of the ADS-B addrtypes."""
+    return source_type in ADSB_SOURCE_TYPES
 
 
 _INT64_MAX = 9223372036854775807

@@ -181,7 +181,7 @@ haversine_nm = geo.haversine_nm
 # ---------------------------------------------------------------------------
 
 def _is_adsb(source_type: str | None) -> bool:
-    return source_type in ("adsb_icao", "adsb_icao_nt", "adsr_icao", "adsc")
+    return posenc.is_adsb_source(source_type)
 
 
 def _is_mlat(source_type: str | None) -> bool:
