@@ -243,6 +243,40 @@ class TestApplyPurgeBatching:
             f" got {counter.commits}"
         )
 
+    def test_interrupted_apply_is_resumable(self):
+        """A crash mid-run leaves earlier batches committed and later ones rolled
+        back; re-running the scan+purge must finish the job (the docstring's
+        idempotency claim). Audit 2026-06-20."""
+        from purge_mlat_gs_spikes import _BATCH_SIZE
+        from tests._helpers import CountingConn
+
+        n_flights = _BATCH_SIZE * 2 + 5
+        spike_ids: list[int] = []
+        for i in range(n_flights):
+            fid = insert_flight(self.conn, icao=f"a{i:05x}")
+            insert_pos(self.conn, fid, 1000 + i, 90.0)
+            spike_ids.append(insert_pos(self.conn, fid, 1007 + i, 700.0))  # 610/7 ≈ 87 kts/s
+        bad = scan_mlat_spikes(self.conn, ACCEL_LIMIT)
+        assert len(bad) == n_flights
+
+        ph = ",".join("?" * len(spike_ids))
+
+        def remaining() -> int:
+            return self.conn.execute(
+                f"SELECT COUNT(*) FROM positions WHERE id IN ({ph}) AND gs IS NOT NULL",
+                spike_ids,
+            ).fetchone()[0]
+
+        with pytest.raises(RuntimeError, match="interrupt"):
+            apply_purge(CountingConn(self.conn, raise_on_commit=2), bad, {})
+        self.conn.rollback()
+
+        after = remaining()
+        assert 0 < after < len(spike_ids)   # partial: batch 1 nulled, rest not
+
+        apply_purge(self.conn, scan_mlat_spikes(self.conn, ACCEL_LIMIT), {})
+        assert remaining() == 0
+
 
 # ---------------------------------------------------------------------------
 # apply_purge
@@ -510,3 +544,23 @@ class TestMain:
             if f.startswith("test.db.backup-")
         ]
         assert len(snapshots) >= 1, "snapshot not created on --apply (without --i-have-a-backup)"
+
+    def test_dry_run_orphan_report_excludes_spike_flights(self, monkeypatch, capsys):
+        """A flight that is BOTH a GS spike AND an orphan max_gs must appear only
+        in the spikes section (with the post-purge target the bad-loop will write),
+        NOT in the orphan section with the pre-purge MAX(p.gs) target that
+        apply_purge skips (it guards `fid not in bad`). Audit 2026-06-20."""
+        fid = insert_flight(self.conn, max_gs=900.0)   # orphan: above all stored gs
+        insert_pos(self.conn, fid, 1000, 70.0)
+        insert_pos(self.conn, fid, 1007, 724.0)        # spike (654/7 ≈ 93 kts/s); also max stored gs
+        insert_pos(self.conn, fid, 1014, 75.0)
+        monkeypatch.setattr("sys.argv", [
+            "purge_mlat_gs_spikes.py", "--db", self.db_path,
+        ])
+        main()
+        out = capsys.readouterr().out
+        # Spikes section shows the post-purge target (75.0, largest non-spike gs).
+        assert "→ 75.0" in out
+        # Orphan section must NOT list this flight with the pre-purge 724.0 target —
+        # apply_purge recomputes it to 75.0 via the bad-loop, so 724.0 never lands.
+        assert "→ 724.0" not in out
