@@ -23,8 +23,13 @@
 // policy. http:// is rejected — if a future source ships HTTP-only, that's
 // a deliberate decision we should revisit, not a silent allow.
 //
-// Returns the trimmed URL on success, or '' on rejection. The empty-string
-// return is convenient for JSX (`<img src={safeUrl(...)}>` won't render).
+// Returns the validated, normalized URL (`url.href`) on success, or '' on
+// rejection. Returning `url.href` rather than the raw input guarantees the
+// rendered attribute is exactly what passed the protocol/userinfo checks:
+// WHATWG `new URL()` strips ASCII tab/newline and normalizes the authority, so
+// the raw string could otherwise carry control chars that diverge from the
+// validated URL (Audit 2026-06-20). The empty-string return is convenient for
+// JSX (`<img src={safeUrl(...)}>` won't render).
 export function safeUrl(input: string | null | undefined): string {
   if (!input) return '';
   const trimmed = input.trim();
@@ -36,7 +41,7 @@ export function safeUrl(input: string | null | undefined): string {
     // `https://user:pass@host/` URL leaks userinfo and is a host-confusion
     // vector; mirrors the server-side reject in http_safe.py.
     if (url.username || url.password) return '';
-    return trimmed;
+    return url.href;
   } catch {
     return '';
   }
