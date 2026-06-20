@@ -241,8 +241,8 @@ def update_aircraft_db(conn: sqlite3.Connection) -> int:
     # the run-end clear in main().
     enrichment.clear_cache()
 
-    log.info("aircraft_db updated (%d rows)", parsed_count)
-    return parsed_count
+    log.info("aircraft_db updated (%d rows)", new_count)
+    return new_count
 
 
 # ---------------------------------------------------------------------------

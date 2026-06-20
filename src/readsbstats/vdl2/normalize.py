@@ -177,7 +177,7 @@ def _normalize_dumpvdl2(raw: dict) -> dict | None:
         "block_id":     clean_short_text(acars.get("blk_id"), _SHORT),
         "ack":          clean_short_text(acars.get("ack"), _SHORT),
         "msgno":        clean_short_text(acars.get("msg_num"), _SHORT),
-        "freq":         freq_hz / 1e6 if freq_hz else None,   # Hz → MHz (0/None → None)
+        "freq":         freq_hz / 1e6 if freq_hz and freq_hz > 0 else None,   # Hz → MHz (0/neg/None → None)
         "station_id":   clean_short_text(vdl2.get("station"), _SHORT),  # dumpvdl2: vdl2.station
         "toaddr":       clean_short_text((avlc.get("dst") or {}).get("addr") if isinstance(avlc.get("dst"), dict) else None, _SHORT),
         "dsta":         None,

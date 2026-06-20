@@ -57,4 +57,35 @@ describe('apiFetch', () => {
     );
     await expect(apiFetch('flights')).rejects.toBeInstanceOf(ApiError);
   });
+
+  it('surfaces the server {detail} in the ApiError (message + .detail)', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        new Response(JSON.stringify({ detail: 'invalid registration' }),
+          { status: 400, statusText: 'Bad Request' })),
+    );
+    let err: unknown;
+    try {
+      await apiFetch('watchlist', { method: 'POST', body: '{}' });
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(ApiError);
+    expect((err as ApiError).detail).toBe('invalid registration');
+    // Message keeps the HTTP-status prefix (live-count-badge asserts it) and
+    // now also carries the reason.
+    expect((err as Error).message).toContain('HTTP 400');
+    expect((err as Error).message).toContain('invalid registration');
+  });
+
+  it('preserves caller-supplied headers alongside X-Requested-With', async () => {
+    await apiFetch('watchlist', {
+      method: 'POST', body: '{}', headers: { 'Content-Type': 'application/json' },
+    });
+    const init = (fetch as unknown as ReturnType<typeof vi.fn>).mock.calls[0][1] as RequestInit;
+    const headers = new Headers(init.headers);
+    expect(headers.get('X-Requested-With')).toBe('XMLHttpRequest');
+    expect(headers.get('Content-Type')).toBe('application/json');
+  });
 });

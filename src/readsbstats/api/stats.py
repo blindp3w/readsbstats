@@ -491,7 +491,9 @@ def _compute_stats_sync(from_ts: int | None, to_ts: int | None) -> dict:
 
     adsb_pct  = agg["adsb_pct"]  or 0
     mlat_pct  = agg["mlat_pct"]  or 0
-    other_pct = round(100.0 - adsb_pct - mlat_pct, 1)
+    # clamp: adsb_pct/mlat_pct are each independently ROUND(…,1), so their sum
+    # can exceed 100 → a tiny negative "other" slice without the floor.
+    other_pct = max(0.0, round(100.0 - adsb_pct - mlat_pct, 1))
 
     # Previous-window deltas. Frontend KPI cards have a `prev` slot that was
     # previously only fed by `trends.flights_*_prev` (24h/7d only), leaving every
@@ -558,7 +560,7 @@ def _compute_stats_sync(from_ts: int | None, to_ts: int | None) -> dict:
         lifetime_oldest_flight    = life["oldest_flight"]
         lifetime_adsb_pct         = life["adsb_pct"] or 0
         lifetime_mlat_pct         = life["mlat_pct"] or 0
-    lifetime_other_pct = round(100.0 - lifetime_adsb_pct - lifetime_mlat_pct, 1)
+    lifetime_other_pct = max(0.0, round(100.0 - lifetime_adsb_pct - lifetime_mlat_pct, 1))
 
     # --- Independent tail sections (each its own helper) ---
     ctx = _StatsCtx(

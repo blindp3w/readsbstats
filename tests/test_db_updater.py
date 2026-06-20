@@ -60,6 +60,18 @@ class TestUpdateAircraftDb:
         assert row["type_desc"] == "BOEING 737-800"
         assert row["flags"] == 1
 
+    def test_duplicate_icao_counted_once(self, monkeypatch):
+        """INSERT OR IGNORE drops a duplicate icao_hex, so the returned/logged
+        count is the distinct rows inserted, not the parsed-row count.
+        Audit 2026-06-20."""
+        conn = self.conn
+        monkeypatch.setattr(db_updater, "_fetch", lambda url: _aircraft_gz(
+            ["abc123", "R1", "A320", "0", "D1"],
+            ["abc123", "R2", "A321", "0", "D2"],   # duplicate icao_hex
+        ))
+        assert db_updater.update_aircraft_db(conn) == 1
+        assert conn.execute("SELECT COUNT(*) FROM aircraft_db").fetchone()[0] == 1
+
     def test_empty_csv_returns_zero(self, monkeypatch):
         conn = self.conn
         monkeypatch.setattr(db_updater, "_fetch", lambda url: _aircraft_gz())

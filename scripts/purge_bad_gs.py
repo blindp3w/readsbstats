@@ -36,8 +36,9 @@ from readsbstats import config, database, geo, posenc
 
 # Audit-12 #199 — `_new_max_gs` was duplicated here and in
 # purge_mlat_gs_spikes.py. Aliased to the shared helper so a fix lands
-# in both places at once.
-from _purge_helpers import new_max_gs as _new_max_gs
+# in both places at once. _BATCH_SIZE (A13-084) is the single source of truth
+# for the batch-commit cadence shared by the three purge scripts.
+from _purge_helpers import new_max_gs as _new_max_gs, BATCH_SIZE as _BATCH_SIZE
 
 haversine_nm = geo.haversine_nm
 
@@ -154,10 +155,8 @@ def scan_flights(
             )
             source_type = posenc.decode_source(pos["source"])
 
-            if gs is None:
-                prev = pos
-                continue
-
+            # (No `gs is None` branch: the SELECT's `WHERE gs IS NOT NULL`
+            # guarantees gs is set, so a null-gs guard here would be dead code.)
             flagged = False
 
             # 1. Hard-limit check
@@ -192,10 +191,6 @@ def scan_flights(
             bad[fid] = bad_ids
 
     return bad
-
-
-# Audit-13 A13-084: single source of truth in `_purge_helpers.BATCH_SIZE`.
-from _purge_helpers import BATCH_SIZE as _BATCH_SIZE
 
 
 def apply_purge(conn: sqlite3.Connection, bad: dict[int, list[int]]) -> None:

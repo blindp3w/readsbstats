@@ -5,6 +5,46 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 2.25.3 — 2026-06-21
+
+Audit follow-up batch 3 (2026-06-20 audit) — the actionable Low-severity
+findings: small correctness fixes, cheap cleanups, and test-coverage gaps.
+Test-first; no API, schema, or dependency changes.
+
+### Fixed
+
+- **Stats source breakdown** never renders a negative "other" slice. The `adsb`
+  and `mlat` percentages are each rounded independently in SQL, so their sum can
+  exceed 100 (e.g. 6.3% + 93.8%); the "other" remainder is now floored at 0
+  instead of showing a tiny negative value (windowed and lifetime).
+- **API error toasts surface the server's reason.** `ApiError` now parses a
+  FastAPI `{"detail": …}` body and includes it in the message (after the
+  `HTTP <status>` prefix) and as `.detail`, so a rejected watchlist add shows
+  *why* instead of a bare "HTTP 400 Bad Request".
+- **`import_rrd`** no longer mislabels an interval where only the aircraft *total*
+  is known (RRD `positions` DS absent) as aircraft-with-position — that point now
+  gaps rather than over-reporting positional coverage.
+- **`db_updater`** logs and returns the distinct rows actually inserted (an
+  `INSERT OR IGNORE` drops duplicate ICAO hexes), not the parsed-row count.
+- **`migrate_v6`** rejects a non-existent database path up front (exit 1) instead
+  of silently creating an empty file and failing later with an opaque "no such
+  table".
+- **`purge_mlat_gs_spikes`** floors `min_readings` to 2 inside
+  `scan_statistical_outliers` (not only in the CLI), so a non-CLI caller can't
+  crash the quantile computation on a single-reading flight.
+- **VDL2 normalize** drops a glitchy non-positive `freq` to NULL instead of
+  converting e.g. `-1 MHz`, so a junk channel can't appear in the per-channel
+  metrics.
+
+### Tests
+
+- Added coverage for the cache prewarm-schedule ordering, `cleaners` non-finite
+  string rejection (`"nan"`/`"inf"`), the VDL2 `decoder=` override + negative-freq
+  drop, `import_rrd.main` happy path, and the `db_updater` duplicate-ICAO contract;
+  plus frontend tests for `AcarsPanel`, `AboutReceiverFooter`, `TopChartMultiples`,
+  `MetricCell`, `MapModeControl`, `useMapPlaybackState`, the watchlist optimistic-
+  delete rollback, and the `apiFetch` detail/header-merge behaviour.
+
 ## 2.25.2 — 2026-06-20
 
 Audit follow-up batch 2 (2026-06-20 audit) — remaining Medium findings plus

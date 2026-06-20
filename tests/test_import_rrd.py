@@ -347,9 +347,11 @@ class TestMergeTier:
         # ts=1000: positions=30 → ac_with_pos=30; (50-30) → ac_without_pos=20
         assert merged[1000]["ac_with_pos"] == 30.0
         assert merged[1000]["ac_without_pos"] == 20.0
-        # ts=1060: positions=None, total=60 → ac_with_pos=60, no without
-        assert merged[1060]["ac_with_pos"] == 60.0
-        assert "ac_without_pos" not in merged[1060]
+        # ts=1060: positions=None — only `total` is known, so we can't split
+        # with-vs-without. With aircraft-recent the only source here, that ts
+        # gaps entirely rather than mislabel the total as aircraft-with-position
+        # (which the old `elif total` branch did). Audit 2026-06-20.
+        assert 1060 not in merged
 
 
 class TestMain:
@@ -444,6 +446,37 @@ class TestMain:
             assert check.execute("SELECT COUNT(*) FROM receiver_stats").fetchone()[0] == 1
         finally:
             check.close()
+
+    def test_main_imports_rows_happy_path(self, monkeypatch, tmp_path):
+        """End-to-end happy path: rrdtool mocked to yield rows → main() writes
+        them to receiver_stats (the orchestration was only covered for the abort
+        guards before). Audit 2026-06-20."""
+        db_path = str(tmp_path / "h.db")
+        database.init_db(db_path)
+        (tmp_path / "dump1090_dbfs-signal.rrd").write_text("")
+
+        def fake_run(cmd, **kw):
+            if "--version" in cmd:
+                return _StubCompletedProcess(0, stdout="rrdtool 1.7\n")
+            if len(cmd) > 1 and cmd[1] == "info":
+                return _StubCompletedProcess(0, stdout="last_update = 2000000000\n")
+            return _StubCompletedProcess(0, stdout="\n\n")
+        monkeypatch.setattr(import_rrd.subprocess, "run", fake_run)
+        monkeypatch.setattr(import_rrd, "merge_tier", lambda *a, **kw: {1000: {"signal": -40.0}})
+
+        import sys as _sys
+        monkeypatch.setattr(_sys, "argv", [
+            "import_rrd.py", "--rrd-dir", str(tmp_path), "--db", db_path,
+        ])
+        import_rrd.main()
+
+        conn = database.connect(db_path)
+        try:
+            assert conn.execute("SELECT COUNT(*) FROM receiver_stats").fetchone()[0] == 1
+            assert conn.execute(
+                "SELECT signal FROM receiver_stats WHERE ts=1000").fetchone()[0] == -40.0
+        finally:
+            conn.close()
 
     def test_aborts_when_reference_file_missing(self, monkeypatch, tmp_path):
         import sys as _sys

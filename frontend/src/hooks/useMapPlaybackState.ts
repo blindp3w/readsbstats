@@ -201,6 +201,8 @@ export function useMapPlaybackState(maxRewindSec: number): MapPlaybackState {
       // delta>0 = go back; delta<0 = advance
       setRewindOffsetSec((v) => Math.max(0, Math.min(maxRewindSec, v + deltaSec)));
     } else if (mode === 'hist') {
+      // Same convention as rewind: delta>0 = go back. hist stores an absolute
+      // timestamp, so "back" means a smaller ts → subtract deltaSec.
       setHistAt((v) => (v == null ? v : clampHist(v - deltaSec, nowSec, maxRewindSec)));
     }
   };

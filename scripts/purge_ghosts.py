@@ -23,6 +23,9 @@ import logging
 import sqlite3
 
 from readsbstats import config, database, geo
+# _BATCH_SIZE (A13-084): single source of truth for the batch-commit cadence
+# shared by the three purge scripts.
+from _purge_helpers import BATCH_SIZE as _BATCH_SIZE
 
 log = logging.getLogger("purge_ghosts")
 
@@ -193,10 +196,7 @@ def max_distance_after_purge(
 # Commit every N flights so a multi-thousand-flight purge doesn't hold the
 # SQLite write lock for the whole run (would starve the collector). The
 # delete/update for a single flight stays in one transaction; only the
-# batch boundary commits early.
-# Audit-13 A13-084: constant lives in `_purge_helpers.BATCH_SIZE` so the
-# three purge scripts can't drift.
-from _purge_helpers import BATCH_SIZE as _BATCH_SIZE
+# batch boundary commits early. (_BATCH_SIZE imported at top — A13-084.)
 
 
 def apply_purge(

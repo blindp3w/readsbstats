@@ -311,3 +311,12 @@ class TestValidIcaoCode:
         assert valid_icao_code(None) is None
         assert valid_icao_code(1234) is None
         assert valid_icao_code(["EPWA"]) is None
+
+
+def test_valid_lat_lon_reject_nonfinite_strings():
+    """float() accepts 'nan'/'inf', so the isfinite guard must still reject the
+    string form — otherwise NaN-from-string could reach geo math via the VDL2 /
+    route feeds. Audit 2026-06-20."""
+    for bad in ("nan", "inf", "-inf", "NaN", "Infinity"):
+        assert valid_lat(bad) is None
+        assert valid_lon(bad) is None

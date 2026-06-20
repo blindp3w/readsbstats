@@ -196,9 +196,8 @@ def merge_tier(rrd_dir: str, resolution: int,
                 merged.setdefault(ts, {})["ac_with_pos"] = positions
             if total is not None and positions is not None:
                 merged.setdefault(ts, {})["ac_without_pos"] = total - positions
-            elif total is not None:
-                # Only total available — can't split
-                merged.setdefault(ts, {})["ac_with_pos"] = total
+            # If only `total` is known (positions NaN) we can't split with-vs-
+            # without, so leave both NULL rather than mislabel total as with-pos.
 
     return merged
 
