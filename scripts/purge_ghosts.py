@@ -19,9 +19,12 @@ Pass --apply to commit the changes.
 
 import argparse
 import itertools
+import logging
 import sqlite3
 
 from readsbstats import config, database, geo
+
+log = logging.getLogger("purge_ghosts")
 
 # ---------------------------------------------------------------------------
 # Geometry
@@ -100,11 +103,26 @@ def find_ghost_ids(
 
         ghost_ids, survivors = _velocity_pass(positions, max_speed_kts, reverse=False)
 
+        # `positions` is already coordinate-filtered by the SELECT above, so
+        # len(positions) is the count of comparable fixes.
         if survivors * 2 < len(positions):
             # More than half the positions were flagged — the first position was
-            # likely a ghost anchor that poisoned all comparisons.  The backward
+            # likely a ghost anchor that poisoned all comparisons. The backward
             # pass starts from the real track end and correctly identifies it.
-            ghost_ids, _ = _velocity_pass(positions, max_speed_kts, reverse=True)
+            bwd_ids, bwd_survivors = _velocity_pass(positions, max_speed_kts, reverse=True)
+            if bwd_survivors * 2 < len(positions):
+                # The backward pass is ALSO poisoned: the flight is bookended by
+                # outliers at BOTH ends, so neither anchor is trustworthy. Trusting
+                # the poisoned backward result here would delete the real fixes and
+                # keep the trailing ghost. Skip the flight (flag nothing) and warn
+                # for manual review rather than mis-purge real data. (Audit 2026-06-20)
+                log.warning(
+                    "flight %s bookended by outliers (both velocity passes "
+                    "poisoned); skipping — review manually",
+                    fid,
+                )
+                continue
+            ghost_ids = bwd_ids
 
         if ghost_ids:
             ghosts[fid] = ghost_ids

@@ -170,7 +170,7 @@ def scan_flights(
             if not flagged and prev is not None and gs >= _MIN_GS_XVAL:
                 pts, plat, plon = prev["ts"], prev["lat"], prev["lon"]
                 dt = ts - pts
-                is_adsb = (source_type or "").startswith("adsb")
+                is_adsb = posenc.is_adsb_source(source_type)
                 min_dt = _MIN_DT_ADSB if is_adsb else _MIN_DT_OTHER
                 # Defensive: the WHERE clause already filters NULLs from
                 # the cursor, but cross-validation pairs current+previous,

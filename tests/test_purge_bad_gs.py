@@ -296,6 +296,23 @@ class TestScanCrossValidation:
         bad = scan_flights(self.conn, CIVIL_LIMIT, MILITARY_LIMIT, DEVIATION)
         assert fid not in bad
 
+    @pytest.mark.parametrize("source_type", ["adsr_icao", "adsc"])
+    def test_adsr_and_adsc_use_adsb_dt_window(self, source_type):
+        """adsr_icao and adsc ARE ADS-B sources (collector._is_adsb /
+        posenc.is_adsb_source). A 10s-spaced deviating pair must be
+        cross-validated with the 5s ADS-B window, not the 30s 'other' window.
+        Regression for the `startswith("adsb")` heuristic that silently
+        excluded these two non-`adsb`-prefixed types (Audit 2026-06-20)."""
+        fid = insert_flight(self.conn, icao="aabbcc", max_gs=600)
+        insert_pos(self.conn, fid, 1000, 52.0, 21.0, gs=400, source_type=source_type)
+        # 10s gap (≥ 5s ADS-B min, < 30s 'other' min); ~0 nm → implied ~0 kts,
+        # gs=600 → deviation 600 > 100. Flagged only if the ADS-B window applies.
+        pid = insert_pos(self.conn, fid, 1010, 52.0001, 21.0, gs=600, source_type=source_type)
+
+        bad = scan_flights(self.conn, CIVIL_LIMIT, MILITARY_LIMIT, DEVIATION)
+        assert fid in bad
+        assert pid in bad[fid]
+
     def test_gs_at_exact_min_xval_threshold_crossval_applies(self):
         """gs == _MIN_GS_XVAL (300) → cross-validation runs."""
         fid = insert_flight(self.conn, icao="aabbcc", max_gs=300)

@@ -29,7 +29,21 @@ describe('safeUrl — frontend SSRF / XSS allowlist', () => {
     expect(safeUrl('not a url')).toBe('');
   });
 
-  it('trims whitespace before validating', () => {
-    expect(safeUrl('  https://x.com  ')).toBe('https://x.com');
+  it('trims whitespace and returns the normalized URL', () => {
+    // url.href normalizes a bare authority with a trailing slash (Audit 2026-06-20).
+    expect(safeUrl('  https://x.com  ')).toBe('https://x.com/');
+  });
+
+  it.each([
+    // WHATWG URL parsing strips ASCII tab/newline and normalizes a backslash
+    // authority; safeUrl must return that *validated* value, not the raw input,
+    // so no control chars leak into the rendered attribute (Audit 2026-06-20).
+    ['https://exa\tmple.com/p', 'https://example.com/p'],
+    ['https://example.com/pa\nth', 'https://example.com/path'],
+    ['https:\\\\evil.com', 'https://evil.com/'],
+  ])('returns the normalized href for %j', (input, expected) => {
+    const out = safeUrl(input);
+    expect(out).toBe(expected);
+    expect(out).not.toMatch(/[\t\n\r]/);
   });
 });
