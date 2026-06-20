@@ -305,6 +305,9 @@ def _open_flight(
     distance_bearing: float | None,
 ) -> int:
     """Insert a new flight row and register it as active. Returns flight_id."""
+    # `source_type` is accepted for call-site symmetry but unused here — the
+    # opening flights row stores no per-fix source; the first _insert_position
+    # records it. Kept rather than churn ~16 callers. (Audit 2026-06-20)
     cur = conn.execute(
         """
         INSERT INTO flights

@@ -226,7 +226,7 @@ def _get_photo_result(
             url = result["thumbnail_url"] if result else None
             return url, is_type
         except Exception as exc:
-            log.debug("photo lookup failed for %s: %s", icao_hex, exc)
+            log.debug("photo lookup failed for %s: %s", icao_hex, _describe_exc(exc))
             return None, False
 
     if not config.DB_PATH:
@@ -276,7 +276,7 @@ def _download_photo(url: str) -> tuple[bytes, str] | None:
         mime = (headers.get("Content-Type") or "image/jpeg").split(";")[0].strip()
         return data, mime
     except Exception as exc:
-        log.debug("photo download failed for %s: %s", url, exc)
+        log.debug("photo download failed for %s: %s", url, _describe_exc(exc))
         return None
 
 

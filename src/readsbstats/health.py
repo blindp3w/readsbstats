@@ -238,8 +238,9 @@ def _baseline_avg(
     improvements.md A13-057: builds an OR-of-narrow-BETWEEN clause from
     per-week target windows computed in Python.  Each week's window is
     one local hour wide (the hour containing the target wall-clock time),
-    so the planner can use ``idx_receiver_stats_ts`` instead of scanning
-    the full lookback range and filtering with strftime per row.  DST is
+    so the planner can use the implicit rowid index on ``ts`` (its PRIMARY KEY)
+    instead of scanning the full lookback range and filtering with strftime per
+    row.  DST is
     handled correctly because Python's naive ``datetime`` + ``timedelta``
     arithmetic on local time, followed by ``.timestamp()``, accounts for
     the offset in effect at the historical wall-clock time.
@@ -431,6 +432,8 @@ def _check_range_degradation(conn: sqlite3.Connection, now: int) -> Check:
     long_s  = config.HEALTH_RANGE_LONG_DAYS * 86400
     # Audit-13 A13-011: combined into one query; guards `long_max <= 0` to
     # avoid div-by-zero if receiver_stats contains a zero/NULL row.
+    # Bind order is positional: 1st ? = (now - short_s) in the CASE (short
+    # window), 2nd ? = (now - long_s) in the WHERE (long window). Keep in sync.
     row = conn.execute(
         """
         SELECT MAX(CASE WHEN ts >= ? THEN max_distance_m END) AS short_max,
