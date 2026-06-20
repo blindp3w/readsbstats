@@ -419,6 +419,9 @@ class TestSignalDropCheck:
         check = health._check_signal_drop(conn, NOW)
         assert check.severity == "info"
         assert "degenerate" in check.message.lower()
+        # A 0 dBFS baseline can also mean a saturated front-end; the message must
+        # not assert "degenerate" as the sole cause (Audit 2026-06-20).
+        assert "saturated" in check.message.lower()
 
 
 # ---------------------------------------------------------------------------

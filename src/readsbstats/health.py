@@ -345,7 +345,7 @@ def _check_signal_drop(conn: sqlite3.Connection, now: int) -> Check:
     # produces delta=−42, which slams every threshold and surfaces a
     # spurious "antenna degraded" warn.
     if baseline >= 0:
-        return Check(name="signal_drop", severity="info", message="Baseline is non-negative dBFS — historical data degenerate")
+        return Check(name="signal_drop", severity="info", message="Baseline ≥ 0 dBFS — degenerate history or saturated front-end; signal-drop check skipped")
     delta = current - baseline
     threshold = -config.HEALTH_SIGNAL_DROP_DB
     msg = f"{current:.1f} dBFS vs {baseline:.1f} dBFS baseline (Δ {delta:+.1f} dB)"
