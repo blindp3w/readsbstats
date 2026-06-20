@@ -281,6 +281,15 @@ def update_airlines_db(conn: sqlite3.Connection) -> int:
 
     log.info("Parsed %d airline records", len(rows))
 
+    # Self-heal an interrupted prior swap before touching `airlines` — mirrors
+    # update_aircraft_db's _recover_aborted_swap(conn) at the top. Without this,
+    # an airlines-absent mid-swap state (airlines renamed to airlines_old, second
+    # RENAME never ran) crashes the COUNT below with "no such table: airlines",
+    # and the defensive DROP airlines_old further down would destroy the only
+    # surviving copy. main() is masked by init_db()'s recovery; this protects
+    # standalone callers. (Audit 2026-06-20)
+    database.recover_airlines_db_swap(conn)
+
     prev_count = conn.execute("SELECT COUNT(*) FROM airlines").fetchone()[0]
 
     # Flush any pending implicit transaction so BEGIN IMMEDIATE can't fail.

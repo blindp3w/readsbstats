@@ -147,3 +147,45 @@ class TestUpdateAirlinesDbDefensiveDrop:
             assert names == {"AAA", "BBB", "CCC"}
         finally:
             conn.close()
+
+    def test_airlines_absent_midswap_does_not_crash(self, monkeypatch, tmp_path):
+        """Interrupted mid-swap left `airlines` renamed to `airlines_old` with no
+        canonical `airlines` table. update_airlines_db must self-recover (restore
+        from _old, mirroring update_aircraft_db) instead of crashing at
+        `SELECT COUNT(*) FROM airlines`. The normal main() path is masked by
+        init_db()'s recovery; this guards a direct/standalone caller and the
+        latent `DROP airlines_old` data-loss if line 284 didn't crash first."""
+        from readsbstats import db_updater
+
+        rows = (
+            b'1,"Alpha","",\\N,"AAA","ALPHA","PL","Y"\n'
+            b'2,"Beta","","BB","BBB","BETA","GB","Y"\n'
+            b'3,"Gamma","","CC","CCC","GAMMA","US","Y"\n'
+        )
+        monkeypatch.setattr(db_updater, "_fetch", lambda url: rows)
+
+        db_path = tmp_path / "test.db"
+        bootstrap = database.connect(str(db_path))
+        bootstrap.execute(
+            "CREATE TABLE airlines (icao_code TEXT PRIMARY KEY, name TEXT, "
+            "iata_code TEXT, country TEXT, active INTEGER)"
+        )
+        bootstrap.execute("INSERT INTO airlines VALUES ('XXX','seed',NULL,NULL,1)")
+        # Simulate the mid-swap crash: the first RENAME ran, the second didn't —
+        # canonical `airlines` is gone, the data survives only in airlines_old.
+        bootstrap.execute("ALTER TABLE airlines RENAME TO airlines_old")
+        bootstrap.commit()
+        assert "airlines" not in _tables(bootstrap)
+        bootstrap.close()
+
+        conn = database.connect(str(db_path))
+        try:
+            db_updater.update_airlines_db(conn)   # must NOT raise "no such table: airlines"
+            assert "airlines_old" not in _tables(conn)
+            assert "airlines_new" not in _tables(conn)
+            names = {r[0] for r in conn.execute(
+                "SELECT icao_code FROM airlines"
+            ).fetchall()}
+            assert names == {"AAA", "BBB", "CCC"}
+        finally:
+            conn.close()
