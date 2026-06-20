@@ -18,10 +18,25 @@ export const apiUrl = (path: string): string => BASE + 'api/' + path.replace(/^\
 export class ApiError extends Error {
   status: number;
   body?: string;
+  detail?: string;
   constructor(res: Response, body?: string) {
-    super(`HTTP ${res.status} ${res.statusText}`);
+    // Surface a FastAPI `{"detail": ...}` reason in the message — kept AFTER the
+    // `HTTP {status}` prefix so existing status-line assertions still hold — and
+    // expose it as `.detail` for callers that want just the reason. errMsg()
+    // returns `.message`, so error toasts now show the server's reason.
+    let detail: string | undefined;
+    if (body) {
+      try {
+        const parsed = JSON.parse(body);
+        if (parsed && typeof parsed.detail === 'string') detail = parsed.detail;
+      } catch {
+        /* non-JSON body — leave detail undefined */
+      }
+    }
+    super(detail ? `HTTP ${res.status}: ${detail}` : `HTTP ${res.status} ${res.statusText}`);
     this.status = res.status;
     this.body = body;
+    this.detail = detail;
   }
 }
 
