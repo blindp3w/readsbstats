@@ -94,3 +94,21 @@ def test_compute_stats_sync_value_identity(monkeypatch):
 
     expected = json.loads(_FIXTURE.read_text())
     assert got == expected
+
+
+def test_source_breakdown_other_never_negative(monkeypatch):
+    """adsb_pct / mlat_pct are each ROUND(…,1) in SQL, so their sum can exceed
+    100 (1/15 of 16 → 6.3 + 93.8 = 100.1); `other` must clamp to >= 0 rather
+    than render a negative pie slice. Audit 2026-06-20."""
+    conn = make_db()
+    # total=16, adsb=1, mlat=15 → adsb_pct=6.3, mlat_pct=93.8 (half-away-from-zero).
+    _flight(conn, "abc123", "X1", None, None, None, _T - 3600, _T - 1800,
+            1000, 100, 5.0, 90, 16, 1, 15, "mlat")
+    conn.commit()
+    monkeypatch.setattr(_deps, "_db", conn)
+    monkeypatch.setattr(stats.time, "time", lambda: _T)
+    monkeypatch.setattr(config, "DB_PATH", "/tmp/__nonexistent_stats_db__.db")
+    monkeypatch.setattr(config, "RECEIVER_LAT", 52.2)
+    monkeypatch.setattr(config, "RECEIVER_LON", 21.0)
+    got = stats._compute_stats_sync(None, None)
+    assert got["source_breakdown"]["other"] >= 0.0
