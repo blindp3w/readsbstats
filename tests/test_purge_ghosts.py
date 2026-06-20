@@ -1,5 +1,6 @@
 """Tests for purge_ghosts.py."""
 
+import logging
 import math
 import sqlite3
 
@@ -100,6 +101,28 @@ class TestFindGhostIds:
 
         ghosts = find_ghost_ids(self.conn, MAX_SPEED)
         assert ghosts.get(fid, []) == [g1]  # ghost is pos1, not the Warsaw positions
+
+    def test_both_ends_ghost_flight_is_skipped_not_mispurged(self, caplog):
+        """A flight bookended by ghosts at BOTH ends poisons the forward AND the
+        backward velocity pass (each anchors on a ghost). The old code trusted
+        the poisoned backward result and deleted the real fixes while keeping the
+        trailing ghost. The fix detects the unresolvable case and skips the flight
+        (flags nothing) + warns for manual review (Audit 2026-06-20)."""
+        fid = insert_flight(self.conn)
+        # Two far-apart ghosts (north + south, far from Warsaw and from each
+        # other) bracketing two consistent real Warsaw fixes.
+        insert_pos(self.conn, fid, 1000, 59.7, 21.5)    # opening ghost (far N)
+        insert_pos(self.conn, fid, 1070, 52.6, 20.75)   # real
+        insert_pos(self.conn, fid, 1130, 52.5, 20.6)    # real
+        insert_pos(self.conn, fid, 1200, 40.0, 21.0)    # trailing ghost (far S)
+
+        with caplog.at_level(logging.WARNING):
+            ghosts = find_ghost_ids(self.conn, MAX_SPEED)
+
+        # Flight skipped entirely — nothing flagged, so apply_purge can't delete
+        # the real fixes (strictly safer than the old mis-purge).
+        assert fid not in ghosts
+        assert "bookended by outliers" in caplog.text
 
     def test_two_flights_independent(self):
         """Ghost in one flight does not affect the other."""
