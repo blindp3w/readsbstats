@@ -161,6 +161,26 @@ class TestNormalizeDumpvdl2:
         assert rec["decoder"] == "dumpvdl2"
         assert rec["freq"] == 136.975   # 136975000 Hz → MHz
 
+    def test_negative_freq_dropped(self):
+        """A glitchy negative freq must normalize to None, not a tiny negative
+        MHz value that would show as a junk channel. Audit 2026-06-20."""
+        raw = {"vdl2": {"freq": -1000000,
+                        "avlc": {"src": {"addr": "48af11"},
+                                 "acars": {"msg_text": "x"}}}}
+        rec = normalize.normalize(raw, decoder="dumpvdl2")
+        assert rec is not None
+        assert rec["freq"] is None
+
+    def test_explicit_decoder_arg_overrides_config(self, monkeypatch):
+        """normalize(raw, decoder=…) overrides config.VDL2_DECODER — the public
+        per-call contract, not just the config-driven path. Audit 2026-06-20."""
+        monkeypatch.setattr(config, "VDL2_DECODER", "vdlm2dec")
+        raw = {"vdl2": {"avlc": {"src": {"addr": "48af11"},
+                                 "acars": {"msg_text": "x"}}}}
+        rec = normalize.normalize(raw, decoder="dumpvdl2")
+        assert rec is not None
+        assert rec["decoder"] == "dumpvdl2"
+
     def test_empty_dumpvdl2_dropped(self):
         assert normalize.normalize({"vdl2": {"avlc": {}}}, decoder="dumpvdl2") is None
 
