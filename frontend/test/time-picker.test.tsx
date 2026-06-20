@@ -63,4 +63,25 @@ describe('TimePicker', () => {
     const opt = within(popover).getByTestId('tp-m-37');
     expect(opt).toHaveAttribute('aria-selected', 'true');
   });
+
+  it('scrolls the selected row into view once on open, not on every pick', () => {
+    // Audit 2026-06-20: the ScrollColumn effect used to depend on `selected`, so
+    // every pick re-centered the column mid-interaction (touch UX). It must scroll
+    // at most once, when the column mounts on open.
+    const spy = vi.spyOn(Element.prototype, 'scrollIntoView').mockImplementation(() => {});
+    try {
+      render(
+        <TimePicker value="09:30" onChange={vi.fn()} data-testid="tp" ariaLabel="t" />,
+      );
+      fireEvent.click(screen.getByTestId('tp')); // open → both columns mount + scroll
+      const afterOpen = spy.mock.calls.length;
+      expect(afterOpen).toBeGreaterThan(0);
+      // Picking only the hour leaves the popover open (commit needs both columns).
+      const popover = screen.getByTestId('time-picker-popover');
+      fireEvent.click(within(popover).getByTestId('tp-h-14'));
+      expect(spy.mock.calls.length).toBe(afterOpen); // no re-scroll on pick
+    } finally {
+      spy.mockRestore();
+    }
+  });
 });

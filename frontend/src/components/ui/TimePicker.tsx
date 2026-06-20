@@ -171,9 +171,15 @@ function ScrollColumn({
   onPick: (n: number) => void;
   testidPrefix: string;
 }) {
-  // Scroll the selected row into view when the column first mounts.
+  // Scroll the selected row into view once, when the column first mounts (Radix
+  // unmounts PopoverContent on close, so this remounts on each open). Guard with
+  // a ref so a later pick — which changes `selected` — doesn't re-center the
+  // column mid-interaction, yanking the user's scroll position (Audit 2026-06-20).
   const ref = useRef<HTMLUListElement>(null);
+  const didScroll = useRef(false);
   useEffect(() => {
+    if (didScroll.current) return;
+    didScroll.current = true; // mark first-run before the null check (at-most-once)
     if (selected == null || !ref.current) return;
     const el = ref.current.querySelector<HTMLElement>(`[data-value="${selected}"]`);
     el?.scrollIntoView({ block: 'center' });
