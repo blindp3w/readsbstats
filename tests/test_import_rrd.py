@@ -176,6 +176,17 @@ class TestImportRows:
         assert inserted == 1  # counted
         # No DB connection → nothing written
 
+    def test_dry_run_with_conn_counts_only_net_new(self):
+        """With a connection, dry-run counts only timestamps not already present,
+        so the preview matches a real INSERT OR IGNORE re-import. Audit 2026-06-20."""
+        import_rrd.import_rows(
+            self.conn, {1000: {"signal": -15.0}, 2000: {"signal": -16.0}}, dry_run=False)
+        rows = {1000: {"signal": -1.0}, 2000: {"signal": -2.0}, 3000: {"signal": -3.0}}
+        inserted = import_rrd.import_rows(self.conn, rows, dry_run=True)
+        assert inserted == 1  # only ts=3000 is net-new
+        # dry-run wrote nothing — the two seeded rows are untouched.
+        assert self.conn.execute("SELECT COUNT(*) FROM receiver_stats").fetchone()[0] == 2
+
     def test_empty_rows(self):
         assert import_rrd.import_rows(self.conn, {}, dry_run=False) == 0
 
@@ -359,6 +370,80 @@ class TestMain:
         with pytest.raises(SystemExit) as exc:
             import_rrd.main()
         assert exc.value.code == 1
+
+    def test_metrics_import_does_not_run_full_migration(self, monkeypatch, tmp_path):
+        """A receiver_stats-only import must NOT drag a legacy DB through the full
+        schema migration (init_db → _migrate → v5→v6 positions rebuild). Assert the
+        legacy positions layout (source_type column) survives. Fail-first: the old
+        init_db path rebuilds the small legacy table v5→v6, dropping source_type.
+        Audit 2026-06-20."""
+        from tests.test_migrate_v6 import _make_v5
+        db_path = str(tmp_path / "legacy.db")
+        _make_v5(db_path)   # v5 positions (source_type col), schema_version=5
+        # Stub the reference RRD file so main() clears its existence check.
+        (tmp_path / "dump1090_dbfs-signal.rrd").write_text("")
+
+        def fake_run(cmd, **kw):
+            if "--version" in cmd:
+                return _StubCompletedProcess(0, stdout="rrdtool 1.7\n")
+            if len(cmd) > 1 and cmd[1] == "info":
+                return _StubCompletedProcess(0, stdout="last_update = 2000000000\n")
+            return _StubCompletedProcess(0, stdout="\n\n")  # fetch → no rows
+        monkeypatch.setattr(import_rrd.subprocess, "run", fake_run)
+
+        import sys as _sys
+        monkeypatch.setattr(_sys, "argv", [
+            "import_rrd.py", "--rrd-dir", str(tmp_path), "--db", db_path,
+        ])
+        import_rrd.main()
+
+        conn = database.connect(db_path)
+        try:
+            pos_cols = {r[1] for r in conn.execute("PRAGMA table_info(positions)")}
+            assert "source_type" in pos_cols, "import ran the v5→v6 migration; it must not"
+            tables = {r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'")}
+            assert "receiver_stats" in tables
+        finally:
+            conn.close()
+
+    def test_dry_run_against_populated_db_writes_nothing(self, monkeypatch, tmp_path):
+        """Regression: --dry-run opens a read-only connection, but main() must
+        dispatch import_rows on args.dry_run — not on `conn is not None` — or it
+        takes the WRITE path against the RO conn ('attempt to write a readonly
+        database'). Dry-run must write nothing. Audit 2026-06-20."""
+        db_path = str(tmp_path / "pop.db")
+        database.init_db(db_path)                 # fresh v6 DB with receiver_stats
+        seed = database.connect(db_path)
+        seed.execute(import_rrd._INSERT_SQL, (1000, *[None] * len(import_rrd._COLS)))
+        seed.commit()
+        seed.close()
+
+        (tmp_path / "dump1090_dbfs-signal.rrd").write_text("")
+
+        def fake_run(cmd, **kw):
+            if "--version" in cmd:
+                return _StubCompletedProcess(0, stdout="rrdtool 1.7\n")
+            if len(cmd) > 1 and cmd[1] == "info":
+                return _StubCompletedProcess(0, stdout="last_update = 2000000000\n")
+            return _StubCompletedProcess(0, stdout="\n\n")
+        monkeypatch.setattr(import_rrd.subprocess, "run", fake_run)
+        # ts=1000 already present, ts=2000 net-new.
+        monkeypatch.setattr(import_rrd, "merge_tier",
+                            lambda *a, **kw: {1000: {"signal": -1.0}, 2000: {"signal": -2.0}})
+
+        import sys as _sys
+        monkeypatch.setattr(_sys, "argv", [
+            "import_rrd.py", "--rrd-dir", str(tmp_path), "--db", db_path, "--dry-run",
+        ])
+        import_rrd.main()   # must NOT raise "attempt to write a readonly database"
+
+        check = database.connect(db_path)
+        try:
+            # Dry-run wrote nothing — only the seeded ts=1000 is present.
+            assert check.execute("SELECT COUNT(*) FROM receiver_stats").fetchone()[0] == 1
+        finally:
+            check.close()
 
     def test_aborts_when_reference_file_missing(self, monkeypatch, tmp_path):
         import sys as _sys
