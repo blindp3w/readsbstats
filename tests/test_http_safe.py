@@ -630,6 +630,21 @@ class TestSafeHttpxGet:
             http_safe.safe_httpx_get(_FakeHttpxClient(resp),
                                       "https://example.com/", max_bytes=1024)
 
+    def test_followed_redirect_history_blocked(self, monkeypatch):
+        """Defense-in-depth mirror of the urllib path's final-URL re-validation:
+        a 200 that arrived via a redirect chain (non-empty .history) is rejected,
+        so the httpx path can't silently lose protection if follow_redirects is
+        ever enabled. Audit 2026-06-20."""
+        _patch_validate(monkeypatch)
+        resp = httpx.Response(
+            200, content=b"{}",
+            request=httpx.Request("GET", "https://example.com/"),
+            history=[httpx.Response(302, request=httpx.Request("GET", "https://example.com/"))],
+        )
+        with pytest.raises(ValueError, match="redirect"):
+            http_safe.safe_httpx_get(_FakeHttpxClient(resp),
+                                      "https://example.com/", max_bytes=1024)
+
     def test_oversized_response_raises(self, monkeypatch):
         _patch_validate(monkeypatch)
         resp = httpx.Response(200, content=b"x" * 2000,
