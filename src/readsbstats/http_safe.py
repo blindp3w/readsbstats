@@ -472,6 +472,16 @@ def safe_httpx_get(
                     f"redirect blocked: GET {url} -> {resp.status_code} "
                     f"-> {resp.headers.get('Location', '?')!r}"
                 )
+            # Defence in depth, mirroring the urllib path's final-URL re-validation
+            # (see safe_urlopen): a non-empty history means a redirect was followed
+            # (only possible if follow_redirects is ever flipped on). Reject so the
+            # httpx path can never silently connect to an unvalidated final host.
+            # getattr keeps this robust to non-httpx response stand-ins in tests.
+            if getattr(resp, "history", None):
+                raise UnsafeURLError(
+                    f"redirect chain blocked: GET {url} arrived via "
+                    f"{len(resp.history)} redirect(s)"
+                )
             buf = bytearray()
             for chunk in resp.iter_bytes(8192):
                 buf.extend(chunk)
@@ -490,6 +500,14 @@ def safe_httpx_get(
         raise UnsafeURLError(
             f"redirect blocked: GET {url} -> {resp.status_code} "
             f"-> {resp.headers.get('Location', '?')!r}"
+        )
+    # Defence in depth (mirror of the streaming branch + urllib path): reject a
+    # response that arrived via a followed redirect chain. getattr keeps this
+    # robust to non-httpx response stand-ins in tests.
+    if getattr(resp, "history", None):
+        raise UnsafeURLError(
+            f"redirect chain blocked: GET {url} arrived via "
+            f"{len(resp.history)} redirect(s)"
         )
     if len(resp.content) > max_bytes:
         raise UnsafeURLError(

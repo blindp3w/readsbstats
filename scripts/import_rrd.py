@@ -207,29 +207,47 @@ def merge_tier(rrd_dir: str, resolution: int,
 # DB import
 # ---------------------------------------------------------------------------
 
-def import_rows(conn: sqlite3.Connection, rows: dict[int, dict],
+def import_rows(conn: sqlite3.Connection | None, rows: dict[int, dict],
                 dry_run: bool) -> int:
     """
     Insert merged rows into receiver_stats.
-    Returns the number of rows actually inserted.
+    Returns the number of rows actually inserted (real run) or that WOULD be
+    inserted (dry-run). In dry-run, when ``conn`` is a (read-only) connection the
+    count excludes timestamps already present — so the preview matches a real
+    INSERT OR IGNORE run on a partially-populated DB; ``conn=None`` counts every
+    row as net-new.
     """
     if not rows:
         return 0
 
+    existing: set[int] = set()
+    if dry_run and conn is not None:
+        # ts is the PRIMARY KEY, so this range read is indexed. A missing table
+        # (fresh DB) → no existing rows → everything is net-new.
+        try:
+            existing = {
+                r[0] for r in conn.execute(
+                    "SELECT ts FROM receiver_stats WHERE ts BETWEEN ? AND ?",
+                    (min(rows), max(rows)),
+                )
+            }
+        except sqlite3.OperationalError:
+            existing = set()
+
     inserted = 0
     batch = 0
     for ts in sorted(rows):
-        row = rows[ts]
-        values = tuple(row.get(c) for c in _COLS)
-        if not dry_run:
-            cur = conn.execute(_INSERT_SQL, (ts, *values))
-            if cur.rowcount > 0:
+        if dry_run:
+            if ts not in existing:
                 inserted += 1
-            batch += 1
-            if batch % 1000 == 0:
-                conn.commit()
-        else:
-            inserted += 1  # count all rows in dry-run
+            continue
+        values = tuple(rows[ts].get(c) for c in _COLS)
+        cur = conn.execute(_INSERT_SQL, (ts, *values))
+        if cur.rowcount > 0:
+            inserted += 1
+        batch += 1
+        if batch % 1000 == 0:
+            conn.commit()
 
     if not dry_run:
         conn.commit()
@@ -301,13 +319,27 @@ def main() -> None:
             file=sys.stderr,
         )
 
-    # Ensure DB has the receiver_stats table
+    # Ensure the receiver_stats table exists — WITHOUT running the full schema
+    # migration. init_db() runs _migrate(), which on a pre-v6 DB rebuilds the
+    # positions table (irrelevant to a metrics-only import, and it aborts on a
+    # large legacy table). Create just the one table from its canonical DDL.
+    # (Audit 2026-06-20)
     if not args.dry_run:
-        database.init_db(args.db)
-        # Audit-13 A13-056: database.connect() already sets WAL + busy_timeout.
+        # database.connect() already sets WAL + busy_timeout (Audit-13 A13-056).
         conn = database.connect(args.db)
+        conn.execute(database._DDL_RECEIVER_STATS)
+        conn.commit()
     else:
-        conn = None
+        # Dry-run: open a READ-ONLY connection so import_rows can count only
+        # net-new timestamps without writing any data rows. (mode=ro reads a
+        # consistent snapshot; a WAL DB still touches empty -shm/-wal sidecars,
+        # but the DB content is untouched.) A missing or inaccessible DB → None →
+        # every row counted as new. (Audit 2026-06-20)
+        try:
+            conn = sqlite3.connect(
+                f"file:{os.path.abspath(args.db)}?mode=ro", uri=True)
+        except sqlite3.OperationalError:
+            conn = None
 
     total_inserted = 0
 
@@ -324,10 +356,11 @@ def main() -> None:
             t_max = datetime.fromtimestamp(timestamps[-1], tz=timezone.utc)
             print(f"  Range: {t_min:%Y-%m-%d %H:%M} → {t_max:%Y-%m-%d %H:%M} UTC")
 
-            if conn is not None:
-                inserted = import_rows(conn, merged, dry_run=False)
-            else:
-                inserted = import_rows(None, merged, dry_run=True)
+            # Dispatch on the MODE, not connection presence: in dry-run `conn` is
+            # a read-only connection (used to count net-new timestamps), so keying
+            # on `conn is not None` would take the write path and fail against a
+            # read-only DB. import_rows handles all three (conn, dry_run) cases.
+            inserted = import_rows(conn, merged, dry_run=args.dry_run)
             total_inserted += inserted
             print(f"  Inserted: {inserted} new rows (skipped {len(merged) - inserted} duplicates)")
         print()

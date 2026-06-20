@@ -578,6 +578,40 @@ class TestApplyPurgeBatching:
             ).fetchone()[0]
             assert null_count == len(ids)
 
+    def test_interrupted_apply_is_resumable(self):
+        """A crash mid-run leaves earlier batches committed and later ones rolled
+        back; re-running the scan+purge must finish the job (the docstring's
+        idempotency claim). Audit 2026-06-20."""
+        from purge_bad_gs import _BATCH_SIZE
+        from tests._helpers import CountingConn
+
+        n_flights = _BATCH_SIZE * 2 + 5
+        bad_ids_all: list[int] = []
+        for i in range(n_flights):
+            fid = insert_flight(self.conn, icao=f"a{i:05x}", max_gs=900.0)
+            insert_pos(self.conn, fid, 1000 + i, 52.0, 21.0, gs=400)
+            bad_ids_all.append(insert_pos(self.conn, fid, 1060 + i, 52.1, 21.0, gs=900))  # > civil 750
+        bad = scan_flights(self.conn, CIVIL_LIMIT, MILITARY_LIMIT, DEVIATION)
+        assert len(bad) == n_flights
+
+        ph = ",".join("?" * len(bad_ids_all))
+
+        def remaining_bad() -> int:
+            return self.conn.execute(
+                f"SELECT COUNT(*) FROM positions WHERE id IN ({ph}) AND gs IS NOT NULL",
+                bad_ids_all,
+            ).fetchone()[0]
+
+        with pytest.raises(RuntimeError, match="interrupt"):
+            apply_purge(CountingConn(self.conn, raise_on_commit=2), bad)
+        self.conn.rollback()
+
+        after = remaining_bad()
+        assert 0 < after < len(bad_ids_all)   # partial: batch 1 nulled, rest not
+
+        apply_purge(self.conn, scan_flights(self.conn, CIVIL_LIMIT, MILITARY_LIMIT, DEVIATION))
+        assert remaining_bad() == 0
+
 
 # ---------------------------------------------------------------------------
 # apply_purge

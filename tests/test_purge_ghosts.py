@@ -353,6 +353,42 @@ class TestApplyPurge:
             ).fetchone()[0]
             assert remaining == 0
 
+    def test_interrupted_apply_is_resumable(self):
+        """apply_purge commits per _BATCH_SIZE; a crash mid-run leaves earlier
+        batches committed and later ones rolled back. Re-running must finish the
+        job — the docstring's idempotency claim. Audit 2026-06-20."""
+        from purge_ghosts import _BATCH_SIZE
+        from tests._helpers import CountingConn
+
+        n_flights = _BATCH_SIZE * 2 + 5
+        ghost_ids_all: list[int] = []
+        for i in range(n_flights):
+            fid = insert_flight(self.conn, icao=f"a{i:05x}")
+            insert_pos(self.conn, fid, 1000 + i, 52.6, 20.75)            # real anchor
+            ghost_ids_all.append(insert_pos(self.conn, fid, 1005 + i, 59.7, 21.5))  # ghost
+
+        ghosts = find_ghost_ids(self.conn, MAX_SPEED)
+        assert len(ghosts) == n_flights
+
+        ph = ",".join("?" * len(ghost_ids_all))
+
+        def remaining_ghosts() -> int:
+            return self.conn.execute(
+                f"SELECT COUNT(*) FROM positions WHERE id IN ({ph})", ghost_ids_all
+            ).fetchone()[0]
+
+        # Crash on the 2nd batch commit, then simulate the crash's rollback.
+        with pytest.raises(RuntimeError, match="interrupt"):
+            apply_purge(CountingConn(self.conn, raise_on_commit=2), ghosts, RLAT, RLON)
+        self.conn.rollback()
+
+        after_crash = remaining_ghosts()
+        assert 0 < after_crash < len(ghost_ids_all)   # partial: batch 1 purged, rest not
+
+        # Re-running the scan+purge finishes the job cleanly.
+        apply_purge(self.conn, find_ghost_ids(self.conn, MAX_SPEED), RLAT, RLON)
+        assert remaining_ghosts() == 0
+
 
 # ---------------------------------------------------------------------------
 # main() CLI

@@ -275,6 +275,11 @@ def main() -> None:
         bad.setdefault(fid, []).extend(i for i in ids if i not in existing)
 
     orphans = scan_orphan_max_gs(conn)
+    # Orphan flights already in `bad` get their max_gs recomputed by the bad-loop
+    # in apply_purge (which guards `fid not in bad`). The dry-run report must
+    # mirror that — otherwise it shows a pre-purge MAX(p.gs) target that won't be
+    # written, misleading the operator at a destructive boundary. (Audit 2026-06-20)
+    orphan_only = {fid: m for fid, m in orphans.items() if fid not in bad}
     total_pos = sum(len(v) for v in bad.values())
 
     if total_pos == 0 and not orphans:
@@ -303,9 +308,9 @@ def main() -> None:
             new_str = f"{new_max:.1f}" if new_max is not None else "NULL"
             print(f"  [{fid:>5}] {label:25s}  {len(bad_ids):>3} spikes [{','.join(sources)}]  max_gs {old_str} → {new_str} kts")
 
-    if orphans:
-        print(f"\n{len(orphans)} flight(s) with orphan max_gs:\n")
-        for fid, correct_max in sorted(orphans.items()):
+    if orphan_only:
+        print(f"\n{len(orphan_only)} flight(s) with orphan max_gs:\n")
+        for fid, correct_max in sorted(orphan_only.items()):
             flight = conn.execute(
                 "SELECT icao_hex, callsign, registration, max_gs FROM flights WHERE id = ?",
                 (fid,),

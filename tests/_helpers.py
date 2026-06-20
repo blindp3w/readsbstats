@@ -98,15 +98,20 @@ class CountingConn:
     Forwards every other attribute access to the wrapped connection.
     """
 
-    def __init__(self, c: sqlite3.Connection):
+    def __init__(self, c: sqlite3.Connection, raise_on_commit: int | None = None):
         self._c = c
         self.commits = 0
+        # When set, the Nth commit() raises instead of committing — simulating a
+        # mid-run crash so tests can verify interrupted purges are resumable.
+        self._raise_on_commit = raise_on_commit
 
     def __getattr__(self, name: str):  # pragma: no cover — passthrough
         return getattr(self._c, name)
 
     def commit(self) -> None:
         self.commits += 1
+        if self._raise_on_commit is not None and self.commits >= self._raise_on_commit:
+            raise RuntimeError("simulated interruption")
         self._c.commit()
 
     def __enter__(self):
