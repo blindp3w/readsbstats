@@ -5,6 +5,36 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 2.25.1 — 2026-06-20
+
+Audit follow-up (2026-06-20 codebase audit) — five small, test-first
+correctness/hardening fixes. No API, schema, or dependency changes.
+
+### Fixed
+
+- **`purge_bad_gs` now treats `adsr_icao` and `adsc` as ADS-B.** A
+  `startswith("adsb")` heuristic excluded these two non-`adsb`-prefixed ADS-B
+  addrtypes, so their implausible ground-speed outliers spaced 5–29 s apart were
+  never purged. The ADS-B source set is now a single source of truth
+  (`posenc.ADSB_SOURCE_TYPES` / `is_adsb_source()`), shared by `collector._is_adsb`
+  and the offline purge script.
+- **`purge_ghosts` no longer mis-purges a flight bookended by outliers.** When a
+  flight had ghost positions at *both* ends, both the forward and backward velocity
+  passes were poisoned and the script could delete the real fixes while keeping a
+  ghost; it now detects the unresolvable case and skips the flight (logging it for
+  manual review) instead.
+- **`migrate_v6` verifies FK integrity inside the rebuild transaction.** A detected
+  `foreign_key_check` break now rolls the rebuild back instead of committing a
+  half-built v6 that would block a re-run. Affects future/fresh v5→v6 migrations.
+- **`db_updater` self-heals an interrupted airlines-table swap.** `update_airlines_db`
+  now recovers an aborted rename swap before reading the table, mirroring
+  `update_aircraft_db` — preventing a `no such table: airlines` crash and a latent
+  loss of the only surviving copy of the airlines data.
+- **Frontend `safeUrl` returns the validated, normalized URL** (`url.href`) rather
+  than the raw input, so a rendered `<img src>` / `<a href>` matches exactly what
+  passed the HTTPS-only / no-userinfo checks (WHATWG URL parsing strips embedded
+  tab/newline characters). Not exploitable; render-time hardening.
+
 ## 2.25.0 — 2026-06-17
 
 Per-channel VDL2 signal-level metrics on the Metrics page — the long-deferred
