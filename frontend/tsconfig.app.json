@@ -23,7 +23,7 @@
     "noUncheckedSideEffectImports": true,
     "resolveJsonModule": true,
     "isolatedModules": true,
-    "types": ["vitest/globals", "@testing-library/jest-dom"],
+    "types": ["vitest/globals", "@testing-library/jest-dom", "geojson"],
     "paths": { "@/*": ["./src/*"] },
     // TS 6.0 deprecated `baseUrl` in favour of paths-only resolution.
     // We keep `baseUrl` for now to preserve the existing tsserver UX

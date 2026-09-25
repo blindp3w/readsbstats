@@ -11,6 +11,7 @@ import {
 } from 'react-map-gl/maplibre';
 import type { StyleSpecification, HeatmapLayerSpecification } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
+import '@/lib/maplibreWorker';
 import { aircraftIconSvg, getIconType } from '@/lib/aircraftIcon';
 import { dedupeFreshestByIcao } from '@/lib/mapData';
 
@@ -22,7 +23,7 @@ import { dedupeFreshestByIcao } from '@/lib/mapData';
 // Heavy: lazy-loaded by Map.tsx so other pages don't import MapLibre.
 //
 // PR #2 of the v2.4 MapLibre migration. Stack:
-//   - maplibre-gl 5 + react-map-gl/maplibre 8
+//   - maplibre-gl 6 + react-map-gl/maplibre 8
 //   - CartoDB Dark Matter raster basemap (no CSS filter chain)
 //   - Inferno heatmap palette via native `heatmap` layer
 //   - Receiver pulse via static-ring + animated-pulse circle layers

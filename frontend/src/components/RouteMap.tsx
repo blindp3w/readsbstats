@@ -11,6 +11,7 @@ import {
 import { LngLatBounds } from 'maplibre-gl';
 import type { StyleSpecification } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
+import '@/lib/maplibreWorker';
 import { routeFitKey } from '@/lib/routeFitKey';
 import {
   buildRouteSegments,
@@ -28,7 +29,7 @@ import {
 // MapLibre (~200 KB gz).
 //
 // PR #1 of the MapLibre migration (v2.4). Stack:
-//   - maplibre-gl 5 + react-map-gl/maplibre 8
+//   - maplibre-gl 6 + react-map-gl/maplibre 8
 //   - CartoDB Dark Matter raster tiles (native dark, no CSS filter chain)
 //   - GeoJSON line layer with data-driven color per segment
 
