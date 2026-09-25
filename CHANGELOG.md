@@ -5,7 +5,10 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## 2.25.4 — 2026-09-25
+
+Maps fix + dependency refresh: CARTO basemap API key support, MapLibre GL 6,
+and all open Dependabot updates (clears 24 security alerts). No schema changes.
 
 ### Fixed
 
@@ -28,6 +31,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   open Dependabot security alerts (incl. a critical one in maplibre-gl < 6.4.1).
 - Map basemap style is shared by the live map and the flight route map
   (`lib/basemap.ts`) instead of being duplicated in each.
+
+### Upgrade notes
+
+- Get a free CARTO key and set `RSBS_CARTO_API_KEY` for `readsbstats-web`
+  (e.g. in `/etc/readsbstats/readsbstats.env` or a `systemctl edit` override),
+  then restart it. Without a key the maps still load, but show CARTO's
+  placeholder tiles.
+- If you run your own nginx config instead of `include`-ing
+  `nginx-readsbstats.conf`, add `https://basemaps.cartocdn.com` to both
+  `img-src` and `connect-src` in your CSP.
 
 ## 2.25.3 — 2026-06-21
 
