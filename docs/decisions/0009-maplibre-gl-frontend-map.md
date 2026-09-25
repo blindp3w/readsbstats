@@ -118,3 +118,23 @@ What becomes harder / costs:
 - **jsdom unit tests cannot exercise the real map.** The wrappers are
   mocked at the component boundary; visual + interaction coverage is
   Playwright (e2e suite under `tests/ui/`) and manual deployment checks.
+
+## Update — 2026-09-25: MapLibre 6 + CARTO API key
+
+- **MapLibre GL 6** (ESM-only) resolves its tile-decoder worker at runtime
+  relative to its own module URL — a file Vite never emits, so the worker
+  404s and nothing that needs it renders. `frontend/src/lib/maplibreWorker.ts`
+  registers the worker through Vite's `?worker&url` pipeline with
+  `setWorkerUrl()`; both map components import it. The worker is now a
+  same-origin asset, so the CSP no longer relies on `blob:` for it.
+- **CARTO now requires an API key.** Keyless tile requests return an
+  "API KEY REQUIRED" placeholder. The key is runtime config
+  (`RSBS_CARTO_API_KEY`), and the tile URLs are built server-side by
+  `/api/map/basemap`, so the key stays out of the public repo and the
+  bundle. Keyed tiles come from the bare `basemaps.cartocdn.com` host, which
+  a CSP `https://*.basemaps.cartocdn.com` wildcard does not match, so the
+  nginx CSP lists both (pinned by a test in `tests/test_map.py`).
+- The duplicated inline `DARK_STYLE` is now a single
+  `frontend/src/lib/basemap.ts::darkBasemapStyle(tiles)`, fed by
+  `hooks/useBasemapStyle.ts`. Swapping providers is a change to
+  `api/map.py` (tile URLs) plus the CSP.

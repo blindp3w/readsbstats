@@ -6,6 +6,7 @@ import type { HealthResponse, Settings } from '@/lib/types';
 import { Nav } from '@/components/Nav';
 import { PageSkeleton } from '@/components/PageSkeleton';
 import { TooltipProvider } from '@/components/ui/Tooltip';
+import { basemapQuery } from '@/hooks/useBasemapStyle';
 import { useClockStore, hasStoredClockFormat } from '@/store/clockFormat';
 
 // App-shell layout. Permanent across route changes: nav, theme, toaster.
@@ -37,6 +38,9 @@ export default function App() {
     queryFn: () => apiJson<HealthResponse>('health'),
     staleTime: 30_000,
   });
+  // Seed the basemap tile URLs (/api/map/basemap) so LiveMap/RouteMap rarely
+  // wait on them — they hold the <Map> back until the URLs resolve.
+  useQuery(basemapQuery);
   useEffect(() => {
     const fmt = settingsQ.data?.time_format;
     if (!hasStoredClockFormat() && (fmt === '12h' || fmt === '24h')) {

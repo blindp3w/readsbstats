@@ -37,6 +37,7 @@ The web server exposes a JSON API at `http://YOUR_PI_IP/stats/api/`.
 | GET | `/api/live` | Currently tracked aircraft (used by nav badge) |
 | GET | `/api/map/snapshot` | Aircraft snapshot at a given timestamp (`at`, `trail` params) — powers live map and rewind |
 | GET | `/api/map/heatmap` | Position density grid for heatmap overlay. `window`: `24h`/`7d`/`30d`/`all`. GZip-compressed; per-window cache (5 min–6 h). `7d`/`30d`/`all` are served from the daily rollup tables and are UTC-day-quantized (last N full days + today-so-far); `24h` is an exact rolling window over raw positions. |
+| GET | `/api/map/basemap` | Basemap raster tile URL templates for the SPA map: `{"tiles": [...], "keyed": bool}`. With `RSBS_CARTO_API_KEY` set, one keyed `https://basemaps.cartocdn.com/rastertiles/dark_all/{z}/{x}/{y}.png?key=…` URL; otherwise the four legacy keyless `{a-d}.basemaps.cartocdn.com/dark_all` URLs. `Cache-Control: private`. |
 | GET | `/api/map/coverage` | Receiver coverage polygon. `window`: `24h`/`7d`/`30d`/`all`. 36-point polygon, one vertex per 10° bearing bucket. Same window semantics as the heatmap: `≥7d` from rollups, day-quantized; `24h` exact rolling. |
 | GET | `/api/airspace` | Airspace GeoJSON. Cached 1 h. |
 

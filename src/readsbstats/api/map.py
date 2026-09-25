@@ -11,7 +11,7 @@ import asyncio
 import logging
 import time
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Response
 
 from .. import cache, config, geo, posenc, rollups, schemas
 from . import _deps
@@ -230,6 +230,32 @@ async def api_map_coverage(window: str = Query("7d")) -> dict:
         )
         cache._set_cache(cache_key, result)
         return result
+
+
+# CARTO Dark Matter raster tiles. Keyless requests on the legacy a–d
+# subdomains now return an "API KEY REQUIRED" placeholder; the keyed form is
+# CARTO's documented single-host endpoint. MapLibre does not expand Leaflet's
+# `{s}` subdomain placeholder, so the keyless list spells out all four.
+_CARTO_KEYLESS_TILES = [
+    f"https://{s}.basemaps.cartocdn.com/dark_all/{{z}}/{{x}}/{{y}}.png" for s in "abcd"
+]
+_CARTO_KEYED_TILE = "https://basemaps.cartocdn.com/rastertiles/dark_all/{z}/{x}/{y}.png?key="
+
+
+@router.get("/api/map/basemap")
+def api_map_basemap(response: Response) -> dict:
+    """Basemap tile URL templates for the SPA's MapLibre raster source.
+
+    Built server-side so RSBS_CARTO_API_KEY lives in the Pi's env file, not
+    in the bundle or the public repo. The key is browser-visible by design
+    (it rides on every tile request) — `private` just keeps this response out
+    of shared caches. config.py restricts the key to a URL-safe charset.
+    """
+    response.headers["Cache-Control"] = "private, max-age=3600"
+    key = config.CARTO_API_KEY
+    if key:
+        return {"tiles": [_CARTO_KEYED_TILE + key], "keyed": True}
+    return {"tiles": list(_CARTO_KEYLESS_TILES), "keyed": False}
 
 
 @router.get("/api/live")

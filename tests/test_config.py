@@ -441,6 +441,39 @@ class TestTimeFormat:
         assert readsbstats.config.TIME_FORMAT == "24h"
 
 
+class TestCartoApiKey:
+    """RSBS_CARTO_API_KEY — optional; charset-validated because it is
+    interpolated into tile URLs served to the browser."""
+
+    def test_defaults_to_empty(self, monkeypatch):
+        monkeypatch.delenv("RSBS_CARTO_API_KEY", raising=False)
+        import readsbstats.config
+        importlib.reload(readsbstats.config)
+        assert readsbstats.config.CARTO_API_KEY == ""
+
+    def test_accepts_valid_key(self, monkeypatch):
+        monkeypatch.setenv("RSBS_CARTO_API_KEY", "  abc123_DEF-456xyz  ")
+        import readsbstats.config
+        importlib.reload(readsbstats.config)
+        assert readsbstats.config.CARTO_API_KEY == "abc123_DEF-456xyz"
+
+    @pytest.mark.parametrize("bad", [
+        "abc&x=1",           # would inject a query parameter
+        "abc def",
+        "abc/../x",
+        "short",             # below the 8-char floor
+        "k" * 257,           # above the 256-char cap
+    ])
+    def test_invalid_key_disabled_with_error(self, monkeypatch, capsys, bad):
+        monkeypatch.setenv("RSBS_CARTO_API_KEY", bad)
+        import readsbstats.config
+        importlib.reload(readsbstats.config)
+        assert readsbstats.config.CARTO_API_KEY == ""
+        err = capsys.readouterr().err
+        assert "RSBS_CARTO_API_KEY" in err
+        assert bad not in err  # never echo the (possibly real) key to logs
+
+
 class TestDbSynchronous:
     """RSBS_DB_SYNCHRONOUS — allow-list (FULL | NORMAL), invalid falls back to NORMAL."""
 

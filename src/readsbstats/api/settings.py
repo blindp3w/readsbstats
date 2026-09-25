@@ -108,6 +108,8 @@ def _settings_ui() -> dict:
         "max_page_size":     config.MAX_PAGE_SIZE,
         "time_format":       config.TIME_FORMAT,
         "map_history_hours": config.MAP_HISTORY_HOURS,
+        # Presence only — the raw key is served by /api/map/basemap alone.
+        "carto_api_key":     "configured" if config.CARTO_API_KEY else "not set",
     }
 
 

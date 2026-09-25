@@ -4,6 +4,7 @@ All tunables can be overridden via environment variables.
 """
 import json
 import os
+import re
 import sys
 
 from . import cleaners
@@ -337,6 +338,17 @@ MAX_PAGE_SIZE      = _int(*_register("max_page_size", "RSBS_MAX_PAGE_SIZE", "500
 MAX_EXPORT_ROWS    = _int("RSBS_MAX_EXPORT",    "50000")
 _TIME_FORMAT_RAW   = os.getenv(*_register("time_format", "RSBS_TIME_FORMAT", "24h", "TIME_FORMAT")).strip().lower()
 TIME_FORMAT        = _TIME_FORMAT_RAW if _TIME_FORMAT_RAW in ("24h", "12h") else "24h"
+# CARTO basemap key (https://carto.com/basemaps/apikey/). Keyless tile
+# requests now get an "API KEY REQUIRED" placeholder. The key is appended to
+# browser-visible tile URLs by /api/map/basemap, so restrict it to a URL-safe
+# charset — an `&`/`#` would otherwise inject into the query string. On a bad
+# value the error names the variable but never echoes it (it may be a real key).
+_CARTO_API_KEY_RAW = os.getenv(*_register("carto_api_key", "RSBS_CARTO_API_KEY", "", "CARTO_API_KEY", secret=True)).strip()
+if _CARTO_API_KEY_RAW and not re.fullmatch(r"[A-Za-z0-9_-]{8,256}", _CARTO_API_KEY_RAW):
+    print("ERROR: RSBS_CARTO_API_KEY is invalid (expected 8-256 chars of "
+          "A-Z a-z 0-9 _ -); loading the CARTO basemap without a key", file=sys.stderr)
+    _CARTO_API_KEY_RAW = ""
+CARTO_API_KEY      = _CARTO_API_KEY_RAW
 
 # ---------------------------------------------------------------------------
 # Telegram notifications

@@ -219,6 +219,72 @@ class TestCoverageFromRollups:
 #  tested in test_web.py::TestCompatRedirects.)
 # ---------------------------------------------------------------------------
 
+class TestBasemap:
+    """/api/map/basemap — raster tile URLs for the CARTO Dark Matter basemap.
+    CARTO now serves an "API KEY REQUIRED" placeholder to keyless requests, so
+    the key (RSBS_CARTO_API_KEY) is appended server-side when configured."""
+
+    def test_keyless_returns_legacy_subdomain_urls(self, client, monkeypatch):
+        monkeypatch.setattr(config, "CARTO_API_KEY", "")
+        r = client.get("/api/map/basemap")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["keyed"] is False
+        assert body["tiles"] == [
+            f"https://{s}.basemaps.cartocdn.com/dark_all/{{z}}/{{x}}/{{y}}.png"
+            for s in "abcd"
+        ]
+
+    def test_keyed_appends_key_to_documented_endpoint(self, client, monkeypatch):
+        monkeypatch.setattr(config, "CARTO_API_KEY", "abc123_DEF-456")
+        body = client.get("/api/map/basemap").json()
+        assert body["keyed"] is True
+        assert body["tiles"] == [
+            "https://basemaps.cartocdn.com/rastertiles/dark_all/{z}/{x}/{y}.png"
+            "?key=abc123_DEF-456"
+        ]
+
+    def test_every_tile_host_allowed_by_nginx_csp(self, client, monkeypatch):
+        """MapLibre fetch()es raster tiles, so each tile host must be in both
+        img-src and connect-src. A CSP `https://*.x` wildcard does NOT match
+        the bare host `x` — the keyed endpoint needs its own entry."""
+        import re
+        from pathlib import Path
+        from urllib.parse import urlsplit
+
+        conf = (Path(__file__).resolve().parents[1] / "nginx-readsbstats.conf").read_text()
+        csp = re.search(r'Content-Security-Policy\s+"([^"]+)"', conf).group(1)
+        directives = {
+            d.split()[0]: d.split()[1:] for d in (p.strip() for p in csp.split(";")) if d
+        }
+
+        def allowed(host: str, sources: list[str]) -> bool:
+            for src in sources:
+                if not src.startswith("https://"):
+                    continue
+                pat = src[len("https://"):]
+                if pat.startswith("*.") and host.endswith(pat[1:]) and host != pat[2:]:
+                    return True
+                if pat == host:
+                    return True
+            return False
+
+        for key in ("", "abc123_DEF-456"):
+            monkeypatch.setattr(config, "CARTO_API_KEY", key)
+            for tile in client.get("/api/map/basemap").json()["tiles"]:
+                host = urlsplit(tile).hostname
+                for directive in ("img-src", "connect-src"):
+                    assert allowed(host, directives[directive]), (
+                        f"{host} not allowed by CSP {directive}"
+                    )
+
+    def test_not_cacheable_by_shared_caches(self, client, monkeypatch):
+        """The response embeds the key; keep it out of shared proxy caches."""
+        monkeypatch.setattr(config, "CARTO_API_KEY", "abc123_DEF-456")
+        r = client.get("/api/map/basemap")
+        assert "private" in r.headers.get("cache-control", "")
+
+
 class TestMapSnapshot:
     def test_live_snapshot_no_at(self, client, db_conn):
         fid = insert_flight_with_position(db_conn)
