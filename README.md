@@ -100,6 +100,20 @@ Environment="RSBS_LON=YOUR_LONGITUDE"
 
 Then restart services and open **`http://YOUR_PI_IP/stats/`**.
 
+**Map basemap key.** The maps use CARTO Dark Matter tiles, which now require a
+free API key — without one they render as "API KEY REQUIRED" placeholders. Get a
+key at <https://carto.com/basemaps/apikey/> and add it to the web service
+(same `systemctl edit readsbstats-web` override), then restart it:
+
+```ini
+[Service]
+Environment="RSBS_CARTO_API_KEY=YOUR_CARTO_KEY"
+```
+
+The key is sent with every tile request, so it is visible to anyone who can
+open the map — that is how CARTO keys are designed to be used. It is kept out
+of the repo and the built bundle; the Settings page only shows whether it is set.
+
 ### nginx setup
 
 Add one line to your nginx `server {}` block:

@@ -1294,6 +1294,17 @@ class TestApiSettings:
         for key in ("lat", "lon", "poll_interval", "db_path", "page_size", "base_url"):
             assert key in payload, f"missing key {key}"
 
+    def test_api_settings_masks_carto_api_key(self, client, monkeypatch):
+        """The Settings page only needs to know whether a key is set; the
+        raw key is served solely via /api/map/basemap (where the map needs it)."""
+        from readsbstats import config
+        monkeypatch.setattr(config, "CARTO_API_KEY", "carto-key-secret-123")
+        r = client.get("/api/settings")
+        assert r.json()["carto_api_key"] == "configured"
+        assert "carto-key-secret-123" not in r.text
+        monkeypatch.setattr(config, "CARTO_API_KEY", "")
+        assert client.get("/api/settings").json()["carto_api_key"] == "not set"
+
     def test_api_settings_db_path_basename_only(self, client):
         import os
         from readsbstats import config

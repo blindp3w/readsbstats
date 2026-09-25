@@ -207,6 +207,7 @@ Thresholds for the nine receiver-health checks. All effective values are also re
 | `RSBS_MAX_PAGE_SIZE` | `500` | Maximum allowed page size (min `1`); `RSBS_PAGE_SIZE` is clamped down to this |
 | `RSBS_MAX_EXPORT` | `50000` | Hard cap on rows returned by `/api/flights/export.csv` (min `1`). The endpoint streams rows, so memory is no longer the limiting factor. |
 | `RSBS_TIME_FORMAT` | `24h` | Clock format for UI timestamps. Allowed: `24h`, `12h`. Invalid values fall back to `24h`. Seeded into the browser on first boot; users can override locally via `localStorage.rsbs_clock_format`. |
+| `RSBS_CARTO_API_KEY` | _(empty)_ | CARTO basemap API key (<https://carto.com/basemaps/apikey/>). CARTO serves "API KEY REQUIRED" placeholder tiles to keyless requests, so set this for a usable map. Served to the browser via `/api/map/basemap` (it rides on every tile request — browser-visible by design); `/api/settings` shows only `configured`/`not set`. Must be 8–256 chars of `A-Z a-z 0-9 _ -`; anything else is rejected with a stderr error (the value is not echoed) and the map falls back to keyless tiles. Read by `readsbstats-web`. |
 
 ### Telegram notifications
 

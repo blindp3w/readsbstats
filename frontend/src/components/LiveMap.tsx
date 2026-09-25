@@ -9,9 +9,10 @@ import {
   type MapRef,
   type MarkerEvent,
 } from 'react-map-gl/maplibre';
-import type { StyleSpecification, HeatmapLayerSpecification } from 'maplibre-gl';
+import type { HeatmapLayerSpecification } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import '@/lib/maplibreWorker';
+import { useBasemapStyle } from '@/hooks/useBasemapStyle';
 import { aircraftIconSvg, getIconType } from '@/lib/aircraftIcon';
 import { dedupeFreshestByIcao } from '@/lib/mapData';
 
@@ -82,49 +83,6 @@ interface Props {
   acarsActive?: Set<string>;
 }
 
-// CartoDB Dark Matter raster basemap — free, no API key, CC-BY 4.0.
-// MapLibre does not expand Leaflet's `{s}` subdomain placeholder; list
-// the four subdomains explicitly. Background layer fills the canvas
-// between tile loads so there is no white flash.
-const DARK_STYLE: StyleSpecification = {
-  version: 8,
-  sources: {
-    'carto-dark': {
-      type: 'raster',
-      tiles: [
-        'https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png',
-        'https://b.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png',
-        'https://c.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png',
-        'https://d.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png',
-      ],
-      tileSize: 256,
-      minzoom: 0,
-      maxzoom: 20,
-      attribution:
-        '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> ' +
-        'contributors, © <a href="https://carto.com/attributions">CARTO</a>',
-    },
-  },
-  layers: [
-    { id: 'bg', type: 'background', paint: { 'background-color': '#0b0b0d' } },
-    // Lift the blacks on Dark Matter — its default range bottoms out at near-
-    // pitch-black which is hard to read at any zoom. raster-brightness-min
-    // pushes the floor up to a mid-charcoal; raster-contrast pulls back a
-    // touch so the lift doesn't wash the basemap out. Data layers (heatmap,
-    // polylines, circles, markers) are unaffected — they paint on top of
-    // the raster layer with their own paint properties.
-    {
-      id: 'carto-dark',
-      type: 'raster',
-      source: 'carto-dark',
-      paint: {
-        'raster-brightness-min': 0.18,
-        'raster-contrast': -0.1,
-      },
-    },
-  ],
-};
-
 // Inferno-derived 6-stop heatmap ramp. Perceptually uniform, monotonically
 // increasing luminance — colorblind-safe (encodes density via brightness
 // not hue alone, per CLAUDE_DESIGN_BRIEF.md §M4.2 / §M1.2). Replaces today's
@@ -171,6 +129,7 @@ export default function LiveMap({
   acarsActive,
 }: Props) {
   const mapRef = useRef<MapRef | null>(null);
+  const basemapStyle = useBasemapStyle();
 
   // ─── First-fit-once ────────────────────────────────────────────────────
   // Today's <FirstFitOnce> set the view exactly once when a non-null
@@ -329,10 +288,15 @@ export default function LiveMap({
     return { longitude: lon, latitude: lat, zoom: 8 };
   }, [initialCenter, receiverLat, receiverLon]);
 
+  // Hold the map back until the basemap tile URLs resolve (see useBasemapStyle).
+  if (!basemapStyle) {
+    return <div className="h-full w-full bg-[#0b0b0d]" />;
+  }
+
   return (
     <Map
       ref={mapRef}
-      mapStyle={DARK_STYLE}
+      mapStyle={basemapStyle}
       initialViewState={initialView}
       onLoad={() => setMapReady(true)}
       style={{ width: '100%', height: '100%' }}

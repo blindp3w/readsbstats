@@ -84,6 +84,7 @@ interface SettingsPayload extends Omit<Settings, 'vdl2_enabled'> {
   max_page_size: number;
   time_format: string;
   map_history_hours?: number;
+  carto_api_key?: string; // "configured" | "not set"
   // Telegram
   telegram_token: string; // "configured" | "not set"
   telegram_chat_id: string; // "configured" | "not set"
@@ -207,6 +208,7 @@ function buildSections(s: SettingsPayload): Section[] {
         ['Default page size', fmt(s.page_size), 'page_size'],
         ['Max page size', fmt(s.max_page_size), 'max_page_size'],
         ['Clock format', s.time_format, 'time_format'],
+        ['CARTO basemap API key', s.carto_api_key ?? 'not set', 'carto_api_key'],
       ],
     },
     {

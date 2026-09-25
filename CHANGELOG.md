@@ -5,6 +5,30 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Fixed
+
+- **Map basemap shows "API KEY REQUIRED" tiles.** CARTO now requires an API
+  key for its basemap tiles. New optional `RSBS_CARTO_API_KEY` (free key from
+  <https://carto.com/basemaps/apikey/>): tile URLs are built server-side by the
+  new `GET /api/map/basemap`, so the key lives in the Pi's environment rather
+  than the repo or bundle. The Settings page shows whether it is set. The
+  nginx CSP now also allows the bare `basemaps.cartocdn.com` host that keyed
+  tiles are served from (`include`d config — reloaded by `update.sh`).
+- **Maps keep working on MapLibre GL 6.** v6 loads its tile-decoder worker from
+  a URL the Vite build never produced (blank heatmap/routes); the worker is
+  now bundled and registered explicitly.
+
+### Changed
+
+- Dependency refresh (Dependabot): MapLibre GL 6.9, React 19.3, Vitest 5,
+  jsdom 30, FastAPI 0.141, uvicorn 0.52, GitHub Actions checkout/setup-node v7.
+  TypeScript stays on 6.x until typescript-eslint supports 7. Clears all 24
+  open Dependabot security alerts (incl. a critical one in maplibre-gl < 6.4.1).
+- Map basemap style is shared by the live map and the flight route map
+  (`lib/basemap.ts`) instead of being duplicated in each.
+
 ## 2.25.3 — 2026-06-21
 
 Audit follow-up batch 3 (2026-06-20 audit) — the actionable Low-severity

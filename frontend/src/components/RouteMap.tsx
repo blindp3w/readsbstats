@@ -9,9 +9,9 @@ import {
   type MapRef,
 } from 'react-map-gl/maplibre';
 import { LngLatBounds } from 'maplibre-gl';
-import type { StyleSpecification } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import '@/lib/maplibreWorker';
+import { useBasemapStyle } from '@/hooks/useBasemapStyle';
 import { routeFitKey } from '@/lib/routeFitKey';
 import {
   buildRouteSegments,
@@ -48,51 +48,9 @@ const RECEIVER_COLOR = '#5b9af9';
 const START_COLOR = ROUTE_ADSB_COLOR;
 const END_COLOR = '#ef4444'; // danger red — "terminate"
 
-// CartoDB Dark Matter raster basemap — free, no API key, CC-BY 4.0.
-// MapLibre does not expand Leaflet's `{s}` subdomain placeholder; list
-// the four subdomains explicitly. Background color fills the canvas
-// during tile load so there is no white flash.
-const DARK_STYLE: StyleSpecification = {
-  version: 8,
-  sources: {
-    'carto-dark': {
-      type: 'raster',
-      tiles: [
-        'https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png',
-        'https://b.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png',
-        'https://c.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png',
-        'https://d.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png',
-      ],
-      tileSize: 256,
-      minzoom: 0,
-      maxzoom: 20,
-      attribution:
-        '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> ' +
-        'contributors, © <a href="https://carto.com/attributions">CARTO</a>',
-    },
-  },
-  layers: [
-    { id: 'bg', type: 'background', paint: { 'background-color': '#0b0b0d' } },
-    // Lift the blacks on Dark Matter — its default range bottoms out at near-
-    // pitch-black which is hard to read at any zoom. raster-brightness-min
-    // pushes the floor up to a mid-charcoal; raster-contrast pulls back a
-    // touch so the lift doesn't wash the basemap out. Data layers paint on
-    // top of the raster layer with their own paint properties and are
-    // unaffected.
-    {
-      id: 'carto-dark',
-      type: 'raster',
-      source: 'carto-dark',
-      paint: {
-        'raster-brightness-min': 0.18,
-        'raster-contrast': -0.1,
-      },
-    },
-  ],
-};
-
 export default function RouteMap({ positions, receiverLat, receiverLon }: Props) {
   const mapRef = useRef<MapRef | null>(null);
+  const basemapStyle = useBasemapStyle();
 
   // Per-segment coloured GeoJSON + the flat [lng, lat] point list. Both are
   // pure transforms in lib/routeSegments (coordinate-swap + segmentation live
@@ -131,10 +89,15 @@ export default function RouteMap({ positions, receiverLat, receiverLon }: Props)
     allPoints[0] ??
     (receiverLat != null && receiverLon != null ? [receiverLon, receiverLat] : [0, 0]);
 
+  // Hold the map back until the basemap tile URLs resolve (see useBasemapStyle).
+  if (!basemapStyle) {
+    return <div className="h-full w-full bg-[#0b0b0d]" />;
+  }
+
   return (
     <Map
       ref={mapRef}
-      mapStyle={DARK_STYLE}
+      mapStyle={basemapStyle}
       initialViewState={{ longitude: initialCenter[0], latitude: initialCenter[1], zoom: 9 }}
       scrollZoom={false}
       attributionControl={false}
