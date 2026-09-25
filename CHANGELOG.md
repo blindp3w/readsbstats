@@ -5,6 +5,21 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Tests
+
+- **Flaky stats boundary tests fixed.** `test_stats_window_boundary` read the
+  clock separately from the handler, so a second ticking over mid-test moved
+  the cutoff and dropped the at-cutoff flight. The clock is now pinned
+  (`frozen_now` fixture); verified by forcing a 1 s tick, which failed before
+  and passes now.
+- **Playwright UI suite back to 84/84.** 25 tests had drifted since the
+  May 2026 Stats / History / Map redesigns (removed test IDs, filter form behind
+  "Advanced", phone command bar collapsing controls, duplicated phone/desktop
+  controls). Updated to the current UI; the seed flight now squawks 7700 so the
+  emergency-squawk pill is exercised.
+
 ## 2.25.4 — 2026-09-25
 
 Maps fix + dependency refresh: CARTO basemap API key support, MapLibre GL 6,

@@ -11,6 +11,7 @@ Fix: half-open [lo, hi) for both windows — `>=` lower bound, `<` upper bound
 from __future__ import annotations
 
 import time
+import types
 
 import pytest
 from fastapi.testclient import TestClient
@@ -38,6 +39,17 @@ def client(db_conn, monkeypatch):
         yield c
 
 
+@pytest.fixture()
+def frozen_now(monkeypatch):
+    """Pin the clock `api/stats.py` reads, and hand the same instant to the
+    test. Otherwise a second boundary falling between the test's
+    `time.time()` and the handler's shifts the cutoff by 1 s and drops the
+    exactly-at-cutoff flight — an intermittent CI failure."""
+    now = int(time.time())
+    monkeypatch.setattr(stats_mod, "time", types.SimpleNamespace(time=lambda: float(now)))
+    return now
+
+
 def _insert(conn, icao, first_seen):
     conn.execute(
         "INSERT INTO flights (icao_hex, callsign, first_seen, last_seen, "
@@ -54,9 +66,9 @@ class TestStatsWindowBoundary:
     flights_prev_24h must exclude it (half-open [lo, hi))."""
 
     def test_flight_at_cutoff_24h_counts_in_current_not_previous(
-        self, client, db_conn,
+        self, client, db_conn, frozen_now,
     ):
-        now = int(time.time())
+        now = frozen_now
         cutoff_24h = now - 86400
         # Three flights: at cutoff, one second inside, and a day earlier.
         _insert(db_conn, "aa0001", cutoff_24h)           # at boundary
@@ -78,9 +90,9 @@ class TestStatsWindowBoundary:
         )
 
     def test_flight_at_cutoff_7d_counts_in_current_not_previous(
-        self, client, db_conn,
+        self, client, db_conn, frozen_now,
     ):
-        now = int(time.time())
+        now = frozen_now
         cutoff_7d = now - 7 * 86400
         _insert(db_conn, "bb0001", cutoff_7d)             # at 7d boundary
         _insert(db_conn, "bb0002", cutoff_7d - 7 * 86400) # solidly in prev_7d
@@ -94,14 +106,14 @@ class TestStatsWindowBoundary:
         assert data.get("trends", {}).get("flights_7d_prev") == 1
 
     def test_filtered_branch_boundary_uses_same_operators(
-        self, client, db_conn,
+        self, client, db_conn, frozen_now,
     ):
         """The filtered (`?from=&to=`) branch computes flights_24h /
         flights_7d from a separate `live` sub-query in stats.py. The W-7
         operator fix touches both blocks; lock the filtered path too so a
         future copy-paste regression in one block doesn't slip past CI.
         """
-        now = int(time.time())
+        now = frozen_now
         cutoff_24h = now - 86400
         _insert(db_conn, "cc0001", cutoff_24h)         # at 24h boundary
         _insert(db_conn, "cc0002", cutoff_24h - 86400) # in prev_24h
