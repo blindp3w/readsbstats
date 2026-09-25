@@ -48,7 +48,9 @@ def _seed_db(db_path: str) -> int:
         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """,
         (
-            "aabbcc", "LOT123", "SP-LRA", "B738", None,
+            # squawk 7700: the Stats emergency pill only renders when its
+            # count is > 0 (FlagBadgeStrip), so seed one to exercise it.
+            "aabbcc", "LOT123", "SP-LRA", "B738", "7700",
             now - 3600, now - 600,
             35000, 450.0, 150.0, 90.0,
             3, 3, 0, "adsb",

@@ -160,6 +160,12 @@ def test_v2_history_page_renders_with_filters(request, v2_server, device_name):
     try:
         page.goto(f"{base_url}/history", wait_until="load")
         expect(page.locator('[data-testid="page-history"]')).to_be_visible()
+        # Sticky filter bar is always there; the full form is collapsed
+        # behind "Advanced" (redesign) and opens on demand.
+        expect(page.locator('[data-testid="history-filter-sticky"]')).to_be_visible()
+        expect(page.locator('[data-testid="history-add-filter-trigger"]')).to_be_visible()
+        expect(page.locator('[data-testid="history-filters-form"]')).not_to_be_visible()
+        page.locator('[data-testid="history-advanced-trigger"]').click()
         expect(page.locator('[data-testid="history-filters-form"]')).to_be_visible()
         # Table or empty-state appears (test DB has 1 seeded flight)
         flights_table = page.locator('[data-testid="flights-table"]')
@@ -176,6 +182,7 @@ def test_v2_history_filter_persists_in_url(request, v2_server):
     base_url, page = _new_page(ctx, v2_server)
     try:
         page.goto(f"{base_url}/history", wait_until="load")
+        page.locator('[data-testid="history-advanced-trigger"]').click()
         page.locator('[data-testid="history-filter-callsign"]').fill("LOT")
         page.locator('[data-testid="history-filter-callsign"]').press("Enter")
         expect(page).to_have_url(re.compile(r"callsign=LOT"))
@@ -236,13 +243,14 @@ def test_v2_flight_other_flights_section(request, v2_server):
 
 
 def test_v2_stats_emergency_squawks_link(request, v2_server):
-    """Each emergency squawk cell is a link to /history?squawk=XXXX."""
+    """Emergency squawk pills (FlagBadgeStrip; rendered only when the count
+    is > 0 — the seed flight squawks 7700) link to /history?squawk=XXXX."""
     ctx = request.getfixturevalue("ctx_iphone_15")
     base_url, _ = v2_server
     page = ctx.new_page()
     try:
         page.goto(f"{base_url}/", wait_until="load")
-        link = page.locator('[data-testid="stat-squawk-7700"]')
+        link = page.locator('[data-testid="flag-pill-squawk-7700"]')
         expect(link).to_be_visible()
         href = link.get_attribute("href")
         assert href and href.endswith("/history?squawk=7700"), f"unexpected href: {href}"
@@ -312,7 +320,8 @@ def test_v2_stats_page_renders(request, v2_server, device_name):
         page.goto(f"{base_url}/", wait_until="load")
         expect(page.locator('[data-testid="page-stats"]')).to_be_visible()
         expect(page.locator("h1", has_text="Statistics")).to_be_visible()
-        expect(page.locator('[data-testid="stats-summary-cards"]')).to_be_visible()
+        expect(page.locator('[data-testid="kpi-flights"]')).to_be_visible()
+        expect(page.locator('[data-testid="kpi-unique-aircraft"]')).to_be_visible()
         expect(page.locator('[data-testid="range-picker"]')).to_be_visible()
     finally:
         page.close()
@@ -381,6 +390,29 @@ def test_v2_flight_page_renders(request, v2_server, device_name):
         page.close()
 
 
+def _visible(page, testid):
+    """The visible element for `testid`. The map command bar renders some
+    controls twice — a phone (<sm) variant and a tablet/desktop variant,
+    one of them hidden via CSS — so a bare locator is ambiguous."""
+    return page.locator(f'[data-testid="{testid}"]').filter(visible=True)
+
+
+def _expand_map_controls(page):
+    """Phones (<sm) collapse the rewind row, layers and window pills behind
+    a chevron in the command bar."""
+    page.locator('[data-testid="map-mobile-expand"]').click()
+    expect(page.locator('[data-testid="map-mobile-expanded"]')).to_be_visible()
+
+
+def _open_map_layers(page):
+    """Phone: expand the bar, then open the Layers popover (below lg the
+    heatmap / coverage / list toggles live inside it; the hidden inline
+    copies are why the toggles go through `_visible`)."""
+    _expand_map_controls(page)
+    _visible(page, "map-layers-popover-trigger").click()
+    expect(page.locator('[data-testid="map-layers-popover"]')).to_be_visible()
+
+
 @pytest.mark.parametrize("device_name", DEVICES)
 def test_v2_map_page_renders(request, v2_server, device_name):
     ctx = request.getfixturevalue(f"ctx_{device_name}")
@@ -388,33 +420,31 @@ def test_v2_map_page_renders(request, v2_server, device_name):
     try:
         page.goto(f"{base_url}/map", wait_until="load")
         expect(page.locator('[data-testid="page-map"]')).to_be_visible()
-        # Controls always visible
-        expect(page.locator('[data-testid="map-controls-overlay"]')).to_be_visible()
-        expect(page.locator('[data-testid="map-mode-live"]')).to_be_visible()
-        expect(page.locator('[data-testid="map-mode-rewind"]')).to_be_visible()
-        # Map container (Leaflet) renders
+        # Bottom command bar with the mode switch is always visible.
+        expect(page.locator('[data-testid="map-command-bar"]')).to_be_visible()
+        expect(_visible(page, "map-mode-live")).to_be_visible()
+        expect(_visible(page, "map-mode-rewind")).to_be_visible()
+        # MapLibre map container renders.
         expect(page.locator('[data-testid="map-container"]')).to_be_visible()
     finally:
         page.close()
 
 
 def test_v2_map_heatmap_toggle_fires_api_call(request, v2_server):
-    """Toggling Heatmap on triggers /api/map/heatmap?window=... and shows
-    the window selector strip."""
+    """Toggling Heatmap on triggers /api/map/heatmap?window=... ."""
     ctx = request.getfixturevalue("ctx_iphone_15")
     base_url, _ = v2_server
     page = ctx.new_page()
     try:
         page.goto(f"{base_url}/map", wait_until="load")
-        # Window selector hidden when both layers are off
-        expect(page.locator('[data-testid="map-window-selector"]')).not_to_be_visible()
+        _open_map_layers(page)
         with page.expect_request(
             lambda req: "/api/map/heatmap" in req.url and "window=" in req.url,
             timeout=5000,
         ):
-            page.locator('[data-testid="map-toggle-heatmap"]').click()
-        # Window selector now visible
-        expect(page.locator('[data-testid="map-window-selector"]')).to_be_visible()
+            _visible(page, "map-toggle-heatmap").click()
+        # The window pills that scope the heatmap are available alongside it.
+        expect(_visible(page, "map-window-selector")).to_be_visible()
     finally:
         page.close()
 
@@ -426,11 +456,12 @@ def test_v2_map_coverage_toggle_fires_api_call(request, v2_server):
     page = ctx.new_page()
     try:
         page.goto(f"{base_url}/map", wait_until="load")
+        _open_map_layers(page)
         with page.expect_request(
             lambda req: "/api/map/coverage" in req.url and "window=" in req.url,
             timeout=5000,
         ):
-            page.locator('[data-testid="map-toggle-coverage"]').click()
+            _visible(page, "map-toggle-coverage").click()
     finally:
         page.close()
 
@@ -443,7 +474,8 @@ def test_v2_map_sidebar_list_opens(request, v2_server):
     try:
         page.goto(f"{base_url}/map", wait_until="load")
         expect(page.locator('[data-testid="map-sidebar-list"]')).not_to_be_visible()
-        page.locator('[data-testid="map-toggle-list"]').click()
+        _open_map_layers(page)
+        _visible(page, "map-toggle-list").click()
         expect(page.locator('[data-testid="map-sidebar-list"]')).to_be_visible()
         # Either rows or empty-state visible.
         rows = page.locator('[data-testid="map-aircraft-list"]')
@@ -460,16 +492,18 @@ def test_v2_map_playback_play_advances_time(request, v2_server):
     page = ctx.new_page()
     try:
         page.goto(f"{base_url}/map", wait_until="load")
-        # Switch to rewind, dial back ~1 hour so there's lots of headroom.
-        page.locator('[data-testid="map-mode-rewind"]').click()
-        page.locator('[data-testid="map-jump-back-1h"]').click()
-        slider = page.locator('[data-testid="map-rewind-slider"]')
+        # Switch to rewind (auto-expands the phone panel holding the scrub
+        # row), dial back ~1 hour so there's lots of headroom.
+        _visible(page, "map-mode-rewind").click()
+        expect(page.locator('[data-testid="map-mobile-expanded"]')).to_be_visible()
+        _visible(page, "map-jump-back-1h").click()
+        slider = _visible(page, "map-rewind-slider")
         before = int(slider.input_value())
         assert before >= 3600, f"expected slider ≥ 3600 after −1h, got {before}"
         # Bump speed to 10× then play. At 10× the offset drops 10 s per real
         # second; wait ~2.5 s for ≥ 2 ticks.
-        page.locator('[data-testid="map-speed-10x"]').click()
-        page.locator('[data-testid="map-play-toggle"]').click()
+        _visible(page, "map-speed-10x").click()
+        _visible(page, "map-play-toggle").click()
         page.wait_for_timeout(2500)
         after = int(slider.input_value())
         assert after < before, f"slider should advance towards now: before={before} after={after}"
@@ -482,12 +516,14 @@ def test_v2_map_rewind_toggle_reveals_slider(request, v2_server):
     base_url, page = _new_page(ctx, v2_server)
     try:
         page.goto(f"{base_url}/map", wait_until="load")
-        # Initially no rewind slider — Live is the default mode.
-        expect(page.locator('[data-testid="map-rewind-controls"]')).not_to_be_visible()
-        # Switch to Rewind
-        page.locator('[data-testid="map-mode-rewind"]').click()
-        expect(page.locator('[data-testid="map-rewind-controls"]')).to_be_visible()
-        expect(page.locator('[data-testid="map-rewind-slider"]')).to_be_visible()
+        # Live is the default mode — phone panel collapsed, no scrub row.
+        expect(page.locator('[data-testid="map-mobile-expanded"]')).not_to_be_visible()
+        expect(_visible(page, "map-rewind-controls")).to_have_count(0)
+        # Entering Rewind auto-expands the phone panel with the scrub row.
+        _visible(page, "map-mode-rewind").click()
+        expect(page.locator('[data-testid="map-mobile-expanded"]')).to_be_visible()
+        expect(_visible(page, "map-rewind-controls")).to_be_visible()
+        expect(_visible(page, "map-rewind-slider")).to_be_visible()
     finally:
         page.close()
 
