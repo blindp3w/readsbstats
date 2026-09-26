@@ -649,12 +649,21 @@ def _build_positions_indexes(path: str = config.DB_PATH) -> None:
         conn.execute("DROP INDEX IF EXISTS idx_positions_flight")
         conn.execute("DROP INDEX IF EXISTS idx_positions_ts_coords")
         conn.execute("DROP INDEX IF EXISTS idx_positions_flight_id_desc")
-        # First-ever statistics for the query planner (production DB had no
-        # sqlite_stat1 at all). analysis_limit bounds the row sample so this
-        # stays cheap even on millions of rows. Re-runs on every collector
-        # start; ~0.1 s at this limit.
+        # Query-planner statistics. A full ANALYZE is NOT cheap here even with
+        # analysis_limit: it still walks the 18M-row positions indexes (5 s on
+        # an SSD, ~60 s on the Pi's USB disk) while holding the write lock, so
+        # re-running it on every collector start starved the poll loop and the
+        # enrichers ("database is locked", lost polls). Run it only when the
+        # DB has never been analysed; afterwards PRAGMA optimize re-analyses
+        # just the tables whose stats have drifted (SQLite's recommended
+        # periodic maintenance — a no-op when they are fresh).
         conn.execute("PRAGMA analysis_limit = 1000")
-        conn.execute("ANALYZE")
+        has_stats = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'sqlite_stat1'"
+        ).fetchone() is not None and conn.execute(
+            "SELECT 1 FROM sqlite_stat1 LIMIT 1"
+        ).fetchone() is not None
+        conn.execute("PRAGMA optimize" if has_stats else "ANALYZE")
         conn.commit()
         _log.info("Positions indexes ready.")
     except Exception:
