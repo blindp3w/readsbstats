@@ -348,6 +348,45 @@ class TestMigrate:
         finally:
             conn.close()
 
+    def test_build_positions_indexes_full_analyze_only_without_stats(
+        self, tmp_path, monkeypatch,
+    ):
+        """A full ANALYZE holds the write lock while it samples every index;
+        on the Pi's 18M-row positions table that took ~60 s at every collector
+        start, starving the poll loop and enrichers ("database is locked",
+        lost polls). Only a never-analyzed DB gets the full ANALYZE; later
+        starts use PRAGMA optimize, which re-analyzes only stale tables."""
+        path = str(tmp_path / "stats.db")
+        database.init_db(path)
+        conn = database.connect(path)
+        conn.execute(
+            "INSERT INTO flights (icao_hex, first_seen, last_seen) VALUES ('abc123', 1, 2)"
+        )
+        conn.executemany(
+            "INSERT INTO positions (flight_id, ts, lat, lon) VALUES (1, ?, 5200000, 2100000)",
+            [(t,) for t in range(50)],
+        )
+        conn.commit()
+        conn.close()
+
+        real_connect = database.connect
+        traced: list[str] = []
+
+        def tracing_connect(*a, **kw):
+            c = real_connect(*a, **kw)
+            c.set_trace_callback(lambda sql: traced.append(sql.strip().upper()))
+            return c
+
+        monkeypatch.setattr(database, "connect", tracing_connect)
+
+        database._build_positions_indexes(path)          # first-ever stats
+        assert "ANALYZE" in traced
+        traced.clear()
+
+        database._build_positions_indexes(path)          # subsequent start
+        assert "ANALYZE" not in traced, "full ANALYZE re-ran on a DB with stats"
+        assert "PRAGMA OPTIMIZE" in traced
+
     def test_run_background_migrations_idempotent(self, tmp_path):
         db_path = str(tmp_path / "test.db")
         database.init_db(db_path)

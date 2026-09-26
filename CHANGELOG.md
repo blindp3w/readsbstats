@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Fixed
+
+- **Collector lost polls for ~1 min after every restart.** Startup re-ran a
+  full `ANALYZE`, which walks the 18M-row `positions` indexes while holding the
+  write lock (5 s on an SSD, ~60 s on the Pi's USB disk). The poll loop and
+  enrichers timed out behind it ("database is locked", `Poll error`). The full
+  `ANALYZE` now runs only on a never-analysed DB; later starts use
+  `PRAGMA optimize`, which re-analyses only stale tables (0.001 s on a
+  production-DB copy).
+
 ### Tests
 
 - **Flaky stats boundary tests fixed.** `test_stats_window_boundary` read the
