@@ -38,10 +38,29 @@ All tests use in-memory SQLite — no Pi or external services needed.
 For coverage:
 
 ```bash
-.venv/bin/pytest --cov=. --cov-report=term-missing --ignore=.venv
+.venv/bin/pytest --cov=readsbstats --cov-report=term-missing
 ```
 
-Target: maintain the current ~99% coverage. New features and bug fixes should include tests.
+Target: keep the current ~98% statement coverage; CI fails below 93%. New features and bug fixes should include tests.
+
+UI tests (Playwright, WebKit + Chromium device matrix) live in `tests/ui/` and are
+excluded from the default run — see [docs/development.md](docs/development.md) for
+setup. CI runs the full suite on every PR (`pytest -m ui tests/ui`), so run it
+locally before pushing UI changes.
+
+## Dependency updates (Dependabot)
+
+Dependabot opens grouped PRs weekly (one each for npm, pip and GitHub Actions)
+plus grouped security-fix PRs as soon as an alert has a patch. Before merging:
+
+- CI must be green — it runs the backend suite, frontend build + lint + Vitest,
+  and the full Playwright UI suite.
+- Read the release notes of every **major** bump in the group; a failing
+  `npm ci` (`ERESOLVE`) usually means one package's peer range lags another.
+- Map-related bumps (`maplibre-gl`, `react-map-gl`): unit tests mock the map,
+  so check the live map + a flight route map render after deploy.
+- TypeScript majors are ignored in `.github/dependabot.yml` until
+  typescript-eslint supports them; drop the rule when it does.
 
 ## Code style
 

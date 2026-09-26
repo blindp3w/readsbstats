@@ -43,7 +43,7 @@ RSBS_AIRCRAFT_JSON=/tmp/rsbs_sim.json RSBS_DB_PATH=./db/history.db \
 ## Running tests
 
 ```bash
-.venv/bin/pytest                                              # 2209 Python tests
+.venv/bin/pytest                                              # 2213 Python tests
 ( cd frontend && npm test )                                   # 534 Vitest tests
 
 # Coverage (CI gates the backend at 93%; frontend report is informational)

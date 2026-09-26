@@ -17,6 +17,14 @@ bash /opt/readsbstats/scripts/update.sh --full
 
 All three modes sync code first. Only `--db-only` and `--full` trigger a database download (~30 seconds, ~10 MB). The collector is stopped automatically during the download to avoid SQLite write conflicts.
 
+Every run first snapshots `history.db` with `VACUUM INTO` to
+`history.db.backup.<YYYYMMDD_HHMMSS>` next to the database and keeps the 3 most
+recent. On a large database this is the slowest step (~10 minutes for 1.6 GB on
+a Pi 4 with a USB disk) and needs free space roughly equal to the DB size.
+
+After a restart the web server's cache prewarmer rebuilds the map caches, so the
+first heatmap/coverage request can take a while to render — that is not an error.
+
 ## Aircraft & airline database
 
 Registration, aircraft type, and airline name data is updated weekly by a systemd timer:
@@ -277,9 +285,11 @@ DB=/mnt/ext/readsbstats/history.db
 # 1. Snapshot the corrupt file first (forensics / second attempt).
 cp "$DB" "$DB.corrupt-$(date +%s)"
 
-# 2a. Preferred: restore the most recent good backup.
-ls -t "$DB".backup-*.db
-cp "$DB".backup-<ts>.db "$DB"
+# 2a. Preferred: restore the most recent good backup — either an update.sh
+#     pre-deploy snapshot (history.db.backup.<ts>) or a purge-script
+#     snapshot (history.db.backup-<ts>.db).
+ls -t "$DB".backup*
+cp "$DB".backup<...> "$DB"
 
 # 2b. Or salvage in place with the SQLite recovery tool.
 sqlite3 "$DB" ".recover" | sqlite3 "$DB.recovered"
