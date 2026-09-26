@@ -5,7 +5,11 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## 2.25.5 — 2026-09-26
+
+Collector restart fix + CI/test hardening. Restarts no longer lose ~1 minute of
+positions; the full Playwright UI suite now gates every PR. No schema or API
+changes.
 
 ### Fixed
 
@@ -43,10 +47,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   "Advanced", phone command bar collapsing controls, duplicated phone/desktop
   controls). Updated to the current UI; the seed flight now squawks 7700 so the
   emergency-squawk pill is exercised.
+
+### CI & dependencies
+
 - **CI now runs the full Playwright UI suite** (84 tests, WebKit + Chromium
   device matrix) instead of only 3 regression locks, so UI drift fails the PR.
 - Dependabot no longer proposes TypeScript major bumps: TypeScript 7 is outside
   typescript-eslint 8's peer range and broke `npm ci` in the grouped PR.
+- Dependency refresh (Dependabot): uvicorn 0.53, MapLibre GL 6.11, TanStack
+  Query 5.103, react-router 7.18.4, Vitest 5.0.1, jsdom 30.1, ESLint 10.11;
+  GitHub Actions checkout 7.0.1, setup-python 7, CodeQL.
+
+### Docs
+
+- `CONTRIBUTING.md`: Dependabot review checklist (referenced from
+  `dependabot.yml` but missing), current coverage command/gate, UI suite in CI.
+- `docs/operations.md`: `update.sh` pre-deploy `VACUUM INTO` backup (naming,
+  retention, duration) and the post-restart map-cache warm-up; recovery steps
+  now also list `update.sh` backups.
+- Test counts refreshed (backend 2213).
 
 ## 2.25.4 — 2026-09-25
 
