@@ -2974,6 +2974,28 @@ class TestLoadNotified:
         collector._load_notified(self.conn)
         assert "488042" in collector._notified_icao
 
+    def test_many_flights_per_aircraft_mixed_flags(self):
+        """The flag predicate is evaluated once per distinct aircraft (the
+        10 KB anonymous-range CASE per flight row cost 3.7 s at startup on
+        the Pi). Repeat flights of flagged + ordinary aircraft must still
+        yield exactly the flagged set."""
+        from readsbstats import collector
+        rows = [(icao, t, t) for icao in ("ae0001", "488042", "dd85cb")
+                for t in range(1000, 1010)]
+        self.conn.executemany(
+            "INSERT INTO flights (icao_hex, first_seen, last_seen) VALUES (?, ?, ?)", rows
+        )
+        self.conn.execute(
+            "INSERT INTO aircraft_db (icao_hex, registration, flags) VALUES ('ae0001', 'MIL-1', 1)"
+        )
+        self.conn.execute(
+            "INSERT INTO aircraft_db (icao_hex, registration, flags) VALUES ('488042', 'ORD-1', 0)"
+        )
+        self.conn.commit()
+        collector._load_notified(self.conn)
+        # ae0001 military, dd85cb anonymous (non-ICAO); 488042 ordinary.
+        assert collector._notified_icao == {"ae0001", "dd85cb"}
+
 
 # ---------------------------------------------------------------------------
 # _dispatch_one — routes a queued notification tuple to the right notify_* helper

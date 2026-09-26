@@ -1245,7 +1245,7 @@ def _load_notified(conn: sqlite3.Connection) -> None:
     non-ICAO anonymous addresses (computed at query time, no DB column), so
     toggling RSBS_TELEGRAM_ANONYMOUS_ALERT after a restart doesn't trigger a
     flood of historical first-sighting alerts."""
-    anon_sql = icao_ranges.anonymous_flag_sql("f.icao_hex", 1)
+    anon_sql = icao_ranges.anonymous_flag_sql("u.icao_hex", 1)
     # Audit-13 A13-034: bulk `set.update(generator)` rather than per-row
     # `set.add` — one C-level call instead of N Python-level loops. On a
     # 200 k-flight DB this trims ~50 ms off collector startup.
@@ -1253,14 +1253,17 @@ def _load_notified(conn: sqlite3.Connection) -> None:
     # flagged military/interesting ONLY via airplanes.live (no aircraft_db row)
     # would otherwise be missing from the dedupe set, so a restart re-alerts
     # for it. Mirrors the OR-merge already used by web.py's flag expressions.
+    # Dedupe FIRST, then join + evaluate: ~7 k distinct aircraft vs ~200 k
+    # flight rows, and the anonymous-range CASE is ~10 KB of SQL per row —
+    # 3.7 s → 0.55 s on the Pi, which runs before READY=1 (no polling yet).
     _notified_icao.update(
         row["icao_hex"]
         for row in conn.execute(
             f"""
-            SELECT DISTINCT f.icao_hex
-            FROM flights f
-            LEFT JOIN aircraft_db adb ON adb.icao_hex = f.icao_hex
-            LEFT JOIN adsbx_overrides axo ON axo.icao_hex = f.icao_hex
+            SELECT u.icao_hex
+            FROM (SELECT DISTINCT icao_hex FROM flights) u
+            LEFT JOIN aircraft_db adb ON adb.icao_hex = u.icao_hex
+            LEFT JOIN adsbx_overrides axo ON axo.icao_hex = u.icao_hex
             WHERE ((COALESCE(adb.flags, 0) | COALESCE(axo.flags, 0)) & 3) != 0
                OR ({anon_sql}) != 0
             """
