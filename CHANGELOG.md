@@ -16,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ANALYZE` now runs only on a never-analysed DB; later starts use
   `PRAGMA optimize`, which re-analyses only stale tables (0.001 s on a
   production-DB copy).
+- **Faster collector startup.** The Telegram de-dupe preload evaluated the
+  anonymous-range check once per flight row (~200 k) instead of once per
+  aircraft (~7 k): 3.7 s → 0.55 s on the Pi, and it runs before the collector
+  starts polling. Same result set.
 
 ### Tests
 
