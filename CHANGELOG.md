@@ -19,6 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   "Advanced", phone command bar collapsing controls, duplicated phone/desktop
   controls). Updated to the current UI; the seed flight now squawks 7700 so the
   emergency-squawk pill is exercised.
+- **CI now runs the full Playwright UI suite** (84 tests, WebKit + Chromium
+  device matrix) instead of only 3 regression locks, so UI drift fails the PR.
+- Dependabot no longer proposes TypeScript major bumps: TypeScript 7 is outside
+  typescript-eslint 8's peer range and broke `npm ci` in the grouped PR.
 
 ## 2.25.4 — 2026-09-25
 

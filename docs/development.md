@@ -64,7 +64,10 @@ RSBS_RECORD_GOLDEN=1 .venv/bin/pytest tests/test_stats_compute_identity.py
 > ( cd frontend && npm run lint )
 > ```
 
-### Playwright mobile UI tests (optional, local only)
+### Playwright mobile UI tests
+
+The full suite runs in CI (Python 3.12 job) on every PR; run it locally before
+pushing UI changes.
 
 ```bash
 # One-time setup
