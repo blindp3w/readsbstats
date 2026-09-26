@@ -34,3 +34,10 @@ updates:
     groups:
       frontend:
         patterns: ["*"]
+    # TypeScript 7 (native compiler) is outside typescript-eslint 8's peer
+    # range (`typescript <6.1`), so bundling it into the grouped PR breaks
+    # `npm ci` with ERESOLVE (see v2.25.4). Stay on 6.x; drop this once
+    # typescript-eslint supports 7. Minor/patch 6.x bumps still flow.
+    ignore:
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
