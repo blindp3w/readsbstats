@@ -20,6 +20,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   anonymous-range check once per flight row (~200 k) instead of once per
   aircraft (~7 k): 3.7 s → 0.55 s on the Pi, and it runs before the collector
   starts polling. Same result set.
+- **No more spurious pip conflict warning on deploys that bump a pin.**
+  `update.sh` installed `requirements.txt` and the package in two pip calls, so
+  the first compared the new pins against the old package metadata. Now one
+  call.
+
+### Security
+
+- CSP `worker-src` is now `'self'` only: MapLibre 6 loads its worker from a
+  same-origin asset, so the `blob:` allowance kept for MapLibre 5 is gone
+  (`include`d nginx config — reloaded by `update.sh`).
 
 ### Tests
 

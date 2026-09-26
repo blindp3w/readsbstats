@@ -144,8 +144,12 @@ if getent group "$SERVICE_USER" >/dev/null 2>&1; then
 fi
 
 echo "==> Installing Python dependencies"
-"$APP_DIR/venv/bin/pip" install -q -r "$APP_DIR/requirements.txt"
-"$APP_DIR/venv/bin/pip" install -q -e "$APP_DIR"
+# One invocation so pip resolves the new requirements.txt pins together with
+# the package's own (pyproject) pins. Two calls made the first one's
+# post-install check compare the new pins against the still-installed old
+# package metadata and print a spurious "readsbstats requires fastapi==<old>"
+# conflict on every deploy that bumped a pin.
+"$APP_DIR/venv/bin/pip" install -q -r "$APP_DIR/requirements.txt" -e "$APP_DIR"
 
 # ---- One-shot schema v6 migration (positions slimming) ----------------------
 # Detects a pre-v6 DB and rebuilds it offline. Runs in EVERY mode: the code

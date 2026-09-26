@@ -278,6 +278,20 @@ class TestBasemap:
                         f"{host} not allowed by CSP {directive}"
                     )
 
+    def test_csp_worker_src_is_self_only(self):
+        """MapLibre 6's worker is a same-origin bundled asset (see
+        frontend/src/lib/maplibreWorker.ts); MapLibre 5 needed `blob:`.
+        Keep worker-src tight so a blob: URL can't be run as a worker."""
+        import re
+        from pathlib import Path
+
+        conf = (Path(__file__).resolve().parents[1] / "nginx-readsbstats.conf").read_text()
+        csp = re.search(r'Content-Security-Policy\s+"([^"]+)"', conf).group(1)
+        directives = {
+            d.split()[0]: d.split()[1:] for d in (p.strip() for p in csp.split(";")) if d
+        }
+        assert directives["worker-src"] == ["'self'"]
+
     def test_not_cacheable_by_shared_caches(self, client, monkeypatch):
         """The response embeds the key; keep it out of shared proxy caches."""
         monkeypatch.setattr(config, "CARTO_API_KEY", "abc123_DEF-456")

@@ -126,7 +126,8 @@ What becomes harder / costs:
   404s and nothing that needs it renders. `frontend/src/lib/maplibreWorker.ts`
   registers the worker through Vite's `?worker&url` pipeline with
   `setWorkerUrl()`; both map components import it. The worker is now a
-  same-origin asset, so the CSP no longer relies on `blob:` for it.
+  same-origin asset, so the CSP no longer allows `blob:` workers
+  (`worker-src 'self'`).
 - **CARTO now requires an API key.** Keyless tile requests return an
   "API KEY REQUIRED" placeholder. The key is runtime config
   (`RSBS_CARTO_API_KEY`), and the tile URLs are built server-side by
