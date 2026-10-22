@@ -1,18 +1,37 @@
+# NOTE: gitignore has NO inline comments — keep each pattern on its own line.
+
 # Python
 __pycache__/
 *.py[cod]
-*.pyo
 venv/
 .venv/
 *.egg-info/
+*.egg
+/build/
+/dist/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.hypothesis/
 
-# Database
+# Local data — the whole db/ folder is local-only (DB copies from the Pi,
+# exports, analysis output); nothing in it may ever reach GitHub, whatever
+# the file extension.
+/db/
+# DB files anywhere else (incl. journals, backups like history.db.backup.*,
+# compressed copies like history.db.zst)
 *.db
 *.db-wal
 *.db-shm
+*.db-journal
+*.db.*
+*.sqlite
+*.sqlite3
+*.sqlite-*
 
 # OS
 .DS_Store
+._*
 Thumbs.db
 
 # Editor
@@ -23,6 +42,8 @@ Thumbs.db
 
 # Test / coverage
 .coverage
+.coverage.*
+coverage.xml
 .pytest_cache/
 htmlcov/
 tests/ui/screenshots/
@@ -33,12 +54,17 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
-# Secrets / local config
+# Secrets / local config (tracked templates are *.env.example)
 .env
+.env.*
+*.env
 *.env.local
+!*.env.example
+*.pem
+*.key
 
 # Frontend (Vite + npm) — dist/ is rsync'd to the Pi but never committed
-frontend/node_modules/
+node_modules/
 frontend/dist/
 frontend/.vite/
 frontend/coverage/
@@ -60,21 +86,34 @@ scratchpad.md
 # AI assistant / agent context — ALL local-only, never public.
 # Hard internal/public split: agent context + internal_docs/ stay off GitHub;
 # only docs/ (incl. docs/decisions ADRs) and code are public.
-# NOTE: gitignore has NO inline comments — keep each pattern on its own line.
 # Claude Code dir (settings.local.json, commands, hooks):
 .claude/
 # CLAUDE.md at any depth + CLAUDE.local.md / CLAUDE.old.md / future variants:
 CLAUDE*.md
 .clauderc
-# Other agent tools (Codex, Gemini, Cursor, Aider, Serena MCP, Copilot):
+# Other agent tools (Codex, Gemini, Cursor, Windsurf, Cline, Roo, Continue,
+# Kiro, Junie, Aider, Serena MCP, SpecStory, Copilot):
 AGENTS.md
 GEMINI.md
+.agents/
+.codex/
+.gemini/
 .cursor/
 .cursorrules
+.windsurf/
+.windsurfrules
+.clinerules
+.roo/
+.continue/
+.kiro/
+.junie/
 .aider*
 .serena/
+.specstory/
 # Copilot only — do NOT ignore all of .github/ (workflows are public):
 .github/copilot-instructions.md
+.github/instructions/
+.github/prompts/
 # MCP server configs may embed tokens / private endpoints:
 .mcp.json
 mcp.json
