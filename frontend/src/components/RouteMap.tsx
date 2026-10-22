@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Map,
   Source,
@@ -8,13 +8,13 @@ import {
   NavigationControl,
   type MapRef,
 } from 'react-map-gl/maplibre';
-import { LngLatBounds } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import '@/lib/maplibreWorker';
 import { useBasemapStyle } from '@/hooks/useBasemapStyle';
 import { routeFitKey } from '@/lib/routeFitKey';
 import {
   buildRouteSegments,
+  routeBounds,
   routePoints,
   ROUTE_ADSB_COLOR,
   type RoutePosition,
@@ -62,20 +62,23 @@ export default function RouteMap({ positions, receiverLat, receiverLon }: Props)
   // fitBounds replaces today's react-leaflet `FitBounds` useEffect. Runs
   // whenever the track changes shape; a key derived from length + endpoints
   // skips redundant fits on prop identity churn.
+  //
+  // Gated on the map's `load`: react-map-gl creates the MapLibre instance
+  // asynchronously, so on the first pass mapRef is still null. Caching the key
+  // before an actual fit (the old behaviour) skipped the fit for good and left
+  // the map centred on the first point at zoom 9.
+  const [mapReady, setMapReady] = useState(false);
   const lastFitKey = useRef<string | null>(null);
   useEffect(() => {
-    if (allPoints.length === 0) return;
+    const map = mapRef.current;
+    if (!mapReady || !map || allPoints.length === 0) return;
     // Key on count + both coordinates of the endpoints (see lib/routeFitKey) —
     // longitude alone collided on tracks sharing endpoint longitudes (BUG-2).
     const key = routeFitKey(allPoints);
     if (key === lastFitKey.current) return;
     lastFitKey.current = key;
-    const bounds = allPoints.reduce(
-      (b, [lng, lat]) => b.extend([lng, lat]),
-      new LngLatBounds(allPoints[0], allPoints[0]),
-    );
-    mapRef.current?.fitBounds(bounds, { padding: 20, duration: 0 });
-  }, [allPoints]);
+    map.fitBounds(routeBounds(allPoints), { padding: 20, duration: 0 });
+  }, [allPoints, mapReady]);
 
   if (allPoints.length === 0 && receiverLat == null) {
     return (
@@ -99,6 +102,7 @@ export default function RouteMap({ positions, receiverLat, receiverLon }: Props)
       ref={mapRef}
       mapStyle={basemapStyle}
       initialViewState={{ longitude: initialCenter[0], latitude: initialCenter[1], zoom: 9 }}
+      onLoad={() => setMapReady(true)}
       scrollZoom={false}
       attributionControl={false}
       style={{ width: '100%', height: '100%', borderRadius: '0.25rem' }}

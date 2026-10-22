@@ -69,6 +69,25 @@ export function buildRouteSegments(positions: RoutePosition[]): GeoJSON.FeatureC
 
 // Flat [lng, lat] list (lat/lon-null positions dropped) used for the initial
 // view centre and the post-load fitBounds.
+// [[minLng, minLat], [maxLng, maxLat]] of a non-empty [lng, lat] point list —
+// the LngLatBoundsLike shape fitBounds accepts.
+export function routeBounds(
+  points: readonly [number, number][],
+): [[number, number], [number, number]] {
+  let [minLng, minLat] = points[0];
+  let [maxLng, maxLat] = points[0];
+  for (const [lng, lat] of points) {
+    if (lng < minLng) minLng = lng;
+    if (lng > maxLng) maxLng = lng;
+    if (lat < minLat) minLat = lat;
+    if (lat > maxLat) maxLat = lat;
+  }
+  return [
+    [minLng, minLat],
+    [maxLng, maxLat],
+  ];
+}
+
 export function routePoints(positions: RoutePosition[]): [number, number][] {
   const out: [number, number][] = [];
   for (const p of positions) {
