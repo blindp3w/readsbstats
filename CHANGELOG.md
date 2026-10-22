@@ -5,6 +5,37 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 2.25.6 — 2026-10-22
+
+Flight route map fix + dependency refresh. Dev-tooling security fixes only —
+nothing in the production bundle was affected. No schema or API changes.
+
+### Fixed
+
+- **Flight route map didn't zoom to the route.** The map stayed centred on the
+  first position at zoom 9, so longer tracks ran off the edge. The fit ran
+  before react-map-gl had created the MapLibre instance (the ref was still
+  null) but cached its "already fitted" key anyway, so it never retried. The
+  fit now waits for the map's `load` event and caches the key only after a real
+  fit. Covered by a component test against a fake map with async init.
+
+### Security
+
+- Dev tooling only (not shipped in the built SPA): Vite 8.3.4 fixes three
+  `launch-editor` advisories in the dev server (GHSA-587h-7wmj-h5pm,
+  GHSA-r825-w8mm-5pxw, GHSA-698v-4r3x-3vcv; Windows-specific), and
+  source-map-js 1.2.2 fixes a crafted-source-map DoS (GHSA-68fv-2mgg-jv7q).
+
+### CI & dependencies
+
+- Dependency refresh (Dependabot): FastAPI 0.143.2, uvicorn 0.54, MapLibre GL
+  6.14, Radix UI (dialog/popover 1.3, tooltip 1.4, select 2.4), TanStack Query
+  5.104, React 19.3.1, Vitest 5.0.5, ESLint 10.12, typescript-eslint 8.71,
+  Playwright 1.64; GitHub Actions setup-node 7.1, CodeQL 4.38.3.
+- `.gitignore` now ignores the whole local `db/` folder (any extension), DB
+  backups/journals elsewhere, more secret-file patterns and more AI-tool
+  context directories.
+
 ## 2.25.5 — 2026-09-26
 
 Collector restart fix + CI/test hardening. Restarts no longer lose ~1 minute of
