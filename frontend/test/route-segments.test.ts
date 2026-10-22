@@ -6,6 +6,7 @@ import { describe, it, expect } from 'vitest';
 import {
   buildRouteSegments,
   colorForSource,
+  routeBounds,
   routePoints,
   ROUTE_ADSB_COLOR,
   ROUTE_MLAT_COLOR,
@@ -29,6 +30,27 @@ describe('colorForSource', () => {
     expect(colorForSource(null)).toBe(ROUTE_MIXED_COLOR);
     expect(colorForSource(undefined)).toBe(ROUTE_MIXED_COLOR);
     expect(colorForSource('mode_s')).toBe(ROUTE_MIXED_COLOR);
+  });
+});
+
+describe('routeBounds', () => {
+  it('returns [[minLng, minLat], [maxLng, maxLat]] over all points', () => {
+    expect(
+      routeBounds([
+        [21.4, 52.2],
+        [20.9, 52.3],
+        [22.0, 52.1],
+      ]),
+    ).toEqual([
+      [20.9, 52.1],
+      [22.0, 52.3],
+    ]);
+  });
+  it('collapses to the point itself for a single point', () => {
+    expect(routeBounds([[20.9, 52.2]])).toEqual([
+      [20.9, 52.2],
+      [20.9, 52.2],
+    ]);
   });
 });
 
