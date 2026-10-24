@@ -10,9 +10,11 @@ import type { Vdl2OooiSummary } from '@/lib/types';
 // Events come from slash-TEI bodies or are synthesized server-side from
 // Q-series QP/QQ/QR/QS compact reports (Ryanair/Wizz style); airline-defined
 // label-49 movement reports and the XID `dsta` destination fill route gaps.
+// `route` is the fallback when events lack dep/dest: the aircraft's own ATN CM
+// logon (FMS flight + dep + dest) or a label-49 movement report (dep + dest).
 // Partial events are normal — TimeRow hides slots the feed didn't report.
 // A ✓/✗ chip confirms the reported route against the scheduled origin/dest.
-// Renders NOTHING when nothing parsed and there's no `dsta`.
+// Renders NOTHING when nothing parsed and there's no `dsta` or `route`.
 
 interface Props {
   icao: string;
@@ -53,10 +55,11 @@ export function OooiCard({ icao, firstSeen, lastSeen, scheduledOrigin, scheduled
   if (!available) return null;
   const data = q.data;
   // Nothing meaningful parsed → don't show an empty card.
-  if (!data || (!data.has_oooi && !data.dsta)) return null;
+  if (!data || (!data.has_oooi && !data.dsta && !data.route)) return null;
 
-  const reportedDep = data.dep?.dep_icao ?? data.arr?.dep_icao ?? null;
-  const reportedDest = data.arr?.dest_icao ?? data.dep?.dest_icao ?? data.dsta ?? null;
+  const reportedDep = data.dep?.dep_icao ?? data.arr?.dep_icao ?? data.route?.dep_icao ?? null;
+  const reportedDest =
+    data.arr?.dest_icao ?? data.dep?.dest_icao ?? data.route?.dest_icao ?? data.dsta ?? null;
 
   // Route confirmation: only assert a verdict when we have both a scheduled and
   // a reported value to compare.
@@ -81,7 +84,15 @@ export function OooiCard({ icao, firstSeen, lastSeen, scheduledOrigin, scheduled
             <TimeRow label="In (on gate)" value={fmtHHMM(data.arr?.t_in ?? null)} />
           </div>
         )}
-        {!data.has_oooi && data.dsta && (
+        {!data.has_oooi && data.route && (
+          <p className="text-xs text-[var(--color-text-dim)]" data-testid="flight-oooi-route-only">
+            No OOOI block times parsed — route from{' '}
+            {data.route.source === 'cm'
+              ? "the aircraft's ATN logon."
+              : 'an airline movement report.'}
+          </p>
+        )}
+        {!data.has_oooi && !data.route && data.dsta && (
           <p className="text-xs text-[var(--color-text-dim)]" data-testid="flight-oooi-dsta-only">
             No OOOI block times parsed — destination from link data only.
           </p>

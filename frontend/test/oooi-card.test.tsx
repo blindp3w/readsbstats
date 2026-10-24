@@ -1,7 +1,8 @@
 /**
  * Flight-detail OOOI card (Phase D, experimental). Renders parsed Out/Off/On/In
  * block times and a ✓/✗ route-confirmation chip vs the scheduled origin/dest.
- * Renders NOTHING when no OOOI body parsed and there's no dsta fallback.
+ * Renders NOTHING when no OOOI body parsed and there's no dsta/route fallback.
+ * `route` (CM logon / label-49 movement report) is the fallback when no OOOI.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, waitFor, screen } from '@testing-library/react';
@@ -90,7 +91,92 @@ describe('OooiCard', () => {
     await waitFor(() => screen.getByTestId('flight-oooi-dsta-only'));
   });
 
-  it('renders nothing when there is no OOOI and no dsta', async () => {
+  it('renders a CM-logon route with its note when no OOOI parsed', async () => {
+    stubFetch({
+      vdl2_enabled: true,
+      oooi: {
+        has_oooi: false,
+        dsta: null,
+        dep: null,
+        arr: null,
+        route: { dep_icao: 'EPWA', dest_icao: 'EGLL', flight: 'RYR8414', source: 'cm' },
+      },
+    });
+    wrap();
+    await waitFor(() => screen.getByTestId('flight-oooi-card'));
+    expect(screen.getByText('EPWA')).toBeTruthy();
+    expect(screen.getByText('EGLL')).toBeTruthy();
+    expect(screen.getByTestId('flight-oooi-route-only').textContent).toContain('ATN logon');
+    expect(screen.queryByTestId('flight-oooi-dsta-only')).toBeNull();
+    expect(screen.getAllByTestId('oooi-route-match').length).toBe(2);
+  });
+
+  it('flags a route-only mismatch against the scheduled route', async () => {
+    stubFetch({
+      vdl2_enabled: true,
+      oooi: {
+        has_oooi: false,
+        dsta: null,
+        dep: null,
+        arr: null,
+        route: { dep_icao: 'EPWA', dest_icao: 'EDDF', flight: null, source: 'cm' },
+      },
+    });
+    wrap({ scheduledDest: 'EGLL' });
+    await waitFor(() => screen.getByTestId('flight-oooi-card'));
+    expect(screen.getAllByTestId('oooi-route-match').length).toBe(1);
+    expect(screen.getByTestId('oooi-route-mismatch')).toBeTruthy();
+  });
+
+  it('shows the airline-report note for a label-49 route', async () => {
+    stubFetch({
+      vdl2_enabled: true,
+      oooi: {
+        has_oooi: false,
+        dsta: 'EGLL',
+        dep: null,
+        arr: null,
+        route: { dep_icao: 'EPWA', dest_icao: 'EGLL', flight: null, source: 'label49' },
+      },
+    });
+    wrap();
+    await waitFor(() => screen.getByTestId('flight-oooi-route-only'));
+    expect(screen.getByTestId('flight-oooi-route-only').textContent).toContain(
+      'airline movement report',
+    );
+    expect(screen.queryByTestId('flight-oooi-dsta-only')).toBeNull();
+  });
+
+  it('renders when the summary carries nothing but a route', async () => {
+    stubFetch({
+      vdl2_enabled: true,
+      oooi: { has_oooi: false, route: { dep_icao: null, dest_icao: 'EGLL', flight: null, source: 'cm' } },
+    });
+    wrap({ scheduledOrigin: null, scheduledDest: null });
+    await waitFor(() => screen.getByTestId('flight-oooi-card'));
+    expect(screen.getByText('EGLL')).toBeTruthy();
+  });
+
+  it('prefers OOOI event values over the route fallback', async () => {
+    stubFetch({
+      vdl2_enabled: true,
+      oooi: {
+        has_oooi: true,
+        dsta: null,
+        dep: { type: 'DEP', dep_icao: 'EPWA', dest_icao: 'EGLL', t_out: '0030' },
+        arr: null,
+        route: { dep_icao: 'EPKK', dest_icao: 'EDDF', flight: null, source: 'cm' },
+      },
+    });
+    wrap();
+    await waitFor(() => screen.getByTestId('flight-oooi-card'));
+    expect(screen.getByText('EPWA')).toBeTruthy();
+    expect(screen.queryByText('EPKK')).toBeNull();
+    expect(screen.queryByText('EDDF')).toBeNull();
+    expect(screen.queryByTestId('flight-oooi-route-only')).toBeNull();
+  });
+
+  it('renders nothing when there is no OOOI, no dsta and no route', async () => {
     stubFetch({ vdl2_enabled: true, oooi: { has_oooi: false, dsta: null, dep: null, arr: null } });
     const { container } = wrap();
     await waitFor(() => {

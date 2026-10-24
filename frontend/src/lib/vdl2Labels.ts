@@ -41,6 +41,10 @@ export const VDL2_LABEL_NAMES: Record<string, string> = {
   QR: 'ON report (wheels down)',
   QS: 'IN report (on gate)',
 
+  // Synthetic labels the backend assigns to decoded ATN frames — not ARINC 620 labels
+  CM: 'ATN logon (Context Management)',
+  CPDLC: 'CPDLC (ATN)',
+
   // Terminal-equipment and weather
   H1: 'Terminal equipment data (ACMS/FMS/CFDIU)',
   H2: 'Meteorological report',

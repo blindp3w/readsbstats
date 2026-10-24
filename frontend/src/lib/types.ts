@@ -143,7 +143,8 @@ export interface Vdl2Position {
   icao_hex: string | null;
   ts: number | null;
   label: string | null;
-  // true = precise (~0.001°) Label-16 AUTPOS body fix; false = coarse (~0.1°) XID fix.
+  // precise = parsed from an ACARS body position report (labels 16/17/38/2F/14/B0/10/13/18/27/33/12/43/41/2P,
+  // `#M1BPOS`, LOT `59,G`) or an ADS-C basic report (B6); false = coarse (~0.1°) VDL2 XID link-frame fix.
   precise?: boolean | null;
 }
 
@@ -165,11 +166,21 @@ export interface Vdl2OooiEvent {
   ts: number | null;
 }
 
+// Route fallback: 'cm' = the aircraft's own ATN Context-Management logon (FMS flight/dep/dest);
+// 'label49' = an airline-defined label-49 movement report. Omitted by the API when absent.
+export interface Vdl2OooiRoute {
+  dep_icao: string | null;
+  dest_icao: string | null;
+  flight: string | null;
+  source: 'cm' | 'label49';
+}
+
 export interface Vdl2OooiSummary {
   dep: Vdl2OooiEvent | null;
   arr: Vdl2OooiEvent | null;
   dsta: string | null;
   has_oooi: boolean;
+  route?: Vdl2OooiRoute | null;
 }
 
 // Subset of /api/settings the SPA reads. Shared so the ['settings'] query has a
