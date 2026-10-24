@@ -374,8 +374,9 @@ class Vdl2Position(ApiModel):
     icao_hex: Optional[str] = None
     ts: Optional[int] = None
     label: Optional[str] = None
-    # True = precise (~0.001°) position parsed from a Label-16 AUTPOS body or a #M1BPOS body
-    # (vdlm2dec prefix kept in body, or dumpvdl2 via sublabel M1);
+    # True = precise (~0.001°) position parsed from an ACARS body by label (16 AUTPOS and the
+    # label-16-style group, 17, 38, 2F, 14, B0 AFN logon), a #M1BPOS body (vdlm2dec prefix kept
+    # in body, or dumpvdl2 via sublabel M1), LOT 59,G, or a decoded ADS-C (label B6) basic_report;
     # False = coarse (~0.1°) VDL2 XID link-frame fix from the lat/lon column (both decoders).
     precise: Optional[bool] = None
 

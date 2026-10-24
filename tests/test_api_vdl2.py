@@ -1106,6 +1106,120 @@ class TestM1bposPositions:
         assert all(p["icao_hex"] != "48ae24" for p in r.json()["points"])
 
 
+class TestPreciseLabelPositions:
+    """Labels 17/38/2F/14/B0 (body parsers) + B6 ADS-C (raw JSON) feed /api/vdl2/positions."""
+
+    @staticmethod
+    def _b6_raw(lat=52.202053, lon=20.719013, alt=2852) -> str:
+        import json
+        return json.dumps({"vdl2": {"avlc": {"acars": {"arinc622": {"adsc": {"tags": [
+            {"basic_report": {"lat": lat, "lon": lon, "alt": alt}}]}}}}}})
+
+    @pytest.fixture()
+    def lab_client(self, monkeypatch):
+        monkeypatch.setattr(config, "VDL2_ENABLED", True)
+        conn = make_vdl2_db()
+        base = int(time.time())
+        vdl2_db.insert_messages(conn, [
+            {"ts": base - 10, "icao_hex": "48b017", "label": "17",
+             "body": "104800,1656,1049,  7520,N 52.237,E 20.877,24OCT26,22051,   5,   7"},
+            # `------` altitude: departure-airport coordinates, NOT the aircraft
+            {"ts": base - 11, "icao_hex": "48b018", "label": "17",
+             "body": "203618,2310,2241,------,N 41.797,E 12.250,18SEP26,27441,  19,  14"},
+            {"ts": base - 12, "icao_hex": "48b038", "label": "38",
+             "body": "/AY1476/240926/E 20.735/N 52.402/36945/-------/      /- 48/  563/ 29"},
+            {"ts": base - 13, "icao_hex": "48b02f", "label": "2F", "body": "1310+5219+2087/0130"},
+            {"ts": base - 14, "icao_hex": "48b014", "label": "14",
+             "body": "PRESENT POSITION REPORT \nDMY 23OCT26,UTC 082912,LAT N 52.223,LON E 20.812,CAS 149"},
+            {"ts": base - 15, "icao_hex": "48b0b0", "label": "B0",
+             "body": "/EPWW.AFN/FMHLOT45,.SP-LRA,48AE00,154016/FPON52016E020114,1/FCOATC,01"},
+            {"ts": base - 16, "icao_hex": "48b0b6", "label": "B6", "body": "/RUHAAYA.ADS.A6-ENQ07251F",
+             "raw": self._b6_raw()},
+            # B6 without a basic_report tag, and with truncated raw: no point
+            {"ts": base - 17, "icao_hex": "48b0b7", "label": "B6", "body": "x",
+             "raw": '{"vdl2":{"avlc":{"acars":{"arinc622":{"adsc":{"tags":[{"predicted_route":{}}]}}}}}}'},
+            {"ts": base - 18, "icao_hex": "48b0b8", "label": "B6", "body": "x",
+             "raw": self._b6_raw()[:60]},
+            # same text under an unmapped label: not precise (no coarse columns either)
+            {"ts": base - 19, "icao_hex": "48b0a1", "label": "H1",
+             "body": "104800,1656,1049,  7520,N 52.237,E 20.877,24OCT26,22051,   5,   7"},
+        ])
+        conn.commit()
+        monkeypatch.setattr(vdl2_db, "_conn", conn)
+        app = FastAPI()
+        web._include_optional_routers(app)
+        with TestClient(app) as c:
+            yield c
+        conn.close()
+
+    def _by(self, client) -> dict:
+        r = client.get("/api/vdl2/positions?minutes=60")
+        assert r.status_code == 200
+        return {p["icao_hex"]: p for p in r.json()["points"]}
+
+    def test_label17(self, lab_client):
+        p = self._by(lab_client)["48b017"]
+        assert p["precise"] is True and p["label"] == "17"
+        assert abs(p["lat"] - 52.237) < 1e-6 and abs(p["lon"] - 20.877) < 1e-6
+
+    def test_label17_dash_altitude_yields_no_point(self, lab_client):
+        assert "48b018" not in self._by(lab_client)
+
+    def test_label38_lon_first(self, lab_client):
+        p = self._by(lab_client)["48b038"]
+        assert p["precise"] is True
+        assert abs(p["lat"] - 52.402) < 1e-6 and abs(p["lon"] - 20.735) < 1e-6
+
+    def test_label2f_hundredths(self, lab_client):
+        p = self._by(lab_client)["48b02f"]
+        assert p["precise"] is True and p["lat"] == 52.19 and p["lon"] == 20.87
+
+    def test_label14(self, lab_client):
+        p = self._by(lab_client)["48b014"]
+        assert p["precise"] is True
+        assert abs(p["lat"] - 52.223) < 1e-6 and abs(p["lon"] - 20.812) < 1e-6
+
+    def test_b0_afn_fpo(self, lab_client):
+        p = self._by(lab_client)["48b0b0"]
+        assert p["precise"] is True and p["label"] == "B0"
+        assert abs(p["lat"] - (52 + 1.6 / 60)) < 1e-4
+        assert abs(p["lon"] - (20 + 11.4 / 60)) < 1e-4
+
+    def test_b6_adsc_basic_report(self, lab_client):
+        p = self._by(lab_client)["48b0b6"]
+        assert p["precise"] is True and p["label"] == "B6"
+        assert abs(p["lat"] - 52.20205) < 1e-5 and abs(p["lon"] - 20.71901) < 1e-5
+
+    def test_b6_without_basic_report_or_truncated_yields_no_point(self, lab_client):
+        by = self._by(lab_client)
+        assert "48b0b7" not in by and "48b0b8" not in by
+
+    def test_unmapped_label_not_parsed(self, lab_client):
+        assert "48b0a1" not in self._by(lab_client)
+
+    def test_b6_coarse_duplicate_not_emitted_twice(self, monkeypatch):
+        # a B6 row that also has coarse lat/lon columns yields ONE (precise) point
+        monkeypatch.setattr(config, "VDL2_ENABLED", True)
+        conn = make_vdl2_db()
+        vdl2_db.insert_messages(conn, [
+            {"ts": int(time.time()) - 5, "icao_hex": "48b0b6", "label": "B6", "body": "x",
+             "lat": 52.1, "lon": 20.7, "raw": self._b6_raw()}])
+        conn.commit()
+        monkeypatch.setattr(vdl2_db, "_conn", conn)
+        app = FastAPI()
+        web._include_optional_routers(app)
+        with TestClient(app) as c:
+            pts = c.get("/api/vdl2/positions?minutes=60").json()["points"]
+        conn.close()
+        assert len(pts) == 1 and pts[0]["precise"] is True
+        assert abs(pts[0]["lat"] - 52.20205) < 1e-5
+
+    def test_cache_key_unchanged(self, lab_client):
+        from readsbstats import cache
+        lab_client.get("/api/vdl2/positions?minutes=60")
+        assert cache._get_cache("vdl2-positions-60") is not None
+
+
 class TestFiledRoute:
     @pytest.fixture()
     def fr_client(self, monkeypatch):
