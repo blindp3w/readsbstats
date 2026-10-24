@@ -18,6 +18,11 @@ ExecStart=/opt/readsbstats/venv/bin/uvicorn readsbstats.web:app \
 Restart=on-failure
 RestartSec=5
 
+# Single settings file shared by all readsbstats units (RSBS_* overrides,
+# Telegram token, ...). Optional (`-`): absent => built-in defaults. Read by
+# systemd as root before privileges drop. See systemd/readsbstats.env.example.
+EnvironmentFile=-/etc/readsbstats/readsbstats.env
+
 # Shared opt-in VDL2 flag (one file gates web surfaces + the ingest service).
 # Optional (`-`): absent ⇒ feature off. See systemd/readsbstats-vdl2.env.example.
 EnvironmentFile=-/etc/readsbstats/vdl2.env

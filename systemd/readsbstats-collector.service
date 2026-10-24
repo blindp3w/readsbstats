@@ -15,6 +15,11 @@ WorkingDirectory=/opt/readsbstats
 ExecStart=/opt/readsbstats/venv/bin/python -m readsbstats.collector
 Restart=on-failure
 RestartSec=10
+
+# Single settings file shared by all readsbstats units (RSBS_* overrides,
+# Telegram token, ...). Optional (`-`): absent => built-in defaults. Read by
+# systemd as root before privileges drop. See systemd/readsbstats.env.example.
+EnvironmentFile=-/etc/readsbstats/readsbstats.env
 TimeoutStartSec=300
 
 # Be polite to the Pi — readsb/tar1090 are the primary tenants

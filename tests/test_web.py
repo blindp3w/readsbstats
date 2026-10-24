@@ -1279,6 +1279,67 @@ class TestCompatRedirects:
         assert "max-age=86400" in r.headers.get("cache-control", "")
 
 
+class TestSpaCatchAll:
+    """The SPA catch-all must not swallow unmatched /api/* paths: an API miss
+    is a JSON 404, not a 200 HTML shell (clients and health probes treat 200
+    as success)."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        if not web._SPA_AVAILABLE:
+            pytest.skip("frontend/dist not built")
+        yield
+
+    def test_unknown_api_path_is_json_404(self, client):
+        r = client.get("/api/nope")
+        assert r.status_code == 404
+        assert r.headers["content-type"].startswith("application/json")
+
+    def test_bare_api_path_is_404(self, client):
+        assert client.get("/api").status_code == 404
+        assert client.get("/api/").status_code == 404
+
+    def test_vdl2_disabled_api_is_404(self, client, monkeypatch):
+        # The vdl2 router is only registered when RSBS_VDL2_ENABLED is on.
+        monkeypatch.setattr(config, "VDL2_ENABLED", False)
+        r = client.get("/api/vdl2/stats")
+        assert r.status_code == 404
+        assert "text/html" not in r.headers["content-type"]
+
+    def test_api_prefix_lookalike_still_served_by_spa(self, client):
+        # Only the /api segment is reserved, not any path starting with "api".
+        r = client.get("/apiary")
+        assert r.status_code == 200
+        assert r.headers["content-type"].startswith("text/html")
+
+    def test_spa_routes_still_serve_shell(self, client):
+        for path in ("/", "/history", "/flight/123"):
+            r = client.get(path)
+            assert r.status_code == 200, path
+            assert r.headers["content-type"].startswith("text/html"), path
+
+    def test_missing_asset_still_404(self, client):
+        assert client.get("/assets/does-not-exist.js").status_code == 404
+
+    def test_real_api_route_unaffected(self, client):
+        assert client.get("/api/settings").status_code == 200
+
+    def test_v2_compat_redirect_unaffected(self, client):
+        r = client.get("/v2/history", follow_redirects=False)
+        assert r.status_code in (301, 302, 307, 308)
+        assert r.headers["location"].endswith("/history")
+
+    def test_api_404_under_root_path(self, db_conn, monkeypatch):
+        """spa_path is relative to the app root: with a proxy-style root_path
+        the /api guard still applies and needs no prefix handling."""
+        monkeypatch.setattr(_deps, "_db", db_conn)
+        monkeypatch.setattr(config, "PREWARM_MAP_CACHE", False)
+        monkeypatch.setattr(web.app, "root_path", "/stats")
+        with TestClient(web.app, headers={"X-Requested-With": "XMLHttpRequest"}) as c:
+            assert c.get("/api/nope").status_code == 404
+            assert c.get("/history").status_code == 200
+
+
 class TestApiSettings:
     def test_api_settings_returns_masked_payload(self, client, monkeypatch):
         from readsbstats import config

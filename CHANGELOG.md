@@ -5,6 +5,31 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 2.28.2 — 2026-10-24
+
+Config and routing fixes from a configuration audit. No schema or API changes.
+
+### Fixed
+
+- **One settings file, `/etc/readsbstats/readsbstats.env`.** `notify-telegram@`
+  required this file but nothing created it, and the collector and web units
+  never read it. On a fresh install the documented `tee -a` into it therefore
+  did nothing, and failure alerts could not start. The collector and web units
+  now read it through an optional `EnvironmentFile=-`, `scripts/install.sh`
+  creates it from the new `systemd/readsbstats.env.example` (mode `0600`,
+  `root:root`), and it is never overwritten. Upgrade note: existing installs
+  that use `systemctl edit` drop-ins keep working. A drop-in that already points
+  at the same file simply reads it twice, and `update.sh` does not create the
+  file on an existing install. VDL2 settings stay in `/etc/readsbstats/vdl2.env`:
+  the web unit loads it after `readsbstats.env`, so it wins for those variables.
+- **`RSBS_MLAT_OUTLIER_MIN` fallback.** A value below the minimum (3) fell back
+  to 50 instead of the documented default of 10.
+- **Unknown `/api/*` paths returned the SPA shell.** The SPA catch-all answered
+  any extension-less path with `200` HTML, so with VDL2 disabled
+  `/api/vdl2/stats` (and any mistyped API URL) returned HTML rather than the
+  documented `404`. Paths under `/api` that no router handles now return a JSON
+  `404`.
+
 ## 2.28.1 — 2026-10-24
 
 Test-suite reliability fix. No runtime, schema or API changes.

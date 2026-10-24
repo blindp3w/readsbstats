@@ -301,6 +301,12 @@ if _SPA_AVAILABLE:
     @app.get("/", include_in_schema=False)
     @app.get("/{spa_path:path}", include_in_schema=False)
     def _spa(spa_path: str = "") -> Response:
+        # An unmatched /api/* path is an API miss, not a client-side route:
+        # answer a JSON 404 (e.g. /api/vdl2/* with VDL2 off, or a typo) rather
+        # than a 200 HTML shell. spa_path is relative to the app root, so
+        # RSBS_ROOT_PATH needs no handling here.
+        if spa_path == "api" or spa_path.startswith("api/"):
+            raise HTTPException(status_code=404)
         # Surface missing-asset 404s instead of returning the SPA shell —
         # masking them as HTML hides deploy mistakes (blank page in browser
         # tries to execute HTML as JS/CSS).
