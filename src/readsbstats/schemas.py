@@ -433,12 +433,26 @@ class Vdl2OooiEvent(ApiModel):
     ts: Optional[int] = None
 
 
+class Vdl2OooiRoute(ApiModel):
+    """Reported route for the flight window. `source`: "cm" = the aircraft's own
+    ATN Context-Management logon (FMS flight id + dep + dest); "label49" = an
+    airline-defined label-49 movement report."""
+    dep_icao: Optional[str] = None
+    dest_icao: Optional[str] = None
+    flight: Optional[str] = None
+    source: Optional[str] = None
+
+
 class Vdl2OooiSummary(ApiModel):
     """Flight-detail OOOI summary: the latest DEP + latest ARR parsed from the
     airframe's ACARS bodies in the flight window, plus a cheap `dsta`
-    destination-airport fallback (from XID frames) when no OOOI body parses.
+    destination-airport fallback (from XID frames, else the route) when no OOOI
+    body parses, and an optional `route` (CM logon preferred over label 49; absent
+    when neither is in the window or the scan ended early because the events
+    already carry the route).
     EXPERIMENTAL — carrier-variant; commonly empty on an H1-dominated feed."""
     dep: Optional[Vdl2OooiEvent] = None
     arr: Optional[Vdl2OooiEvent] = None
     dsta: Optional[str] = None
     has_oooi: bool = False
+    route: Optional[Vdl2OooiRoute] = None

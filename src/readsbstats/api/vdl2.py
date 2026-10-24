@@ -405,10 +405,11 @@ def api_vdl2_oooi(
 ) -> dict:
     """OOOI block-time summary for one airframe over a flight window. The latest
     slash-TEI DEP/ARR bodies win; where those are absent (the norm on air-side
-    feeds) events are synthesized from Q-series QP/QQ/QR/QS compact reports, and
-    airline-defined label-49 movement reports fill route gaps plus the `dsta`
-    destination fallback. The SPA hides the card when `has_oooi` is false and no
-    `dsta`."""
+    feeds) events are synthesized from Q-series QP/QQ/QR/QS compact reports. A
+    `route` (the aircraft's own ATN CM logon, else an airline-defined label-49
+    movement report) fills route gaps on events plus the `dsta` destination
+    fallback. The SPA hides the card when `has_oooi` is false and there is no
+    `dsta` or `route`."""
     hexv = _deps._parse_icao_path(icao_hex)
     _check_window(since, until)
     with _vdl2_guard():
@@ -442,6 +443,7 @@ def _compute_oooi(icao_hex: str, since: int | None, until: int | None) -> dict:
     dsta = None
     q_partials: list[dict] = []
     route49: dict | None = None
+    route_cm: dict | None = None
     # Rows are newest-first, so the first DEP/ARR we parse is the most recent.
     for r in rows:
         if dsta is None and r["dsta"]:
@@ -455,6 +457,8 @@ def _compute_oooi(icao_hex: str, since: int | None, until: int | None) -> dict:
                                    "flight": r["flight"]})
         elif lab == "49" and route49 is None:
             route49 = oooi.parse_label49(r["body"])
+        elif lab == "CM" and route_cm is None:
+            route_cm = oooi.parse_cm_logon(lab, r["body"])
         parsed = oooi.parse_oooi(r["body"])
         if parsed is not None:
             if parsed["type"] == "DEP" and dep is None:
@@ -462,8 +466,9 @@ def _compute_oooi(icao_hex: str, since: int | None, until: int | None) -> dict:
             elif parsed["type"] == "ARR" and arr is None:
                 arr = {**parsed, "ts": r["ts"]}
         # Early exit once slash-TEI gave a complete answer. Accepted trade-off:
-        # this can skip a label-49 route fill for a TEI event missing DA/DS —
-        # rare, and bounded work wins.
+        # this can skip a route fill for a TEI event missing DA/DS — and `route`
+        # may then be absent from the response because the events already carry
+        # it. Rare, and bounded work wins.
         if dep is not None and arr is not None and dsta is not None:
             break
 
@@ -475,19 +480,30 @@ def _compute_oooi(icao_hex: str, since: int | None, until: int | None) -> dict:
         if arr is None:
             arr = _synth_q_event("ARR", phases.get("on"), phases.get("in"))
 
-    # Airline-defined label-49 movement reports carry a dep+arr pair: fill route
-    # gaps on events, and serve as the `dsta` fallback when nothing else parsed.
-    if route49 is not None:
+    # The aircraft's own CM logon beats an airline-defined label-49 movement report.
+    # Either carries a dep+arr pair: fill route gaps on events, and serve as the
+    # `dsta` fallback when nothing else parsed.
+    route: dict | None = None
+    if route_cm is not None:
+        route = {"dep_icao": route_cm["dep_icao"], "dest_icao": route_cm["dest_icao"],
+                 "flight": route_cm["flight"], "source": "cm"}
+    elif route49 is not None:
+        route = {"dep_icao": route49["dep_icao"], "dest_icao": route49["dest_icao"],
+                 "flight": route49["flight"], "source": "label49"}
+    if route is not None:
         for ev in (dep, arr):
             if ev is not None:
                 if ev["dep_icao"] is None:
-                    ev["dep_icao"] = route49["dep_icao"]
+                    ev["dep_icao"] = route["dep_icao"]
                 if ev["dest_icao"] is None:
-                    ev["dest_icao"] = route49["dest_icao"]
+                    ev["dest_icao"] = route["dest_icao"]
         if dsta is None:
-            dsta = route49["dest_icao"]
+            dsta = route["dest_icao"]
 
-    return {"dep": dep, "arr": arr, "dsta": dsta, "has_oooi": dep is not None or arr is not None}
+    out = {"dep": dep, "arr": arr, "dsta": dsta, "has_oooi": dep is not None or arr is not None}
+    if route is not None:
+        out["route"] = route   # only when present: exclude_unset omits the key otherwise
+    return out
 
 
 def _dominant_q_phases(partials: list[dict]) -> dict[str, dict]:

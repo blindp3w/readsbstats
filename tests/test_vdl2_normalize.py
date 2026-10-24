@@ -273,6 +273,43 @@ class TestNormalizeDumpvdl2:
         assert rec["flight"] is None
         assert rec["freq"] == 136.725
 
+    def test_cm_logon_frame_gets_label_body_and_dsta(self):
+        # ATN Context-Management logon (real frame): the aircraft's own FMS flight id
+        # + dep + dest land in body; dest feeds dsta. `flight` stays NULL on purpose —
+        # it's an ICAO callsign, while top_airlines assumes IATA-style ACARS flight ids.
+        from tests._helpers import dumpvdl2_record
+        rec = dumpvdl2_record("cm_logon", 1_700_000_000)
+        assert rec["label"] == "CM"
+        assert rec["body"] == "LOGON RYR8414 EPMO-LATI"
+        assert rec["dsta"] == "LATI"
+        assert rec["flight"] is None
+        assert rec["registration"] is None
+        assert rec["icao_hex"] == "48c132"
+
+    def test_cm_logon_without_route_keeps_dsta_none(self):
+        raw = {"vdl2": {"avlc": {"src": {"addr": "48C132"}, "x25": {"clnp": {"cotp": {
+            "x225_spdu": {"x227_apdu": {"context_mgmt": {"cm_aircraft_message": {
+                "choice": "cmLogonRequest",
+                "data": {"atn_context_mgmt_logon_request": {"flight_id": "RYR8414"}}}}}}}}}}}}
+        rec = normalize.normalize(raw, decoder="dumpvdl2")
+        assert rec["label"] == "CM" and rec["body"] == "LOGON RYR8414"
+        assert rec["dsta"] is None
+
+    def test_xid_dsta_takes_precedence_over_cm(self):
+        # XID and CM never co-occur in one real frame; if they did, XID wins.
+        raw = {"vdl2": {"avlc": {
+            "src": {"addr": "48C132"},
+            "xid": {"vdl_params": [{"name": "dst_airport", "value": "EPWA"}]},
+            "x25": {"clnp": {"cotp": {"x225_spdu": {"x227_apdu": {"context_mgmt": {
+                "cm_aircraft_message": {"choice": "cmLogonRequest", "data": {
+                    "atn_context_mgmt_logon_request": {
+                        "flight_id": "RYR8414", "departure_airport": "EPMO",
+                        "destination_airport": "LATI"}}}}}}}}},
+        }}}
+        rec = normalize.normalize(raw, decoder="dumpvdl2")
+        assert rec["dsta"] == "EPWA"
+        assert rec["body"] == "LOGON RYR8414 EPMO-LATI"
+
     def test_bare_transport_frame_stays_bare(self):
         # Content-free ATN transport/routing (x25, no cpdlc, no acars) keeps NULL
         # label/body but survives on icao_hex — "keep bare" is intentional.

@@ -28,6 +28,14 @@ def _prefix_row(name: str, ts: int = 1_700_000_000) -> dict:
     return rec
 
 
+def _cm_prefix_row(ts: int = 1_700_000_000) -> dict:
+    """A CM logon as pre-2.27 ingest stored it: content-free (label/body/dsta NULL)."""
+    rec = dumpvdl2_record("cm_logon", ts)
+    for c in ("label", "body", "dsta"):
+        rec[c] = None
+    return rec
+
+
 def _seed(path: str, records: list[dict]) -> None:
     conn = vdl2_db.connect(path)
     vdl2_db.insert_messages(conn, records)
@@ -135,6 +143,71 @@ def test_fts_search_still_works_after_backfill(db_path):
             "WHERE vdl2_fts MATCH 'OLIL6G'"
         ).fetchall()
         assert len(hit) == 1 and hit[0]["sublabel"] == "M1"
+    finally:
+        conn.close()
+
+
+def test_fills_cm_logon_label_body_and_dsta(db_path):
+    _seed(db_path, [_cm_prefix_row()])
+    res = backfill(db_path)
+    assert res["scanned"] == 1 and res["updated"] == 1
+    row = _rows(db_path)["48c132"]
+    assert (row["label"], row["body"], row["dsta"]) == ("CM", "LOGON RYR8414 EPMO-LATI", "LATI")
+    assert row["flight"] is None
+    assert res["filled"]["label"] == 1 and res["filled"]["body"] == 1
+    assert res["filled"]["dsta"] == 1
+
+
+def test_cm_second_run_is_noop(db_path):
+    _seed(db_path, [_cm_prefix_row(), _prefix_row("xid_ho")])
+    assert backfill(db_path)["updated"] == 2
+    again = backfill(db_path)
+    assert again["updated"] == 0 and again["scanned"] == 2
+
+
+def test_cm_never_overwrites_existing_label_body(db_path):
+    rec = _cm_prefix_row()
+    rec["body"] = "custom"
+    _seed(db_path, [rec])
+    backfill(db_path)
+    row = _rows(db_path)["48c132"]
+    assert row["body"] == "custom" and row["label"] == "CM"
+
+
+def test_existing_rows_label_body_untouched(db_path):
+    # ACARS rows already carry label/body; the widened column set must not change them.
+    rec = _prefix_row("m1_pos")
+    full = dumpvdl2_record("m1_pos", 1_700_000_000)
+    rec["label"], rec["body"] = full["label"], full["body"]
+    _seed(db_path, [rec])
+    backfill(db_path)
+    row = _rows(db_path)["4787a0"]
+    assert row["label"] == full["label"] and row["body"] == full["body"]
+
+
+def test_cm_dry_run_writes_nothing(db_path):
+    _seed(db_path, [_cm_prefix_row()])
+    res = backfill(db_path, dry_run=True)
+    assert res["updated"] == 1
+    row = _rows(db_path)["48c132"]
+    assert row["label"] is None and row["body"] is None and row["dsta"] is None
+
+
+def test_fts_finds_backfilled_cm_body(db_path):
+    conn = vdl2_db.connect(db_path)
+    if not vdl2_db.has_fts(conn):
+        conn.close()
+        pytest.skip("FTS5 unavailable")
+    conn.close()
+    _seed(db_path, [_cm_prefix_row()])
+    backfill(db_path)
+    conn = vdl2_db.connect(db_path)
+    try:
+        hit = conn.execute(
+            "SELECT m.label FROM vdl2_fts f JOIN vdl2_messages m ON m.id = f.rowid "
+            "WHERE vdl2_fts MATCH 'LATI'"
+        ).fetchall()
+        assert len(hit) == 1 and hit[0]["label"] == "CM"
     finally:
         conn.close()
 

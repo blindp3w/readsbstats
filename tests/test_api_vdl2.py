@@ -621,6 +621,123 @@ class TestOooi:
         vconn.close()
 
 
+    def test_cm_logon_only_gives_route_and_dsta(self, monkeypatch):
+        now = int(time.time())
+        vconn, app = self._make(monkeypatch, [
+            {"ts": now - 60, "icao_hex": "48c132", "label": "CM", "dsta": "LATI",
+             "body": "LOGON RYR8414 EPMO-LATI"},
+        ])
+        with TestClient(app) as c:
+            data = c.get("/api/vdl2/oooi/48c132").json()
+        assert data["has_oooi"] is False
+        assert data["dep"] is None and data["arr"] is None
+        assert data["dsta"] == "LATI"
+        assert data["route"] == {"dep_icao": "EPMO", "dest_icao": "LATI",
+                                 "flight": "RYR8414", "source": "cm"}
+        vconn.close()
+
+    def test_cm_dsta_fallback_when_row_dsta_null(self, monkeypatch):
+        # A pre-backfill CM row has body but NULL dsta: the route still supplies it.
+        now = int(time.time())
+        vconn, app = self._make(monkeypatch, [
+            {"ts": now - 60, "icao_hex": "48c132", "label": "CM", "body": "LOGON RYR8414 EPMO-LATI"},
+        ])
+        with TestClient(app) as c:
+            data = c.get("/api/vdl2/oooi/48c132").json()
+        assert data["dsta"] == "LATI"
+        vconn.close()
+
+    def test_cm_beats_label49(self, monkeypatch):
+        now = int(time.time())
+        vconn, app = self._make(monkeypatch, [
+            {"ts": now - 300, "icao_hex": "4d2228", "label": "CM", "body": "LOGON RYR8414 EPMO-LATI"},
+            {"ts": now - 60, "icao_hex": "4d2228", "label": "49",
+             "body": "01DCAP    ETD159/090545OMAAEPWA"},
+        ])
+        with TestClient(app) as c:
+            data = c.get("/api/vdl2/oooi/4d2228").json()
+        assert data["route"]["source"] == "cm"
+        assert (data["route"]["dep_icao"], data["route"]["dest_icao"]) == ("EPMO", "LATI")
+        vconn.close()
+
+    def test_newest_cm_logon_wins(self, monkeypatch):
+        now = int(time.time())
+        vconn, app = self._make(monkeypatch, [
+            {"ts": now - 600, "icao_hex": "4d2228", "label": "CM", "body": "LOGON RYR1 EGLL-EPWA"},
+            {"ts": now - 60, "icao_hex": "4d2228", "label": "CM", "body": "LOGON RYR2 EPWA-EGLL"},
+        ])
+        with TestClient(app) as c:
+            data = c.get("/api/vdl2/oooi/4d2228").json()
+        assert data["route"]["flight"] == "RYR2"
+        vconn.close()
+
+    def test_label49_only_route_has_both_ends(self, monkeypatch):
+        now = int(time.time())
+        vconn, app = self._make(monkeypatch, [
+            {"ts": now - 60, "icao_hex": "4d2228", "label": "49",
+             "body": "01ICCL    LOT15K/111616EPWAKEWR"},
+        ])
+        with TestClient(app) as c:
+            data = c.get("/api/vdl2/oooi/4d2228").json()
+        assert data["route"] == {"dep_icao": "EPWA", "dest_icao": "KEWR",
+                                 "flight": "LOT15K", "source": "label49"}
+        assert data["dsta"] == "KEWR"
+        vconn.close()
+
+    def test_qseries_event_missing_dep_filled_from_cm(self, monkeypatch):
+        # A Q-series event always carries its own pair, so exercise the TEI path:
+        # a DEP with times but no airports takes dep+dest from the CM route.
+        now = int(time.time())
+        vconn, app = self._make(monkeypatch, [
+            {"ts": now - 300, "icao_hex": "4d2228", "label": "H1", "body": "DEP / OT 0030"},
+            {"ts": now - 200, "icao_hex": "4d2228", "label": "H1", "body": "ARR / ON 0210"},
+            {"ts": now - 60, "icao_hex": "4d2228", "label": "CM", "body": "LOGON RYR8414 EPMO-LATI"},
+        ])
+        with TestClient(app) as c:
+            data = c.get("/api/vdl2/oooi/4d2228").json()
+        assert data["dep"]["dep_icao"] == "EPMO" and data["dep"]["dest_icao"] == "LATI"
+        assert data["arr"]["dep_icao"] == "EPMO" and data["arr"]["dest_icao"] == "LATI"
+        assert data["dep"]["t_out"] == "0030"
+        assert data["route"]["source"] == "cm"
+        vconn.close()
+
+    def test_event_airports_not_overwritten_by_route(self, monkeypatch):
+        now = int(time.time())
+        vconn, app = self._make(monkeypatch, [
+            {"ts": now - 300, "icao_hex": "4d2228", "label": "QP", "body": "EPWAEGLL0930"},
+            {"ts": now - 60, "icao_hex": "4d2228", "label": "CM", "body": "LOGON RYR8414 EPMO-LATI"},
+        ])
+        with TestClient(app) as c:
+            data = c.get("/api/vdl2/oooi/4d2228").json()
+        assert data["dep"]["dep_icao"] == "EPWA" and data["dep"]["dest_icao"] == "EGLL"
+        vconn.close()
+
+    def test_no_route_source_omits_route_key(self, monkeypatch):
+        now = int(time.time())
+        vconn, app = self._make(monkeypatch, [
+            {"ts": now - 60, "icao_hex": "48af11", "label": "H1", "dsta": "EPWA",
+             "body": "#DFB free text, not oooi"},
+            {"ts": now - 50, "icao_hex": "48af11", "label": "CM", "body": "LOGON RYR8414"},
+        ])
+        with TestClient(app) as c:
+            data = c.get("/api/vdl2/oooi/48af11").json()
+        assert "route" not in data
+        vconn.close()
+
+    def test_route_has_only_contract_keys(self, monkeypatch):
+        now = int(time.time())
+        vconn, app = self._make(monkeypatch, [
+            {"ts": now - 60, "icao_hex": "48c132", "label": "CM", "body": "LOGON RYR8414 EPMO-LATI"},
+            {"ts": now - 70, "icao_hex": "48c132", "label": "49",
+             "body": "01ICCL    LOT15K/111616EPWAKEWR"},
+        ])
+        with TestClient(app) as c:
+            data = c.get("/api/vdl2/oooi/48c132").json()
+        assert set(data) == {"dep", "arr", "dsta", "has_oooi", "route"}
+        assert set(data["route"]) == {"dep_icao", "dest_icao", "flight", "source"}
+        vconn.close()
+
+
 class TestBucketFill:
     """_bucket_fill — the zero-fill+scatter helper shared by the rate and
     per-frequency timeseries columns."""
