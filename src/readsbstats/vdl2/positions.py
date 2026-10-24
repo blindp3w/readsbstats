@@ -1,6 +1,7 @@
 """Parse precise aircraft positions out of ACARS message bodies.
 
-Two formats, both query-time / read-only (same pattern as m1bpos.py / oooi.py):
+Several formats (label-16 AUTPOS, LOT ``59,G`` telemetry and the per-label airline
+parsers below), all query-time / read-only (same pattern as m1bpos.py / oooi.py):
 
 1. **Label-16 AUTPOS** (:func:`parse_position`). vdlm2dec populates the ``lat``/``lon``
    columns only from coarse VDL2 XID link-layer frames (~0.1° ≈ 11 km); the precise

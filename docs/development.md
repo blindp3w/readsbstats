@@ -91,6 +91,9 @@ Screenshots saved to `tests/ui/screenshots/` (gitignored).
 | `tests/test_icao_ranges.py` | ICAO address → country lookup |
 | `tests/test_db_updater.py` | Aircraft/airline DB download |
 | `tests/test_map.py` | `/map` routes and snapshot API |
+| `tests/test_vdl2_*.py`, `tests/test_api_vdl2.py` | VDL2/ACARS: normalizer, parsers, ingest, `vdl2.db`, `/api/vdl2/*` |
+| `tests/test_backfill_vdl2.py` | `scripts/backfill_vdl2_dumpvdl2.py` |
+| `tests/test_systemd_units.py` | settings env file wiring in the systemd units and `install.sh` |
 | `tests/ui/test_mobile_smoke.py` | Playwright: 84 tests across all pages and viewports |
 
 ## Build and deploy to the Pi

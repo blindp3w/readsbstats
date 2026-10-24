@@ -58,8 +58,12 @@ journalctl -u readsbstats-web -f
 systemctl restart readsbstats-collector readsbstats-web
 
 # Stop and disable everything
-systemctl disable --now readsbstats-collector readsbstats-web readsbstats-updater.timer
+systemctl disable --now readsbstats-collector readsbstats-web \
+  readsbstats-updater.timer readsbstats-dbcheck.timer readsbstats-dbcheck-full.timer
+systemctl disable --now readsbstats-vdl2   # opt-in; skip if never enabled
 ```
+
+Settings live in `/etc/readsbstats/readsbstats.env`, read by `readsbstats-collector`, `readsbstats-web` and `notify-telegram@` — edit it, then restart the services (see [Configuration](configuration.md)).
 
 ## RRD history import
 
@@ -76,10 +80,11 @@ Maps 20 RRD files to 21 receiver metric columns. Uses `INSERT OR IGNORE` to pres
 Enable metrics collection from `/run/readsb/stats.json`:
 
 ```ini
-Environment="RSBS_METRICS_ENABLED=1"
+# /etc/readsbstats/readsbstats.env
+RSBS_METRICS_ENABLED=1
 ```
 
-The collector polls every 60 s and stores 43 metrics in `receiver_stats`. The `/metrics` page displays 10 time-series charts with automatic downsampling (raw ≤24h, 5-min ≤7d, 15-min ≤30d, 1-hour ≤90d).
+Then `sudo systemctl restart readsbstats-collector`. The collector polls every 60 s and stores 43 metrics in `receiver_stats`. The `/metrics` page displays 10 time-series charts with automatic downsampling (raw ≤24h, 5-min ≤7d, 15-min ≤30d, 1-hour ≤90d, 4-hour beyond 90d).
 
 ## VDL2 / ACARS ingest
 
@@ -113,9 +118,32 @@ failure. Retention prune runs in batches so the first big cleanup can't starve
 inserts. Watch ingest health via the periodic summary line:
 `journalctl -u readsbstats-vdl2 | grep 'vdl2 ingest:'`.
 
-**Decoder (run separately, owns the SDR).** Feed line-delimited JSON over UDP
-to the listener (default `127.0.0.1:5556` — 5555 is left free for SpyServer so
-the ingest listener can keep running while the SDR is handed to SpyServer):
+**Decoder (run separately, owns the SDR).** [dumpvdl2](https://github.com/szpajder/dumpvdl2)
+is the recommended, supported decoder. Set `RSBS_VDL2_DECODER=dumpvdl2` in
+`/etc/readsbstats/vdl2.env` — the code default is still `vdlm2dec`, so without
+this line a dumpvdl2 feed is not parsed correctly — and restart
+`readsbstats-vdl2`. Feed line-delimited JSON over UDP to the listener (default
+`127.0.0.1:5556` — 5555 is left free for SpyServer so the ingest listener can
+keep running while the SDR is handed to SpyServer):
+
+```bash
+dumpvdl2 --output decoded:json:udp:address=127.0.0.1,port=5556 …
+```
+
+It decodes ACARS plus the ATN/OSI classes vdlm2dec can't (notably **CPDLC**
+controller–pilot messages and the ATN Context-Management logon that supplies the
+aircraft's reported route), the H1 `sublabel`/`mfi` fields, ADS-C positions, and
+reports per-frame signal level (the Metrics signal/SNR charts). A per-decoder
+normalizer handles the JSON; no other readsbstats change is needed.
+`dumpvdl2` needs a sample rate that is a multiple of 105000 sym/s, so it requires
+either a compatible SDR or an external resampler ahead of the Airspy Mini's fixed
+rates — see [Running dumpvdl2 on an Airspy Mini](dumpvdl2-airspy-mini.md) for a
+tested IQ‑resampling recipe.
+
+**vdlm2dec (legacy, limited).** [vdlm2dec](https://github.com/TLeconte/vdlm2dec)
+works with the default `RSBS_VDL2_DECODER=vdlm2dec` but is ACARS only: no signal
+level or SNR (the Metrics charts stay hidden), no `sublabel`/`mfi` handling, no
+CPDLC, no CM logon routes and no ADS-C positions.
 
 ```bash
 # vdlm2dec on an Airspy Mini, 4 PL channels, linearity gain 14:
@@ -125,17 +153,6 @@ vdlm2dec -g 14 -j 127.0.0.1:5556 136.725 136.775 136.875 136.975
 > Verify the exact `-j` / `-i` flag syntax against your `vdlm2dec` build's help
 > output — flags have drifted across versions. Only one process may hold the
 > Airspy at a time (no SpyServer/SDR++ against the same device concurrently).
-
-**Switching decoders.** Set `RSBS_VDL2_DECODER=dumpvdl2` to ingest from
-[dumpvdl2](https://github.com/szpajder/dumpvdl2) instead — it decodes the same ACARS
-plus the ATN/OSI classes vdlm2dec can't (notably **CPDLC** controller–pilot messages).
-Point it at the same port:
-`dumpvdl2 --output decoded:json:udp:address=127.0.0.1,port=5556 …`. No
-readsbstats code change is required (a per-decoder normalizer handles the JSON).
-`dumpvdl2` needs a sample rate that is a multiple of 105000 sym/s, so it requires
-either a compatible SDR or an external resampler ahead of the Airspy Mini's fixed
-rates — see [Running dumpvdl2 on an Airspy Mini](dumpvdl2-airspy-mini.md) for a
-tested IQ‑resampling recipe.
 
 **One-time backfill after upgrading to 2.26.0, 2.27.0 and 2.28.0 (dumpvdl2 feeds).** Rows ingested
 before 2.26.0 are missing the H1 `sublabel`/`mfi` and the XID position and
@@ -157,7 +174,11 @@ sudo -u readsbstats /opt/readsbstats/venv/bin/python \
     /opt/readsbstats/scripts/backfill_vdl2_dumpvdl2.py \
     --db /mnt/ext/readsbstats/vdl2.db
 # add --dry-run to count what would change without writing
+# add --chunk N to change the rows per transaction (default 2000)
 ```
+
+`--dry-run` skips the supersede pass (it depends on `more` being filled first)
+and reports `"superseded": null`.
 
 Skipping it is mostly harmless: unfilled rows simply age out with retention, but
 until then duplicate multi-block messages from before 2.28.0 keep showing in the
@@ -206,12 +227,13 @@ snapshot_db('/mnt/ext/readsbstats/history.db')
 ## Storage and retention
 
 The `positions` table is the dominant on-disk consumer — every five-second
-poll appends one row per visible aircraft. As a rough Pi-4 sizing rule
-measured against a developer database with ~4.2 M `positions` rows in
-826 MB: **expect roughly 200 MB per million `positions` rows** including
-indexes and WAL overhead. A continuously-running receiver with ~50
-concurrent aircraft visible writes on the order of 30 M positions per
-month — about 6 GB raw on disk before any rollup.
+poll appends one row per visible aircraft. Measured on a production Pi 4
+(2026-10-24, schema v6, a busy Warsaw-area receiver): **≈ 89 bytes per
+`positions` row** including indexes, and growth of **≈ 300 MB/month** before
+retention kicks in (about 3.4 M rows/month). With
+`RSBS_RETENTION_DAYS=180`, `history.db` reached a plateau of 1.82 GB
+(20.5 M position rows, 228 k flights). Both figures are traffic-dependent, so
+scale them to your receiver.
 
 `RSBS_RETENTION_DAYS=0` (keep forever) is the default. For most home
 installations on a 32 GB or larger SSD this is fine, and full history is
@@ -219,16 +241,18 @@ the feature most users want. Operators who run on smaller storage, or who
 want to bound growth, set a non-zero value:
 
 ```ini
-# /etc/readsbstats.env
-Environment="RSBS_RETENTION_DAYS=365"
+# /etc/readsbstats/readsbstats.env
+RSBS_RETENTION_DAYS=365
 ```
 
 After restarting `readsbstats-collector`, the next purge cycle drops
-`positions` rows older than the cutoff. **The first purge after enabling
-retention on a long-running database can hold the SQLite write lock for
-several minutes** — schedule the restart during quiet hours, and verify
-with `journalctl -u readsbstats-collector -f` that purge completes before
-walking away. Subsequent purges are incremental and quick.
+`positions` rows older than the cutoff. The purge deletes in batches of
+50 000 rows, each its own transaction with a 200 ms pause between batches, so
+polling and web readers keep working. **The first purge after enabling
+retention on a long-running database can still take several minutes** —
+verify with `journalctl -u readsbstats-collector -f` that it completes
+(`Purge: deleted N expired positions`). It waits until the one-time rollup
+backfill has finished. Subsequent purges are incremental and quick.
 
 Flight-level aggregates in the `flights` table (per-flight max altitude,
 max speed, max distance, primary source, first/last seen) **persist
@@ -237,8 +261,10 @@ pages keep their summary numbers even after the per-position fixes age
 out. Only the position log on the Flight page and the per-flight chart
 endpoints lose detail.
 
-See `docs/configuration.md` for the full list of `RSBS_RETENTION_*`
-tunables (cutoff days, batch size, min positions to keep).
+The retention tunables are `RSBS_RETENTION_DAYS`, `RSBS_PURGE_INTERVAL` and
+`RSBS_GRID_FINE_RETENTION_DAYS`; the purge batch size is fixed at 50 000 rows.
+Flights with too few positions are governed by `RSBS_MIN_POSITIONS`. See
+[Configuration](configuration.md) for details.
 
 Two-tier rollup (keep raw N days, LTTB-downsample older flights to a
 few hundred points each) is on the roadmap but not yet implemented — the
@@ -254,7 +280,7 @@ trust model is "bind to loopback, sit behind nginx on a trusted LAN."
 - The uvicorn app listens on `127.0.0.1:8080`. nginx proxies `/stats/` to it.
   Anyone who can reach that port (directly, or through nginx) can read every
   flight, aircraft, and metrics endpoint **and** call every mutating endpoint
-  (watchlist add/remove, settings writes).
+  (watchlist add/delete — the only mutating endpoints; `/api/settings` is read-only).
 - **The `X-Requested-With: XMLHttpRequest` CSRF check is not authentication.**
   It only stops a third-party web page from silently POSTing to the API in a
   logged-in browser. It does not identify, authenticate, or authorize the

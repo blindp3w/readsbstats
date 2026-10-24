@@ -5,6 +5,31 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 2.28.3 — 2026-10-24
+
+Documentation release. A full audit checked every public document against the
+code; the inaccurate and stale parts are fixed. No code, schema or API changes
+(comments and docstrings only).
+
+### Documentation
+
+- **API reference.** `/api/flights` and `export.csv` list their real filter
+  names (`registration`, `aircraft_type`) plus sorting and paging limits.
+  `/api/metrics` documents `from`/`to`/`metrics`, its status codes and bucket
+  tiers. `/api/stats` is cached for 2 h and takes `from`/`to`. Map, watchlist
+  and VDL2 rows gain their defaults and status codes.
+- **One settings file.** README, configuration, operations and integrations now
+  all use `/etc/readsbstats/readsbstats.env` (see 2.28.2); Telegram values are
+  set once. VDL2 settings stay in `vdl2.env`.
+- **Database size** figures are replaced by a measurement: 1.82 GB at 180-day
+  retention on a busy receiver (about 89 bytes per position row).
+- **VDL2 decoder.** dumpvdl2 is presented as the recommended decoder and
+  vdlm2dec as the limited legacy option.
+- **README.** The nginx setup includes the required `limit_req_zone` line; the
+  project tree, VDL2 sources and the list of mutating endpoints are current.
+- **Integrations.** All bot commands and the MLAT outlier pass are documented.
+- **ADRs.** Revision notes on ADR-0013 and ADR-0017; index titles and count fixed.
+
 ## 2.28.2 — 2026-10-24
 
 Config and routing fixes from a configuration audit. No schema or API changes.

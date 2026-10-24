@@ -93,7 +93,7 @@ def _compute_heatmap_sync(window: str) -> dict:
 
 @router.get("/api/map/heatmap")
 async def api_map_heatmap(window: str = Query("7d")) -> dict:
-    """Return position density grid for Leaflet.heat overlay.
+    """Return position density grid for the map's MapLibre heatmap layer.
 
     Intensities are normalised so the densest cell = 1.0.
     Fine grid (0.01°) for 24h/7d; coarse grid (0.1°) for 30d/all.
@@ -205,7 +205,7 @@ def _compute_coverage_sync(window: str) -> dict:
 
 @router.get("/api/map/coverage")
 async def api_map_coverage(window: str = Query("7d")) -> dict:
-    """Return receiver coverage polygon for Leaflet overlay.
+    """Return receiver coverage polygon for the map's MapLibre overlay.
 
     Each of 36 bearing buckets (10° each) contains the max detection range
     in that direction, projected to a lat/lon point.  Buckets with no data

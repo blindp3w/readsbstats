@@ -60,3 +60,12 @@ VDL2 remains fully read-only over the separate `vdl2.db`; no writes to `history.
   message rows — no breaking change to the API. The positions endpoint's `precise`
   flag already distinguished coarse/precise fixes; `#M1BPOS` points are a new source
   of `precise: true` points, transparent to callers.
+
+**Revision (2026-10-24):** the "remaining raw labels" consequence is partly
+outdated. Label-49 bodies have had a strict server-side route parser
+(`oooi.parse_label49`, a route source only) since ADR-0016, so they are no longer
+undecoded. ADR-0019 and ADR-0020 later added more server-side route sources (the
+ATN CM logon, Air France label 26, KLM label-20 `RST`), further precise-position
+formats, and local client-side decoders (`frontend/src/lib/acarsLocal.ts`) that
+run after `@airframes/acars-decoder` for labels it does not cover. The
+`#CFBMM`/`#CFBFDE` maintenance faults still have no parser.

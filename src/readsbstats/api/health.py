@@ -22,7 +22,7 @@ def api_metrics(
     metrics: str = "signal,noise",
 ) -> dict:
     """
-    Return receiver metrics as columnar arrays (uPlot-native format).
+    Return receiver metrics as columnar arrays (the format the frontend's ECharts charts consume).
 
     Query params:
         from   — start epoch (default: 24 h ago)

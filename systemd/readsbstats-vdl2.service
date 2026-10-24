@@ -2,8 +2,9 @@
 Description=readsbstats VDL2 / ACARS ingest listener
 # Opt-in feature. NOT enabled by install.sh — enable explicitly with
 #   sudo systemctl enable --now readsbstats-vdl2.service
-# Consume-only: an external decoder (vdlm2dec) feeds line-delimited JSON over
-# UDP to RSBS_VDL2_UDP_HOST:PORT. This service writes a SEPARATE vdl2.db; it
+# Consume-only: an external decoder (dumpvdl2 recommended, vdlm2dec legacy; match
+# RSBS_VDL2_DECODER, whose code default is vdlm2dec) feeds line-delimited JSON
+# over UDP to RSBS_VDL2_UDP_HOST:PORT. This service writes a SEPARATE vdl2.db; it
 # never touches history.db. See docs/operations.md for the decoder runbook.
 After=network.target
 OnFailure=notify-telegram@%n.service
