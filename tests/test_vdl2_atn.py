@@ -91,3 +91,89 @@ class TestSummarizeCpdlc:
         assert atn.summarize_cpdlc(None) is None
         assert atn.summarize_cpdlc("nope") is None
         assert atn.summarize_cpdlc({}) is None
+
+
+# ── ATN Context-Management logon ─────────────────────────────────────────────
+
+def _real_cm_avlc():
+    """The `avlc` subtree of a real dumpvdl2 CM logon frame (48C132, RYR8414
+    EPMO→LATI) — captured from the Pi feed, test_helpers DUMPVDL2_FRAMES."""
+    import json
+
+    from tests._helpers import DUMPVDL2_FRAMES
+    return json.loads(DUMPVDL2_FRAMES["cm_logon"])["vdl2"]["avlc"]
+
+
+def _cm_avlc(logon, choice="cmLogonRequest"):
+    """Minimal avlc carrying a CM aircraft message with the given logon dict."""
+    return {"x25": {"clnp": {"cotp": {"x225_spdu": {"x227_apdu": {"context_mgmt": {
+        "cm_aircraft_message": {
+            "choice": choice,
+            "data": {"atn_context_mgmt_logon_request": logon},
+        }}}}}}}}
+
+
+class TestCmLogon:
+    def test_real_frame(self):
+        assert atn.cm_logon(_real_cm_avlc()) == {
+            "flight": "RYR8414", "dep": "EPMO", "dest": "LATI"}
+
+    def test_real_frame_summary(self):
+        assert atn.summarize_cm_logon(_real_cm_avlc()) == ("CM", "LOGON RYR8414 EPMO-LATI")
+
+    def test_missing_airports_summary_is_flight_only(self):
+        avlc = _cm_avlc({"flight_id": "RYR8414"})
+        assert atn.cm_logon(avlc) == {"flight": "RYR8414", "dep": None, "dest": None}
+        assert atn.summarize_cm_logon(avlc) == ("CM", "LOGON RYR8414")
+
+    def test_one_airport_missing_summary_is_flight_only(self):
+        avlc = _cm_avlc({"flight_id": "RYR8414", "departure_airport": "EPMO"})
+        assert atn.summarize_cm_logon(avlc) == ("CM", "LOGON RYR8414")
+
+    def test_no_flight_summary_is_bare_logon(self):
+        avlc = _cm_avlc({"departure_airport": "EPMO", "destination_airport": "LATI"})
+        assert atn.cm_logon(avlc) == {"flight": None, "dep": "EPMO", "dest": "LATI"}
+        assert atn.summarize_cm_logon(avlc) == ("CM", "LOGON")
+
+    def test_bad_airports_become_none(self):
+        for bad in ("epmo", "EP1O", "EPMOX", "EPM", "", " EPMO", "EPMO\n", 1234, None, ["EPMO"]):
+            avlc = _cm_avlc({"flight_id": "RYR8414", "departure_airport": bad,
+                             "destination_airport": "LATI"})
+            assert atn.cm_logon(avlc) == {"flight": "RYR8414", "dep": None, "dest": "LATI"}, bad
+
+    def test_bad_flight_ids_become_none(self):
+        for bad in ("ryr8414", "R", "RYR841412X", "RYR 84", "RYR-84", "", 8414, None, {}):
+            avlc = _cm_avlc({"flight_id": bad, "departure_airport": "EPMO",
+                             "destination_airport": "LATI"})
+            assert atn.cm_logon(avlc)["flight"] is None, bad
+
+    def test_other_choice_is_none(self):
+        assert atn.cm_logon(_cm_avlc({"flight_id": "RYR8414"}, choice="cmContactRequest")) is None
+        assert atn.summarize_cm_logon(_cm_avlc({"flight_id": "RYR8414"}, choice="cmForward")) is None
+
+    def test_non_dict_levels_are_none(self):
+        assert atn.cm_logon(None) is None
+        assert atn.cm_logon([]) is None
+        assert atn.cm_logon({}) is None
+        assert atn.cm_logon({"x25": "x"}) is None
+        assert atn.cm_logon({"x25": {"clnp": []}}) is None
+        assert atn.cm_logon({"x25": {"clnp": {"cotp": {"x225_spdu": 5}}}}) is None
+        assert atn.cm_logon({"x25": {"clnp": {"cotp": {"x225_spdu": {"x227_apdu": []}}}}}) is None
+        base = _cm_avlc({"flight_id": "RYR8414"})
+        apdu = base["x25"]["clnp"]["cotp"]["x225_spdu"]["x227_apdu"]
+        apdu["context_mgmt"] = "nope"
+        assert atn.cm_logon(base) is None
+        apdu["context_mgmt"] = {"cm_aircraft_message": "nope"}
+        assert atn.cm_logon(base) is None
+        apdu["context_mgmt"] = {"cm_aircraft_message": {"choice": "cmLogonRequest", "data": []}}
+        assert atn.cm_logon(base) is None
+        apdu["context_mgmt"] = {"cm_aircraft_message": {
+            "choice": "cmLogonRequest", "data": {"atn_context_mgmt_logon_request": "x"}}}
+        assert atn.cm_logon(base) is None
+        assert atn.summarize_cm_logon(base) is None
+
+    def test_cpdlc_frame_still_cpdlc_and_not_cm(self):
+        assert atn.summarize_cpdlc(CPDLC_WILCO_AVLC) == ("CPDLC", "WILCO")
+        assert atn.cm_logon(CPDLC_WILCO_AVLC) is None
+        assert atn.summarize_cm_logon(CPDLC_WILCO_AVLC) is None
+        assert atn.summarize_cpdlc(_real_cm_avlc()) is None

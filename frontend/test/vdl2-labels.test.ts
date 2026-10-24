@@ -27,6 +27,11 @@ describe('labelName', () => {
     expect(labelName('QS')).toContain('IN report');
   });
 
+  it('names the synthetic ATN labels', () => {
+    expect(labelName('CM')).toBe('ATN logon (Context Management)');
+    expect(labelName('cpdlc')).toBe('CPDLC (ATN)');
+  });
+
   it('returns null for unknown, null and empty codes', () => {
     expect(labelName('ZZ')).toBeNull();
     expect(labelName(null)).toBeNull();

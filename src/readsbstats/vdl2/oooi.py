@@ -58,6 +58,8 @@ _QSERIES_RE = re.compile(rf"^([A-Z]{{4}})([A-Z]{{4}})({_HHMM})({_HHMM})?(?=$|[\s
 # other carriers' incompatible label-49 bodies. Flight id allows up to 2
 # trailing letters (DLH4AB-style).
 _LABEL49_RE = re.compile(r"\b([A-Z]{3}\d{1,4}[A-Z]{0,2})/\d{6}([A-Z]{4})([A-Z]{4})(?![A-Z0-9])")
+# Our own synthesized ATN CM-logon body (atn.summarize_cm_logon): not decoder text.
+_CM_LOGON_RE = re.compile(r"LOGON (\S+) ([A-Z]{4})-([A-Z]{4})")
 
 
 def parse_oooi(body: object) -> dict | None:
@@ -144,3 +146,16 @@ def parse_label49(body: object) -> dict | None:
         "dep_icao": m.group(2),
         "dest_icao": m.group(3),
     }
+
+
+def parse_cm_logon(label: object, body: object) -> dict | None:
+    """Parse a synthesized ATN CM-logon row (label ``CM``, body ``LOGON <flight>
+    <dep>-<dest>``, see ``atn.summarize_cm_logon``) into a route record
+    ``{"flight", "dep_icao", "dest_icao"}``, or ``None`` (incl. route-less
+    ``LOGON <flight>`` bodies)."""
+    if label != "CM" or not isinstance(body, str):
+        return None
+    m = _CM_LOGON_RE.fullmatch(body)
+    if m is None:
+        return None
+    return {"flight": m.group(1), "dep_icao": m.group(2), "dest_icao": m.group(3)}

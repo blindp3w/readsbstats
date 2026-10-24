@@ -201,3 +201,27 @@ class TestParseLabel49:
     def test_rejects_empty_and_none(self):
         assert oooi.parse_label49("") is None
         assert oooi.parse_label49(None) is None
+
+
+class TestParseCmLogon:
+    """Our own synthesized ATN CM-logon body (`atn.summarize_cm_logon`):
+    `LOGON <flight> <dep>-<dest>` under label `CM`."""
+
+    def test_valid(self):
+        assert oooi.parse_cm_logon("CM", "LOGON RYR8414 EPMO-LATI") == {
+            "flight": "RYR8414", "dep_icao": "EPMO", "dest_icao": "LATI"}
+
+    def test_wrong_label(self):
+        assert oooi.parse_cm_logon("H1", "LOGON RYR8414 EPMO-LATI") is None
+        assert oooi.parse_cm_logon("cm", "LOGON RYR8414 EPMO-LATI") is None
+        assert oooi.parse_cm_logon(None, "LOGON RYR8414 EPMO-LATI") is None
+
+    def test_no_route(self):
+        assert oooi.parse_cm_logon("CM", "LOGON RYR8414") is None
+        assert oooi.parse_cm_logon("CM", "LOGON") is None
+
+    def test_junk(self):
+        for body in ("", None, 42, "LOGON RYR8414 epmo-lati", "LOGON RYR8414 EPMO-LATIX",
+                     "LOGON RYR8414 EPMO-LATI trailing", "xLOGON RYR8414 EPMO-LATI",
+                     "LOGON  RYR8414 EPMO-LATI", "LOGON RYR8414 EPMO-LATI\n"):
+            assert oooi.parse_cm_logon("CM", body) is None, body

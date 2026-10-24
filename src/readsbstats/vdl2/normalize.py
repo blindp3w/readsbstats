@@ -175,8 +175,10 @@ def _normalize_dumpvdl2(raw: dict) -> dict | None:
     ``vdl2.avlc.acars`` (address in ``vdl2.avlc.src.addr``), reports ``freq`` in **Hz**
     (converted to MHz below), and emits the ``--station-id`` value as ``vdl2.station``.
     ATN/OSI frames (``vdl2.avlc.x25``) carry no ACARS body; CPDLC is lifted into
-    ``label``/``body`` via :func:`atn.summarize_cpdlc`. ADS-C is still deferred (no
-    real fixture yet); MIAM arrives over-ACARS so the ACARS branch handles it. Other
+    ``label``/``body`` via :func:`atn.summarize_cpdlc`; a Context-Management logon
+    becomes ``label='CM'``, ``body='LOGON <flight> <dep>-<dest>'`` with ``dsta`` = its
+    destination (``flight`` stays NULL: it is an ICAO callsign, not an IATA ACARS id).
+    ADS-C and MIAM arrive over-ACARS so the ACARS branch handles them. Other
     ATN transport/routing frames fall through to bare ``icao_hex`` rows by design.
 
     libacars strips the H1 text prefix into ``acars.sublabel`` (``#M1B`` → ``M1``) and
@@ -190,12 +192,18 @@ def _normalize_dumpvdl2(raw: dict) -> dict | None:
     src = avlc.get("src") if isinstance(avlc.get("src"), dict) else {}
     acars = avlc.get("acars") if isinstance(avlc.get("acars"), dict) else {}
     freq_hz = _float_or_none(vdl2.get("freq"))
-    # label/body: ACARS text, else an ATN/CPDLC summary for bare ATN frames.
+    # label/body: ACARS text, else an ATN CPDLC / CM-logon summary for bare ATN frames.
+    cm_dest: str | None = None
     if acars:
         label = _label(acars.get("label"))
         body = clean_short_text(acars.get("msg_text"), config.VDL2_BODY_MAX)
     else:
         summary = atn.summarize_cpdlc(avlc)
+        if summary is None:
+            summary = atn.summarize_cm_logon(avlc)
+            if summary is not None:
+                logon = atn.cm_logon(avlc)
+                cm_dest = logon["dest"] if logon else None
         label = _label(summary[0]) if summary else None
         body = clean_short_text(summary[1], config.VDL2_BODY_MAX) if summary else None
     # XID vdl_params: aircraft position + destination. `gs_location` is the GROUND
@@ -218,7 +226,9 @@ def _normalize_dumpvdl2(raw: dict) -> dict | None:
         "freq":         freq_hz / 1e6 if freq_hz and freq_hz > 0 else None,   # Hz → MHz (0/neg/None → None)
         "station_id":   clean_short_text(vdl2.get("station"), _SHORT),  # dumpvdl2: vdl2.station
         "toaddr":       clean_short_text((avlc.get("dst") or {}).get("addr") if isinstance(avlc.get("dst"), dict) else None, _SHORT),
-        "dsta":         clean_short_text(xid_p.get("dst_airport"), _SHORT),
+        # XID dst_airport wins; the CM logon destination is the fallback (the two
+        # never co-occur in one real frame, but the precedence is explicit).
+        "dsta":         clean_short_text(xid_p.get("dst_airport"), _SHORT) or cm_dest,
         "lat":          valid_lat(loc.get("lat")),
         "lon":          valid_lon(loc.get("lon")),
         "alt":          _int_or_none(ac_loc.get("alt")),

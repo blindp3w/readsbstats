@@ -374,8 +374,9 @@ class Vdl2Position(ApiModel):
     icao_hex: Optional[str] = None
     ts: Optional[int] = None
     label: Optional[str] = None
-    # True = precise (~0.001°) position parsed from a Label-16 AUTPOS body or a #M1BPOS body
-    # (vdlm2dec prefix kept in body, or dumpvdl2 via sublabel M1);
+    # True = precise (~0.001°) position parsed from an ACARS body by label (16 AUTPOS and the
+    # label-16-style group, 17, 38, 2F, 14, B0 AFN logon), a #M1BPOS body (vdlm2dec prefix kept
+    # in body, or dumpvdl2 via sublabel M1), LOT 59,G, or a decoded ADS-C (label B6) basic_report;
     # False = coarse (~0.1°) VDL2 XID link-frame fix from the lat/lon column (both decoders).
     precise: Optional[bool] = None
 
@@ -432,12 +433,26 @@ class Vdl2OooiEvent(ApiModel):
     ts: Optional[int] = None
 
 
+class Vdl2OooiRoute(ApiModel):
+    """Reported route for the flight window. `source`: "cm" = the aircraft's own
+    ATN Context-Management logon (FMS flight id + dep + dest); "label49" = an
+    airline-defined label-49 movement report."""
+    dep_icao: Optional[str] = None
+    dest_icao: Optional[str] = None
+    flight: Optional[str] = None
+    source: Optional[str] = None
+
+
 class Vdl2OooiSummary(ApiModel):
     """Flight-detail OOOI summary: the latest DEP + latest ARR parsed from the
     airframe's ACARS bodies in the flight window, plus a cheap `dsta`
-    destination-airport fallback (from XID frames) when no OOOI body parses.
+    destination-airport fallback (from XID frames, else the route) when no OOOI
+    body parses, and an optional `route` (CM logon preferred over label 49; absent
+    when neither is in the window or the scan ended early because the events
+    already carry the route).
     EXPERIMENTAL — carrier-variant; commonly empty on an H1-dominated feed."""
     dep: Optional[Vdl2OooiEvent] = None
     arr: Optional[Vdl2OooiEvent] = None
     dsta: Optional[str] = None
     has_oooi: bool = False
+    route: Optional[Vdl2OooiRoute] = None

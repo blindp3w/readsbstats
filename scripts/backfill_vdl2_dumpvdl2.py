@@ -1,11 +1,17 @@
 #!/usr/bin/env python3
-"""One-shot backfill: dumpvdl2 sublabel/mfi + XID position/destination.
+"""One-shot backfill: dumpvdl2 sublabel/mfi, XID position/destination, ATN CM logon.
 
 Rows ingested before the dumpvdl2 sublabel/XID fix have NULL ``sublabel``,
 ``mfi``, ``lat``, ``lon``, ``alt`` and ``dsta`` even though their verbatim ``raw``
 JSON carries the data (H1 sublabel/MFI, XID ``ac_location`` / ``dst_airport``).
 This re-runs the normalizer over those rows and fills the NULL columns. It only
 ever fills NULLs — an existing non-NULL value is never overwritten.
+
+It also lifts ATN Context-Management logon rows (``context_mgmt`` in ``raw``), which
+pre-2.27.0 ingest stored content-free: ``label='CM'``, ``body='LOGON <flight>
+<dep>-<dest>'`` and ``dsta`` = the destination. Filling ``body`` fires the FTS
+update trigger, so the new bodies become searchable. Re-run once after upgrading to
+2.27.0 (safe on a DB already backfilled for sublabel/XID: those rows no-op).
 
 Safe to run while ``readsbstats-vdl2`` is live (do NOT stop any service): the
 connection is WAL with a 30 s busy_timeout and each chunk is its own short
@@ -32,7 +38,7 @@ from readsbstats import config
 from readsbstats.vdl2 import db as vdl2_db
 from readsbstats.vdl2 import normalize
 
-_COLS = ("sublabel", "mfi", "lat", "lon", "alt", "dsta")
+_COLS = ("sublabel", "mfi", "lat", "lon", "alt", "dsta", "label", "body")
 
 
 def backfill(path: str, *, chunk: int = 2000, dry_run: bool = False) -> dict:
@@ -48,7 +54,8 @@ def backfill(path: str, *, chunk: int = 2000, dry_run: bool = False) -> dict:
         sql = (
             f"SELECT id, raw, {sel} FROM vdl2_messages "
             "WHERE decoder = 'dumpvdl2' AND id > ? "
-            "AND (raw LIKE '%\"sublabel\":%' OR raw LIKE '%\"xid\":{%') "
+            "AND (raw LIKE '%\"sublabel\":%' OR raw LIKE '%\"xid\":{%' "
+            "OR instr(raw, 'context_mgmt') > 0) "
             "ORDER BY id LIMIT ?"
         )
         res = {"scanned": 0, "updated": 0, "bad_json": 0,

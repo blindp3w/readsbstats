@@ -137,13 +137,16 @@ either a compatible SDR or an external resampler ahead of the Airspy Mini's fixe
 rates — see [Running dumpvdl2 on an Airspy Mini](dumpvdl2-airspy-mini.md) for a
 tested IQ‑resampling recipe.
 
-**One-time backfill after upgrading to 2.26.0 (dumpvdl2 feeds).** Rows ingested
+**One-time backfill after upgrading to 2.26.0 and again after 2.27.0 (dumpvdl2 feeds).** Rows ingested
 before 2.26.0 are missing the H1 `sublabel`/`mfi` and the XID position and
-destination, because the old normalizer dropped them. New rows are fixed
-automatically. To fill older rows, run the backfill once after the update.
-It only fills NULL columns from the stored `raw` JSON, and it can run while
-`readsbstats-vdl2` is live (no service stop needed). A second run updates
-nothing:
+destination, because the old normalizer dropped them. Rows ingested before
+2.27.0 also have ATN Context-Management logons stored without content (`CM`
+label, body and `dsta` missing). New rows are fixed automatically. To fill older
+rows, run the backfill once after each update. It only fills NULL columns from
+the stored `raw` JSON, and it can run while `readsbstats-vdl2` is live (no
+service stop needed). A second run updates nothing. Upgrading to 2.27.0 on a
+database already backfilled for 2.26.0 only touches the CM rows. Expect a few
+minutes on a Raspberry Pi 4 for a 90-day database:
 
 ```bash
 sudo -u readsbstats /opt/readsbstats/venv/bin/python \
