@@ -417,8 +417,9 @@ def api_vdl2_oooi(
     """OOOI block-time summary for one airframe over a flight window. The latest
     slash-TEI DEP/ARR bodies win; where those are absent (the norm on air-side
     feeds) events are synthesized from Q-series QP/QQ/QR/QS compact reports. A
-    `route` (the aircraft's own ATN CM logon, else an airline-defined label-49
-    movement report) fills route gaps on events plus the `dsta` destination
+    `route` (the aircraft's own ATN CM logon, else an Air France label-26 report,
+    else a KLM label-20 `RST` report, else an airline-defined label-49 movement
+    report) fills route gaps on events plus the `dsta` destination
     fallback. The SPA hides the card when `has_oooi` is false and there is no
     `dsta` or `route`."""
     hexv = _deps._parse_icao_path(icao_hex)
@@ -455,6 +456,8 @@ def _compute_oooi(icao_hex: str, since: int | None, until: int | None) -> dict:
     q_partials: list[dict] = []
     route49: dict | None = None
     route_cm: dict | None = None
+    route26: dict | None = None
+    route20: dict | None = None
     # Rows are newest-first, so the first DEP/ARR we parse is the most recent.
     for r in rows:
         if dsta is None and r["dsta"]:
@@ -470,6 +473,10 @@ def _compute_oooi(icao_hex: str, since: int | None, until: int | None) -> dict:
             route49 = oooi.parse_label49(r["body"])
         elif lab == "CM" and route_cm is None:
             route_cm = oooi.parse_cm_logon(lab, r["body"])
+        elif lab == "26" and route26 is None:
+            route26 = oooi.parse_label26(r["body"])
+        elif lab == "20" and route20 is None:
+            route20 = oooi.parse_label20_rst(r["body"])
         parsed = oooi.parse_oooi(r["body"])
         if parsed is not None:
             if parsed["type"] == "DEP" and dep is None:
@@ -491,16 +498,17 @@ def _compute_oooi(icao_hex: str, since: int | None, until: int | None) -> dict:
         if arr is None:
             arr = _synth_q_event("ARR", phases.get("on"), phases.get("in"))
 
-    # The aircraft's own CM logon beats an airline-defined label-49 movement report.
-    # Either carries a dep+arr pair: fill route gaps on events, and serve as the
-    # `dsta` fallback when nothing else parsed.
+    # Precedence: the aircraft's own CM logon > Air France label 26 > KLM label-20
+    # RST > airline-defined label 49. Each carries a dep+arr pair: fill route gaps
+    # on events, and serve as the `dsta` fallback when nothing else parsed. Only
+    # the four contract keys are copied (no eta/runway — ApiModel is extra="allow").
     route: dict | None = None
-    if route_cm is not None:
-        route = {"dep_icao": route_cm["dep_icao"], "dest_icao": route_cm["dest_icao"],
-                 "flight": route_cm["flight"], "source": "cm"}
-    elif route49 is not None:
-        route = {"dep_icao": route49["dep_icao"], "dest_icao": route49["dest_icao"],
-                 "flight": route49["flight"], "source": "label49"}
+    for src, rec in (("cm", route_cm), ("label26", route26),
+                     ("label20", route20), ("label49", route49)):
+        if rec is not None:
+            route = {"dep_icao": rec["dep_icao"], "dest_icao": rec["dest_icao"],
+                     "flight": rec["flight"], "source": src}
+            break
     if route is not None:
         for ev in (dep, arr):
             if ev is not None:

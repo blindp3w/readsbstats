@@ -684,6 +684,128 @@ class TestOooi:
         assert data["dsta"] == "KEWR"
         vconn.close()
 
+    def test_label26_only_route_and_dsta(self, monkeypatch):
+        now = int(time.time())
+        vconn, app = self._make(monkeypatch, [
+            {"ts": now - 60, "icao_hex": "3944e0", "label": "26",
+             "body": "1049EPWAAF1147/18\r1241LFPG27R"},
+        ])
+        with TestClient(app) as c:
+            data = c.get("/api/vdl2/oooi/3944e0").json()
+        assert data["has_oooi"] is False
+        assert data["dsta"] == "LFPG"
+        assert data["route"] == {"dep_icao": "EPWA", "dest_icao": "LFPG",
+                                 "flight": "AF1147", "source": "label26"}
+        vconn.close()
+
+    def test_label20_rst_only_route_and_dsta(self, monkeypatch):
+        now = int(time.time())
+        vconn, app = self._make(monkeypatch, [
+            {"ts": now - 60, "icao_hex": "484b2a", "label": "20",
+             "body": "RST53A27145652KLM49N  EHAMEPWA"},
+        ])
+        with TestClient(app) as c:
+            data = c.get("/api/vdl2/oooi/484b2a").json()
+        assert data["dsta"] == "EPWA"
+        assert data["route"] == {"dep_icao": "EHAM", "dest_icao": "EPWA",
+                                 "flight": "KLM49N", "source": "label20"}
+        vconn.close()
+
+    def test_label20_non_route_bodies_give_no_route(self, monkeypatch):
+        now = int(time.time())
+        vconn, app = self._make(monkeypatch, [
+            {"ts": now - 60, "icao_hex": "484b2a", "label": "20",
+             "body": "POSN52117E020255,,121107,075,"},
+        ])
+        with TestClient(app) as c:
+            data = c.get("/api/vdl2/oooi/484b2a").json()
+        assert "route" not in data
+        vconn.close()
+
+    def test_cm_beats_label26(self, monkeypatch):
+        now = int(time.time())
+        vconn, app = self._make(monkeypatch, [
+            {"ts": now - 300, "icao_hex": "3944e0", "label": "CM", "body": "LOGON AFR1147 EPWA-LFPG"},
+            {"ts": now - 60, "icao_hex": "3944e0", "label": "26",
+             "body": "1049EPWAAF1147/18\r1241LFPG27R"},
+        ])
+        with TestClient(app) as c:
+            data = c.get("/api/vdl2/oooi/3944e0").json()
+        assert data["route"]["source"] == "cm"
+        assert data["route"]["flight"] == "AFR1147"
+        vconn.close()
+
+    def test_label26_beats_label49(self, monkeypatch):
+        now = int(time.time())
+        vconn, app = self._make(monkeypatch, [
+            {"ts": now - 300, "icao_hex": "3944e0", "label": "26",
+             "body": "1049EPWAAF1147/18\r1241LFPG27R"},
+            {"ts": now - 60, "icao_hex": "3944e0", "label": "49",
+             "body": "01DCAP    ETD159/090545OMAAEPWA"},
+        ])
+        with TestClient(app) as c:
+            data = c.get("/api/vdl2/oooi/3944e0").json()
+        assert data["route"]["source"] == "label26"
+        assert data["dsta"] == "LFPG"
+        vconn.close()
+
+    def test_label20_beats_label49_and_loses_to_label26(self, monkeypatch):
+        now = int(time.time())
+        rows = [
+            {"ts": now - 300, "icao_hex": "484b2a", "label": "20",
+             "body": "RST53A27145652KLM49N  EHAMEPWA"},
+            {"ts": now - 200, "icao_hex": "484b2a", "label": "49",
+             "body": "01DCAP    ETD159/090545OMAAEPWA"},
+        ]
+        vconn, app = self._make(monkeypatch, rows)
+        with TestClient(app) as c:
+            data = c.get("/api/vdl2/oooi/484b2a").json()
+        assert data["route"]["source"] == "label20"
+        vconn.close()
+        rows.append({"ts": now - 100, "icao_hex": "484b2a", "label": "26",
+                     "body": "1049EPWAAF1147/18\r1241LFPG27R"})
+        vconn, app = self._make(monkeypatch, rows)
+        with TestClient(app) as c:
+            data = c.get("/api/vdl2/oooi/484b2a").json()
+        assert data["route"]["source"] == "label26"
+        vconn.close()
+
+    def test_label26_route_has_only_contract_keys(self, monkeypatch):
+        now = int(time.time())
+        vconn, app = self._make(monkeypatch, [
+            {"ts": now - 60, "icao_hex": "3944e0", "label": "26",
+             "body": "1049EPWAAF1147/18\r1241LFPG27R"},
+        ])
+        with TestClient(app) as c:
+            data = c.get("/api/vdl2/oooi/3944e0").json()
+        assert set(data["route"]) == {"dep_icao", "dest_icao", "flight", "source"}
+        vconn.close()
+
+    def test_label26_fills_route_on_tei_event_missing_airports(self, monkeypatch):
+        now = int(time.time())
+        vconn, app = self._make(monkeypatch, [
+            {"ts": now - 300, "icao_hex": "3944e0", "label": "H1", "body": "DEP / OT 0030"},
+            {"ts": now - 60, "icao_hex": "3944e0", "label": "26",
+             "body": "1049EPWAAF1147/18\r1241LFPG27R"},
+        ])
+        with TestClient(app) as c:
+            data = c.get("/api/vdl2/oooi/3944e0").json()
+        assert data["dep"]["dep_icao"] == "EPWA" and data["dep"]["dest_icao"] == "LFPG"
+        vconn.close()
+
+    def test_superseded_label26_ignored(self, monkeypatch):
+        now = int(time.time())
+        vconn, app = self._make(monkeypatch, [
+            {"ts": now - 60, "icao_hex": "3944e0", "label": "26",
+             "body": "1049EPWAAF1147/18\r1241LFPG27R"},
+        ])
+        vconn.execute("UPDATE vdl2_messages SET superseded = 1")
+        vconn.commit()
+        with TestClient(app) as c:
+            data = c.get("/api/vdl2/oooi/3944e0").json()
+        assert "route" not in data
+        vconn.close()
+
     def test_qseries_event_missing_dep_filled_from_cm(self, monkeypatch):
         # A Q-series event always carries its own pair, so exercise the TEI path:
         # a DEP with times but no airports takes dep+dest from the CM route.

@@ -225,3 +225,70 @@ class TestParseCmLogon:
                      "LOGON RYR8414 EPMO-LATI trailing", "xLOGON RYR8414 EPMO-LATI",
                      "LOGON  RYR8414 EPMO-LATI", "LOGON RYR8414 EPMO-LATI\n"):
             assert oooi.parse_cm_logon("CM", body) is None, body
+
+
+class TestParseLabel26:
+    """Air France label-26 report: HHMM dep flight/DD HHMM(ETA) dest [runway]."""
+
+    def test_real_with_runway(self):
+        assert oooi.parse_label26("1049EPWAAF1147/18\r1241LFPG27R") == {
+            "flight": "AF1147", "dep_icao": "EPWA", "dest_icao": "LFPG",
+            "eta": "1241", "runway": "27R"}
+
+    def test_newline_separator(self):
+        rec = oooi.parse_label26("1049EPWAAF1147/18\n1241LFPG27R")
+        assert rec is not None and rec["dest_icao"] == "LFPG"
+
+    def test_no_separator(self):
+        rec = oooi.parse_label26("1049EPWAAF1147/181241LFPG27R")
+        assert rec is not None and rec["eta"] == "1241"
+
+    def test_without_runway(self):
+        assert oooi.parse_label26("1305LFPGAF1346/10\r1310EPWA") == {
+            "flight": "AF1346", "dep_icao": "LFPG", "dest_icao": "EPWA",
+            "eta": "1310", "runway": None}
+
+    def test_flight_with_trailing_letter(self):
+        rec = oooi.parse_label26("1305LFPGAF134A/10\r1310EPWA")
+        assert rec is not None and rec["flight"] == "AF134A"
+
+    def test_rejects_junk(self):
+        for body in ("", None, 42, "position report krakow",
+                     "1049epwaaf1147/18\r1241lfpg27r",       # lowercase
+                     "1049EPWAAF1147/18\r1241LFPG27R trailing junk!",
+                     "1049EPWAAF1147/18",                       # no ETA/dest
+                     "1049EPWAAF1147/1\r1241LFPG",             # 1-digit day
+                     "1049EPWA/18\r1241LFPG",                  # no flight
+                     "x1049EPWAAF1147/18\r1241LFPG27R",
+                     "1049EPWAAF1147/18\r1241LFP"):
+            assert oooi.parse_label26(body) is None, body
+
+
+class TestParseLabel20Rst:
+    """KLM label-20 ``RST`` report: day, HHMMSS, callsign, dep, dest."""
+
+    def test_real_double_space(self):
+        assert oooi.parse_label20_rst("RST53A27145652KLM49N  EHAMEPWA") == {
+            "flight": "KLM49N", "dep_icao": "EHAM", "dest_icao": "EPWA"}
+
+    def test_real_reverse_direction(self):
+        assert oooi.parse_label20_rst("RST31A30181806KLM60M  EPWAEHAM") == {
+            "flight": "KLM60M", "dep_icao": "EPWA", "dest_icao": "EHAM"}
+
+    def test_single_space(self):
+        assert oooi.parse_label20_rst("RST31A13111945KLM9938 EPWAEHAM") == {
+            "flight": "KLM9938", "dep_icao": "EPWA", "dest_icao": "EHAM"}
+
+    def test_non_route_label20_bodies(self):
+        for body in ("POSN52117E020255,,121107,075,",
+                     "FMM||LOT2YE/02.LZ-EAO.RKG.ULT/800..FKG"):
+            assert oooi.parse_label20_rst(body) is None
+
+    def test_rejects_junk(self):
+        for body in ("", None, 42, "RST53A27145652KLM49N  EHAMEPWA extra",
+                     "rst53a27145652klm49n  ehamepwa",
+                     "RST53A27145652KLM49N  EHAM",
+                     "RST53A2714565KLM49N  EHAMEPWA",
+                     "xRST53A27145652KLM49N  EHAMEPWA",
+                     "RST53A27145652KLM49NEHAMEPWA"):
+            assert oooi.parse_label20_rst(body) is None, body
