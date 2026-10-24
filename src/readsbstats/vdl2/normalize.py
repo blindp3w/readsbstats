@@ -244,6 +244,9 @@ def _normalize_dumpvdl2(raw: dict) -> dict | None:
         # on every dumpvdl2 frame; feeds the Metrics per-channel signal + SNR charts.
         "sig_level":    _float_or_none(vdl2.get("sig_level")),
         "noise_level":  _float_or_none(vdl2.get("noise_level")),
+        # acars.more = a further block of the same message follows. NULL off ACARS
+        # (x25.more is an unrelated X.25 flag); feeds vdl2_db.mark_superseded.
+        "more":         (1 if acars.get("more") else 0) if acars else None,
     }
     return rec if _has_content(rec) else None
 

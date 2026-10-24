@@ -1465,3 +1465,106 @@ class TestDumpvdl2Ingest:
         msgs = dv_client.get("/api/vdl2/messages").json()["messages"]
         row = next(m for m in msgs if m["icao_hex"] == "48ae21")
         assert row["sublabel"] is None and row["mfi"] is None
+
+
+class TestSupersededFragments:
+    """Multi-block ACARS: earlier block rows hidden once the final block carries the
+    full text (``superseded``); ``fragments=true`` shows them."""
+
+    _POS = "#M1BPOSN52081E020017,N51491E019372,191139,370,BOKSU,M51,19155"
+
+    @pytest.fixture()
+    def frag_client(self, monkeypatch):
+        monkeypatch.setattr(config, "VDL2_ENABLED", True)
+        conn = make_vdl2_db()
+        base = int(time.time())
+        vdl2_db.insert_messages(conn, [
+            {"ts": base - 40, "icao_hex": "48ae21", "label": "H1", "msgno": "D75",
+             "more": 1, "body": self._POS[:40]},
+            {"ts": base - 35, "icao_hex": "48ae21", "label": "H1", "msgno": "D75",
+             "more": 0, "body": self._POS},
+            {"ts": base - 30, "icao_hex": "48ae22", "label": "H1", "msgno": "D80",
+             "more": 1, "body": "an orphan fragment with no final block"},
+        ])
+        # the collector marks at ingest; do the same here
+        vdl2_db.mark_superseded(conn, [{"ts": base - 35, "icao_hex": "48ae21", "label": "H1",
+                                        "msgno": "D75", "more": 0, "body": self._POS}])
+        conn.commit()
+        monkeypatch.setattr(vdl2_db, "_conn", conn)
+        app = FastAPI()
+        web._include_optional_routers(app)
+        with TestClient(app) as c:
+            c.conn = conn
+            yield c
+        conn.close()
+
+    def test_default_hides_superseded_keeps_orphan_fragment(self, frag_client):
+        msgs = frag_client.get("/api/vdl2/messages").json()["messages"]
+        assert [m["body"] for m in msgs] == ["an orphan fragment with no final block", self._POS]
+
+    def test_fragments_true_shows_all(self, frag_client):
+        msgs = frag_client.get("/api/vdl2/messages?fragments=true").json()["messages"]
+        assert len(msgs) == 3
+        hidden = [m for m in msgs if m["superseded"] == 1]
+        assert len(hidden) == 1 and hidden[0]["more"] == 1
+
+    def test_rows_carry_more_and_superseded(self, frag_client):
+        msgs = frag_client.get("/api/vdl2/messages").json()["messages"]
+        final = next(m for m in msgs if m["body"] == self._POS)
+        assert final["more"] == 0 and final["superseded"] is None
+        orphan = next(m for m in msgs if m["msgno"] == "D80")
+        assert orphan["more"] == 1 and orphan["superseded"] is None
+
+    def test_aircraft_endpoint_same_behaviour(self, frag_client):
+        d = frag_client.get("/api/vdl2/messages/48ae21").json()["messages"]
+        assert len(d) == 1 and d[0]["body"] == self._POS
+        d = frag_client.get("/api/vdl2/messages/48ae21?fragments=true").json()["messages"]
+        assert len(d) == 2
+
+    def test_pagination_not_broken_by_hidden_rows(self, frag_client):
+        first = frag_client.get("/api/vdl2/messages?limit=1").json()
+        assert len(first["messages"]) == 1 and first["next_before_id"] is not None
+        nxt = frag_client.get(
+            f"/api/vdl2/messages?limit=1&before_id={first['next_before_id']}").json()
+        assert [m["body"] for m in nxt["messages"]] == [self._POS]   # hidden id 1 skipped
+        assert nxt["next_before_id"] is not None   # page was full; one more (empty) page ends it
+        last = frag_client.get(
+            f"/api/vdl2/messages?limit=1&before_id={nxt['next_before_id']}").json()
+        assert last["messages"] == [] and last["next_before_id"] is None
+
+    def test_positions_emit_one_point_for_multi_block_m1bpos(self, frag_client):
+        # fragment is cut mid-coordinates, so only the full text parses; give the
+        # fragment a complete fix too to prove the superseded filter (not the parser)
+        # is what drops it.
+        c = frag_client.conn
+        c.execute("UPDATE vdl2_messages SET body = ? WHERE msgno = 'D75' AND more = 1",
+                  (self._POS,))
+        c.commit()
+        pts = [p for p in frag_client.get("/api/vdl2/positions?minutes=60").json()["points"]
+               if p["icao_hex"] == "48ae21"]
+        assert len(pts) == 1
+
+    def test_positions_include_unsuperseded_duplicate(self, frag_client):
+        c = frag_client.conn
+        c.execute("UPDATE vdl2_messages SET body = ?, superseded = NULL WHERE msgno = 'D75' AND more = 1",
+                  (self._POS,))
+        c.commit()
+        pts = [p for p in frag_client.get("/api/vdl2/positions?minutes=60").json()["points"]
+               if p["icao_hex"] == "48ae21"]
+        assert len(pts) == 2     # control: without the mark both rows yield a point
+
+    def test_oooi_ignores_superseded_rows(self, frag_client):
+        c = frag_client.conn
+        now = int(time.time())
+        vdl2_db.insert_messages(c, [
+            {"ts": now - 20, "icao_hex": "48ae25", "label": "H1", "superseded": 1,
+             "body": "DEP / FI LO6550/AN SP-LYF/DA EPWA/DS EGLL/OT 0030"},
+        ])
+        c.commit()
+        assert frag_client.get("/api/vdl2/oooi/48ae25").json()["has_oooi"] is False
+        c.execute("UPDATE vdl2_messages SET superseded = NULL WHERE icao_hex = '48ae25'")
+        c.commit()
+        assert frag_client.get("/api/vdl2/oooi/48ae25").json()["has_oooi"] is True
+
+    def test_stats_still_count_every_frame(self, frag_client):
+        assert frag_client.get("/api/vdl2/stats").json()["total"] == 3

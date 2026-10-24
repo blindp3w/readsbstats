@@ -327,6 +327,10 @@ class Vdl2Message(ApiModel):
     # dumpvdl2 only: libacars-stripped H1 '#<SL>B[/<MFI> ]' prefix parts (body excludes them)
     sublabel: Optional[str] = None
     mfi: Optional[str] = None
+    # dumpvdl2 multi-block ACARS: more=1 → further blocks follow; superseded=1 → a later
+    # final block holds this row's text in full (only returned with ?fragments=true)
+    more: Optional[int] = None
+    superseded: Optional[int] = None
     filed_route: Optional[Vdl2FiledRoute] = None
 
 

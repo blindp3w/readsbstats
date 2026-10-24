@@ -2,13 +2,17 @@
 that pre-fix ingest left NULL: sublabel/mfi + XID lat/lon/alt/dsta)."""
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from backfill_vdl2_dumpvdl2 import backfill, main
 from readsbstats.vdl2 import db as vdl2_db
+from readsbstats.vdl2 import normalize
 from tests._helpers import dumpvdl2_record
 
 _FILLED = ("sublabel", "mfi", "lat", "lon", "alt", "dsta")
+_FULL_TEXT = "POSN52256E019186,ADOXO,200245,380,PENOR,202912,KSD,M52,226050,11122DB"
 
 
 @pytest.fixture()
@@ -218,3 +222,80 @@ def test_main_rejects_missing_db(tmp_path, monkeypatch, capsys):
         main()
     assert e.value.code == 1
     assert not (tmp_path / "nope.db").exists()
+
+
+# --- multi-block ACARS: `more` fill + fragment supersede pass ----------------
+
+def _block_row(ts: int, text: str, more: bool, *, icao: str = "48E95C",
+               msgno: str = "D75") -> dict:
+    """A block as pre-2.28 ingest stored it: real raw, ``more``/``superseded`` NULL."""
+    frame = {"vdl2": {"t": {"sec": ts}, "freq": 136725000, "avlc": {
+        "src": {"addr": icao}, "acars": {
+            "more": more, "reg": ".SP-LYF", "label": "H1", "msg_num": msgno,
+            "sublabel": "M1", "msg_text": text}}}}
+    rec = normalize.normalize(frame, "dumpvdl2")
+    rec["more"] = None
+    rec["superseded"] = None
+    return rec
+
+
+def _blocks(path: str) -> list[dict]:
+    conn = vdl2_db.connect(path)
+    try:
+        return [dict(r) for r in conn.execute(
+            "SELECT id, more, superseded FROM vdl2_messages ORDER BY id")]
+    finally:
+        conn.close()
+
+
+def _seed_message(path: str) -> None:
+    _seed(path, [
+        _block_row(1_700_000_000, _FULL_TEXT[:35], True),
+        _block_row(1_700_000_004, _FULL_TEXT[:55], True),
+        _block_row(1_700_000_008, _FULL_TEXT, False),
+        _block_row(1_700_000_009, "an orphan fragment with no final", True,
+                   icao="48E95D", msgno="D80"),
+    ])
+
+
+def test_fills_more_and_supersedes_fragments(db_path):
+    _seed_message(db_path)
+    res = backfill(db_path)
+    assert res["filled"]["more"] == 4
+    assert res["superseded"] == 2
+    got = _blocks(db_path)
+    assert [r["more"] for r in got] == [1, 1, 0, 1]
+    assert [r["superseded"] for r in got] == [1, 1, None, None]
+
+
+def test_supersede_second_run_is_noop(db_path):
+    _seed_message(db_path)
+    backfill(db_path)
+    res = backfill(db_path)
+    assert res["updated"] == 0 and res["superseded"] == 0
+
+
+def test_supersede_pass_chunks(db_path):
+    _seed_message(db_path)
+    res = backfill(db_path, chunk=1)
+    assert res["superseded"] == 2
+
+
+def test_supersede_pass_on_already_filled_more(db_path):
+    # `more` populated by new ingest but the DB predates marking: the pass alone fixes it
+    _seed_message(db_path)
+    backfill(db_path)
+    conn = vdl2_db.connect(db_path)
+    conn.execute("UPDATE vdl2_messages SET superseded = NULL")
+    conn.commit()
+    conn.close()
+    assert backfill(db_path)["superseded"] == 2
+
+
+def test_more_dry_run_writes_nothing(db_path):
+    _seed_message(db_path)
+    res = backfill(db_path, dry_run=True)
+    assert res["filled"]["more"] == 4
+    assert res["superseded"] is None          # supersede pass is skipped on a dry run
+    got = _blocks(db_path)
+    assert all(r["more"] is None and r["superseded"] is None for r in got)

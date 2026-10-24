@@ -89,7 +89,7 @@ def vdl2_health() -> dict:
 _LIST_COLS = (
     "id, ts, icao_hex, registration, flight, label, mode, block_id, ack, "
     "msgno, freq, station_id, toaddr, dsta, lat, lon, alt, epu, app_name, "
-    "app_ver, body, decoder, sublabel, mfi"
+    "app_ver, body, decoder, sublabel, mfi, more, superseded"
 )
 
 
@@ -142,11 +142,15 @@ def _rows_to_messages(rows) -> list[dict]:
 def _query_messages(
     *, limit: int, before_id: int | None, label: str | None,
     hex_: str | None, reg: str | None, since: int | None, until: int | None,
-    q: str | None, icao_eq: str | None = None,
+    q: str | None, icao_eq: str | None = None, fragments: bool = False,
 ) -> dict:
     conn = vdl2_db.web_conn()
     where: list[str] = []
     params: list = []
+    if not fragments:
+        # Hide earlier blocks of a multi-block message once its final block carries
+        # the full text (marked at ingest / by the backfill; NULL-safe).
+        where.append("superseded IS NOT 1")
     if icao_eq is not None:
         where.append("icao_hex = ?")
         params.append(icao_eq)
@@ -215,15 +219,18 @@ def api_vdl2_messages(
     q: str | None = Query(None, max_length=200),
     since: int | None = Query(None, ge=0),
     until: int | None = Query(None, ge=0),
+    fragments: bool = Query(False),
 ) -> dict:
     """Newest-first message feed (by ingest id) with optional filters + full-text
     search. Keyset pagination via ``before_id`` (pass the previous response's
-    ``next_before_id`` to load older messages)."""
+    ``next_before_id`` to load older messages). Earlier blocks of a multi-block
+    message whose final block carries the full text (``superseded``) are hidden;
+    ``fragments=true`` includes them."""
     _check_window(since, until)
     with _vdl2_guard():
         return _query_messages(
             limit=limit, before_id=before_id, label=label, hex_=hex, reg=reg,
-            since=since, until=until, q=q,
+            since=since, until=until, q=q, fragments=fragments,
         )
 
 
@@ -236,15 +243,17 @@ def api_vdl2_aircraft(
     q: str | None = Query(None, max_length=200),
     since: int | None = Query(None, ge=0),
     until: int | None = Query(None, ge=0),
+    fragments: bool = Query(False),
 ) -> dict:
     """All messages from one airframe (by ICAO hex), newest-first. ``since``/
-    ``until`` (epoch) scope it to a flight window for the flight-detail panel."""
+    ``until`` (epoch) scope it to a flight window for the flight-detail panel.
+    Superseded block fragments are hidden unless ``fragments=true``."""
     hexv = _deps._parse_icao_path(icao_hex)
     _check_window(since, until)
     with _vdl2_guard():
         return _query_messages(
             limit=limit, before_id=before_id, label=None, hex_=None, reg=None,
-            since=since, until=until, q=q, icao_eq=hexv,
+            since=since, until=until, q=q, icao_eq=hexv, fragments=fragments,
         )
 
 
@@ -286,6 +295,8 @@ def api_vdl2_stats() -> dict:
 
 
 def _compute_stats() -> dict:
+    # Stats count received frames (incl. partial blocks and superseded fragments) by
+    # design — they measure the feed, not distinct messages.
     conn = vdl2_db.web_conn()
     now = int(time.time())
     # Single table pass for the three headline counts.
@@ -434,7 +445,7 @@ def _compute_oooi(icao_hex: str, since: int | None, until: int | None) -> dict:
     params.append(_OOOI_SCAN_LIMIT)
     rows = conn.execute(
         f"SELECT body, dsta, ts, label, registration, flight "
-        f"FROM vdl2_messages WHERE {' AND '.join(where)} "
+        f"FROM vdl2_messages WHERE {' AND '.join(where)} AND superseded IS NOT 1 "
         "ORDER BY id DESC LIMIT ?",
         params,
     ).fetchall()
@@ -886,30 +897,31 @@ def _compute_positions(minutes: int) -> dict:
     label_rows = conn.execute(
         # placeholder count comes from the module constant, never user input
         "SELECT id, icao_hex, ts, label, body FROM vdl2_messages "
-        f"WHERE label IN ({','.join('?' * len(labels))}) AND ts >= ? "
+        f"WHERE label IN ({','.join('?' * len(labels))}) AND ts >= ? AND superseded IS NOT 1 "
         "ORDER BY ts DESC, id DESC LIMIT ?",
         (*labels, cutoff, _POSITIONS_LABEL_SCAN_CAP),
     ).fetchall()
     coarse_rows = conn.execute(
         "SELECT id, lat, lon, icao_hex, ts, label FROM vdl2_messages "
-        "WHERE lat IS NOT NULL AND lon IS NOT NULL AND ts >= ? "
+        "WHERE lat IS NOT NULL AND lon IS NOT NULL AND ts >= ? AND superseded IS NOT 1 "
         "ORDER BY ts DESC, id DESC LIMIT ?",
         (cutoff, _POSITIONS_CAP),
     ).fetchall()
     m1bpos_rows = conn.execute(
         "SELECT id, icao_hex, ts, label, body, sublabel, mfi FROM vdl2_messages "
-        "WHERE ts >= ? AND (body LIKE '#M1BPOS%' OR (sublabel = 'M1' AND body LIKE 'POS%')) "
+        "WHERE ts >= ? AND superseded IS NOT 1 "
+        "AND (body LIKE '#M1BPOS%' OR (sublabel = 'M1' AND body LIKE 'POS%')) "
         "ORDER BY ts DESC, id DESC LIMIT ?",
         (cutoff, _POSITIONS_M1BPOS_SCAN_CAP),
     ).fetchall()
     g59_rows = conn.execute(
         "SELECT id, icao_hex, ts, label, body FROM vdl2_messages "
-        "WHERE ts >= ? AND body LIKE '59,G,%' ORDER BY ts DESC, id DESC LIMIT ?",
+        "WHERE ts >= ? AND superseded IS NOT 1 AND body LIKE '59,G,%' ORDER BY ts DESC, id DESC LIMIT ?",
         (cutoff, _POSITIONS_59G_SCAN_CAP),
     ).fetchall()
     adsc_rows = conn.execute(
         "SELECT id, icao_hex, ts, label, raw FROM vdl2_messages "
-        "WHERE label = 'B6' AND ts >= ? ORDER BY ts DESC, id DESC LIMIT ?",
+        "WHERE label = 'B6' AND ts >= ? AND superseded IS NOT 1 ORDER BY ts DESC, id DESC LIMIT ?",
         (cutoff, _POSITIONS_ADSC_SCAN_CAP),
     ).fetchall()
 

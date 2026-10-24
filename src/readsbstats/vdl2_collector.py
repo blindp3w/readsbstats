@@ -271,6 +271,9 @@ def _flush(conn, pending: list[dict]) -> int:
         return 0
     try:
         n = vdl2_db.insert_messages(conn, pending)
+        # Hide earlier blocks of multi-block messages whose final block just arrived;
+        # same transaction, so a failure rolls back the inserts too.
+        vdl2_db.mark_superseded(conn, pending)
         conn.commit()
     except sqlite3.OperationalError as exc:
         # rollback first: executemany may have inserted part of the batch into
