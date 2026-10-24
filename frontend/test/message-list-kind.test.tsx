@@ -53,3 +53,17 @@ describe('MessageList body-kind chip', () => {
     expect(screen.getByTestId('vdl2-filed-route')).toBeTruthy();
   });
 });
+
+describe('MessageList partial badge', () => {
+  it('flags an intermediate block of a multi-block message', () => {
+    renderList({ id: 5, ts: 1_749_000_000, label: 'H1', body: 'abc', more: 1 } as Vdl2Message);
+    const b = screen.getByTestId('vdl2-row-partial');
+    expect(b.textContent).toBe('partial');
+    expect(b.getAttribute('title')).toBe('Intermediate block of a multi-block message');
+  });
+
+  it.each([0, null, undefined])('shows no badge when more=%s', (more) => {
+    renderList({ id: 6, ts: 1_749_000_000, label: 'H1', body: 'abc', more } as Vdl2Message);
+    expect(screen.queryByTestId('vdl2-row-partial')).toBeNull();
+  });
+});

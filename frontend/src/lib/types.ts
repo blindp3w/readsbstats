@@ -64,6 +64,11 @@ export interface Vdl2Message {
   sublabel?: string | null;
   mfi?: string | null;
   decoder: string | null;
+  // Multi-block ACARS: 1 = intermediate block (more follows), 0 = final/single block,
+  // null = not ACARS. `superseded` = 1 when this intermediate block's text is fully
+  // contained in a later reassembled final message (the API hides these by default).
+  more?: number | null;
+  superseded?: number | null;
   filed_route?: {
     dep: string;
     arr: string;
@@ -167,12 +172,13 @@ export interface Vdl2OooiEvent {
 }
 
 // Route fallback: 'cm' = the aircraft's own ATN Context-Management logon (FMS flight/dep/dest);
-// 'label49' = an airline-defined label-49 movement report. Omitted by the API when absent.
+// 'label49' = an airline-defined label-49 movement report; 'label26' = Air France ETA report;
+// 'label20' = KLM route report. Omitted by the API when absent.
 export interface Vdl2OooiRoute {
   dep_icao: string | null;
   dest_icao: string | null;
   flight: string | null;
-  source: 'cm' | 'label49';
+  source: 'cm' | 'label49' | 'label26' | 'label20';
 }
 
 export interface Vdl2OooiSummary {

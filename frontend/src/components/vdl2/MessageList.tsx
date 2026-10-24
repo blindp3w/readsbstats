@@ -23,7 +23,7 @@ import type { Vdl2Message } from '@/lib/types';
 // When onHexClick/onRegClick are provided (the feed page), hex/reg render as
 // filter buttons; otherwise (the flight panel) they render as plain text.
 //
-// `decode` defaults to useAcarsDecoder() (lazy client-side decoder). Tests inject
+// `decode` defaults to useAcarsDecoder() (lazy airframes decoder + local fallbacks). Tests inject
 // a synchronous decode fn so decoded rendering is deterministic. (In tests the
 // virtualizer is mocked to render all rows — see test/setup.ts — so jsdom's
 // zero-height layout can't hide rows.)
@@ -103,7 +103,7 @@ export function MessageList({
       <ul className="relative" data-testid="vdl2-list" style={{ height: rowVirt.getTotalSize() }}>
         {rowVirt.getVirtualItems().map((vrow) => {
           const m = messages[vrow.index];
-          const decoded = decode && m.body ? decode(m) : null;
+          const decoded = m.body ? decode(m) : null;
           // Body-category chip — only when the row has no richer rendering already
           // (airframes decoded line or a filed_route line).
           const kind = !decoded && !m.filed_route ? bodyKind(m.body, m.label, m.sublabel) : null;
@@ -147,6 +147,15 @@ export function MessageList({
                   ))}
                 {m.flight && <span className="font-mono">{m.flight}</span>}
                 {m.label && <LabelBadge code={m.label} />}
+                {m.more === 1 && (
+                  <Badge
+                    variant="muted"
+                    title="Intermediate block of a multi-block message"
+                    data-testid="vdl2-row-partial"
+                  >
+                    partial
+                  </Badge>
+                )}
                 {kind && (
                   <span
                     className="rounded border border-[var(--color-border-default)] px-1.5 py-0.5 text-[11px] text-[var(--color-text-dim)]"
