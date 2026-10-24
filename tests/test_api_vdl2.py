@@ -13,7 +13,7 @@ from readsbstats import config, web
 from readsbstats.api import _deps
 from readsbstats.api import vdl2 as vdl2_api
 from readsbstats.vdl2 import db as vdl2_db
-from tests._helpers import iter_api_routes, make_db, make_vdl2_db
+from tests._helpers import dumpvdl2_record, iter_api_routes, make_db, make_vdl2_db
 
 
 @pytest.fixture(autouse=True)
@@ -1154,3 +1154,83 @@ class TestFiledRoute:
         assert rte_row["filed_route"]["dep"] == "EPWA"
         assert rte_row["filed_route"]["arr"] == "EDDF"
         assert rte_row["filed_route"]["company_route"] == "BCG59-U000-08E7 BCG38-0MFC-0017"
+
+
+class TestDumpvdl2Ingest:
+    """Rows ingested through the real dumpvdl2 normalizer: libacars strips the H1
+    '#<SL>B[/<MFI> ]' prefix into sublabel/mfi, so the API must rebuild it for the
+    prefix-keyed parsers while leaving the stored body untouched."""
+
+    @pytest.fixture()
+    def dv_client(self, monkeypatch):
+        monkeypatch.setattr(config, "VDL2_ENABLED", True)
+        monkeypatch.setattr(_deps, "_db", make_db())
+        conn = make_vdl2_db()
+        now = int(time.time())
+        vdl2_db.insert_messages(conn, [
+            dumpvdl2_record("m1_pos", now - 40),
+            dumpvdl2_record("m1_route", now - 30),
+            dumpvdl2_record("m1_mfi", now - 20),
+            dumpvdl2_record("xid_ho", now - 10),
+            # vdlm2dec-shaped #M1BPOS row (prefix kept in body, no sublabel) — regression guard
+            {"ts": now - 5, "icao_hex": "48ae21", "label": "H1",
+             "body": "#M1BPOSN52081E020017,N51491E019372,191139,370,BOKSU,M51,19155"},
+        ])
+        conn.commit()
+        monkeypatch.setattr(vdl2_db, "_conn", conn)
+        app = FastAPI()
+        web._include_optional_routers(app)
+        with TestClient(app) as c:
+            yield c
+        conn.close()
+
+    def test_m1_pos_row_is_precise_point(self, dv_client):
+        pts = dv_client.get("/api/vdl2/positions?minutes=60").json()["points"]
+        mine = [p for p in pts if p["icao_hex"] == "4787a0"]
+        assert len(mine) == 1
+        assert mine[0]["precise"] is True
+        assert abs(mine[0]["lat"] - (52 + 25.6 / 60)) < 1e-5    # N52256
+        assert abs(mine[0]["lon"] - (19 + 18.6 / 60)) < 1e-5    # E019186
+
+    def test_m1_non_pos_row_yields_no_point(self, dv_client):
+        # AFN/FPO row (sublabel M1 + mfi B0, body not POS...) must not become a point
+        pts = dv_client.get("/api/vdl2/positions?minutes=60").json()["points"]
+        assert all(p["icao_hex"] != "48ea00" for p in pts)
+
+    def test_m1_route_row_has_filed_route_and_untouched_body(self, dv_client):
+        msgs = dv_client.get("/api/vdl2/messages").json()["messages"]
+        row = next(m for m in msgs if m["icao_hex"] == "47bf9d")
+        assert row["filed_route"]["dep"] == "EPWA"
+        assert row["filed_route"]["arr"] == "ENGM(19R)"
+        assert row["body"].startswith("POSN52182E020495")    # no '#M1B' rebuilt into body
+        assert row["sublabel"] == "M1"
+        assert row["mfi"] is None
+
+    def test_mfi_exposed_and_body_unchanged(self, dv_client):
+        msgs = dv_client.get("/api/vdl2/messages").json()["messages"]
+        row = next(m for m in msgs if m["icao_hex"] == "48ea00")
+        assert row["sublabel"] == "M1" and row["mfi"] == "B0"
+        assert row["body"].startswith("EPWW.AFN/")
+        assert "filed_route" not in row
+
+    def test_xid_row_is_coarse_point(self, dv_client):
+        pts = dv_client.get("/api/vdl2/positions?minutes=60").json()["points"]
+        mine = [p for p in pts if p["icao_hex"] == "48c132"]
+        assert len(mine) == 1
+        assert mine[0]["precise"] is False
+        assert abs(mine[0]["lat"] - 52.3) < 0.01
+        assert abs(mine[0]["lon"] - 20.5) < 0.01
+
+    def test_xid_dsta_reported_by_oooi(self, dv_client):
+        data = dv_client.get("/api/vdl2/oooi/48c132").json()
+        assert data["has_oooi"] is False
+        assert data["dsta"] == "LATI"
+
+    def test_vdlm2dec_m1bpos_still_works(self, dv_client):
+        pts = dv_client.get("/api/vdl2/positions?minutes=60").json()["points"]
+        mine = [p for p in pts if p["icao_hex"] == "48ae21"]
+        assert len(mine) == 1 and mine[0]["precise"] is True
+        assert abs(mine[0]["lat"] - 52.135) < 1e-6
+        msgs = dv_client.get("/api/vdl2/messages").json()["messages"]
+        row = next(m for m in msgs if m["icao_hex"] == "48ae21")
+        assert row["sublabel"] is None and row["mfi"] is None

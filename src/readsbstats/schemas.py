@@ -324,6 +324,9 @@ class Vdl2Message(ApiModel):
     app_ver: Optional[str] = None
     body: Optional[str] = None
     decoder: Optional[str] = None
+    # dumpvdl2 only: libacars-stripped H1 '#<SL>B[/<MFI> ]' prefix parts (body excludes them)
+    sublabel: Optional[str] = None
+    mfi: Optional[str] = None
     filed_route: Optional[Vdl2FiledRoute] = None
 
 
@@ -371,8 +374,9 @@ class Vdl2Position(ApiModel):
     icao_hex: Optional[str] = None
     ts: Optional[int] = None
     label: Optional[str] = None
-    # True = precise (~0.001°) position parsed from a Label-16 AUTPOS body or a #M1BPOS body;
-    # False = coarse (~0.1°) VDL2 XID link-frame fix from the lat/lon column.
+    # True = precise (~0.001°) position parsed from a Label-16 AUTPOS body or a #M1BPOS body
+    # (vdlm2dec prefix kept in body, or dumpvdl2 via sublabel M1);
+    # False = coarse (~0.1°) VDL2 XID link-frame fix from the lat/lon column (both decoders).
     precise: Optional[bool] = None
 
 
