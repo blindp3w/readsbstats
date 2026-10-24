@@ -5,6 +5,76 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 2.28.0 — 2026-10-24
+
+Cleaner VDL2 message feed and more decoded ACARS messages. dumpvdl2 stored every
+block of a multi-block ACARS message as its own row, so the same text appeared
+two or three times, and the duplicate `#M1BPOS` positions doubled the map points.
+Earlier blocks are now marked at ingest and hidden by default. Local decoders
+also cover more message types, and Air France and KLM route reports now feed the
+OOOI route. Adds two nullable `vdl2_messages` columns, with no change to
+`history.db`.
+
+### Added
+
+- **Decoded messages for more labels.** The Messages feed and the flight ACARS
+  panel decode SA (media advisory), B9 (D-ATIS request), 5U (weather request),
+  Ryanair 8A/8C/8F/8S door events, Air France label 26 (ETA report) and KLM
+  label 20 `RST` (route report). The decoders run in the browser after the
+  bundled airframes decoder, and each was validated against the 90-day feed.
+  The Ryanair door meaning is inferred from ADS-B timing, not from a published
+  spec, so the UI marks the door as "probable".
+- **Show partial blocks.** The Messages page has a "Show partial blocks" toggle
+  (`fragments=true`). Intermediate blocks of a multi-block message carry a
+  `partial` badge.
+- **Air France and KLM route sources.** The OOOI route now also comes from
+  label 26 (`"label26"`) and KLM label-20 `RST` (`"label20"`), in that order
+  after the ATN logon and before label 49.
+
+### Changed
+
+- **Duplicate multi-block messages are hidden.** When a multi-block message is
+  reassembled, its final block carries the full text, so the earlier blocks are
+  duplicates. At ingest, an earlier block is marked `superseded` when its body
+  is contained in the final block's body and both share the same airframe,
+  label and message number, within 300 s. Marked rows are hidden from the feed,
+  the flight ACARS panel, `/api/vdl2/positions` and `/api/vdl2/oooi`. They are
+  not deleted. On the 90-day database, 29,548 rows are marked. Positions on the
+  map go from 690 to 623 points, which are the same 604 unique fixes.
+- **Counters still count received frames.** `/api/vdl2/stats`, `/timeseries`,
+  `/signal`, `/active`, the health check and the flight `has_acars` flag include
+  partial blocks and superseded rows, because they measure the feed and not
+  distinct messages.
+
+### Schema & API
+
+- No change to the `history.db` schema (still version 6) or to the `vdl2.db`
+  schema beyond two nullable `vdl2_messages` columns, `more` and `superseded`.
+  They are added idempotently on open.
+- `more` is `1` for an intermediate block and `0` for a final or single block.
+  It is `NULL` for non-ACARS rows and under vdlm2dec. `superseded` is `1` when
+  the row is hidden. Both are returned by `/api/vdl2/messages` and
+  `/api/vdl2/messages/{icao_hex}`.
+- `/api/vdl2/messages` and `/api/vdl2/messages/{icao_hex}` gain
+  `fragments` (default `false`). When `false`, superseded rows are hidden.
+- `/api/vdl2/oooi` `route.source` can now be `"label26"` or `"label20"`.
+
+### Upgrade notes
+
+- Run the backfill once after updating to 2.28.0. It fills `more` on rows
+  stored by earlier versions and then marks the superseded duplicates. It is
+  idempotent and safe while the ingest service runs. Without it, duplicates
+  stored before the upgrade stay visible until they age out. On a Raspberry Pi 4
+  expect several minutes, because it reads every ACARS row once.
+
+  ```bash
+  sudo -u readsbstats /opt/readsbstats/venv/bin/python \
+      /opt/readsbstats/scripts/backfill_vdl2_dumpvdl2.py \
+      --db /mnt/ext/readsbstats/vdl2.db
+  ```
+
+  See [Operations](docs/operations.md#vdl2--acars-ingest) for details.
+
 ## 2.27.0 — 2026-10-24
 
 More precise VDL2 map positions and a reported route on the flight page. Precise
