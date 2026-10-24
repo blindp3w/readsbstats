@@ -147,6 +147,27 @@ describe('OooiCard', () => {
     expect(screen.queryByTestId('flight-oooi-dsta-only')).toBeNull();
   });
 
+  it.each([
+    ['label26', 'an Air France ETA report'],
+    ['label20', 'a KLM route report'],
+  ])('shows the %s note for a route-only summary', async (source, phrase) => {
+    stubFetch({
+      vdl2_enabled: true,
+      oooi: {
+        has_oooi: false,
+        dsta: null,
+        dep: null,
+        arr: null,
+        route: { dep_icao: 'EPWA', dest_icao: 'EGLL', flight: null, source },
+      },
+    });
+    wrap();
+    await waitFor(() => screen.getByTestId('flight-oooi-route-only'));
+    expect(screen.getByTestId('flight-oooi-route-only').textContent).toContain(
+      `No OOOI block times parsed \u2014 route from ${phrase}.`,
+    );
+  });
+
   it('renders when the summary carries nothing but a route', async () => {
     stubFetch({
       vdl2_enabled: true,

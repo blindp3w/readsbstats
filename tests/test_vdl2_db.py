@@ -376,3 +376,132 @@ class TestSublabelMfiColumns:
         ).fetchall()
         assert len(hits) == 1
         conn.execute("INSERT INTO vdl2_fts(vdl2_fts) VALUES('integrity-check')")
+
+
+class TestMoreSupersededColumns:
+    """``more`` (acars.more) / ``superseded`` (fragment hidden by a final block)."""
+
+    _LEGACY_DDL = TestSignalColumns._LEGACY_DDL
+
+    def test_migrate_adds_columns_to_existing_db(self):
+        conn = vdl2_db.connect(":memory:")
+        conn.executescript(self._LEGACY_DDL)
+        conn.execute(f"PRAGMA user_version = {vdl2_db.VDL2_SCHEMA_VERSION}")
+        conn.commit()
+        before = {r[1] for r in conn.execute("PRAGMA table_info(vdl2_messages)")}
+        assert "more" not in before and "superseded" not in before
+        vdl2_db.migrate(conn)
+        vdl2_db.migrate(conn)       # idempotent
+        after = {r[1] for r in conn.execute("PRAGMA table_info(vdl2_messages)")}
+        assert "more" in after and "superseded" in after
+
+    def test_fresh_db_has_columns_and_more_in_insert_columns(self):
+        conn = make_vdl2_db()
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(vdl2_messages)")}
+        assert "more" in cols and "superseded" in cols
+        assert "more" in vdl2_db.COLUMNS
+        assert "superseded" in vdl2_db.COLUMNS
+
+    def test_insert_and_readback(self):
+        conn = make_vdl2_db()
+        vdl2_db.insert_messages(conn, [_msg(more=1), _msg(more=0), _msg()])
+        conn.commit()
+        got = [r["more"] for r in conn.execute("SELECT more FROM vdl2_messages ORDER BY id")]
+        assert got == [1, 0, None]
+
+
+class TestMarkSuperseded:
+    _FULL = "POSN52256E019186,ADOXO,200245,380,PENOR,202912,KSD,M52,226050,11122DB"
+    _PART = _FULL[:40]
+    T = 1_700_000_000
+
+    def _db(self, rows):
+        conn = make_vdl2_db()
+        vdl2_db.insert_messages(conn, rows)
+        conn.commit()
+        return conn
+
+    def _frag(self, **kw):
+        base = {"ts": self.T, "icao_hex": "48e95c", "label": "H1", "msgno": "D75",
+                "more": 1, "body": self._PART}
+        base.update(kw)
+        return base
+
+    def _final(self, **kw):
+        base = {"ts": self.T + 5, "icao_hex": "48e95c", "label": "H1", "msgno": "D75",
+                "more": 0, "body": self._FULL}
+        base.update(kw)
+        return base
+
+    @staticmethod
+    def _flags(conn):
+        return [r["superseded"] for r in
+                conn.execute("SELECT superseded FROM vdl2_messages ORDER BY id")]
+
+    def _run(self, frag_kw=None, final_kw=None):
+        frag, final = self._frag(**(frag_kw or {})), self._final(**(final_kw or {}))
+        conn = self._db([frag, final])
+        n = vdl2_db.mark_superseded(conn, [final])
+        conn.commit()
+        return conn, n
+
+    def test_contained_fragment_marked(self):
+        conn, n = self._run()
+        assert n == 1
+        assert self._flags(conn) == [1, None]    # the final itself is never marked
+
+    def test_fragment_text_not_in_final_not_marked(self):
+        conn, n = self._run(frag_kw={"body": "something else entirely, different text"})
+        assert n == 0 and self._flags(conn) == [None, None]
+
+    @pytest.mark.parametrize("kw", [
+        {"msgno": "D76"}, {"icao_hex": "48e95d"}, {"label": "Q0"},
+    ])
+    def test_other_message_identity_not_marked(self, kw):
+        conn, n = self._run(frag_kw=kw)
+        assert n == 0 and self._flags(conn) == [None, None]
+
+    def test_outside_window_not_marked(self):
+        w = vdl2_db.SUPERSEDE_WINDOW_SEC
+        conn, n = self._run(frag_kw={"ts": self.T + 5 - w - 1})
+        assert n == 0
+        conn, n = self._run(frag_kw={"ts": self.T + 5 - w})    # boundary is inclusive
+        assert n == 1
+
+    def test_fragment_after_final_not_marked(self):
+        conn, n = self._run(frag_kw={"ts": self.T + 6})
+        assert n == 0 and self._flags(conn) == [None, None]
+
+    def test_short_body_not_marked(self):
+        conn, n = self._run(frag_kw={"body": self._FULL[:vdl2_db.SUPERSEDE_MIN_BODY - 1]})
+        assert n == 0 and self._flags(conn) == [None, None]
+
+    def test_final_that_is_not_final_is_ignored(self):
+        # a more=1 / more=NULL "final" must not hide anything
+        for more in (1, None):
+            frag, final = self._frag(), self._final(more=more)
+            conn = self._db([frag, final])
+            assert vdl2_db.mark_superseded(conn, [final]) == 0
+
+    def test_final_without_msgno_or_body_is_ignored(self):
+        for kw in ({"msgno": None}, {"body": None}, {"label": None}, {"icao_hex": None}):
+            frag, final = self._frag(), self._final(**kw)
+            conn = self._db([frag, final])
+            assert vdl2_db.mark_superseded(conn, [final]) == 0
+
+    def test_second_call_returns_zero(self):
+        conn, n = self._run()
+        assert n == 1
+        final = self._final()
+        assert vdl2_db.mark_superseded(conn, [final]) == 0
+
+    def test_empty_records(self):
+        assert vdl2_db.mark_superseded(make_vdl2_db(), []) == 0
+
+    def test_fts_still_finds_final_text_and_stays_consistent(self):
+        conn, _ = self._run()
+        hits = conn.execute(
+            "SELECT rowid FROM vdl2_fts WHERE vdl2_fts MATCH ?", ('"ADOXO"',)
+        ).fetchall()
+        assert len(hits) == 2                       # fragment stays indexed (hidden, not deleted)
+        conn.execute("INSERT INTO vdl2_fts(vdl2_fts) VALUES('integrity-check')")

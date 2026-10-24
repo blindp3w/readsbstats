@@ -1,6 +1,6 @@
 """OOOI (Out/Off/On/In) block-time parsing from ACARS message bodies.
 
-Three formats, in order of what a real air-side VDL2 feed actually carries
+Formats, in order of what a real air-side VDL2 feed actually carries
 (validated against a 6.4-day live dump, 13.6k msgs, 2026-06):
 
 1. **Q-series compact reports** (``parse_qseries``) — labels QP=OUT, QQ=OFF,
@@ -13,7 +13,14 @@ Three formats, in order of what a real air-side VDL2 feed actually carries
    ARINC-standard); the observed Etihad/LOT form is
    ``01DCAP    ETD159/090545OMAAEPWA`` = flight/DDHHMM + dep+arr pair. Used as
    a route source only — no OOOI times are derived from it.
-3. **Slash-delimited TEI** (``parse_oooi``) — e.g.
+3. **Air France label 26** (``parse_label26``) — ``1049EPWAAF1147/18\r1241LFPG27R``
+   = report HHMM, departure, flight/day, ETA HHMM, destination, optional
+   runway. Route source only.
+4. **KLM label 20 ``RST``** (``parse_label20_rst``) —
+   ``RST53A27145652KLM49N  EHAMEPWA`` = day, HHMMSS, callsign, departure,
+   destination. Route source only (other label-20 bodies, ``POS…``/``FMM…``,
+   are not routes).
+5. **Slash-delimited TEI** (``parse_oooi``) — e.g.
    ``DEP / FI JA401/AN CC-AWE/DA SPJC/DS SCEL/OT 0030`` with ``AN``=registration,
    ``DA``=departure, ``DS``/``AD``=destination, ``FI``=flight, ``OT``/``OFF``/
    ``ON``/``IN``=times. This is the ARINC-620 *ground-side* Standard Message
@@ -58,6 +65,12 @@ _QSERIES_RE = re.compile(rf"^([A-Z]{{4}})([A-Z]{{4}})({_HHMM})({_HHMM})?(?=$|[\s
 # other carriers' incompatible label-49 bodies. Flight id allows up to 2
 # trailing letters (DLH4AB-style).
 _LABEL49_RE = re.compile(r"\b([A-Z]{3}\d{1,4}[A-Z]{0,2})/\d{6}([A-Z]{4})([A-Z]{4})(?![A-Z0-9])")
+# Air France label 26: HHMM dep flight/DD [\r|space] ETA-HHMM dest [runway].
+_LABEL26_RE = re.compile(
+    r"(\d{4})([A-Z]{4})([A-Z0-9]{2,3}\d{1,4}[A-Z]?)/(\d{2})\s*(\d{4})([A-Z]{4})(\w*)")
+# KLM label 20 RST: day, HHMMSS, callsign, dep, dest.
+_LABEL20_RST_RE = re.compile(
+    r"RST\d{2}[A-Z](\d{2})(\d{6})([A-Z0-9]{3,8})\s+([A-Z]{4})([A-Z]{4})")
 # Our own synthesized ATN CM-logon body (atn.summarize_cm_logon): not decoder text.
 _CM_LOGON_RE = re.compile(r"LOGON (\S+) ([A-Z]{4})-([A-Z]{4})")
 
@@ -146,6 +159,44 @@ def parse_label49(body: object) -> dict | None:
         "dep_icao": m.group(2),
         "dest_icao": m.group(3),
     }
+
+
+def parse_label26(body: object) -> dict | None:
+    """Parse an Air France label-26 report into ``{"flight", "dep_icao",
+    "dest_icao", "eta" (HHMM), "runway" (None when absent)}``, or ``None``.
+
+    ``1049EPWAAF1147/18\\r1241LFPG27R`` -> AF1147 EPWA->LFPG, ETA 1241, rwy 27R.
+    Validated on a 90-day DB: 142/142 label-26 rows match; the route agrees with
+    the callsign-based enrichment for 131 of 141 flights (10 had no enriched
+    route). The report-time and day groups are anchors only and not returned."""
+    if not isinstance(body, str) or not body:
+        return None
+    m = _LABEL26_RE.fullmatch(body)
+    if m is None:
+        return None
+    return {
+        "flight": m.group(3),
+        "dep_icao": m.group(2),
+        "dest_icao": m.group(6),
+        "eta": m.group(5),
+        "runway": m.group(7) or None,
+    }
+
+
+def parse_label20_rst(body: object) -> dict | None:
+    """Parse a KLM label-20 ``RST`` report into ``{"flight", "dep_icao",
+    "dest_icao"}``, or ``None`` (incl. every non-RST label-20 body).
+
+    ``RST53A27145652KLM49N  EHAMEPWA`` -> KLM49N EHAM->EPWA. Validated on a
+    90-day DB: 41/41 RST rows match; ADS-B shows the aircraft landing at the RST
+    destination in the cases where callsign-based enrichment disagrees (KLM
+    reuses alphanumeric callsigns), so RST outranks that enrichment."""
+    if not isinstance(body, str) or not body:
+        return None
+    m = _LABEL20_RST_RE.fullmatch(body)
+    if m is None:
+        return None
+    return {"flight": m.group(3), "dep_icao": m.group(4), "dest_icao": m.group(5)}
 
 
 def parse_cm_logon(label: object, body: object) -> dict | None:

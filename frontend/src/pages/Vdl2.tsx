@@ -37,6 +37,9 @@ export default function Vdl2Page() {
   const [label, setLabel] = useSearchParam('label', '');
   const [reg, setReg] = useSearchParam('reg', '');
   const [hex, setHex] = useSearchParam('hex', '');
+  // Show intermediate blocks of reassembled multi-block messages (hidden by default).
+  const [frag, setFrag] = useSearchParam('frag', '');
+  const showFragments = frag === '1';
 
   const updateFilters = useSearchParamBatch();
 
@@ -58,7 +61,7 @@ export default function Vdl2Page() {
   }
 
   const feed = useInfiniteQuery({
-    queryKey: ['vdl2-messages', { q, label, reg, hex }],
+    queryKey: ['vdl2-messages', { q, label, reg, hex, showFragments }],
     enabled,
     initialPageParam: undefined as number | undefined,
     queryFn: ({ pageParam }) => {
@@ -68,6 +71,7 @@ export default function Vdl2Page() {
       if (label) p.set('label', label);
       if (reg) p.set('reg', reg);
       if (hex) p.set('hex', hex);
+      if (showFragments) p.set('fragments', 'true');
       return apiJson<Vdl2MessagesResponse>('vdl2/messages?' + p.toString());
     },
     getNextPageParam: (last) => last.next_before_id ?? undefined,
@@ -128,7 +132,7 @@ export default function Vdl2Page() {
     // back-to-back setSearchParams calls in a single handler (see
     // useSearchParam.ts). The qInput box re-syncs via the effect on `q`.
     setQInput('');
-    updateFilters({ q: null, label: null, reg: null, hex: null });
+    updateFilters({ q: null, label: null, reg: null, hex: null, frag: null });
   }
 
   return (
@@ -205,6 +209,19 @@ export default function Vdl2Page() {
                 data-testid="vdl2-reg"
               />
             </div>
+            <label
+              htmlFor="vdl2-frag"
+              className="flex shrink-0 cursor-pointer items-center gap-1.5 self-end pb-2 text-sm"
+            >
+              <input
+                id="vdl2-frag"
+                type="checkbox"
+                checked={showFragments}
+                onChange={(e) => setFrag(e.target.checked ? '1' : '')}
+                data-testid="vdl2-frag"
+              />
+              Show partial blocks
+            </label>
             {hex && (
               <Badge variant="default" data-testid="vdl2-hex-chip">
                 hex: {hex}

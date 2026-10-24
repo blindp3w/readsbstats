@@ -89,7 +89,7 @@ def vdl2_health() -> dict:
 _LIST_COLS = (
     "id, ts, icao_hex, registration, flight, label, mode, block_id, ack, "
     "msgno, freq, station_id, toaddr, dsta, lat, lon, alt, epu, app_name, "
-    "app_ver, body, decoder, sublabel, mfi"
+    "app_ver, body, decoder, sublabel, mfi, more, superseded"
 )
 
 
@@ -142,11 +142,15 @@ def _rows_to_messages(rows) -> list[dict]:
 def _query_messages(
     *, limit: int, before_id: int | None, label: str | None,
     hex_: str | None, reg: str | None, since: int | None, until: int | None,
-    q: str | None, icao_eq: str | None = None,
+    q: str | None, icao_eq: str | None = None, fragments: bool = False,
 ) -> dict:
     conn = vdl2_db.web_conn()
     where: list[str] = []
     params: list = []
+    if not fragments:
+        # Hide earlier blocks of a multi-block message once its final block carries
+        # the full text (marked at ingest / by the backfill; NULL-safe).
+        where.append("superseded IS NOT 1")
     if icao_eq is not None:
         where.append("icao_hex = ?")
         params.append(icao_eq)
@@ -215,15 +219,18 @@ def api_vdl2_messages(
     q: str | None = Query(None, max_length=200),
     since: int | None = Query(None, ge=0),
     until: int | None = Query(None, ge=0),
+    fragments: bool = Query(False),
 ) -> dict:
     """Newest-first message feed (by ingest id) with optional filters + full-text
     search. Keyset pagination via ``before_id`` (pass the previous response's
-    ``next_before_id`` to load older messages)."""
+    ``next_before_id`` to load older messages). Earlier blocks of a multi-block
+    message whose final block carries the full text (``superseded``) are hidden;
+    ``fragments=true`` includes them."""
     _check_window(since, until)
     with _vdl2_guard():
         return _query_messages(
             limit=limit, before_id=before_id, label=label, hex_=hex, reg=reg,
-            since=since, until=until, q=q,
+            since=since, until=until, q=q, fragments=fragments,
         )
 
 
@@ -236,15 +243,17 @@ def api_vdl2_aircraft(
     q: str | None = Query(None, max_length=200),
     since: int | None = Query(None, ge=0),
     until: int | None = Query(None, ge=0),
+    fragments: bool = Query(False),
 ) -> dict:
     """All messages from one airframe (by ICAO hex), newest-first. ``since``/
-    ``until`` (epoch) scope it to a flight window for the flight-detail panel."""
+    ``until`` (epoch) scope it to a flight window for the flight-detail panel.
+    Superseded block fragments are hidden unless ``fragments=true``."""
     hexv = _deps._parse_icao_path(icao_hex)
     _check_window(since, until)
     with _vdl2_guard():
         return _query_messages(
             limit=limit, before_id=before_id, label=None, hex_=None, reg=None,
-            since=since, until=until, q=q, icao_eq=hexv,
+            since=since, until=until, q=q, icao_eq=hexv, fragments=fragments,
         )
 
 
@@ -286,6 +295,8 @@ def api_vdl2_stats() -> dict:
 
 
 def _compute_stats() -> dict:
+    # Stats count received frames (incl. partial blocks and superseded fragments) by
+    # design — they measure the feed, not distinct messages.
     conn = vdl2_db.web_conn()
     now = int(time.time())
     # Single table pass for the three headline counts.
@@ -406,8 +417,9 @@ def api_vdl2_oooi(
     """OOOI block-time summary for one airframe over a flight window. The latest
     slash-TEI DEP/ARR bodies win; where those are absent (the norm on air-side
     feeds) events are synthesized from Q-series QP/QQ/QR/QS compact reports. A
-    `route` (the aircraft's own ATN CM logon, else an airline-defined label-49
-    movement report) fills route gaps on events plus the `dsta` destination
+    `route` (the aircraft's own ATN CM logon, else an Air France label-26 report,
+    else a KLM label-20 `RST` report, else an airline-defined label-49 movement
+    report) fills route gaps on events plus the `dsta` destination
     fallback. The SPA hides the card when `has_oooi` is false and there is no
     `dsta` or `route`."""
     hexv = _deps._parse_icao_path(icao_hex)
@@ -434,7 +446,7 @@ def _compute_oooi(icao_hex: str, since: int | None, until: int | None) -> dict:
     params.append(_OOOI_SCAN_LIMIT)
     rows = conn.execute(
         f"SELECT body, dsta, ts, label, registration, flight "
-        f"FROM vdl2_messages WHERE {' AND '.join(where)} "
+        f"FROM vdl2_messages WHERE {' AND '.join(where)} AND superseded IS NOT 1 "
         "ORDER BY id DESC LIMIT ?",
         params,
     ).fetchall()
@@ -444,6 +456,8 @@ def _compute_oooi(icao_hex: str, since: int | None, until: int | None) -> dict:
     q_partials: list[dict] = []
     route49: dict | None = None
     route_cm: dict | None = None
+    route26: dict | None = None
+    route20: dict | None = None
     # Rows are newest-first, so the first DEP/ARR we parse is the most recent.
     for r in rows:
         if dsta is None and r["dsta"]:
@@ -459,6 +473,10 @@ def _compute_oooi(icao_hex: str, since: int | None, until: int | None) -> dict:
             route49 = oooi.parse_label49(r["body"])
         elif lab == "CM" and route_cm is None:
             route_cm = oooi.parse_cm_logon(lab, r["body"])
+        elif lab == "26" and route26 is None:
+            route26 = oooi.parse_label26(r["body"])
+        elif lab == "20" and route20 is None:
+            route20 = oooi.parse_label20_rst(r["body"])
         parsed = oooi.parse_oooi(r["body"])
         if parsed is not None:
             if parsed["type"] == "DEP" and dep is None:
@@ -480,16 +498,17 @@ def _compute_oooi(icao_hex: str, since: int | None, until: int | None) -> dict:
         if arr is None:
             arr = _synth_q_event("ARR", phases.get("on"), phases.get("in"))
 
-    # The aircraft's own CM logon beats an airline-defined label-49 movement report.
-    # Either carries a dep+arr pair: fill route gaps on events, and serve as the
-    # `dsta` fallback when nothing else parsed.
+    # Precedence: the aircraft's own CM logon > Air France label 26 > KLM label-20
+    # RST > airline-defined label 49. Each carries a dep+arr pair: fill route gaps
+    # on events, and serve as the `dsta` fallback when nothing else parsed. Only
+    # the four contract keys are copied (no eta/runway — ApiModel is extra="allow").
     route: dict | None = None
-    if route_cm is not None:
-        route = {"dep_icao": route_cm["dep_icao"], "dest_icao": route_cm["dest_icao"],
-                 "flight": route_cm["flight"], "source": "cm"}
-    elif route49 is not None:
-        route = {"dep_icao": route49["dep_icao"], "dest_icao": route49["dest_icao"],
-                 "flight": route49["flight"], "source": "label49"}
+    for src, rec in (("cm", route_cm), ("label26", route26),
+                     ("label20", route20), ("label49", route49)):
+        if rec is not None:
+            route = {"dep_icao": rec["dep_icao"], "dest_icao": rec["dest_icao"],
+                     "flight": rec["flight"], "source": src}
+            break
     if route is not None:
         for ev in (dep, arr):
             if ev is not None:
@@ -886,30 +905,31 @@ def _compute_positions(minutes: int) -> dict:
     label_rows = conn.execute(
         # placeholder count comes from the module constant, never user input
         "SELECT id, icao_hex, ts, label, body FROM vdl2_messages "
-        f"WHERE label IN ({','.join('?' * len(labels))}) AND ts >= ? "
+        f"WHERE label IN ({','.join('?' * len(labels))}) AND ts >= ? AND superseded IS NOT 1 "
         "ORDER BY ts DESC, id DESC LIMIT ?",
         (*labels, cutoff, _POSITIONS_LABEL_SCAN_CAP),
     ).fetchall()
     coarse_rows = conn.execute(
         "SELECT id, lat, lon, icao_hex, ts, label FROM vdl2_messages "
-        "WHERE lat IS NOT NULL AND lon IS NOT NULL AND ts >= ? "
+        "WHERE lat IS NOT NULL AND lon IS NOT NULL AND ts >= ? AND superseded IS NOT 1 "
         "ORDER BY ts DESC, id DESC LIMIT ?",
         (cutoff, _POSITIONS_CAP),
     ).fetchall()
     m1bpos_rows = conn.execute(
         "SELECT id, icao_hex, ts, label, body, sublabel, mfi FROM vdl2_messages "
-        "WHERE ts >= ? AND (body LIKE '#M1BPOS%' OR (sublabel = 'M1' AND body LIKE 'POS%')) "
+        "WHERE ts >= ? AND superseded IS NOT 1 "
+        "AND (body LIKE '#M1BPOS%' OR (sublabel = 'M1' AND body LIKE 'POS%')) "
         "ORDER BY ts DESC, id DESC LIMIT ?",
         (cutoff, _POSITIONS_M1BPOS_SCAN_CAP),
     ).fetchall()
     g59_rows = conn.execute(
         "SELECT id, icao_hex, ts, label, body FROM vdl2_messages "
-        "WHERE ts >= ? AND body LIKE '59,G,%' ORDER BY ts DESC, id DESC LIMIT ?",
+        "WHERE ts >= ? AND superseded IS NOT 1 AND body LIKE '59,G,%' ORDER BY ts DESC, id DESC LIMIT ?",
         (cutoff, _POSITIONS_59G_SCAN_CAP),
     ).fetchall()
     adsc_rows = conn.execute(
         "SELECT id, icao_hex, ts, label, raw FROM vdl2_messages "
-        "WHERE label = 'B6' AND ts >= ? ORDER BY ts DESC, id DESC LIMIT ?",
+        "WHERE label = 'B6' AND ts >= ? AND superseded IS NOT 1 ORDER BY ts DESC, id DESC LIMIT ?",
         (cutoff, _POSITIONS_ADSC_SCAN_CAP),
     ).fetchall()
 

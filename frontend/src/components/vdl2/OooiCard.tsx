@@ -4,7 +4,7 @@ import { apiJson } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Badge } from '@/components/ui/Badge';
 import { useVdl2FlightWindow } from '@/hooks/useVdl2Enabled';
-import type { Vdl2OooiSummary } from '@/lib/types';
+import type { Vdl2OooiRoute, Vdl2OooiSummary } from '@/lib/types';
 
 // Route confirmation + (when available) OOOI block times for this flight.
 // Events come from slash-TEI bodies or are synthesized server-side from
@@ -86,10 +86,7 @@ export function OooiCard({ icao, firstSeen, lastSeen, scheduledOrigin, scheduled
         )}
         {!data.has_oooi && data.route && (
           <p className="text-xs text-[var(--color-text-dim)]" data-testid="flight-oooi-route-only">
-            No OOOI block times parsed — route from{' '}
-            {data.route.source === 'cm'
-              ? "the aircraft's ATN logon."
-              : 'an airline movement report.'}
+            No OOOI block times parsed — route from {ROUTE_SOURCE_NOTE[data.route.source]}
           </p>
         )}
         {!data.has_oooi && !data.route && data.dsta && (
@@ -101,6 +98,13 @@ export function OooiCard({ icao, firstSeen, lastSeen, scheduledOrigin, scheduled
     </Card>
   );
 }
+
+const ROUTE_SOURCE_NOTE: Record<Vdl2OooiRoute['source'], string> = {
+  cm: "the aircraft's ATN logon.",
+  label49: 'an airline movement report.',
+  label26: 'an Air France ETA report.',
+  label20: 'a KLM route report.',
+};
 
 type Verdict = 'match' | 'mismatch' | null;
 

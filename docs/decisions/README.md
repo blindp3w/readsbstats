@@ -28,6 +28,7 @@ a date-stamped **Revision** note (see ADR-0010).
 | [0017](0017-client-side-acars-decoding.md) | Client-side ACARS decoding + server-side `#M1BPOS` positions and filed routes | Accepted | 2026-06-13 |
 | [0018](0018-dumpvdl2-sublabel-columns.md) | dumpvdl2 H1 sublabel/MFI as columns; body kept verbatim | Accepted | 2026-10-24 |
 | [0019](0019-vdl2-position-and-route-sources.md) | Precise positions from a validated label whitelist; ATN CM logon as a reported route | Accepted | 2026-10-24 |
+| [0020](0020-vdl2-multiblock-fragments-and-local-decoders.md) | Hide superseded multi-block ACARS fragments; local decoders for more labels; AF and KLM route sources | Accepted | 2026-10-24 |
 
 ## Adding an ADR
 

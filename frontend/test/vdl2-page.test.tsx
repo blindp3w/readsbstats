@@ -6,7 +6,7 @@
  * notice shows when off, and the nav link follows the capability flag.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { render, waitFor } from '@testing-library/react';
+import { render, waitFor, fireEvent } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { TooltipProvider } from '@/components/ui/Tooltip';
@@ -109,6 +109,46 @@ describe('Vdl2 page', () => {
     stubFetch({ vdl2_enabled: true, messages: [] });
     const { findByTestId } = renderPage();
     expect(await findByTestId('vdl2-empty')).toBeTruthy();
+  });
+});
+
+describe('Vdl2 page partial-blocks toggle', () => {
+  const messageUrls = () =>
+    (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls
+      .map((c) => String(c[0]))
+      .filter((u) => u.includes('/api/vdl2/messages'));
+
+  it('does not request fragments by default and does not count as an active filter', async () => {
+    stubFetch({ vdl2_enabled: true, messages: [] });
+    const { findByTestId, queryByTestId, getByTestId } = renderPage();
+    await findByTestId('vdl2-empty');
+    expect((getByTestId('vdl2-frag') as HTMLInputElement).checked).toBe(false);
+    expect(messageUrls().every((u) => !u.includes('fragments'))).toBe(true);
+    expect(queryByTestId('vdl2-clear')).toBeNull();
+  });
+
+  it('sends fragments=true when toggled on and Clear turns it off', async () => {
+    stubFetch({ vdl2_enabled: true, messages: [] });
+    const { findByTestId, getByTestId, queryByTestId } = renderPage();
+    await findByTestId('vdl2-empty');
+    fireEvent.click(getByTestId('vdl2-frag'));
+    await waitFor(() => expect(messageUrls().some((u) => u.includes('fragments=true'))).toBe(true));
+    expect((getByTestId('vdl2-frag') as HTMLInputElement).checked).toBe(true);
+    // Not an "active filter": no Clear button from the toggle alone.
+    expect(queryByTestId('vdl2-clear')).toBeNull();
+    fireEvent.click(getByTestId('vdl2-frag'));
+    await waitFor(() => expect((getByTestId('vdl2-frag') as HTMLInputElement).checked).toBe(false));
+  });
+
+  it('Clear resets the toggle together with other filters', async () => {
+    stubFetch({ vdl2_enabled: true, messages: [] });
+    const { findByTestId, getByTestId, queryByTestId } = renderPage();
+    await findByTestId('vdl2-empty');
+    fireEvent.click(getByTestId('vdl2-frag'));
+    fireEvent.change(getByTestId('vdl2-reg'), { target: { value: 'SP-LYF' } });
+    fireEvent.click(await findByTestId('vdl2-clear'));
+    await waitFor(() => expect(queryByTestId('vdl2-clear')).toBeNull());
+    expect((getByTestId('vdl2-frag') as HTMLInputElement).checked).toBe(false);
   });
 });
 

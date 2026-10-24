@@ -53,6 +53,7 @@ readsb and tar1090 give you a great live view — readsbstats adds the other hal
 - Heatmap and coverage overlays served from collector-maintained daily rollup tables — millisecond responses at any history size, and the all-time views survive raw-position retention
 - Optional **VDL2 / ACARS** integration — ingest VHF Data Link Mode 2 traffic from a separate SDR via [vdlm2dec](https://github.com/TLeconte/vdlm2dec): a Messages tab (live feed, filters, full-text search, human-readable label names) plus an ACARS panel on flight pages with OOOI block times (Out/Off/On/In from Q-series reports), route confirmation, and the route the aircraft reports in its ATN logon, a "has ACARS" badge/filter in history, and a Stats card. Fully pluggable (`RSBS_VDL2_ENABLED`), stored in its own database (see [Operations](docs/operations.md#vdl2--acars-ingest))
   - Human-readable decoded ACARS message bodies in the Messages log (client-side [`@airframes/acars-decoder`](https://github.com/airframes/acars-decoder), lazy-loaded; raw body always retained as fallback)
+  - Extra local decoders for media advisories, D-ATIS and weather requests, Ryanair door events (marked "probable"), and Air France / KLM ETA and route reports; earlier blocks of multi-block messages are hidden by default (a "Show partial blocks" toggle reveals them)
   - Precise positions on the map overlay from `#M1BPOS`, Label-16 AUTPOS, other airline formats (labels 17, 38, 2F, 14, B0) and ADS-C reports, each validated against ADS-B tracks; filed routes (departure/arrival/company route/SID/STAR/approach) surfaced on the message log
   - Each message row is tagged with a category chip (ACMS / engine / maintenance / route / …) so the H1-dominated feed is readable at a glance; `RTE` route messages also surface their filed departure→arrival
   - Selectable decoder (`RSBS_VDL2_DECODER`): `vdlm2dec` (ACARS) or `dumpvdl2`, which additionally decodes ATN **CPDLC** controller–pilot messages and reports per-frame signal level, surfaced as per-channel **signal (dBFS)** and **SNR (dB)** charts on the Metrics page (the charts self-hide on a vdlm2dec feed, which has no signal field)
@@ -184,8 +185,8 @@ readsbstats/
 │   ├── purge_ghosts.py         # One-shot: remove ghost positions
 │   ├── purge_bad_gs.py         # One-shot: null implausible gs values
 │   └── purge_mlat_gs_spikes.py # One-shot: null MLAT gs spikes
-├── frontend/                   # React 19 + Vite 8 SPA (552 Vitest tests)
-├── tests/                      # pytest (2337 tests) + Playwright UI (84 tests)
+├── frontend/                   # React 19 + Vite 8 SPA (591 Vitest tests)
+├── tests/                      # pytest (2397 tests) + Playwright UI (84 tests)
 ├── static/airspace/            # Bundled airspace GeoJSON
 ├── systemd/                    # Service + timer unit files
 └── docs/                       # Public documentation

@@ -351,6 +351,47 @@ class TestNormalizeDumpvdl2:
         assert rec["noise_level"] == -52.8
 
 
+class TestMoreFlag:
+    @staticmethod
+    def _rec(acars=None, **extra):
+        avlc = {"src": {"addr": "4bb875"}}
+        if acars is not None:
+            avlc["acars"] = acars
+        avlc.update(extra)
+        return normalize.normalize({"vdl2": {"avlc": avlc}}, decoder="dumpvdl2")
+
+    def test_more_true_is_1(self):
+        assert self._rec({"msg_text": "x", "more": True})["more"] == 1
+
+    def test_more_false_is_0(self):
+        assert self._rec({"msg_text": "x", "more": False})["more"] == 0
+
+    def test_acars_without_more_key_is_0(self):
+        assert self._rec({"msg_text": "x"})["more"] == 0
+
+    def test_xid_frame_is_none(self):
+        raw = {"vdl2": {"avlc": {"src": {"addr": "48c132"}, "cmd": "XID", "xid": {
+            "vdl_params": [{"name": "dst_airport", "value": "LATI"}]}}}}
+        assert normalize.normalize(raw, decoder="dumpvdl2")["more"] is None
+
+    def test_atn_frame_is_none(self):
+        # x25.more is an X.25 flag, not ACARS fragmentation — must not leak in
+        import json
+        from tests._helpers import DUMPVDL2_FRAMES
+        rec = normalize.normalize(json.loads(DUMPVDL2_FRAMES["cm_logon"]), decoder="dumpvdl2")
+        assert rec["label"] == "CM" and rec["more"] is None
+
+    def test_real_fragment_frame(self):
+        import json
+        from tests._helpers import DUMPVDL2_FRAMES
+        rec = normalize.normalize(json.loads(DUMPVDL2_FRAMES["m1_route"]), decoder="dumpvdl2")
+        assert rec["more"] == 1
+
+    def test_vdlm2dec_leaves_more_unset(self):
+        rec = normalize.normalize(dict(SAMPLE_VDLM2DEC), decoder="vdlm2dec")
+        assert rec.get("more") is None
+
+
 class TestHelperCoercion:
     """Residual branches of the _ts / _num field coercers."""
 

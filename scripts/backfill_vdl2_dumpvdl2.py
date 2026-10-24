@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""One-shot backfill: dumpvdl2 sublabel/mfi, XID position/destination, ATN CM logon.
+"""One-shot backfill: dumpvdl2 sublabel/mfi, XID position/destination, ATN CM logon,
+multi-block ACARS ``more`` flag + superseded fragments.
 
 Rows ingested before the dumpvdl2 sublabel/XID fix have NULL ``sublabel``,
 ``mfi``, ``lat``, ``lon``, ``alt`` and ``dsta`` even though their verbatim ``raw``
@@ -13,10 +14,16 @@ pre-2.27.0 ingest stored content-free: ``label='CM'``, ``body='LOGON <flight>
 update trigger, so the new bodies become searchable. Re-run once after upgrading to
 2.27.0 (safe on a DB already backfilled for sublabel/XID: those rows no-op).
 
+Since 2.28.0 it also fills ``more`` (``acars.more`` of each block) and then runs a
+second "supersede" pass: every final block (``more = 0``) hides the earlier block rows of
+the same message that its full text contains (``superseded = 1``; mark-and-hide, never
+delete; see ``vdl2_db.mark_superseded``). Re-run once after upgrading to 2.28.0 (the
+supersede pass is idempotent and also fixes rows ingested between upgrade and backfill).
+
 Safe to run while ``readsbstats-vdl2`` is live (do NOT stop any service): the
 connection is WAL with a 30 s busy_timeout and each chunk is its own short
 transaction. Only needed once, after deploying the fix; idempotent (a second run
-reports ``updated: 0``). /etc/readsbstats/vdl2.env is not loaded under sudo, so
+reports ``updated: 0`` and ``superseded: 0``). /etc/readsbstats/vdl2.env is not loaded under sudo, so
 pass ``--db`` explicitly:
 
     sudo -u readsbstats /opt/readsbstats/venv/bin/python \\
@@ -24,7 +31,8 @@ pass ``--db`` explicitly:
         --db /mnt/ext/readsbstats/vdl2.db
 
 ``--dry-run`` reports what would change without writing (and without running
-the schema migration).
+the schema migration). The supersede pass is skipped on a dry run (it depends on
+``more`` being filled first) and reports ``"superseded": null``.
 """
 from __future__ import annotations
 
@@ -38,7 +46,29 @@ from readsbstats import config
 from readsbstats.vdl2 import db as vdl2_db
 from readsbstats.vdl2 import normalize
 
-_COLS = ("sublabel", "mfi", "lat", "lon", "alt", "dsta", "label", "body")
+_COLS = ("sublabel", "mfi", "lat", "lon", "alt", "dsta", "label", "body", "more")
+
+
+def _supersede_pass(conn, chunk: int) -> int:
+    """Mark fragments hidden by their final block. Keyset-paged over the final
+    blocks, one short transaction per chunk. Returns the rows newly marked."""
+    sql = (
+        "SELECT id, ts, icao_hex, label, msgno, body, more FROM vdl2_messages "
+        "WHERE decoder = 'dumpvdl2' AND more = 0 AND msgno IS NOT NULL "
+        "AND body IS NOT NULL AND id > ? ORDER BY id LIMIT ?"
+    )
+    marked, last_id, scanned = 0, 0, 0
+    t0 = time.monotonic()
+    while True:
+        rows = conn.execute(sql, (last_id, chunk)).fetchall()
+        if not rows:
+            return marked
+        last_id = rows[-1]["id"]
+        scanned += len(rows)
+        marked += vdl2_db.mark_superseded(conn, [dict(r) for r in rows])
+        conn.commit()
+        print(f"  supersede: {scanned:,} final blocks  marked {marked:,}  "
+              f"(id {last_id}, {time.monotonic() - t0:.0f}s)", flush=True)
 
 
 def backfill(path: str, *, chunk: int = 2000, dry_run: bool = False) -> dict:
@@ -55,11 +85,11 @@ def backfill(path: str, *, chunk: int = 2000, dry_run: bool = False) -> dict:
             f"SELECT id, raw, {sel} FROM vdl2_messages "
             "WHERE decoder = 'dumpvdl2' AND id > ? "
             "AND (raw LIKE '%\"sublabel\":%' OR raw LIKE '%\"xid\":{%' "
-            "OR instr(raw, 'context_mgmt') > 0) "
+            "OR instr(raw, 'context_mgmt') > 0 OR instr(raw, '\"more\":') > 0) "
             "ORDER BY id LIMIT ?"
         )
         res = {"scanned": 0, "updated": 0, "bad_json": 0,
-               "filled": {c: 0 for c in _COLS}}
+               "filled": {c: 0 for c in _COLS}, "superseded": None}
         last_id = 0
         t0 = time.monotonic()
         while True:
@@ -92,6 +122,8 @@ def backfill(path: str, *, chunk: int = 2000, dry_run: bool = False) -> dict:
             conn.commit()   # short transaction per chunk — never blocks the live writer long
             print(f"  scanned {res['scanned']:,}  updated {res['updated']:,}  "
                   f"(id {last_id}, {time.monotonic() - t0:.0f}s)", flush=True)
+        if not dry_run:
+            res["superseded"] = _supersede_pass(conn, chunk)
         return res
     finally:
         conn.close()

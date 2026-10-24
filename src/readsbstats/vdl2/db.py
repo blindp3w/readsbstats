@@ -26,7 +26,7 @@ COLUMNS = (
     "ts", "icao_hex", "registration", "flight", "label", "mode",
     "block_id", "ack", "msgno", "freq", "station_id", "toaddr", "dsta",
     "lat", "lon", "alt", "epu", "app_name", "app_ver", "body", "raw", "decoder",
-    "sig_level", "noise_level", "sublabel", "mfi",
+    "sig_level", "noise_level", "sublabel", "mfi", "more", "superseded",
 )
 
 _DDL_MESSAGES = """
@@ -57,7 +57,9 @@ CREATE TABLE IF NOT EXISTS vdl2_messages (
     sig_level    REAL,                      -- dumpvdl2 per-frame signal level (dBFS); NULL on vdlm2dec
     noise_level  REAL,                      -- dumpvdl2 per-frame noise floor (dBFS); NULL on vdlm2dec
     sublabel     TEXT,                      -- H1 sublabel libacars stripped from the body (e.g. 'M1'); NULL on vdlm2dec
-    mfi          TEXT                       -- H1 message function id stripped from the body (e.g. 'B0'); usually NULL
+    mfi          TEXT,                      -- H1 message function id stripped from the body (e.g. 'B0'); usually NULL
+    more         INTEGER,                   -- dumpvdl2 acars.more: 1 = more blocks follow, 0 = final/only block; NULL on non-ACARS rows + vdlm2dec
+    superseded   INTEGER                    -- 1 = a later final block of the same message carries this row's text in full (hidden by default); else NULL
 );
 """
 
@@ -163,6 +165,7 @@ def ensure_schema(conn: sqlite3.Connection, *, build_fts: bool = True) -> None:
 _ADDED_COLUMNS = (
     ("sig_level", "REAL"), ("noise_level", "REAL"),
     ("sublabel", "TEXT"), ("mfi", "TEXT"),
+    ("more", "INTEGER"), ("superseded", "INTEGER"),
 )
 
 
@@ -234,6 +237,46 @@ def insert_messages(conn: sqlite3.Connection, records: list[dict]) -> int:
     sql = f"INSERT INTO vdl2_messages ({', '.join(COLUMNS)}) VALUES ({placeholders})"
     conn.executemany(sql, [tuple(r.get(c) for c in COLUMNS) for r in records])
     return len(records)
+
+
+# A final block follows its fragments within seconds (observed median 3 s, p99 23 s,
+# max 121 s on 90 days of data); the window comfortably covers that.
+SUPERSEDE_WINDOW_SEC = 300
+# Bodies shorter than this are never hidden: containment of a short scrap in a long
+# final could be accidental. No genuine fragment in the observed data was shorter.
+SUPERSEDE_MIN_BODY = 20
+
+
+def mark_superseded(conn: sqlite3.Connection, records: list[dict]) -> int:
+    """Flag earlier block rows of a multi-block ACARS message as ``superseded``.
+
+    dumpvdl2 stores every in-progress block (``more = 1``) as its own row; when
+    libacars reassembly succeeds the final block (``more = 0``) carries the FULL text,
+    so those earlier rows are duplicates. For each final-block record in ``records``
+    (``more == 0`` with ``icao_hex``/``label``/``msgno``/``body``/``ts`` all set) this
+    marks rows of the same ``(icao_hex, label, msgno)`` within the preceding
+    ``SUPERSEDE_WINDOW_SEC`` whose body is wholly contained in the final text.
+    Mark-and-hide, never delete; fragments with no complete copy stay unmarked.
+    Idempotent (``superseded IS NULL`` guard) and index-served by ``idx_vdl2_icao``;
+    FTS is untouched (its trigger fires on ``UPDATE OF body``). Runs in the caller's
+    transaction. Returns the number of rows newly marked."""
+    total = 0
+    for r in records:
+        if r.get("more") != 0:
+            continue
+        icao, label, msgno, body, ts = (
+            r.get("icao_hex"), r.get("label"), r.get("msgno"), r.get("body"), r.get("ts"))
+        if not (icao and label and msgno and body and ts):
+            continue
+        cur = conn.execute(
+            "UPDATE vdl2_messages SET superseded = 1 "
+            "WHERE icao_hex = ? AND ts BETWEEN ? - ? AND ? "
+            "AND label = ? AND msgno = ? AND more = 1 AND superseded IS NULL "
+            "AND body IS NOT NULL AND length(body) >= ? AND instr(?, body) > 0",
+            (icao, ts, SUPERSEDE_WINDOW_SEC, ts, label, msgno, SUPERSEDE_MIN_BODY, body),
+        )
+        total += cur.rowcount
+    return total
 
 
 def prune(

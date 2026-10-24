@@ -513,6 +513,47 @@ def test_main_flushes_when_batch_threshold_reached(monkeypatch, tmp_path):
 
 
 # ---------------------------------------------------------------------------
+def _multi_block_batch():
+    full = "POSN52256E019186,ADOXO,200245,380,PENOR,202912,KSD,M52,226050,11122DB"
+    base = {"icao_hex": "48e95c", "label": "H1", "msgno": "D75"}
+    return [
+        {**base, "ts": 100, "more": 1, "body": full[:30]},
+        {**base, "ts": 103, "more": 1, "body": full[:50]},
+        {**base, "ts": 106, "more": 0, "body": full},
+    ]
+
+
+def test_flush_marks_fragments_superseded_by_final():
+    conn = make_vdl2_db()
+    pending = _multi_block_batch()
+    assert vdl2_collector._flush(conn, pending) == 3
+    flags = [r[0] for r in conn.execute("SELECT superseded FROM vdl2_messages ORDER BY id")]
+    assert flags == [1, 1, None]
+
+
+def test_flush_marks_fragment_from_earlier_batch():
+    conn = make_vdl2_db()
+    batch = _multi_block_batch()
+    vdl2_collector._flush(conn, batch[:2])           # fragments only: nothing to hide yet
+    assert conn.execute("SELECT COUNT(*) FROM vdl2_messages WHERE superseded = 1").fetchone()[0] == 0
+    vdl2_collector._flush(conn, batch[2:])           # final arrives in the next batch
+    assert conn.execute("SELECT COUNT(*) FROM vdl2_messages WHERE superseded = 1").fetchone()[0] == 2
+
+
+def test_flush_rolls_back_inserts_when_marking_fails(monkeypatch):
+    conn = make_vdl2_db()
+
+    def boom(c, recs):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(vdl2_db, "mark_superseded", boom)
+    pending = _multi_block_batch()
+    assert vdl2_collector._flush(conn, pending) == 0
+    assert len(pending) == 3                          # retained for retry
+    assert conn.execute("SELECT COUNT(*) FROM vdl2_messages").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM vdl2_messages WHERE superseded = 1").fetchone()[0] == 0
+
+
 # _flush failure modes
 # ---------------------------------------------------------------------------
 
