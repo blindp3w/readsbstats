@@ -33,6 +33,15 @@ def test_web_keeps_vdl2_env_file():
     assert "EnvironmentFile=-/etc/readsbstats/vdl2.env" in _lines(SYSTEMD / "readsbstats-web.service")
 
 
+def test_vdl2_env_loads_after_settings_file_and_example_says_so():
+    # systemd lets the later EnvironmentFile win: vdl2.env (which ships an active
+    # RSBS_VDL2_ENABLED=false) overrides readsbstats.env for VDL2 vars, so the
+    # settings example must point VDL2 settings at vdl2.env.
+    lines = _lines(SYSTEMD / "readsbstats-web.service")
+    assert lines.index(OPTIONAL_LINE) < lines.index("EnvironmentFile=-/etc/readsbstats/vdl2.env")
+    assert "vdl2.env" in (SYSTEMD / "readsbstats.env.example").read_text()
+
+
 def test_env_example_exists_and_names_are_real_settings():
     example = SYSTEMD / "readsbstats.env.example"
     assert example.is_file()
