@@ -44,7 +44,7 @@ RSBS_AIRCRAFT_JSON=/tmp/rsbs_sim.json RSBS_DB_PATH=./db/history.db \
 
 ```bash
 .venv/bin/pytest                                              # 2213 Python tests
-( cd frontend && npm test )                                   # 546 Vitest tests
+( cd frontend && npm test )                                   # 552 Vitest tests
 
 # Coverage (CI gates the backend at 93%; frontend report is informational)
 .venv/bin/pytest --cov=readsbstats --cov-report=term-missing

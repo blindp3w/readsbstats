@@ -5,6 +5,69 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 2.27.0 — 2026-10-24
+
+More precise VDL2 map positions and a reported route on the flight page. Precise
+positions now come from more ACARS label formats and from ADS-C reports, each
+validated against ADS-B tracks of the same airframe. ATN Context-Management (CM)
+logons, which carry the departure and destination from the aircraft's own FMS,
+are now kept as route data and shown on the flight page's ACARS route / OOOI card. No change to the
+core database schema.
+
+### Fixed
+
+- **Label-49 movement reports lost the departure.** The OOOI route from a
+  label-49 report kept only the destination. It now reports both.
+
+### Added
+
+- **Precise map positions from more sources.** `/api/vdl2/positions` now also
+  parses label 17 (Wizz Air), 38 (Finnair), 2F, 14, B0 (FANS AFN logon), the
+  label-16-style labels (10, 13, 18, 27, 33, 12, 43, 41, 2P) and ADS-C basic
+  reports (label B6, decoded by dumpvdl2). Median error against ADS-B is
+  0.1 to 1.0 nm. Each label is parsed only by its own format parser, so a
+  coordinate-looking body under any other label is ignored.
+- **Reported route from the ATN CM logon.** dumpvdl2 decodes the logon request
+  an aircraft sends when it logs on to the ATN datalink ground system, which
+  includes its flight id, departure and destination. Those rows used to be stored without content.
+  They are now kept as `label` `CM` with a body such as
+  `LOGON RYR8414 EPMO-LATI`, and `dsta` is the destination. The stored
+  `flight` stays empty because the logon carries an ICAO callsign, not the IATA
+  ACARS flight id that the stats code expects.
+- **Route on the flight card.** The "ACARS route / OOOI" card now shows when
+  only a route is known. It shows departure and destination, and a matches /
+  differs chip against the scheduled route. It also says whether the route came
+  from the aircraft's ATN logon or from an airline movement report. Label
+  tooltips for `CM` and `CPDLC` were added.
+
+### Schema & API
+
+- No change to the `history.db` schema (still version 6) or to the `vdl2.db`
+  schema.
+- `/api/vdl2/oooi/{icao_hex}` gains an optional `route` object:
+  `{dep_icao, dest_icao, flight, source}`, where `source` is `"cm"` (ATN logon)
+  or `"label49"`. It is omitted when no route is known. The ATN logon wins over
+  label 49. The route also fills a missing departure or destination on the OOOI
+  event and the `dsta` fallback.
+- `/api/vdl2/messages` shows the new `CM` rows. `/api/vdl2/stats` `top_labels`
+  will include `CM` (about 60 a day on a busy receiver).
+
+### Upgrade notes
+
+- Run the backfill once after updating to 2.27.0. It fills `label`, `body` and
+  `dsta` on CM rows stored by earlier versions. It only fills NULL values and is
+  idempotent. It is safe while the ingest service runs. On a 90-day database it
+  filled 5,560 CM rows, and a second run updates nothing. On a Raspberry Pi 4
+  expect a few minutes.
+
+  ```bash
+  sudo -u readsbstats /opt/readsbstats/venv/bin/python \
+      /opt/readsbstats/scripts/backfill_vdl2_dumpvdl2.py \
+      --db /mnt/ext/readsbstats/vdl2.db
+  ```
+
+  See [Operations](docs/operations.md#vdl2--acars-ingest) for details.
+
 ## 2.26.0 — 2026-10-24
 
 dumpvdl2 ACARS fix. Since the VDL2 ingest moved to the dumpvdl2 decoder,
@@ -62,8 +125,8 @@ vdlm2dec feeds are unaffected.
 
 - Run the backfill once after updating to 2.26.0. It is not needed for new
   data, and rows that are not backfilled age out with
-  `RSBS_VDL2_RETENTION_DAYS`. On a 90-day / 567k-row database it finished in
-  about 3 s and filled `sublabel` on ~103k rows, `lat`/`lon`/`alt` on ~5.4k and
+  `RSBS_VDL2_RETENTION_DAYS`. On a 90-day / 567k-row database it took about
+  3½ minutes on a Raspberry Pi 4 (the ingest service kept running) and filled `sublabel` on ~103k rows, `lat`/`lon`/`alt` on ~5.4k and
   `dsta` on ~6.8k. A second run updates 0 rows:
 
   ```bash
