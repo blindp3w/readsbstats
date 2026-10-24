@@ -2,8 +2,9 @@
 
 Run via ``python -m readsbstats.vdl2_collector`` (see
 systemd/readsbstats-vdl2.service). **Consume-only**: the operator runs an
-external decoder (vdlm2dec by default) and points it at this listener with
-line-delimited JSON over UDP, e.g.::
+external decoder (dumpvdl2 recommended; set ``RSBS_VDL2_DECODER`` to match —
+the code default is still ``vdlm2dec``) and points it at this listener with
+line-delimited JSON over UDP, e.g. with the legacy vdlm2dec::
 
     vdlm2dec -g 14 -j 127.0.0.1:5556 136.725 136.775 136.875 136.975
 

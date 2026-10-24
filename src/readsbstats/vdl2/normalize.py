@@ -1,9 +1,12 @@
 """Decoder-agnostic normalization: raw decoder JSON -> one internal record.
 
-vdlm2dec is the working decoder (Airspy Mini). dumpvdl2 is the documented
-future swap; its JSON dialect differs (nested ``vdl2.avlc.acars.*``), so the
-swap is a config flip (``RSBS_VDL2_DECODER``) plus completing the dumpvdl2
-mapping here — no changes anywhere else in the pipeline.
+Two decoder dialects are supported, selected by ``RSBS_VDL2_DECODER``. dumpvdl2
+(nested ``vdl2.avlc.acars.*``) is the recommended, fully mapped decoder: signal and
+noise level, sublabel/mfi, XID position/destination, CPDLC and CM logon (ADS-C
+reports stay in ``raw`` for query-time parsing).
+vdlm2dec (flat JSON) is the limited legacy option — ACARS only: no signal level, no
+sublabel/mfi and no CPDLC/CM/ADS-C. Everything downstream of this module is
+decoder-agnostic.
 
 Every normalizer returns a dict keyed by :data:`db.COLUMNS` (missing keys
 default to ``None`` at insert time), or ``None`` to drop the datagram. Short

@@ -1,8 +1,9 @@
 # Running dumpvdl2 on an Airspy Mini (via IQ resampling)
 
-`dumpvdl2` (+ libacars) is the most capable VDL2 decoder: it decodes ACARS over
-VDL2 **plus** the ATN/OSI classes — ATN‑B1 **CPDLC**, **ADS‑C**, X.25/CLNP, **MIAM** —
-that ACARS‑only decoders like `vdlm2dec` cannot. But it has **no native Airspy
+`dumpvdl2` (+ libacars) is the most capable VDL2 decoder and the one readsbstats
+recommends and supports: it decodes ACARS over VDL2 **plus** the ATN/OSI classes —
+ATN‑B1 **CPDLC**, **ADS‑C**, X.25/CLNP, **MIAM** — that ACARS‑only decoders like
+`vdlm2dec` cannot. But it has **no native Airspy
 backend**, and the Airspy Mini's fixed sample rates can't feed it directly. The
 common advice is "it can't be done on an Airspy Mini." It can — this is the one
 working route, tested end‑to‑end.
@@ -107,10 +108,10 @@ airspace), ADS‑C, X.25/CLNP, and MIAM — none of which ACARS‑only decoders 
 also reports per‑frame `sig_level` / `noise_level`, which drive the per‑channel **signal
 level (dBFS)** and **SNR (dB)** charts on the Metrics page (vdlm2dec has no signal field,
 so those charts are present only on a dumpvdl2 feed). Note: one Airspy = one decoder, so
-dumpvdl2 **replaces** (not augments) `vdlm2dec` unless you add a second SDR.
+dumpvdl2 **replaces** (not augments) `vdlm2dec` unless you add a second SDR. vdlm2dec remains a limited legacy option in readsbstats (ACARS only: no signal level/SNR, no CPDLC, no CM logon routes, no ADS-C positions).
 
 ---
 
 *In [readsbstats](https://github.com/blindp3w/readsbstats): set
-`RSBS_VDL2_DECODER=dumpvdl2` and point the pipe's `--output decoded:json:udp:…` at the
+`RSBS_VDL2_DECODER=dumpvdl2` in `/etc/readsbstats/vdl2.env` (the code default is still `vdlm2dec`) and point the pipe's `--output decoded:json:udp:…` at the
 VDL2 listener — see [operations.md](operations.md#vdl2--acars-ingest).*

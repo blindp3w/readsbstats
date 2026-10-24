@@ -1,7 +1,7 @@
-# 0016 — OOOI from Q-series compact reports (and what we deliberately don't parse)
+# OOOI from Q-series compact reports (and what we deliberately don't parse)
 
-Date: 2026-06-12
-Status: accepted
+- Status: ACCEPTED
+- Date: 2026-06-12
 
 ## Context
 

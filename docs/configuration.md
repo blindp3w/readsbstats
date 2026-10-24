@@ -1,20 +1,22 @@
 # Configuration
 
-All settings live in `src/readsbstats/config.py` and can be overridden via environment variables without editing any files. Create a systemd drop-in:
-
-```bash
-systemctl edit readsbstats-collector
-```
+All settings live in `src/readsbstats/config.py` and can be overridden via environment variables without editing any code. The canonical place is one settings file, `/etc/readsbstats/readsbstats.env`, read by `readsbstats-collector` and `readsbstats-web` (optional, `EnvironmentFile=-`) and by `notify-telegram@` (which requires it). `scripts/install.sh` creates it from `systemd/readsbstats.env.example` (mode 0600, root:root — it holds the Telegram bot token) with every option commented out. One `NAME=value` per line (no `Environment=` prefix), comments on their own lines:
 
 ```ini
-[Service]
-Environment="RSBS_RETENTION_DAYS=180"
-Environment="RSBS_FLIGHT_GAP=1200"
+RSBS_RETENTION_DAYS=180
+RSBS_FLIGHT_GAP=1200
 ```
+
+Restart the services after editing: `sudo systemctl restart readsbstats-collector readsbstats-web`.
+
+VDL2 settings stay in `/etc/readsbstats/vdl2.env` (see [VDL2 / ACARS](#vdl2--acars-opt-in)); the web unit loads it after `readsbstats.env`, so it wins for VDL2 variables.
+
+A `systemctl edit <unit>` drop-in with `Environment="NAME=value"` lines is an alternative, but a value from the env file overrides the same variable set in a drop-in's `Environment=`.
 
 ## Environment variables
 
-All 83 `RSBS_*` vars in `config.py`, grouped by section. Numeric values
+All 84 `RSBS_*` vars, grouped by section: the 83 read in `config.py` plus
+`RSBS_API_TOKEN`, which is read in `api/_deps.py`. Numeric values
 that fall below the documented minimum log a stderr warning and fall
 back to the listed default (see `_min_or_default_int`/`_float`).
 Boolean vars accept `1`/`0`, `true`/`false`, `yes`/`no`, `on`/`off`
@@ -40,7 +42,7 @@ Boolean vars accept `1`/`0`, `true`/`false`, `yes`/`no`, `on`/`off`
 | `RSBS_MAX_GS_DEVIATION` | `100` | Null the `gs` field when reported ground speed deviates from position-derived speed by more than this (kts; min `1`) |
 | `RSBS_MAX_GS_ACCEL` | `8.0` | Null the `gs` field for MLAT positions when acceleration exceeds this (kts/s; min `0.1`) |
 | `RSBS_MLAT_OUTLIER_FACTOR` | `5.0` | Null MLAT GS when it exceeds this × the flight's p75 GS (min `2.0`) |
-| `RSBS_MLAT_OUTLIER_MIN` | `10` | Minimum MLAT GS readings required to apply the outlier filter (min `3`) |
+| `RSBS_MLAT_OUTLIER_MIN` | `10` | Minimum MLAT GS readings required to apply the outlier filter (min `3`; a value below the minimum falls back to `10`) |
 
 ### Database
 
@@ -93,13 +95,16 @@ are always rolled up before their raw rows can be purged.
 **DB file size:** the file does not shrink immediately after the first purge
 — freed pages are recycled via SQLite's freelist for future inserts. At
 180-day retention and current typical Pi traffic, the database plateaus at
-roughly 1.2 GB rather than growing ~7+ GB/year unbounded. A future
+roughly 1.8 GB rather than growing without bound. Measured on a busy
+(Warsaw-area) receiver at exactly that plateau: `history.db` 1.82 GB for
+20.5 M position rows and 228 k flights, ≈ 89 bytes per position row including
+indexes (schema v6); before the plateau it grew ≈ 300 MB/month. Traffic-dependent,
+so a quieter receiver plateaus lower. A future
 `VACUUM` (or the offline migration in `scripts/migrate_v6.py`) reclaims
 the freed space if smaller file size is important.
 
-**Current data starts 2026-04-06**, so with `RSBS_RETENTION_DAYS=180` the
-first actual deletions happen around 2026-10-03. Until that date the purge
-is a no-op.
+Until the data is older than `RSBS_RETENTION_DAYS`, the purge is a no-op; the
+first deletions happen once the oldest positions pass the cutoff.
 
 To enable retention on a running Pi install:
 
@@ -107,6 +112,8 @@ To enable retention on a running Pi install:
 echo 'RSBS_RETENTION_DAYS=180' | sudo tee -a /etc/readsbstats/readsbstats.env
 sudo systemctl restart readsbstats-collector
 ```
+
+(The example file already contains a commented `# RSBS_RETENTION_DAYS=0` line; either uncomment and edit it, or append as above — the last assignment wins.)
 
 ### Receiver location
 
@@ -127,7 +134,7 @@ sudo systemctl restart readsbstats-collector
 | `RSBS_ROUTE_CACHE_DAYS` | `30` | How long to cache adsbdb.com route lookups |
 | `RSBS_ROUTE_INTERVAL` | `60` | Seconds between route enricher batch runs (min `1`) |
 | `RSBS_ROUTE_BATCH` | `20` | Callsigns processed per enricher batch (min `1`) |
-| `RSBS_ROUTE_RATE_LIMIT` | `1.0` | Minimum seconds between adsbdb.com API requests |
+| `RSBS_ROUTE_RATE_LIMIT` | `1.0` | Minimum seconds between adsbdb.com API requests (min `0.0`) |
 
 ### External ADS-B enrichment (airplanes.live)
 
@@ -256,8 +263,10 @@ The bundled `static/airspace/poland.geojson` contains Warsaw-area zones. **For n
 To use custom airspace data, download a GeoJSON from [openaip.net](https://www.openaip.net/) and point to it:
 
 ```ini
-Environment="RSBS_AIRSPACE_GEOJSON=/opt/readsbstats/my_airspace.geojson"
+RSBS_AIRSPACE_GEOJSON=/opt/readsbstats/my_airspace.geojson
 ```
+
+in `/etc/readsbstats/readsbstats.env`, then restart the services.
 
 ## VDL2 / ACARS (opt-in)
 
@@ -272,9 +281,9 @@ decoder runbook and the two-switch enablement model.
 | `RSBS_VDL2_DB_PATH` | `/mnt/ext/readsbstats/vdl2.db` | Separate message store (FTS5 + WAL). Never the core DB. |
 | `RSBS_VDL2_RETENTION_DAYS` | `90` | Prune messages older than this. `0` = keep forever. |
 | `RSBS_VDL2_UDP_HOST` | `127.0.0.1` | Bind address for the JSON-over-UDP listener. |
-| `RSBS_VDL2_UDP_PORT` | `5556` | UDP port the decoder feeds. (5555 left free for SpyServer.) |
-| `RSBS_VDL2_DECODER` | `vdlm2dec` | JSON dialect to expect: `vdlm2dec` (ACARS) or `dumpvdl2` (also decodes ATN CPDLC into the message log). |
-| `RSBS_VDL2_PURGE_INTERVAL` | `3600` | Seconds between retention prunes (batched). |
+| `RSBS_VDL2_UDP_PORT` | `5556` | UDP port the decoder feeds (min `1`). (5555 left free for SpyServer.) |
+| `RSBS_VDL2_DECODER` | `vdlm2dec` | JSON dialect to expect: `dumpvdl2` (**recommended and supported**: also ATN CPDLC and CM logons, H1 sublabel/MFI, ADS-C positions, per-frame signal level/SNR) or `vdlm2dec` (limited legacy option: ACARS only — no signal level/SNR, no `sublabel`/`mfi` handling, no CPDLC, no CM logon routes, no ADS-C positions). The code default is still `vdlm2dec`, so **set `RSBS_VDL2_DECODER=dumpvdl2`** explicitly. Any other value logs an error and falls back to `vdlm2dec`. Decoder setup: [Operations → VDL2 / ACARS ingest](operations.md#vdl2--acars-ingest). |
+| `RSBS_VDL2_PURGE_INTERVAL` | `3600` | Seconds between retention prunes (batched; min `60`). |
 | `RSBS_VDL2_BODY_MAX` | `4096` | Max stored message-body length (chars; floor 256). |
 | `RSBS_VDL2_RAW_MAX` | `8192` | Max stored verbatim `raw` decoder JSON (chars; floor 256). |
 

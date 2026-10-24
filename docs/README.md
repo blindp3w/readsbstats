@@ -15,14 +15,14 @@ what you're trying to do.
 
 | Guide | Contents |
 |---|---|
-| [Operations](operations.md) | Updating code, the aircraft/airline DB, backups, retention sizing, VDL2/ACARS ingest, deployment security, crash recovery |
+| [Operations](operations.md) | Updating code, the aircraft/airline DB, backups, retention sizing, VDL2/ACARS ingest (dumpvdl2 first), deployment security, crash recovery |
 | [Integrations](integrations.md) | Telegram bot setup + commands, ghost-position and ground-speed filtering |
 | [Development](development.md) | Local setup, running the collector, tests, building the SPA, deploying to the Pi |
-| [dumpvdl2 on an Airspy Mini](dumpvdl2-airspy-mini.md) | Driving dumpvdl2 (ATN CPDLC/ADS-C/MIAM) from an Airspy Mini via external IQ resampling |
+| [dumpvdl2 on an Airspy Mini](dumpvdl2-airspy-mini.md) | Driving dumpvdl2, the recommended VDL2 decoder (ATN CPDLC/ADS-C/MIAM), from an Airspy Mini via external IQ resampling |
 
 ## Explanation — understand the why
 
-- [Architecture Decision Records](decisions/README.md) — the rationale behind key technical choices (13 ADRs).
+- [Architecture Decision Records](decisions/README.md) — the rationale behind key technical choices (20 ADRs).
 
 ## See also
 

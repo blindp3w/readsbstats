@@ -51,12 +51,13 @@ readsb and tar1090 give you a great live view — readsbstats adds the other hal
 - Receiver metrics dashboard with 10 time-series charts (Apache ECharts canvas, cross-panel hover sync, wheel/pinch zoom, LTTB downsampling) and 9 health checks
 - Statistics dashboard — receiver-wide aggregates (top aircraft/airlines/routes/airports, hourly & daily activity, DOW×hour heatmap, polar coverage range). Defaults to the **last 7 days** for fast loads; the all-time view is background-warmed so it stays snappy
 - Heatmap and coverage overlays served from collector-maintained daily rollup tables — millisecond responses at any history size, and the all-time views survive raw-position retention
-- Optional **VDL2 / ACARS** integration — ingest VHF Data Link Mode 2 traffic from a separate SDR via [vdlm2dec](https://github.com/TLeconte/vdlm2dec): a Messages tab (live feed, filters, full-text search, human-readable label names) plus an ACARS panel on flight pages with OOOI block times (Out/Off/On/In from Q-series reports), route confirmation, and the route the aircraft reports in its ATN logon, a "has ACARS" badge/filter in history, and a Stats card. Fully pluggable (`RSBS_VDL2_ENABLED`), stored in its own database (see [Operations](docs/operations.md#vdl2--acars-ingest))
+- Optional **VDL2 / ACARS** integration — ingest VHF Data Link Mode 2 traffic from a separate SDR via [dumpvdl2](https://github.com/szpajder/dumpvdl2) (recommended) or, with reduced functionality, [vdlm2dec](https://github.com/TLeconte/vdlm2dec): a Messages tab (live feed, filters, full-text search, human-readable label names) plus an ACARS panel on flight pages with OOOI block times (Out/Off/On/In from Q-series reports), route confirmation, and the route the aircraft reports in its ATN logon, a "has ACARS" badge/filter in history, and a Stats card. Fully pluggable (`RSBS_VDL2_ENABLED`), stored in its own database (see [Operations](docs/operations.md#vdl2--acars-ingest))
   - Human-readable decoded ACARS message bodies in the Messages log (client-side [`@airframes/acars-decoder`](https://github.com/airframes/acars-decoder), lazy-loaded; raw body always retained as fallback)
   - Extra local decoders for media advisories, D-ATIS and weather requests, Ryanair door events (marked "probable"), and Air France / KLM ETA and route reports; earlier blocks of multi-block messages are hidden by default (a "Show partial blocks" toggle reveals them)
-  - Precise positions on the map overlay from `#M1BPOS`, Label-16 AUTPOS, other airline formats (labels 17, 38, 2F, 14, B0) and ADS-C reports, each validated against ADS-B tracks; filed routes (departure/arrival/company route/SID/STAR/approach) surfaced on the message log
+  - Precise positions on the map overlay from `#M1BPOS`, Label-16 AUTPOS and the label-16-style group (labels 10, 13, 18, 27, 33, 12, 43, 41, 2P), LOT `59,G` telemetry, other airline formats (labels 17, 38, 2F, 14, B0) and ADS-C reports, each validated against ADS-B tracks ([ADR-0019](docs/decisions/0019-vdl2-position-and-route-sources.md)); coarse VDL2 XID link-layer fixes as a fallback; filed routes (departure/arrival/company route/SID/STAR/approach) surfaced on the message log
+  - Flight-page route sources, in precedence order: the route the aircraft reports in its ATN Context-Management logon (needs dumpvdl2), Air France label-26 and KLM label-20 `RST` reports, then label-49 movement reports ([ADR-0019](docs/decisions/0019-vdl2-position-and-route-sources.md), [ADR-0020](docs/decisions/0020-vdl2-multiblock-fragments-and-local-decoders.md))
   - Each message row is tagged with a category chip (ACMS / engine / maintenance / route / …) so the H1-dominated feed is readable at a glance; `RTE` route messages also surface their filed departure→arrival
-  - Selectable decoder (`RSBS_VDL2_DECODER`): `vdlm2dec` (ACARS) or `dumpvdl2`, which additionally decodes ATN **CPDLC** controller–pilot messages and reports per-frame signal level, surfaced as per-channel **signal (dBFS)** and **SNR (dB)** charts on the Metrics page (the charts self-hide on a vdlm2dec feed, which has no signal field)
+  - Selectable decoder (`RSBS_VDL2_DECODER`): **`dumpvdl2` is the recommended, fully supported decoder** — it also decodes ATN **CPDLC** controller–pilot messages and CM logons, H1 sublabel/MFI and ADS-C positions, and reports per-frame signal level, surfaced as per-channel **signal (dBFS)** and **SNR (dB)** charts on the Metrics page. `vdlm2dec` is a limited legacy option (ACARS only: no signal level/SNR, no sublabel/MFI handling, no CPDLC, no CM logon routes, no ADS-C positions; the Metrics charts self-hide on its feed). The code default is still `vdlm2dec`, so set `RSBS_VDL2_DECODER=dumpvdl2` explicitly
 - Unit switching: Aeronautical / Metric / Imperial — persisted in browser
 - SQLite crash-safety (WAL + `synchronous=NORMAL`, `RSBS_DB_SYNCHRONOUS=FULL` for per-commit durability) with dirty-shutdown detection (fail-closed on corruption — see [Operations](docs/operations.md#database-integrity--startup-recovery)) and weekly/monthly integrity checks via systemd timers
 
@@ -87,28 +88,22 @@ sudo bash /tmp/readsbstats/scripts/install.sh
 
 The installer creates a `readsbstats` system user, sets up `/opt/readsbstats/` with a Python virtualenv, creates the SQLite database, and installs systemd services.
 
-After installation, set your receiver coordinates:
-
-```bash
-systemctl edit readsbstats-collector readsbstats-web
-```
+After installation, set your receiver coordinates in the single settings file, `/etc/readsbstats/readsbstats.env` (read by `readsbstats-collector`, `readsbstats-web` and `notify-telegram@`). The installer creates it from `systemd/readsbstats.env.example` (mode 0600, root:root) with every option commented out:
 
 ```ini
-[Service]
-Environment="RSBS_LAT=YOUR_LATITUDE"
-Environment="RSBS_LON=YOUR_LONGITUDE"
+RSBS_LAT=YOUR_LATITUDE
+RSBS_LON=YOUR_LONGITUDE
 ```
 
-Then restart services and open **`http://YOUR_PI_IP/stats/`**.
+Then restart the services (`sudo systemctl restart readsbstats-collector readsbstats-web`) and open **`http://YOUR_PI_IP/stats/`**. A `systemctl edit` drop-in with `Environment=` lines also works, but a value in the env file overrides the same variable set in a drop-in. See [Configuration](docs/configuration.md) for all settings.
 
 **Map basemap key.** The maps use CARTO Dark Matter tiles, which now require a
 free API key — without one they render as "API KEY REQUIRED" placeholders. Get a
-key at <https://carto.com/basemaps/apikey/> and add it to the web service
-(same `systemctl edit readsbstats-web` override), then restart it:
+key at <https://carto.com/basemaps/apikey/> and add it to the same file, then
+restart `readsbstats-web`:
 
 ```ini
-[Service]
-Environment="RSBS_CARTO_API_KEY=YOUR_CARTO_KEY"
+RSBS_CARTO_API_KEY=YOUR_CARTO_KEY
 ```
 
 The key is sent with every tile request, so it is visible to anyone who can
@@ -117,7 +112,13 @@ of the repo and the built bundle; the Settings page only shows whether it is set
 
 ### nginx setup
 
-Add one line to your nginx `server {}` block:
+The included conf rate-limits the API with `limit_req zone=rsbs_api`, so first declare the zone once in the `http {}` block of `nginx.conf` (not inside `server {}`) — `nginx -t` fails without it:
+
+```nginx
+limit_req_zone $binary_remote_addr zone=rsbs_api:1m rate=10r/s;
+```
+
+Then add one line to your nginx `server {}` block:
 
 ```nginx
 server {
@@ -125,15 +126,15 @@ server {
 }
 ```
 
-The conf file proxies `/stats/` to uvicorn at `127.0.0.1:8080` and serves the SPA's hashed asset bundles directly with long-cache headers.
+Test and reload with `sudo nginx -t && sudo systemctl reload nginx`. The conf file proxies `/stats/` to uvicorn at `127.0.0.1:8080` and serves the SPA's hashed asset bundles directly with long-cache headers.
 
 ## Security model
 
-readsbstats has **no built-in authentication or authorization by default**. It is designed to run bound to `127.0.0.1:8080` behind nginx on a **trusted LAN**. Anyone who can reach the web port can read all flight data and call every mutating endpoint (watchlist edits, settings).
+readsbstats has **no built-in authentication or authorization by default**. It is designed to run bound to `127.0.0.1:8080` behind nginx on a **trusted LAN**. Anyone who can reach the web port can read all flight data and call every mutating endpoint (watchlist add/delete).
 
 - **The `X-Requested-With` CSRF header is not authentication.** It only blocks cross-site form posts from a browser; it does not identify or authorize a caller. Do not treat it as an access control.
 - **If you expose the UI beyond a trusted LAN, put an authenticating reverse proxy in front** (HTTP basic auth, an OAuth2 proxy, or a VPN/Tailscale). Do not publish `127.0.0.1:8080` directly to the internet.
-- **`RSBS_API_TOKEN`** — opt-in bearer-token gate for every mutating (POST/DELETE) `/api/*` endpoint (watchlist, settings, …). When set, every such call must carry `Authorization: Bearer <token>`. When unset (the default), the web server logs a one-line startup warning so the open posture is never silent. Read endpoints stay open (they were already public on the trusted LAN). Useful as a thin extra layer if the app is reachable from devices you don't fully trust on the LAN; **not** a substitute for a reverse-proxy auth layer when exposed to the internet.
+- **`RSBS_API_TOKEN`** — opt-in bearer-token gate for every mutating (POST/DELETE) `/api/*` endpoint (currently the watchlist add/delete). When set, every such call must carry `Authorization: Bearer <token>`. When unset (the default), the web server logs a one-line startup warning so the open posture is never silent. Read endpoints stay open (they were already public on the trusted LAN). Useful as a thin extra layer if the app is reachable from devices you don't fully trust on the LAN; **not** a substitute for a reverse-proxy auth layer when exposed to the internet.
 - Outbound HTTP (photo/route enrichment) is SSRF-guarded (`http_safe.py`) and provider photo URLs are host-allowlisted before caching (`RSBS_PHOTO_HOST_ENFORCE`) and at the API response boundary.
 
 See [Operations → Deployment security](docs/operations.md#deployment-security) for the full trust model.
@@ -145,7 +146,7 @@ See [Operations → Deployment security](docs/operations.md#deployment-security)
 | collector | 15% | 192 MB |
 | web server | 50% | 1024 MB |
 
-Database size: plateaus at ~0.6 GB at steady state with 180-day position retention (`RSBS_RETENTION_DAYS=180`; recommended), since the schema-v6 scaled-integer position storage. Without retention the DB grows ~20–60 MB/month unbounded.
+Database size (schema v6, traffic-dependent): on a busy receiver, `history.db` plateaus at about 1.8 GB with 180-day position retention (`RSBS_RETENTION_DAYS=180`; recommended) — measured 1.82 GB for 20.5 M position rows and 228 k flights, roughly 89 bytes per position row including indexes. Before the plateau it grows by about 300 MB/month on that receiver; without retention it keeps growing at the same rate.
 
 ## Project structure
 
@@ -171,17 +172,40 @@ readsbstats/
 │   │   └── vdl2.py             # /api/vdl2/* (opt-in; reads the separate vdl2.db)
 │   ├── database.py             # SQLite schema, WAL, migrations
 │   ├── config.py               # RSBS_* env vars
+│   ├── schemas.py              # Pydantic response contracts for the hot /api/* endpoints
+│   ├── cleaners.py             # Input normalization + lat/lon/ICAO validators
 │   ├── http_safe.py            # SSRF-safe HTTP helpers (HTTPS-only)
 │   ├── photo_sources.py        # Planespotters → airport-data → hexdb → Wikipedia
+│   ├── enrichment.py           # In-process caches for aircraft/airline/override lookups
+│   ├── adsbx_enricher.py       # airplanes.live area-poll enricher
+│   ├── route_enricher.py       # Callsign → route via adsbdb.com
+│   ├── db_updater.py           # Weekly aircraft/airline database refresh
+│   ├── icao_ranges.py          # 24-bit Mode-S → country, anonymous-aircraft SQL
+│   ├── metrics_collector.py    # Receiver metrics from readsb stats.json (opt-in)
 │   ├── notifier.py             # Telegram notifications
 │   ├── rollups.py              # Daily heatmap/coverage rollups (collector-maintained)
 │   ├── posenc.py               # Scaled-integer codecs for positions columns (schema v6)
+│   ├── downsample.py           # LTTB downsampling for chart endpoints
 │   ├── health.py               # Receiver health checks
 │   ├── geo.py                  # haversine_nm, bearing
-│   └── vdl2/                   # Opt-in VDL2/ACARS ingest (separate vdl2.db)
+│   ├── sim.py                  # Dev-only aircraft.json simulator
+│   ├── vdl2_collector.py       # Opt-in VDL2/ACARS ingest service (UDP → vdl2.db)
+│   └── vdl2/                   # VDL2/ACARS parsing + separate vdl2.db
+│       ├── db.py               # vdl2.db schema + idempotent migrate()
+│       ├── normalize.py        # vdlm2dec / dumpvdl2 JSON → one record
+│       ├── atn.py              # ATN CPDLC intents + CM logon
+│       ├── oooi.py             # OOOI block times + routes (Q-series, labels 49/26/20, CM)
+│       ├── positions.py        # Precise positions via label → parser whitelist
+│       ├── m1bpos.py           # #M1BPOS positions + filed routes
+│       ├── rte.py              # Teledyne RTE filed routes
+│       └── adsc.py             # ADS-C positions from dumpvdl2 raw JSON
 ├── scripts/
 │   ├── install.sh              # First-time installer
 │   ├── update.sh               # Code sync + restart + optional DB update
+│   ├── backfill_vdl2_dumpvdl2.py # One-shot: backfill VDL2 rows after dumpvdl2-related upgrades
+│   ├── migrate_v6.py           # One-shot offline migration: schema v5 → v6
+│   ├── check_db.py             # SQLite integrity checker (also run by the systemd timers)
+│   ├── import_rrd.py           # Import graphs1090 RRD history into receiver_stats
 │   ├── purge_ghosts.py         # One-shot: remove ghost positions
 │   ├── purge_bad_gs.py         # One-shot: null implausible gs values
 │   └── purge_mlat_gs_spikes.py # One-shot: null MLAT gs spikes
@@ -195,6 +219,8 @@ readsbstats/
     ├── integrations.md         # Telegram setup + ghost/GS filtering
     ├── operations.md           # Updating, maintenance, useful commands
     ├── development.md          # Local dev, testing, build, deploy
+    ├── dumpvdl2-airspy-mini.md # Running dumpvdl2 on an Airspy Mini
+    ├── README.md               # Documentation index
     ├── decisions/              # Architecture Decision Records
     └── screenshots/            # UI screenshots
 ```
@@ -205,11 +231,12 @@ Full guides live in [`docs/`](docs/), grouped by reference / how-to / explanatio
 
 | Guide | Contents |
 |---|---|
-| [Configuration](docs/configuration.md) | All 83 `RSBS_*` env vars, logging, airspace config |
+| [Configuration](docs/configuration.md) | All 84 `RSBS_*` env vars, logging, airspace config |
 | [API Reference](docs/api.md) | All API endpoints, SPA routes, database schema |
 | [Integrations](docs/integrations.md) | Telegram setup, bot commands, ghost/GS filtering |
 | [Operations](docs/operations.md) | Updating code, DB sync, useful commands, backups |
 | [Development](docs/development.md) | Local setup, tests, build, deploy to Pi |
+| [dumpvdl2 on an Airspy Mini](docs/dumpvdl2-airspy-mini.md) | Driving dumpvdl2 from an Airspy Mini via external IQ resampling |
 | [Architecture decisions](docs/decisions/) | ADRs for key technical choices |
 
 ## Contributing

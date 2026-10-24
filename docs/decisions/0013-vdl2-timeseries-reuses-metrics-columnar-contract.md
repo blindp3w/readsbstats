@@ -83,3 +83,11 @@ is no second charting code path to keep in sync with the readsb panels.
   emits no per-message signal level (only dumpvdl2 does; tracked
   separately). The shared small-multiples builder is signal-agnostic, so
   this required no builder change.
+
+**Revision (2026-10-24):** the "vdlm2dec-only — no signal level" consequence no
+longer holds for the dumpvdl2 decoder. Since v2.25.0, dumpvdl2 per-frame
+`sig_level`/`noise_level` are stored and served by `GET /api/vdl2/signal`, which
+drives per-channel signal (dBFS) and SNR (dB) charts on the Metrics page. A
+vdlm2dec feed still has no signal field, so those charts self-hide there. The
+`/api/vdl2/timeseries` message-rate and per-frequency charts decided here are
+unchanged.
