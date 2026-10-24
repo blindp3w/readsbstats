@@ -5,6 +5,20 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 2.28.1 — 2026-10-24
+
+Test-suite reliability fix. No runtime, schema or API changes.
+
+### Fixed
+
+- **Flaky `test_purge_triggered`.** The collector `main()` tests started the
+  real ADSBx and route enricher threads. Those threads outlived each test on its
+  shared (later closed) connection, made network requests, and called the
+  monkeypatched `time.sleep`, which stops the main loop. Under load the loop
+  could therefore exit before its first iteration and skip the purge. The tests
+  now stub those threads, and a new regression test fails if `main()` leaves any
+  background thread running.
+
 ## 2.28.0 — 2026-10-24
 
 Cleaner VDL2 message feed and more decoded ACARS messages. dumpvdl2 stored every
