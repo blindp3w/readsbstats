@@ -10,6 +10,7 @@ import os
 import signal
 import sqlite3
 import tempfile
+import threading
 import time
 
 import pytest
@@ -3281,7 +3282,8 @@ class TestMain:
     def setup(self, monkeypatch):
         _reset_collector_state()
         enrichment.clear_cache()
-        from readsbstats import collector, database
+        from readsbstats import (adsbx_enricher, collector, database,
+                                 metrics_collector, route_enricher)
         collector._running = True
         # Stub the daemon threads main() spawns: the watchdog busy-loops with
         # monkeypatched sleep, and run_background_migrations would close the
@@ -3289,6 +3291,14 @@ class TestMain:
         monkeypatch.setattr(database, "run_background_migrations",
                             lambda *a, **kw: None)
         monkeypatch.setattr(collector, "_watchdog_loop", lambda: None)
+        # The enricher/metrics threads loop forever: they would outlive the test
+        # on its (closed) shared connection and call the patched sleep, which
+        # flips _running to False before the main loop runs (flaky
+        # test_purge_triggered). They also hit the network. main() joins the
+        # notification consumer itself, so that one is left real.
+        monkeypatch.setattr(adsbx_enricher, "start_background_enricher", lambda: None)
+        monkeypatch.setattr(route_enricher, "start_background_enricher", lambda: None)
+        monkeypatch.setattr(metrics_collector, "start_metrics_collector", lambda: None)
         yield
         collector._running = True  # always restore
 
@@ -3312,6 +3322,27 @@ class TestMain:
 
         collector.main()
         assert poll_calls == [1]
+
+    def test_main_leaves_no_background_threads(self, monkeypatch):
+        # Regression: main() starts real enricher/metrics/notification threads.
+        # Unstubbed, they outlived the test, shared its connection (connect is
+        # monkeypatched) and called the patched sleep — flipping _running to
+        # False before the main loop's first iteration, which made
+        # test_purge_triggered flaky under load.
+        from readsbstats import collector, database, notifier
+        conn = make_db()
+        monkeypatch.setattr(database, "init_db", lambda: None)
+        monkeypatch.setattr(database, "connect", lambda p=None: conn)
+        monkeypatch.setattr(notifier, "start_command_listener", lambda p: None)
+        monkeypatch.setattr(collector, "_poll", lambda c: None)
+        monkeypatch.setattr(collector, "_check_daily_summary", lambda c: None)
+        monkeypatch.setattr(time, "sleep", self._sleep_exit())
+        before = {t.ident for t in threading.enumerate()}
+
+        collector.main()
+        leaked = [t.name for t in threading.enumerate()
+                  if t.ident not in before and t.is_alive()]
+        assert leaked == []
 
     def test_poll_exception_is_swallowed(self, monkeypatch):
         from readsbstats import collector, database, notifier
