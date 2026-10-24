@@ -265,3 +265,114 @@ class TestNoFtsFallback:
         vdl2_db._web_conns.append(BoomConn())
         vdl2_db.close_all_web_conns()      # must not raise
         assert vdl2_db._web_conns == []
+
+
+# FTS schema exactly as it was BEFORE the update trigger was narrowed to body.
+_LEGACY_FTS_DDL = """
+CREATE VIRTUAL TABLE vdl2_fts USING fts5(body, content='vdl2_messages', content_rowid='id');
+CREATE TRIGGER vdl2_ai AFTER INSERT ON vdl2_messages BEGIN
+    INSERT INTO vdl2_fts(rowid, body) VALUES (new.id, new.body);
+END;
+CREATE TRIGGER vdl2_ad AFTER DELETE ON vdl2_messages BEGIN
+    INSERT INTO vdl2_fts(vdl2_fts, rowid, body) VALUES ('delete', old.id, old.body);
+END;
+CREATE TRIGGER vdl2_au AFTER UPDATE ON vdl2_messages BEGIN
+    INSERT INTO vdl2_fts(vdl2_fts, rowid, body) VALUES ('delete', old.id, old.body);
+    INSERT INTO vdl2_fts(rowid, body) VALUES (new.id, new.body);
+END;
+"""
+
+
+class TestSublabelMfiColumns:
+    """sublabel / mfi columns (libacars-stripped H1 prefix) + the FTS update
+    trigger narrowed to ``UPDATE OF body``."""
+
+    _LEGACY_DDL = TestSignalColumns._LEGACY_DDL
+
+    def _legacy_db(self, *, with_fts: bool = False):
+        conn = vdl2_db.connect(":memory:")
+        conn.executescript(self._LEGACY_DDL)
+        conn.execute(f"PRAGMA user_version = {vdl2_db.VDL2_SCHEMA_VERSION}")
+        if with_fts:
+            # Pre-change FTS: the update trigger fired on ANY column update.
+            conn.executescript(_LEGACY_FTS_DDL)
+        conn.commit()
+        return conn
+
+    @staticmethod
+    def _trigger_sql(conn) -> str:
+        return conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='trigger' AND name='vdl2_au'"
+        ).fetchone()[0]
+
+    def test_migrate_adds_columns_to_existing_db(self):
+        conn = self._legacy_db()
+        before = {r[1] for r in conn.execute("PRAGMA table_info(vdl2_messages)")}
+        assert "sublabel" not in before and "mfi" not in before
+        vdl2_db.migrate(conn)
+        after = {r[1] for r in conn.execute("PRAGMA table_info(vdl2_messages)")}
+        assert "sublabel" in after and "mfi" in after
+
+    def test_migrate_idempotent(self):
+        conn = self._legacy_db()
+        vdl2_db.migrate(conn)
+        vdl2_db.migrate(conn)
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(vdl2_messages)")}
+        assert "sublabel" in cols and "mfi" in cols
+
+    def test_fresh_db_has_columns_and_in_insert_columns(self):
+        conn = make_vdl2_db()
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(vdl2_messages)")}
+        assert "sublabel" in cols and "mfi" in cols
+        assert "sublabel" in vdl2_db.COLUMNS and "mfi" in vdl2_db.COLUMNS
+
+    def test_insert_and_readback(self):
+        conn = make_vdl2_db()
+        vdl2_db.insert_messages(conn, [_msg(sublabel="M1", mfi="B0")])
+        conn.commit()
+        row = conn.execute("SELECT sublabel, mfi FROM vdl2_messages").fetchone()
+        assert row["sublabel"] == "M1" and row["mfi"] == "B0"
+
+    def test_fresh_db_trigger_is_update_of_body(self):
+        conn = make_vdl2_db()
+        assert "update of body" in self._trigger_sql(conn).lower()
+
+    def test_writer_migrate_replaces_legacy_trigger(self):
+        conn = self._legacy_db(with_fts=True)
+        assert "update of body" not in self._trigger_sql(conn).lower()
+        vdl2_db.migrate(conn, build_fts=True)
+        assert "update of body" in self._trigger_sql(conn).lower()
+        vdl2_db.migrate(conn, build_fts=True)       # idempotent
+        assert "update of body" in self._trigger_sql(conn).lower()
+
+    def test_web_migrate_does_not_touch_trigger(self):
+        conn = self._legacy_db(with_fts=True)
+        vdl2_db.migrate(conn, build_fts=False)
+        assert "update of body" not in self._trigger_sql(conn).lower()
+
+    def test_body_update_still_reindexes_fts(self):
+        conn = make_vdl2_db()
+        vdl2_db.insert_messages(conn, [_msg(body="oldtext warsaw")])
+        conn.commit()
+        conn.execute("UPDATE vdl2_messages SET body = 'newtext krakow'")
+        conn.commit()
+
+        def hits(term):
+            return conn.execute(
+                "SELECT rowid FROM vdl2_fts WHERE vdl2_fts MATCH ?", (f'"{term}"',)
+            ).fetchall()
+
+        assert len(hits("newtext")) == 1
+        assert hits("oldtext") == []
+
+    def test_non_body_update_leaves_fts_intact(self):
+        conn = make_vdl2_db()
+        vdl2_db.insert_messages(conn, [_msg(body="oldtext warsaw")])
+        conn.commit()
+        conn.execute("UPDATE vdl2_messages SET sublabel = 'M1', mfi = 'B0'")
+        conn.commit()
+        hits = conn.execute(
+            "SELECT rowid FROM vdl2_fts WHERE vdl2_fts MATCH ?", ('"oldtext"',)
+        ).fetchall()
+        assert len(hits) == 1
+        conn.execute("INSERT INTO vdl2_fts(vdl2_fts) VALUES('integrity-check')")
