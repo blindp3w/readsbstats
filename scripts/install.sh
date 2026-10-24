@@ -115,6 +115,14 @@ mkdir -p /etc/readsbstats
 if [ ! -f /etc/readsbstats/vdl2.env ]; then
     cp "$APP_DIR/systemd/readsbstats-vdl2.env.example" /etc/readsbstats/vdl2.env
 fi
+# Single settings file read by collector, web and notify-telegram@ (the latter
+# requires it to exist). Holds the Telegram token => root-only. Never overwrite
+# an operator's existing file.
+if [ ! -f /etc/readsbstats/readsbstats.env ]; then
+    cp "$APP_DIR/systemd/readsbstats.env.example" /etc/readsbstats/readsbstats.env
+    chmod 600 /etc/readsbstats/readsbstats.env
+    chown root:root /etc/readsbstats/readsbstats.env
+fi
 systemctl daemon-reload
 systemctl enable --now readsbstats-collector.service
 systemctl enable --now readsbstats-web.service

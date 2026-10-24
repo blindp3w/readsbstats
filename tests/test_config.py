@@ -274,6 +274,19 @@ class TestConfigValidation:
         importlib.reload(readsbstats.config)
         assert readsbstats.config.MLAT_OUTLIER_FACTOR == 7.5
 
+    def test_mlat_outlier_min_below_min_falls_back_to_10(self, monkeypatch):
+        # Previously fell back to 50 (5× the declared/documented default of 10).
+        monkeypatch.setenv("RSBS_MLAT_OUTLIER_MIN", "2")
+        import readsbstats.config
+        importlib.reload(readsbstats.config)
+        assert readsbstats.config.MLAT_OUTLIER_MIN_READINGS == 10
+
+    def test_mlat_outlier_min_above_min_unchanged(self, monkeypatch):
+        monkeypatch.setenv("RSBS_MLAT_OUTLIER_MIN", "5")
+        import readsbstats.config
+        importlib.reload(readsbstats.config)
+        assert readsbstats.config.MLAT_OUTLIER_MIN_READINGS == 5
+
     def test_flight_gap_zero_clamped(self, monkeypatch):
         monkeypatch.setenv("RSBS_FLIGHT_GAP", "0")
         import readsbstats.config
