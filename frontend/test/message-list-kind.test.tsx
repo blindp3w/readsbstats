@@ -23,6 +23,14 @@ describe('MessageList body-kind chip', () => {
     expect(screen.getByTestId('vdl2-kind').textContent).toBe('ACMS report');
   });
 
+  it('shows a category chip for a dumpvdl2 row whose H1 prefix was stripped into sublabel', () => {
+    renderList({
+      id: 4, ts: 1_749_000_000, label: 'H1', sublabel: 'M1', mfi: null,
+      body: 'POSN52081E020017,...',
+    } as Vdl2Message);
+    expect(screen.getByTestId('vdl2-kind').textContent).toBe('FMS position/route');
+  });
+
   it('shows no chip for an unrecognized body', () => {
     renderList({ id: 2, ts: 1_749_000_000, label: 'Q0', body: 'free text' } as Vdl2Message);
     expect(screen.queryByTestId('vdl2-kind')).toBeNull();

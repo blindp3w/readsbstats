@@ -98,6 +98,32 @@ def _float_or_none(value: object) -> float | None:
     return float(n) if n is not None else None
 
 
+def acars_text(body: str | None, sublabel: str | None, mfi: str | None) -> str | None:
+    """Rebuild the libacars-stripped DOWNLINK text prefix: ``#<sublabel>B`` plus an
+    optional ``/<mfi> `` ahead of ``body``. dumpvdl2 moves that prefix into
+    separate ``sublabel``/``mfi`` fields, so prefix-keyed parsers (m1bpos, route,
+    kind chips) need it put back. The uplink form (``- #SL``) is intentionally not
+    reproduced — this receiver only hears aircraft. Falsy ``body`` or no
+    ``sublabel`` → ``body`` unchanged."""
+    if not body or not sublabel:
+        return body
+    return f"#{sublabel}B" + (f"/{mfi} " if mfi else "") + body
+
+
+def _xid_params(avlc: dict) -> dict:
+    """``{name: value}`` from ``avlc.xid.vdl_params``. Every level is type-guarded
+    (untrusted upstream JSON): non-dict xid, non-list params, non-dict entries and
+    non-str names are skipped."""
+    xid = avlc.get("xid")
+    params = xid.get("vdl_params") if isinstance(xid, dict) else None
+    out: dict = {}
+    if isinstance(params, list):
+        for p in params:
+            if isinstance(p, dict) and isinstance(p.get("name"), str):
+                out[p["name"]] = p.get("value")
+    return out
+
+
 def _has_content(rec: dict) -> bool:
     """Drop completely empty records (no identity, no body)."""
     return any(rec.get(k) for k in ("icao_hex", "registration", "flight", "label", "body"))
@@ -152,6 +178,12 @@ def _normalize_dumpvdl2(raw: dict) -> dict | None:
     ``label``/``body`` via :func:`atn.summarize_cpdlc`. ADS-C is still deferred (no
     real fixture yet); MIAM arrives over-ACARS so the ACARS branch handles it. Other
     ATN transport/routing frames fall through to bare ``icao_hex`` rows by design.
+
+    libacars strips the H1 text prefix into ``acars.sublabel`` (``#M1B`` → ``M1``) and
+    ``acars.mfi`` (``/B0 ``), stored as separate columns; ``body`` stays un-prefixed
+    (see :func:`acars_text` to rebuild it). XID frames carry the aircraft's coarse
+    position (``ac_location``: 0.1° lat/lon, alt in ft) and destination airport
+    (``dst_airport``), mapped onto lat/lon/alt/dsta.
     """
     vdl2 = raw.get("vdl2") if isinstance(raw.get("vdl2"), dict) else {}
     avlc = vdl2.get("avlc") if isinstance(vdl2.get("avlc"), dict) else {}
@@ -166,6 +198,12 @@ def _normalize_dumpvdl2(raw: dict) -> dict | None:
         summary = atn.summarize_cpdlc(avlc)
         label = _label(summary[0]) if summary else None
         body = clean_short_text(summary[1], config.VDL2_BODY_MAX) if summary else None
+    # XID vdl_params: aircraft position + destination. `gs_location` is the GROUND
+    # STATION's position and is deliberately never read.
+    xid_p = _xid_params(avlc)
+    ac_loc = xid_p.get("ac_location")
+    ac_loc = ac_loc if isinstance(ac_loc, dict) else {}
+    loc = ac_loc.get("loc") if isinstance(ac_loc.get("loc"), dict) else {}
     rec = {
         "ts":           _ts((vdl2.get("t") or {}).get("sec") if isinstance(vdl2.get("t"), dict) else raw.get("timestamp")),
         # valid_icao_hex enforces 6-hex + lowercases; rejects malformed addrs.
@@ -180,16 +218,18 @@ def _normalize_dumpvdl2(raw: dict) -> dict | None:
         "freq":         freq_hz / 1e6 if freq_hz and freq_hz > 0 else None,   # Hz → MHz (0/neg/None → None)
         "station_id":   clean_short_text(vdl2.get("station"), _SHORT),  # dumpvdl2: vdl2.station
         "toaddr":       clean_short_text((avlc.get("dst") or {}).get("addr") if isinstance(avlc.get("dst"), dict) else None, _SHORT),
-        "dsta":         None,
-        "lat":          None,
-        "lon":          None,
-        "alt":          None,
+        "dsta":         clean_short_text(xid_p.get("dst_airport"), _SHORT),
+        "lat":          valid_lat(loc.get("lat")),
+        "lon":          valid_lon(loc.get("lon")),
+        "alt":          _int_or_none(ac_loc.get("alt")),
         "epu":          None,
         "app_name":     None,
         "app_ver":      None,
         "body":         body,
         "raw":          _raw_json(raw),
         "decoder":      "dumpvdl2",
+        "sublabel":     clean_short_text(acars.get("sublabel"), _SHORT),
+        "mfi":          clean_short_text(acars.get("mfi"), _SHORT),
         # Per-frame signal/noise (dBFS), at the vdl2 level alongside freq. Present
         # on every dumpvdl2 frame; feeds the Metrics per-channel signal + SNR charts.
         "sig_level":    _float_or_none(vdl2.get("sig_level")),

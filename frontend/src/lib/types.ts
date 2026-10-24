@@ -59,6 +59,10 @@ export interface Vdl2Message {
   app_name: string | null;
   app_ver: string | null;
   body: string | null;
+  // dumpvdl2/libacars strips the H1 text prefix (`#` + sublabel + `B`, then optional
+  // `/` + MFI) out of body into these; null under vdlm2dec, which keeps it in body.
+  sublabel?: string | null;
+  mfi?: string | null;
   decoder: string | null;
   filed_route?: {
     dep: string;

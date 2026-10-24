@@ -123,3 +123,26 @@ class CountingConn:
             # `with conn:` commits on clean exit — count it like .commit()
             self.commits += 1
         return self._c.__exit__(exc_type, exc, tb)
+
+
+# Real dumpvdl2 frames (captured from the Pi feed) for tests that exercise the
+# true ingest path: M1 position report, M1 with /RP: filed route, M1 with an
+# MFI (B0), and an XID handoff carrying ac_location + dst_airport.
+DUMPVDL2_FRAMES = {
+    'm1_pos': '{"vdl2":{"app":{"name":"dumpvdl2","ver":"2.6.0"},"station":"homepi","t":{"sec":1785096166,"usec":698842},"freq":136775000,"burst_len_octets":117,"hdr_bits_fixed":0,"octets_corrected_by_fec":3,"idx":0,"sig_level":-48.149063,"noise_level":-52.339676,"freq_skew":2.204034,"avlc":{"src":{"addr":"4787A0","type":"Aircraft","status":"Airborne"},"dst":{"addr":"2391C5","type":"Ground station"},"cr":"Command","frame_type":"I","rseq":4,"sseq":2,"poll":false,"acars":{"err":false,"crc_ok":true,"more":false,"reg":".LN-NIB","mode":"2","label":"H1","blk_id":"8","ack":"!","flight":"DY1577","msg_num":"F57","msg_num_seq":"A","sublabel":"M1","msg_text":"POSN52256E019186,ADOXO,200245,380,PENOR,202912,KSD,M52,226050,11122DB"}}}}',
+    'm1_route': '{"vdl2":{"app":{"name":"dumpvdl2","ver":"2.6.0"},"station":"homepi","t":{"sec":1785138022,"usec":410578},"freq":136875000,"burst_len_octets":256,"hdr_bits_fixed":0,"octets_corrected_by_fec":0,"idx":0,"sig_level":-44.885689,"noise_level":-52.587124,"freq_skew":3.288023,"avlc":{"src":{"addr":"47BF9D","type":"Aircraft","status":"Airborne"},"dst":{"addr":"2B86E1","type":"Ground station"},"cr":"Command","frame_type":"I","rseq":5,"sseq":5,"poll":false,"acars":{"err":false,"crc_ok":true,"more":true,"reg":".LN-FGJ","mode":"2","label":"H1","blk_id":"5","ack":"!","flight":"DY02KU","msg_num":"F16","msg_num_seq":"A","sublabel":"M1","msg_text":"POSN52182E020495,WA932,074020,63,WA791,074058,INRAS,P10,242026,120/DTENGM,19R,48,091243,73/PR1489,154,320,120,,33,40,207045,M46,65,P22,P0/RP:DA:EPWA:AA:ENGM(19R):D:OLIL6G:F:OLILA.L621.GRUDA..OSLOG..PENOR..K"}}}}',
+    'm1_mfi': '{"vdl2":{"app":{"name":"dumpvdl2","ver":"2.6.0"},"station":"homepi","t":{"sec":1785134699,"usec":713040},"freq":136725000,"burst_len_octets":130,"hdr_bits_fixed":0,"octets_corrected_by_fec":0,"idx":0,"sig_level":-46.04364,"noise_level":-52.785419,"freq_skew":3.254894,"avlc":{"src":{"addr":"48EA00","type":"Aircraft","status":"Airborne"},"dst":{"addr":"11920A","type":"Ground station"},"cr":"Command","frame_type":"I","rseq":4,"sseq":7,"poll":false,"acars":{"err":false,"crc_ok":true,"more":false,"reg":".SP-EXM","mode":"2","label":"H1","blk_id":"9","ack":"!","flight":"E401KP","msg_num":"F00","msg_num_seq":"A","sublabel":"M1","mfi":"B0","msg_text":"EPWW.AFN/FMHENT1KP,.SP-EXM,,064457/FPON52007E020075,1/FCOATC,01/FCOADS,01A21F"}}}}',
+    'xid_ho': '{"vdl2":{"app":{"name":"dumpvdl2","ver":"2.6.0"},"station":"homepi","t":{"sec":1785065967,"usec":212646},"freq":136725000,"burst_len_octets":65,"hdr_bits_fixed":0,"octets_corrected_by_fec":0,"idx":0,"sig_level":-46.492935,"noise_level":-52.837135,"freq_skew":4.27249,"avlc":{"src":{"addr":"48C132","type":"Aircraft","status":"Airborne"},"dst":{"addr":"11920A","type":"Ground station"},"cr":"Command","frame_type":"U","cmd":"XID","pf":true,"xid":{"err":false,"type":"XID_CMD_HO","type_descr":"Handoff Initiation","pub_params":[{"name":"param_set_id","value":"8885:1993"},{"name":"procedure_classes","value":[0,1]},{"name":"hdlc_options","value":[32,132,128]}],"vdl_params":[{"name":"param_set_id","value":"V"},{"name":"xid_sequencing","value":{"seq":1,"retry":0}},{"name":"dst_airport","value":"LATI"},{"name":"ac_location","value":{"loc":{"lat":52.299999,"lon":20.5},"alt":31000}},{"name":"avlc_specific_options","value":[36]},{"name":"conn_mgmt","value":1}]}}}}',
+}
+
+
+def dumpvdl2_record(name: str, ts: int | None = None) -> dict:
+    """Normalized dumpvdl2 record for a DUMPVDL2_FRAMES entry, optionally re-timestamped."""
+    import json
+
+    from readsbstats.vdl2 import normalize
+
+    obj = json.loads(DUMPVDL2_FRAMES[name])
+    if ts is not None:
+        obj["vdl2"]["t"]["sec"] = ts
+    return normalize.normalize(obj, "dumpvdl2")

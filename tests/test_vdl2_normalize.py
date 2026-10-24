@@ -4,7 +4,7 @@ from __future__ import annotations
 import time
 
 from readsbstats import config
-from readsbstats.vdl2 import normalize
+from readsbstats.vdl2 import m1bpos, normalize
 
 
 SAMPLE_VDLM2DEC = {
@@ -335,3 +335,177 @@ class TestHelperCoercion:
 
     def test_num_garbage_string_rejected(self):
         assert normalize._num("not-a-number") is None
+
+
+def _dump(avlc_extra: dict, *, src: str = "4D241C") -> dict:
+    """Minimal dumpvdl2 frame wrapper around an ``avlc`` payload."""
+    return {"vdl2": {"freq": 136775000, "t": {"sec": 1782559365},
+                     "avlc": {"src": {"addr": src}, **avlc_extra}}}
+
+
+def _xid(vdl_params, *, xid_type: str = "XID_CMD_HO") -> dict:
+    return _dump({"frame_type": "U", "cmd": "XID",
+                  "xid": {"err": False, "type": xid_type, "vdl_params": vdl_params}})
+
+
+# Real XID handoff-initiation frame (trimmed): ac_location + dst_airport.
+XID_HO_PARAMS = [
+    {"name": "param_set_id", "value": "V"},
+    {"name": "conn_mgmt", "value": 1},
+    {"name": "xid_sequencing", "value": {"seq": 3, "retry": 4}},
+    {"name": "avlc_specific_options", "value": [37]},
+    {"name": "dst_airport", "value": "EPWA"},
+    {"name": "ac_location", "value": {"loc": {"lat": 52.299999, "lon": 20.5}, "alt": 5000}},
+]
+
+
+class TestDumpvdl2Xid:
+    """XID frames carry the aircraft's coarse position + destination airport."""
+
+    def test_xid_handoff_maps_position_alt_dest(self):
+        rec = normalize.normalize(_xid(XID_HO_PARAMS), decoder="dumpvdl2")
+        assert rec is not None
+        assert abs(rec["lat"] - 52.3) < 0.001
+        assert rec["lon"] == 20.5
+        assert rec["alt"] == 5000
+        assert rec["dsta"] == "EPWA"
+        assert rec["icao_hex"] == "4d241c"
+
+    def test_xid_gs_location_is_never_used(self):
+        # gs_location is the GROUND STATION's position, not the aircraft's.
+        rec = normalize.normalize(
+            _xid([{"name": "gs_location", "value": {"lat": 52.1, "lon": 20.9}}]),
+            decoder="dumpvdl2")
+        assert rec is not None
+        assert rec["lat"] is None and rec["lon"] is None and rec["alt"] is None
+
+    def test_xid_lcr_without_location_all_none(self):
+        params = [
+            {"name": "param_set_id", "value": "V"},
+            {"name": "conn_mgmt", "value": 6},
+            {"name": "lcr_cause", "value": {"cause_code": 8, "delay": 0}},
+        ]
+        rec = normalize.normalize(_xid(params, xid_type="XID_CMD_LCR"), decoder="dumpvdl2")
+        assert rec is not None          # still a row: icao_hex present
+        assert rec["icao_hex"] == "4d241c"
+        assert rec["lat"] is None and rec["lon"] is None
+        assert rec["alt"] is None and rec["dsta"] is None
+
+    def test_xid_junk_vdl_params_types_do_not_raise(self):
+        for params in ("junk", 5, None, {"name": "dst_airport"},
+                       [1, "x", None, ["a"], {"name": 7, "value": "EPWA"}, {"value": "EPWA"}]):
+            rec = normalize.normalize(_xid(params), decoder="dumpvdl2")
+            assert rec is not None
+            assert rec["lat"] is None and rec["lon"] is None
+            assert rec["alt"] is None and rec["dsta"] is None
+
+    def test_xid_non_dict_xid_ignored(self):
+        raw = _dump({"frame_type": "U", "cmd": "XID", "xid": "junk"})
+        rec = normalize.normalize(raw, decoder="dumpvdl2")
+        assert rec is not None and rec["lat"] is None
+
+    def test_xid_bad_ac_location_shapes(self):
+        for loc in ("52.3,20.5", None, 7, [], {}, {"alt": 5000, "loc": "x"},
+                    {"alt": 5000}):
+            rec = normalize.normalize(
+                _xid([{"name": "ac_location", "value": loc}]), decoder="dumpvdl2")
+            assert rec is not None
+            assert rec["lat"] is None and rec["lon"] is None
+
+    def test_xid_alt_kept_when_loc_missing(self):
+        rec = normalize.normalize(
+            _xid([{"name": "ac_location", "value": {"alt": 5000}}]), decoder="dumpvdl2")
+        assert rec["alt"] == 5000 and rec["lat"] is None
+
+    def test_xid_out_of_range_lat_dropped(self):
+        rec = normalize.normalize(
+            _xid([{"name": "ac_location", "value": {"loc": {"lat": 123.0, "lon": 20.5}}}]),
+            decoder="dumpvdl2")
+        assert rec["lat"] is None
+        assert rec["lon"] == 20.5
+
+    def test_xid_dst_airport_non_string_is_none(self):
+        rec = normalize.normalize(
+            _xid([{"name": "dst_airport", "value": {"x": 1}}]), decoder="dumpvdl2")
+        assert rec["dsta"] is None
+
+    def test_non_xid_frame_keeps_none_position(self):
+        raw = _dump({"acars": {"label": "H1", "msg_text": "x"}})
+        rec = normalize.normalize(raw, decoder="dumpvdl2")
+        assert rec["lat"] is None and rec["lon"] is None
+        assert rec["alt"] is None and rec["dsta"] is None
+
+
+def _h1(msg_text: str, **acars_extra) -> dict:
+    return _dump({"acars": {"reg": ".LN-NIB", "label": "H1", "msg_text": msg_text,
+                            **acars_extra}}, src="4787A0")
+
+
+class TestSublabelMfi:
+    """libacars strips the H1 ``#<SL>B`` / ``/<MFI> `` prefix into separate fields."""
+
+    POS_BODY = "POSN52256E019186,ADOXO,200245,380,PENOR,202912,KSD,M52,226050,11122DB"
+    RP_BODY = ("POSN52182E020495,WA932,074020,63,WA791,074058,INRAS,P10,242026,120"
+               "/DTENGM,19R,48,091243,73/PR1489,154,320,120,,33,40,207045,M46,65,P22,P0"
+               "/RP:DA:EPWA:AA:ENGM(19R):D:OLIL6G:F:OLILA.L621.GRUDA..OSLOG..PENOR..K")
+    MFI_BODY = "EPWW.AFN/FMHENT1KP,.SP-EXM,,064457/FPON52007E020075,1/FCOATC,01/FCOADS,01A21F"
+
+    def test_sublabel_mapped_mfi_none(self):
+        rec = normalize.normalize(_h1(self.POS_BODY, sublabel="M1"), decoder="dumpvdl2")
+        assert rec["sublabel"] == "M1"
+        assert rec["mfi"] is None
+        assert rec["body"] == self.POS_BODY      # body stays un-prefixed
+
+    def test_sublabel_and_mfi_mapped(self):
+        rec = normalize.normalize(
+            _h1(self.MFI_BODY, sublabel="M1", mfi="B0"), decoder="dumpvdl2")
+        assert rec["sublabel"] == "M1"
+        assert rec["mfi"] == "B0"
+
+    def test_missing_keys_are_none(self):
+        rec = normalize.normalize(_h1("hello"), decoder="dumpvdl2")
+        assert rec["sublabel"] is None and rec["mfi"] is None
+
+    def test_non_string_sublabel_coerced_safely(self):
+        rec = normalize.normalize(
+            _h1("hello", sublabel={"x": 1}, mfi=["B0"]), decoder="dumpvdl2")
+        assert rec["sublabel"] is None and rec["mfi"] is None
+
+    def test_vdlm2dec_has_no_sublabel_or_mfi(self):
+        rec = normalize.normalize(SAMPLE_VDLM2DEC, decoder="vdlm2dec")
+        assert rec.get("sublabel") is None
+        assert rec.get("mfi") is None
+
+
+class TestAcarsText:
+    def test_prefix_rebuilt_with_sublabel(self):
+        assert normalize.acars_text("POSN52", "M1", None) == "#M1BPOSN52"
+
+    def test_prefix_rebuilt_with_mfi(self):
+        assert normalize.acars_text("EPWW.AFN/FMH", "M1", "B0") == "#M1B/B0 EPWW.AFN/FMH"
+
+    def test_no_sublabel_unchanged(self):
+        assert normalize.acars_text("hello", None, None) == "hello"
+        assert normalize.acars_text("hello", "", "B0") == "hello"
+
+    def test_empty_or_none_body_unchanged(self):
+        assert normalize.acars_text(None, "M1", "B0") is None
+        assert normalize.acars_text("", "M1", None) == ""
+
+    def test_m1_position_frame_parses_via_m1bpos(self):
+        rec = normalize.normalize(
+            _h1(TestSublabelMfi.POS_BODY, sublabel="M1"), decoder="dumpvdl2")
+        assert m1bpos.parse_position(rec["body"]) is None   # stripped body: no tag
+        text = normalize.acars_text(rec["body"], rec["sublabel"], rec["mfi"])
+        assert text.startswith("#M1BPOSN52256E019186")
+        pos = m1bpos.parse_position(text)
+        assert pos is not None
+        assert abs(pos["lat"] - 52.42667) < 0.001
+
+    def test_m1_route_frame_parses_via_m1bpos(self):
+        rec = normalize.normalize(
+            _h1(TestSublabelMfi.RP_BODY, sublabel="M1"), decoder="dumpvdl2")
+        text = normalize.acars_text(rec["body"], rec["sublabel"], rec["mfi"])
+        route = m1bpos.parse_route(text)
+        assert route is not None
+        assert route["dep"] == "EPWA" and route["arr"] == "ENGM(19R)"

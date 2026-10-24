@@ -26,7 +26,7 @@ COLUMNS = (
     "ts", "icao_hex", "registration", "flight", "label", "mode",
     "block_id", "ack", "msgno", "freq", "station_id", "toaddr", "dsta",
     "lat", "lon", "alt", "epu", "app_name", "app_ver", "body", "raw", "decoder",
-    "sig_level", "noise_level",
+    "sig_level", "noise_level", "sublabel", "mfi",
 )
 
 _DDL_MESSAGES = """
@@ -55,7 +55,9 @@ CREATE TABLE IF NOT EXISTS vdl2_messages (
     raw          TEXT,                      -- full decoder JSON, verbatim (fidelity / re-parse)
     decoder      TEXT,                      -- which decoder produced it
     sig_level    REAL,                      -- dumpvdl2 per-frame signal level (dBFS); NULL on vdlm2dec
-    noise_level  REAL                       -- dumpvdl2 per-frame noise floor (dBFS); NULL on vdlm2dec
+    noise_level  REAL,                      -- dumpvdl2 per-frame noise floor (dBFS); NULL on vdlm2dec
+    sublabel     TEXT,                      -- H1 sublabel libacars stripped from the body (e.g. 'M1'); NULL on vdlm2dec
+    mfi          TEXT                       -- H1 message function id stripped from the body (e.g. 'B0'); usually NULL
 );
 """
 
@@ -79,6 +81,16 @@ CREATE INDEX IF NOT EXISTS idx_vdl2_label_ts_id ON vdl2_messages(label, ts DESC,
 CREATE INDEX IF NOT EXISTS idx_vdl2_pos_ts_id   ON vdl2_messages(ts DESC, id DESC) WHERE lat IS NOT NULL AND lon IS NOT NULL;
 """
 
+# The update trigger fires on body changes only (FTS indexes just `body`), so
+# non-body backfill UPDATEs (e.g. sublabel/mfi) skip FTS reindexing. One constant
+# feeds both _DDL_FTS and the migrate() upgrade of legacy `AFTER UPDATE` triggers.
+_DDL_FTS_UPDATE_TRIGGER = """
+CREATE TRIGGER IF NOT EXISTS vdl2_au AFTER UPDATE OF body ON vdl2_messages BEGIN
+    INSERT INTO vdl2_fts(vdl2_fts, rowid, body) VALUES ('delete', old.id, old.body);
+    INSERT INTO vdl2_fts(rowid, body) VALUES (new.id, new.body);
+END;
+"""
+
 # External-content FTS5 over body. Triggers keep it in sync; the delete/update
 # triggers use the special 'delete' command form required for external-content
 # tables so retention DELETEs don't leave orphaned FTS rows.
@@ -91,11 +103,7 @@ END;
 CREATE TRIGGER IF NOT EXISTS vdl2_ad AFTER DELETE ON vdl2_messages BEGIN
     INSERT INTO vdl2_fts(vdl2_fts, rowid, body) VALUES ('delete', old.id, old.body);
 END;
-CREATE TRIGGER IF NOT EXISTS vdl2_au AFTER UPDATE ON vdl2_messages BEGIN
-    INSERT INTO vdl2_fts(vdl2_fts, rowid, body) VALUES ('delete', old.id, old.body);
-    INSERT INTO vdl2_fts(rowid, body) VALUES (new.id, new.body);
-END;
-"""
+""" + _DDL_FTS_UPDATE_TRIGGER
 
 
 def connect(path: str | None = None) -> sqlite3.Connection:
@@ -152,7 +160,10 @@ def ensure_schema(conn: sqlite3.Connection, *, build_fts: bool = True) -> None:
 # migrate() (idempotent, like the indexes — NOT gated by user_version). ALTER ADD
 # COLUMN with no default is O(1) metadata-only in SQLite, so it's cheap on every
 # open; the PRAGMA check skips it once present.
-_ADDED_COLUMNS = (("sig_level", "REAL"), ("noise_level", "REAL"))
+_ADDED_COLUMNS = (
+    ("sig_level", "REAL"), ("noise_level", "REAL"),
+    ("sublabel", "TEXT"), ("mfi", "TEXT"),
+)
 
 
 def _add_missing_columns(conn: sqlite3.Connection) -> None:
@@ -171,6 +182,22 @@ def _add_missing_columns(conn: sqlite3.Connection) -> None:
                 pass  # lost the add race to another connection — column now exists
 
 
+def _upgrade_fts_update_trigger(conn: sqlite3.Connection) -> None:
+    """Replace a legacy ``AFTER UPDATE`` vdl2_au trigger with the body-only form.
+    Idempotent; DROP + CREATE run in one write transaction (no window without an
+    update trigger), and a concurrent opener that already swapped it just
+    re-creates the same definition."""
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='trigger' AND name='vdl2_au'"
+    ).fetchone()
+    if row is None or "update of body" in (row[0] or "").lower():
+        return
+    conn.executescript(
+        "BEGIN IMMEDIATE; DROP TRIGGER IF EXISTS vdl2_au;"
+        + _DDL_FTS_UPDATE_TRIGGER + "COMMIT;"
+    )
+
+
 def migrate(conn: sqlite3.Connection, *, build_fts: bool = True) -> None:
     """Idempotent upgrades NOT gated by user_version, so they reach already-created
     DBs: add any missing columns, create any missing indexes, and create FTS if
@@ -181,7 +208,11 @@ def migrate(conn: sqlite3.Connection, *, build_fts: bool = True) -> None:
     takes a write lock, so it's gated on ``build_fts`` — the collector (writer)
     runs it; the web path passes ``build_fts=False`` and, when rows already exist,
     leaves FTS absent so search falls back to LIKE instead of MATCHing a
-    half-populated index (which would silently miss old rows)."""
+    half-populated index (which would silently miss old rows).
+
+    ``build_fts=True`` (writer only) also swaps a legacy ``AFTER UPDATE`` FTS
+    trigger for ``AFTER UPDATE OF body``, so non-body UPDATEs skip reindexing;
+    web threads never run that DDL."""
     _add_missing_columns(conn)
     conn.executescript(_DDL_INDEXES)
     if fts5_available(conn) and not has_fts(conn):
@@ -190,6 +221,8 @@ def migrate(conn: sqlite3.Connection, *, build_fts: bool = True) -> None:
             conn.executescript(_DDL_FTS)
             if has_rows:
                 conn.execute("INSERT INTO vdl2_fts(vdl2_fts) VALUES('rebuild')")
+    if build_fts and has_fts(conn):
+        _upgrade_fts_update_trigger(conn)
     conn.commit()
 
 

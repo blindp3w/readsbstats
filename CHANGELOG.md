@@ -5,6 +5,75 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 2.26.0 — 2026-10-24
+
+dumpvdl2 ACARS fix. Since the VDL2 ingest moved to the dumpvdl2 decoder,
+libacars had been stripping the H1 text prefix (`#M1B`, `/B0 `) and the XID
+aircraft position and destination out of the message, and the normalizer
+dropped them. `#M1BPOS` precise positions and `/RP:` filed routes, the H1 body
+kind chips, XID map points and the OOOI destination fallback were empty for
+dumpvdl2 data. They work again. Adds two nullable `vdl2_messages` columns
+(`sublabel`, `mfi`) and a one-shot backfill for rows stored before the fix.
+vdlm2dec feeds are unaffected.
+
+### Fixed
+
+- **dumpvdl2 `#M1BPOS` positions and filed routes were missing.** libacars
+  moves the `#M1B` sublabel out of the body into `acars.sublabel`, so the
+  prefix-keyed parsers never matched. The normalizer now stores the sublabel
+  and the optional MFI in their own columns, and the read path rebuilds the
+  downlink prefix before parsing (`normalize.acars_text`). Precise positions
+  and `/RP:` routes show up on the map and the message log again.
+- **H1 body-kind chips were missing on dumpvdl2 rows.** The chips key on the
+  same prefix, so the UI now matches them against the prefix rebuilt from the
+  sublabel (after trying the raw body, which keeps OHMA rows as OHMA).
+- **XID position and destination were ignored on dumpvdl2.** XID link frames
+  now fill `lat`/`lon`/`alt` from `ac_location` (0.1° and feet, as the
+  decoder emits them) and `dsta` from `dst_airport`, so coarse XID map points
+  and the OOOI `dsta` fallback work. The ground station's position
+  (`gs_location`) is not used.
+- **FTS update trigger fires only on `body` changes.** Non-body updates such
+  as the backfill no longer reindex the full-text index. Legacy databases get
+  the body-only trigger on the next writer start.
+
+### Added
+
+- **`sublabel` / `mfi` on message rows.** `/api/vdl2/messages` and
+  `/api/vdl2/messages/{icao_hex}` rows now include both fields (`null` under
+  vdlm2dec). The stored `body` is unchanged, so FTS search and the fidelity
+  of `raw` are unaffected.
+- **`scripts/backfill_vdl2_dumpvdl2.py`** — one-shot backfill that re-runs the
+  normalizer over dumpvdl2 rows stored before this fix and fills only the NULL
+  columns (`sublabel`, `mfi`, `lat`, `lon`, `alt`, `dsta`) from the stored
+  `raw` JSON. Safe while `readsbstats-vdl2` runs; idempotent; supports
+  `--dry-run` and `--chunk`.
+
+### Schema & API
+
+- `vdl2.db`: `vdl2_messages` gains nullable `sublabel` and `mfi` columns,
+  added idempotently when the database is opened (no table rebuild). No change
+  to the core `history.db` schema (still version 6).
+- `/api/vdl2/messages` (and `/messages/{icao_hex}`): rows gain `sublabel` and
+  `mfi`. Additive only.
+- `/api/vdl2/positions`: dumpvdl2 `#M1BPOS` rows are precise points again;
+  XID rows are coarse (`precise: false`) points.
+
+### Upgrade notes
+
+- Run the backfill once after updating to 2.26.0. It is not needed for new
+  data, and rows that are not backfilled age out with
+  `RSBS_VDL2_RETENTION_DAYS`. On a 90-day / 567k-row database it finished in
+  about 3 s and filled `sublabel` on ~103k rows, `lat`/`lon`/`alt` on ~5.4k and
+  `dsta` on ~6.8k. A second run updates 0 rows:
+
+  ```bash
+  sudo -u readsbstats /opt/readsbstats/venv/bin/python \
+      /opt/readsbstats/scripts/backfill_vdl2_dumpvdl2.py \
+      --db /mnt/ext/readsbstats/vdl2.db
+  ```
+
+  See [Operations](docs/operations.md#vdl2--acars-ingest) for details.
+
 ## 2.25.6 — 2026-10-22
 
 Flight route map fix + dependency refresh. Dev-tooling security fixes only —

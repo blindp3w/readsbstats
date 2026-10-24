@@ -19,6 +19,7 @@ from fastapi import APIRouter, HTTPException, Query
 from .. import cache, config, schemas
 from ..vdl2 import db as vdl2_db
 from ..vdl2 import m1bpos
+from ..vdl2 import normalize
 from ..vdl2 import oooi
 from ..vdl2 import positions as vdl2_positions
 from ..vdl2 import rte
@@ -87,7 +88,7 @@ def vdl2_health() -> dict:
 _LIST_COLS = (
     "id, ts, icao_hex, registration, flight, label, mode, block_id, ack, "
     "msgno, freq, station_id, toaddr, dsta, lat, lon, alt, epu, app_name, "
-    "app_ver, body, decoder"
+    "app_ver, body, decoder, sublabel, mfi"
 )
 
 
@@ -120,14 +121,17 @@ def _rows_to_messages(rows) -> list[dict]:
         d = dict(r)
         body = d.get("body")
         if body:
+            # dumpvdl2 strips the '#<SL>B[/<MFI> ]' prefix into sublabel/mfi; rebuild
+            # it for the prefix-keyed parsers (the returned body stays as stored).
+            text = normalize.acars_text(body, d.get("sublabel"), d.get("mfi"))
             # Filed route from the two body shapes that carry one: #M1BPOS /RP:
             # blocks and Teledyne RTE messages. Only set when parseable ->
             # exclude_unset omits it elsewhere.
             route = None
-            if body.startswith("#M1BPOS"):
-                route = m1bpos.parse_route(body)
-            elif body.startswith("RTE ") or body.startswith("#T1BRTE"):
-                route = rte.parse_route(body)
+            if text.startswith("#M1BPOS"):
+                route = m1bpos.parse_route(text)
+            elif text.startswith("RTE ") or text.startswith("#T1BRTE"):
+                route = rte.parse_route(text)
             if route is not None:
                 d["filed_route"] = route
         out.append(d)
@@ -825,7 +829,8 @@ def api_vdl2_positions(minutes: int = Query(60, ge=1, le=1440)) -> dict:
     map overlay. Three sources, precise preferred (validated against a real feed):
     Label-16 AUTPOS bodies **and** `#M1BPOS` (Honeywell FMS) bodies both carry
     **precise** (~0.001°) coordinates parsed here; the lat/lon columns hold only
-    **coarse** (~0.1°) VDL2 XID link-frame fixes used as a fallback. Each point
+    **coarse** (~0.1°) VDL2 XID link-frame fixes used as a fallback (vdlm2dec and
+    dumpvdl2 alike; dumpvdl2 `#M1BPOS` rows are matched via `sublabel`). Each point
     carries `precise`. Sparse on an H1-dominated feed. Capped + cached ~30 s."""
     cached = cache._get_cache(f"vdl2-positions-{minutes}")
     if cached is not None:
@@ -841,7 +846,9 @@ def _compute_positions(minutes: int) -> dict:
     label-16 and coarse queries are index-served (idx_vdl2_label_ts_id /
     idx_vdl2_pos_ts_id); the `#M1BPOS` and `59,G` queries are time-window-bounded row
     scans (idx_vdl2_ts bounds `ts >=`, then a `body LIKE` filter), capped so they still
-    terminate. Precise fixes are parsed from Label-16 AUTPOS, `#M1BPOS`, and LOT `59,G`
+    terminate. The `#M1BPOS` query also matches dumpvdl2 rows (`sublabel = 'M1'`, body
+    `POS…` — libacars stripped the prefix), re-prefixed via `normalize.acars_text`
+    before parsing. Precise fixes are parsed from Label-16 AUTPOS, `#M1BPOS`, and LOT `59,G`
     bodies (so a coordinate-looking body on any other row can't masquerade as precise);
     coarse XID column fixes are the fallback. Independent caps + over-fetched scans + a
     final merge/cap so a burst of no-fix rows can't starve valid coarse OR older precise
@@ -861,8 +868,9 @@ def _compute_positions(minutes: int) -> dict:
         (cutoff, _POSITIONS_CAP),
     ).fetchall()
     m1bpos_rows = conn.execute(
-        "SELECT id, icao_hex, ts, label, body FROM vdl2_messages "
-        "WHERE ts >= ? AND body LIKE '#M1BPOS%' ORDER BY ts DESC, id DESC LIMIT ?",
+        "SELECT id, icao_hex, ts, label, body, sublabel, mfi FROM vdl2_messages "
+        "WHERE ts >= ? AND (body LIKE '#M1BPOS%' OR (sublabel = 'M1' AND body LIKE 'POS%')) "
+        "ORDER BY ts DESC, id DESC LIMIT ?",
         (cutoff, _POSITIONS_M1BPOS_SCAN_CAP),
     ).fetchall()
     g59_rows = conn.execute(
@@ -887,7 +895,8 @@ def _compute_positions(minutes: int) -> dict:
         seen.add(r["id"])
         points.append(_point(r, parsed["lat"], parsed["lon"], True))
     for r in m1bpos_rows:
-        parsed = m1bpos.parse_position(r["body"])
+        parsed = m1bpos.parse_position(
+            normalize.acars_text(r["body"], r["sublabel"], r["mfi"]))
         if parsed is None:
             continue   # non-position #M1BPOS body — discarded (does not consume the final cap)
         if r["id"] in seen:

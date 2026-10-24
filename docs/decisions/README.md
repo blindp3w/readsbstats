@@ -25,6 +25,8 @@ a date-stamped **Revision** note (see ADR-0010).
 | [0014](0014-daily-rollups-replace-duckdb.md) | Daily rollup tables replace the DuckDB accelerator | Accepted | 2026-06-11 |
 | [0015](0015-scaled-integer-positions-storage.md) | Scaled-integer storage for the positions table (schema v6) | Accepted | 2026-06-11 |
 | [0016](0016-oooi-qseries-parsing.md) | OOOI from Q-series compact reports (and what we deliberately don't parse) | Accepted | 2026-06-12 |
+| [0017](0017-client-side-acars-decoding.md) | Client-side ACARS decoding + server-side `#M1BPOS` positions and filed routes | Accepted | 2026-06-13 |
+| [0018](0018-dumpvdl2-sublabel-columns.md) | dumpvdl2 H1 sublabel/MFI as columns; body kept verbatim | Accepted | 2026-10-24 |
 
 ## Adding an ADR
 

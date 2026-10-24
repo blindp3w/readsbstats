@@ -106,7 +106,7 @@ export function MessageList({
           const decoded = decode && m.body ? decode(m) : null;
           // Body-category chip — only when the row has no richer rendering already
           // (airframes decoded line or a filed_route line).
-          const kind = !decoded && !m.filed_route ? bodyKind(m.body, m.label) : null;
+          const kind = !decoded && !m.filed_route ? bodyKind(m.body, m.label, m.sublabel) : null;
           return (
             <li
               key={m.id}

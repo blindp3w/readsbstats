@@ -31,6 +31,41 @@ describe('bodyKind', () => {
     expect(bodyKind('59,X,whatever')).toBeNull();
   });
 
+  describe('dumpvdl2 sublabel (H1 prefix stripped from body)', () => {
+    it('rebuilds the downlink prefix from the sublabel', () => {
+      expect(bodyKind('POSN52081E020017,...', 'H1', 'M1')).toBe('FMS position/route');
+      expect(bodyKind('ABS011DA_S UAAAEPWA2', 'H1', 'DF')).toBe('ACMS report');
+      expect(bodyKind('WRN/PNRC... FAULT', 'H1', 'CF')).toBe('Maintenance (CMS)');
+      expect(bodyKind('CKFk4f3x...', 'H1', 'T1')).toBe('AID report');
+    });
+
+    it('keeps OHMA as Boeing OHMA even though its sublabel is T1', () => {
+      expect(bodyKind('OHMAeJydU01v...', 'H1', 'T1')).toBe('Boeing OHMA');
+    });
+
+    it('returns null for an unknown sublabel with an unrecognized body', () => {
+      expect(bodyKind('free text', 'H1', 'ZZ')).toBeNull();
+    });
+
+    it('behaves as before when the sublabel is null, undefined or empty', () => {
+      for (const sub of [null, undefined, '']) {
+        expect(bodyKind('POSN52081E020017', 'H1', sub)).toBeNull();
+        expect(bodyKind('#DFBABS011DA_S UAAAEPWA2', 'H1', sub)).toBe('ACMS report');
+        expect(bodyKind('OHMAeJydU01v...', 'H1', sub)).toBe('Boeing OHMA');
+      }
+    });
+
+    it('still matches vdlm2dec-style prefixed bodies regardless of sublabel', () => {
+      expect(bodyKind('#DFBABS011DA_S UAAAEPWA2', 'H1', 'M1')).toBe('ACMS report');
+      expect(bodyKind('#M1BPOSN52086E019235', 'H1', null)).toBe('FMS position/route');
+    });
+
+    it('leaves 59,G label handling unchanged with a sublabel present', () => {
+      expect(bodyKind('59,G,0542,1,1,EPWA', '36', 'M1')).toBe('Position report');
+      expect(bodyKind('59,G,EPGD,EPWA,33/-', '37', 'M1')).toBe('Ground report');
+    });
+  });
+
   it('has no key that is a prefix of another (first-match is unambiguous)', () => {
     const keys = Object.keys(VDL2_BODY_KINDS);
     for (const a of keys)
