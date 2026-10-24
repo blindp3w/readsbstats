@@ -867,7 +867,9 @@ def api_vdl2_positions(minutes: int = Query(60, ge=1, le=1440)) -> dict:
 def _compute_positions(minutes: int) -> dict:
     """Five candidate queries merged in Python (a single OR query full-scans). The
     label (`label IN (…)` over `positions.PRECISE_LABEL_PARSERS`), ADS-C (`label = 'B6'`)
-    and coarse queries are index-served (idx_vdl2_label_ts_id / idx_vdl2_pos_ts_id); the
+    and coarse queries are index-served (idx_vdl2_label_ts_id / idx_vdl2_pos_ts_id) — the
+    multi-value `IN` probes each label then sorts the merged rows in a temp B-tree before
+    the LIMIT, cheap at the observed volume (~40 rows/day across these labels); the
     `#M1BPOS` and `59,G` queries are time-window-bounded row scans (idx_vdl2_ts bounds `ts >=`, then a `body LIKE` filter), capped so they still
     terminate. The `#M1BPOS` query also matches dumpvdl2 rows (`sublabel = 'M1'`, body
     `POS…` — libacars stripped the prefix), re-prefixed via `normalize.acars_text`
