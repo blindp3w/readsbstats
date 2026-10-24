@@ -137,6 +137,25 @@ either a compatible SDR or an external resampler ahead of the Airspy Mini's fixe
 rates — see [Running dumpvdl2 on an Airspy Mini](dumpvdl2-airspy-mini.md) for a
 tested IQ‑resampling recipe.
 
+**One-time backfill after upgrading to 2.26.0 (dumpvdl2 feeds).** Rows ingested
+before 2.26.0 are missing the H1 `sublabel`/`mfi` and the XID position and
+destination, because the old normalizer dropped them. New rows are fixed
+automatically. To fill older rows, run the backfill once after the update.
+It only fills NULL columns from the stored `raw` JSON, and it can run while
+`readsbstats-vdl2` is live (no service stop needed). A second run updates
+nothing:
+
+```bash
+sudo -u readsbstats /opt/readsbstats/venv/bin/python \
+    /opt/readsbstats/scripts/backfill_vdl2_dumpvdl2.py \
+    --db /mnt/ext/readsbstats/vdl2.db
+# add --dry-run to count what would change without writing
+```
+
+Skipping it is harmless: unfilled rows simply age out with retention. The
+`--db` flag is required under `sudo`, because `/etc/readsbstats/vdl2.env` is not
+loaded in that context.
+
 **Retention.** The ingest service prunes messages older than
 `RSBS_VDL2_RETENTION_DAYS` (default 90) every hour. Message volume is modest
 (thousands–tens of thousands/day at a busy site); at ~1 KB/row stored that's
