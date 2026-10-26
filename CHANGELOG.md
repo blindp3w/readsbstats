@@ -5,6 +5,33 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 2.29.3 — 2026-10-26
+
+Documentation release from the 2026-10 codebase audit. No code changes.
+
+### Documentation
+
+- **Retention, corrected.** With `RSBS_RETENTION_DAYS` set, flights whose
+  positions have all aged out are deleted too, so History, Statistics, Aircraft
+  pages and leaderboards cover only the retention window. Only the coarse
+  heatmap rollup and the coverage rollup are permanent. The docs previously said
+  every flight row was kept forever.
+- **Safe database snapshot** for local development: `VACUUM INTO` a RAM-backed
+  `/dev/shm` file on the Pi, pull it, then `PRAGMA integrity_check`. The old
+  recipe copied the live database without its WAL file.
+- **Startup corruption is fail-closed** (the collector exits with code 2 and
+  alerts), as in Operations; Configuration said it continued degraded.
+- **Install** now builds the frontend first (`frontend/dist` is not in git;
+  Node 22+ on the build machine).
+- Smaller fixes: the RRD import needs `--rrd-dir` and `rrdtool`; enricher logs
+  are in the collector journal; the map trail window applies to live mode only;
+  the photo image/link host allowlists are listed; failure alerts also cover the
+  VDL2 and integrity-check units; Dependabot security PRs are not grouped; the
+  API reference lists the existing paging and sort parameters.
+- **Third-party notices:** the d3.js code embedded in ECharts is named
+  correctly, BSD-3 notices for zrender, pbf and `@mapbox/vector-tile` are added,
+  and the basemap attribution section matches the code.
+
 ## 2.29.2 — 2026-10-26
 
 Test-suite release from the 2026-10 codebase audit. No production code changes.
