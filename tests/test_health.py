@@ -269,6 +269,13 @@ class TestBaselineAvg:
         assert n == 1
         assert avg == 200.0
 
+    def test_zero_lookback_weeks_returns_no_baseline(self, conn):
+        # Matching history exists, but with lookback_weeks < 1 there is no
+        # window to sample: (None, 0), not an empty-OR-clause SQL error.
+        insert_metrics_row(conn, ts=NOW - 7 * 86400, messages=100)
+        assert health._baseline_avg(conn, "messages", NOW, lookback_weeks=0) == (None, 0)
+        assert health._baseline_avg(conn, "messages", NOW, lookback_weeks=-3) == (None, 0)
+
     def test_lookback_window_limits_history(self, conn):
         # 5 weeks back is outside the 4-week window
         insert_metrics_row(conn, ts=NOW - 5 * 7 * 86400, messages=999)
@@ -365,6 +372,17 @@ class TestMessageRateCheck:
         _seed_hour_of_week_history(conn, 1000, weeks_back=3)
         check = health._check_message_rate(conn, NOW)
         assert check.severity == "ok"
+
+    def test_zero_baseline_returns_info(self, conn):
+        # Historically idle receiver (baseline 0 msg/min): the pct computation
+        # would divide by zero, so the check short-circuits to info.
+        for off in (0, 60, 120):
+            insert_metrics_row(conn, ts=NOW - off, messages=500)
+        _seed_hour_of_week_history(conn, 0, weeks_back=3)
+        check = health._check_message_rate(conn, NOW)
+        assert check.name == "message_rate"
+        assert check.severity == "info"
+        assert "historically idle" in check.message
 
     def test_drop_below_threshold_warns(self, conn):
         # Recent 200/min vs 1000/min baseline = 20% — below default 50% threshold

@@ -480,6 +480,33 @@ def test_main_dirty_sentinel_clean_check_proceeds(monkeypatch, tmp_path, caplog)
     assert not sentinel.exists()
 
 
+def test_main_dirty_sentinel_checkpoint_failure_is_ignored(monkeypatch, tmp_path):
+    """After a passing quick_check on an unclean start, a failing WAL
+    checkpoint is best-effort only: main() proceeds and shuts down cleanly."""
+    real = _scaffold_main(monkeypatch, tmp_path)
+    executed = []
+
+    class _CheckpointFails:
+        def __getattr__(self, name):
+            return getattr(real, name)
+
+        def execute(self, sql, *a, **k):
+            executed.append(sql)
+            if "wal_checkpoint" in sql:
+                raise sqlite3.OperationalError("database is locked")
+            return real.execute(sql, *a, **k)
+
+    proxy = _CheckpointFails()
+    monkeypatch.setattr(vdl2_db, "connect", lambda *a, **k: proxy)
+    sentinel = tmp_path / ".vdl2_dirty_shutdown"
+    sentinel.touch()
+    monkeypatch.setattr(socket, "socket", lambda *a, **k: _StopImmediatelySock())
+
+    assert vdl2_collector.main() == 0
+    assert any("wal_checkpoint" in q for q in executed)   # it was attempted
+    assert not sentinel.exists()
+
+
 def test_main_dirty_sentinel_failed_check_refuses_to_write(monkeypatch, tmp_path, caplog):
     monkeypatch.setattr(config, "VDL2_ENABLED", True)
     monkeypatch.setattr(config, "VDL2_DB_PATH", str(tmp_path / "vdl2.db"))

@@ -776,6 +776,28 @@ class TestApiMetricsHealth:
         assert "noise_floor" in names
         assert "cpu_saturation" in names
 
+    def test_second_call_is_served_from_cache(self, client, monkeypatch):
+        """A repeat request inside the TTL must reuse the cached report and
+        not recompute health (compute_health walks receiver_stats)."""
+        from readsbstats.api import health as api_health
+
+        calls = []
+
+        class _Report:
+            def to_dict(self):
+                return {"overall": "ok", "checks": [], "n": len(calls)}
+
+        def fake_compute(conn):
+            calls.append(conn)
+            return _Report()
+
+        monkeypatch.setattr(api_health.receiver_health, "compute_health", fake_compute)
+        r1 = client.get("/api/metrics/health")
+        r2 = client.get("/api/metrics/health")
+        assert r1.status_code == r2.status_code == 200
+        assert r1.json() == r2.json() == {"overall": "ok", "checks": [], "n": 1}
+        assert len(calls) == 1
+
     def test_returns_check_payload_shape(self, client):
         r = client.get("/api/metrics/health")
         body = r.json()

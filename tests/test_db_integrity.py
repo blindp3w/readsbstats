@@ -226,7 +226,7 @@ class TestMainFailClosed:
         sd_msgs: list[str] = []
         monkeypatch.setattr(collector, "_sd_notify", lambda msg: sd_msgs.append(msg))
 
-        with caplog.at_level(logging.ERROR, logger="readsbstats.collector"):
+        with caplog.at_level(logging.ERROR, logger="collector"):
             with pytest.raises(SystemExit) as ei:
                 collector.main()
 

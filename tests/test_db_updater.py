@@ -36,6 +36,35 @@ def _airlines_csv(*rows: list[str]) -> bytes:
     return "\n".join(lines).encode()
 
 
+class _CleanupFailingConn:
+    """Connection proxy whose ROLLBACK and post-failure staging-table DROP both
+    raise sqlite3.Error — simulates a connection that is itself broken at the
+    moment the updater tries to clean up after its own failure.
+
+    The staging DROP only fails once ``rollback()`` has been attempted, so the
+    updater's normal start-of-transaction ``DROP TABLE IF EXISTS`` still works.
+    """
+
+    def __init__(self, inner, staging_table):
+        self._inner = inner
+        self._staging = staging_table
+        self.rollback_attempted = False
+        self.cleanup_drop_attempted = False
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+    def rollback(self):
+        self.rollback_attempted = True
+        raise sqlite3.OperationalError("rollback failed")
+
+    def execute(self, sql, *args, **kw):
+        if self.rollback_attempted and sql == f"DROP TABLE IF EXISTS {self._staging}":
+            self.cleanup_drop_attempted = True
+            raise sqlite3.OperationalError("cleanup drop failed")
+        return self._inner.execute(sql, *args, **kw)
+
+
 # ---------------------------------------------------------------------------
 # update_aircraft_db
 # ---------------------------------------------------------------------------
@@ -293,6 +322,32 @@ class TestUpdateAircraftDb:
             "staging table aircraft_db_new must be dropped after a "
             "min-ratio refusal"
         )
+
+    def test_cleanup_failure_does_not_mask_original_error(self, monkeypatch):
+        """If both ROLLBACK and the staging-table DROP fail while handling a
+        swap refusal, the ORIGINAL RuntimeError must still propagate (not the
+        sqlite3.Error from the cleanup), and both cleanup steps were tried."""
+        conn = self.conn
+        for i in range(100):
+            conn.execute(
+                "INSERT INTO aircraft_db (icao_hex, registration, type_code, type_desc, flags) "
+                f"VALUES ('aa{i:04x}', 'OLD{i}', 'A320', '', 0)"
+            )
+        conn.commit()
+        monkeypatch.setattr(config, "AIRCRAFT_DB_MIN_RATIO", 0.8)
+        monkeypatch.setattr(db_updater, "_fetch", lambda url: _aircraft_gz(
+            *[[f"48{i:04x}", f"NEW{i}", "B738", "0", ""] for i in range(10)]
+        ))
+        proxy = _CleanupFailingConn(conn, "aircraft_db_new")
+
+        with pytest.raises(RuntimeError, match="swap refused"):
+            db_updater.update_aircraft_db(proxy)
+
+        assert proxy.rollback_attempted
+        assert proxy.cleanup_drop_attempted
+        # Real rollback now (the proxy swallowed ours): the live table is intact.
+        conn.rollback()
+        assert conn.execute("SELECT COUNT(*) FROM aircraft_db").fetchone()[0] == 100
 
     def test_recovery_restores_aircraft_db_old_after_interrupted_swap(
         self, monkeypatch
@@ -612,6 +667,51 @@ class TestUpdateAirlinesDb:
             "airlines.active must keep DEFAULT 1 after the swap; "
             f"got {info['active']['dflt_value']!r}"
         )
+
+    def test_swap_refusal_rolls_back_and_drops_staging(self, monkeypatch):
+        """A truncated upstream is refused, the old airlines survive and the
+        airlines_new staging table is gone."""
+        conn = self.conn
+        conn.execute("DELETE FROM airlines")
+        for i in range(10):
+            conn.execute(
+                "INSERT INTO airlines (icao_code, name, iata_code, country, active) "
+                "VALUES (?, ?, NULL, 'Poland', 1)", (f"A{i:02d}", f"Old {i}"))
+        conn.commit()
+        monkeypatch.setattr(config, "AIRLINES_DB_MIN_RATIO", 0.8)
+        monkeypatch.setattr(db_updater, "_fetch", lambda url: _airlines_csv(
+            ["1", "LOT Polish Airlines", r"\N", "LO", "LOT", "LOT", "Poland", "Y"],
+        ))
+        with pytest.raises(RuntimeError, match="airlines swap refused"):
+            db_updater.update_airlines_db(conn)
+        assert conn.execute("SELECT COUNT(*) FROM airlines").fetchone()[0] == 10
+        assert conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE name IN ('airlines_new','airlines_old')"
+        ).fetchall() == []
+
+    def test_cleanup_failure_does_not_mask_original_error(self, monkeypatch):
+        """ROLLBACK and the staging DROP both failing while handling a refusal
+        must not replace the original RuntimeError."""
+        conn = self.conn
+        conn.execute("DELETE FROM airlines")
+        for i in range(10):
+            conn.execute(
+                "INSERT INTO airlines (icao_code, name, iata_code, country, active) "
+                "VALUES (?, ?, NULL, 'Poland', 1)", (f"A{i:02d}", f"Old {i}"))
+        conn.commit()
+        monkeypatch.setattr(config, "AIRLINES_DB_MIN_RATIO", 0.8)
+        monkeypatch.setattr(db_updater, "_fetch", lambda url: _airlines_csv(
+            ["1", "LOT Polish Airlines", r"\N", "LO", "LOT", "LOT", "Poland", "Y"],
+        ))
+        proxy = _CleanupFailingConn(conn, "airlines_new")
+
+        with pytest.raises(RuntimeError, match="airlines swap refused"):
+            db_updater.update_airlines_db(proxy)
+
+        assert proxy.rollback_attempted
+        assert proxy.cleanup_drop_attempted
+        conn.rollback()
+        assert conn.execute("SELECT COUNT(*) FROM airlines").fetchone()[0] == 10
 
     def test_first_ever_airlines_import_skips_ratio_check(self, monkeypatch):
         """When the airlines table is empty (prev_count == 0), import

@@ -191,6 +191,79 @@ class TestCoverageFromRollups:
         assert body["max_range_nm"] == pytest.approx(100.0, rel=0.01)
 
 
+class TestDoubleCheckedCacheInsideLock:
+    """Heatmap/coverage use double-checked locking: a request that queued on the
+    per-window lock must re-read the cache once it gets the lock and return the
+    value the previous holder computed, rather than recomputing."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        cache._cache.clear()
+        yield
+        cache._cache.clear()
+
+    @staticmethod
+    def _populating_lock(key, payload):
+        """Async-context-manager lock stand-in: acquiring it simulates another
+        request finishing its computation and filling the cache while we waited."""
+        class _Lock:
+            entered = 0
+            async def __aenter__(self_inner):
+                _Lock.entered += 1
+                cache._set_cache(key, payload)
+            async def __aexit__(self_inner, *exc):
+                return False
+        return _Lock
+
+    @pytest.mark.parametrize("kind,handler_name,lock_name,compute_name", [
+        ("heatmap", "api_map_heatmap", "_heatmap_lock", "_compute_heatmap_sync"),
+        ("coverage", "api_map_coverage", "_coverage_lock", "_compute_coverage_sync"),
+    ])
+    def test_cache_filled_while_waiting_for_lock_skips_recompute(
+            self, monkeypatch, kind, handler_name, lock_name, compute_name):
+        from readsbstats.api import map as api_map
+        from tests._helpers import run_async
+
+        payload = {"points": [[1.0, 2.0, 1.0]], "window": "7d", "count": 3,
+                   "from": "other-request"}
+        key = f"{kind}:7d"
+        lock_cls = self._populating_lock(key, payload)
+        monkeypatch.setattr(cache, lock_name, lambda window: lock_cls())
+
+        def must_not_run(window):
+            raise AssertionError("compute ran despite a filled cache")
+
+        monkeypatch.setattr(api_map, compute_name, must_not_run)
+
+        result = run_async(getattr(api_map, handler_name)(window="7d"))
+
+        assert result is payload
+        assert lock_cls.entered == 1   # it did go through the lock path
+
+    @pytest.mark.parametrize("kind,handler_name,compute_name", [
+        ("heatmap", "api_map_heatmap", "_compute_heatmap_sync"),
+        ("coverage", "api_map_coverage", "_compute_coverage_sync"),
+    ])
+    def test_cold_cache_computes_once_and_stores(
+            self, monkeypatch, kind, handler_name, compute_name):
+        """Counterpart: with nothing cached the lock path computes, stores the
+        result, and a second call is served from the cache."""
+        from readsbstats.api import map as api_map
+        from tests._helpers import run_async
+
+        calls = []
+
+        def fake_compute(window):
+            calls.append(window)
+            return {"window": window, "n": len(calls)}
+
+        monkeypatch.setattr(api_map, compute_name, fake_compute)
+        first = run_async(getattr(api_map, handler_name)(window="30d"))
+        second = run_async(getattr(api_map, handler_name)(window="30d"))
+        assert first == second == {"window": "30d", "n": 1}
+        assert calls == ["30d"]
+
+
 # ---------------------------------------------------------------------------
 # Tests: /api/map/snapshot
 # (The /map Jinja page was deleted at v2.0.0 cutover; the React SPA at

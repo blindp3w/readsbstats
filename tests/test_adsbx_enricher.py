@@ -503,6 +503,164 @@ class TestFetchArea:
             self.enricher._fetch_area()
 
 
+class TestFetchAreaCall:
+    """`_fetch_area`'s inner `_call`: raise_for_status + .json() contract."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        from readsbstats import adsbx_enricher
+        importlib.reload(adsbx_enricher)
+        self.enricher = adsbx_enricher
+        yield
+
+    def test_returns_parsed_json_using_supplied_client(self, monkeypatch):
+        import httpx
+        from readsbstats import http_safe
+
+        seen = {}
+
+        def fake_safe_get(client, url, **kwargs):
+            seen["client"] = client
+            seen["url"] = url
+            seen["max_bytes"] = kwargs.get("max_bytes")
+            return httpx.Response(
+                200, json={"ac": [{"hex": "aaa111"}]},
+                request=httpx.Request("GET", url),
+            )
+
+        monkeypatch.setattr(http_safe, "safe_httpx_get", fake_safe_get)
+        sentinel_client = object()
+        data = self.enricher._fetch_area(sentinel_client)
+        assert data == {"ac": [{"hex": "aaa111"}]}
+        assert seen["client"] is sentinel_client
+        assert seen["url"].startswith(config.ADSBX_API_URL + "/point/")
+        assert seen["max_bytes"] == self.enricher._RESPONSE_MAX_BYTES
+
+    def test_one_shot_client_path_returns_json(self, monkeypatch):
+        import httpx
+        from readsbstats import http_safe
+
+        monkeypatch.setattr(
+            http_safe, "safe_httpx_get",
+            lambda client, url, **kw: httpx.Response(
+                200, json={"ac": []}, request=httpx.Request("GET", url)),
+        )
+        assert self.enricher._fetch_area() == {"ac": []}
+
+    def test_http_error_status_becomes_transient(self, monkeypatch):
+        import httpx
+        from readsbstats import http_safe
+
+        monkeypatch.setattr(
+            http_safe, "safe_httpx_get",
+            lambda client, url, **kw: httpx.Response(
+                503, text="busy", request=httpx.Request("GET", url)),
+        )
+        with pytest.raises(self.enricher._TransientError):
+            self.enricher._fetch_area(object())
+
+    def test_invalid_json_body_becomes_transient(self, monkeypatch):
+        import httpx
+        from readsbstats import http_safe
+
+        monkeypatch.setattr(
+            http_safe, "safe_httpx_get",
+            lambda client, url, **kw: httpx.Response(
+                200, content=b"<html>not json", request=httpx.Request("GET", url)),
+        )
+        with pytest.raises(self.enricher._TransientError):
+            self.enricher._fetch_area(object())
+
+
+class _StopLoop(Exception):
+    """Private sentinel used to break out of the enricher's infinite loop."""
+
+
+class TestRunEnricherLoop:
+    """`run_enricher_loop`: disabled guard + backoff schedule."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self, monkeypatch):
+        from readsbstats import adsbx_enricher, database
+        importlib.reload(adsbx_enricher)
+        self.enricher = adsbx_enricher
+        self.conn = make_db()
+        monkeypatch.setattr(database, "connect", lambda path: self.conn)
+        monkeypatch.setattr(config, "ADSBX_ENABLED", True)
+        monkeypatch.setattr(config, "ADSBX_POLL_INTERVAL", 60)
+        self.sleeps = []
+        yield
+        self.conn.close()
+
+    def _drive(self, monkeypatch, outcomes):
+        """Run the loop; each poll consumes one outcome (exception or None).
+
+        sleep() records durations and raises _StopLoop once outcomes are used up.
+        """
+        outcomes = list(outcomes)
+        polls = []
+
+        def fake_poll(conn, client=None):
+            polls.append(client)
+            exc = outcomes[len(polls) - 1]
+            if exc is not None:
+                raise exc
+            return 0
+
+        def fake_sleep(secs):
+            self.sleeps.append(secs)
+            if len(self.sleeps) >= len(outcomes):
+                raise _StopLoop
+
+        monkeypatch.setattr(self.enricher, "_poll_area", fake_poll)
+        monkeypatch.setattr(self.enricher.time, "sleep", fake_sleep)
+        with pytest.raises(_StopLoop):
+            self.enricher.run_enricher_loop(":memory:")
+        return polls
+
+    def test_disabled_returns_without_connecting_or_polling(self, monkeypatch, caplog):
+        from readsbstats import database
+        monkeypatch.setattr(config, "ADSBX_ENABLED", False)
+
+        def boom(*a, **k):
+            raise AssertionError("must not be reached when disabled")
+
+        monkeypatch.setattr(database, "connect", boom)
+        monkeypatch.setattr(self.enricher, "_poll_area", boom)
+        monkeypatch.setattr(self.enricher.time, "sleep", boom)
+        with caplog.at_level("INFO", logger=self.enricher.log.name):
+            assert self.enricher.run_enricher_loop(":memory:") is None
+        assert any("disabled" in r.getMessage() for r in caplog.records)
+
+    def test_success_sleeps_poll_interval_and_shares_one_client(self, monkeypatch):
+        polls = self._drive(monkeypatch, [None, None])
+        assert self.sleeps == [60, 60]
+        assert polls[0] is polls[1] and polls[0] is not None
+
+    def test_permanent_error_backs_off_one_hour_then_resets(self, monkeypatch, caplog):
+        with caplog.at_level("WARNING", logger=self.enricher.log.name):
+            self._drive(monkeypatch, [self.enricher._PermanentError("redirect"), None])
+        assert self.sleeps == [3600, 60]
+        assert any("permanent error" in r.getMessage() for r in caplog.records)
+
+    def test_transient_errors_double_then_success_resets(self, monkeypatch):
+        T = self.enricher._TransientError
+        self._drive(monkeypatch, [T("a"), T("b"), None])
+        assert self.sleeps == [120, 240, 60]
+
+    def test_transient_backoff_is_capped_at_300s(self, monkeypatch):
+        T = self.enricher._TransientError
+        self._drive(monkeypatch, [T("a"), T("b"), T("c"), T("d")])
+        assert self.sleeps == [120, 240, 300, 300]
+
+    def test_unexpected_error_is_logged_and_resets_to_poll_interval(self, monkeypatch, caplog):
+        T = self.enricher._TransientError
+        with caplog.at_level("ERROR", logger=self.enricher.log.name):
+            self._drive(monkeypatch, [T("x"), RuntimeError("bug")])
+        assert self.sleeps == [120, 60]
+        assert any("enricher error" in r.getMessage() for r in caplog.records)
+
+
 class _MockClient:
     """Minimal mock for httpx.Client context manager."""
     def __init__(self, get_fn):

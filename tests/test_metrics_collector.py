@@ -713,6 +713,40 @@ class TestMetricsApi:
         data = resp.json()
         assert data["bucket_seconds"] == 300
 
+    def test_bucket_seconds_15min_for_30d(self, client, db_conn):
+        """Range between 7 and 30 days uses 15-min buckets."""
+        now = int(time.time())
+        _insert_metric_row(db_conn, now, signal=-15.0)
+        resp = client.get(f"/api/metrics?from={now - 20 * 86400}&to={now + 1}&metrics=signal")
+        assert resp.json()["bucket_seconds"] == 900
+
+    def test_bucket_seconds_1h_for_range_over_30d(self, client, db_conn):
+        """Range between 30 and 90 days uses 1-hour buckets, grouped on hour
+        boundaries, with SUM semantics for counters."""
+        base = 1_000_000                      # 277.77 h -> bucket ts 997_200
+        _insert_metric_row(db_conn, base, messages=100)
+        _insert_metric_row(db_conn, base + 60, messages=200)       # same hour
+        _insert_metric_row(db_conn, base + 7200, messages=5)       # two hours later
+        resp = client.get(
+            f"/api/metrics?from={base - 1}&to={base + 60 * 86400}&metrics=messages")
+        data = resp.json()
+        assert data["bucket_seconds"] == 3600
+        assert data["data"][0] == [997_200, 1_004_400]
+        assert data["data"][1] == [300, 5]
+
+    def test_bucket_seconds_4h_for_range_over_90d(self, client, db_conn):
+        """Range beyond 90 days uses 4-hour buckets."""
+        base = 1_000_000                      # 69.4 x 4h -> bucket ts 993_600
+        _insert_metric_row(db_conn, base, messages=100)
+        _insert_metric_row(db_conn, base + 3000, messages=200)     # same 4 h bucket
+        _insert_metric_row(db_conn, base + 20000, messages=7)      # a later bucket
+        resp = client.get(
+            f"/api/metrics?from={base - 1}&to={base + 120 * 86400}&metrics=messages")
+        data = resp.json()
+        assert data["bucket_seconds"] == 14400
+        assert data["data"][0] == [993_600, 1_008_000]
+        assert data["data"][1] == [300, 7]
+
     def test_aggregation_sum_for_messages(self, client, db_conn):
         """Messages are SUM-aggregated in buckets."""
         base = 1_000_000

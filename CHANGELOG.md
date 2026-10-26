@@ -5,6 +5,23 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 2.29.5 — 2026-10-26
+
+Tests and CI. No production behaviour changes.
+
+### Changed
+
+- **Backend test coverage 98% → 99%** (131 → 42 uncovered lines): 65 tests for
+  logic that had none, including the airplanes.live poll loop's backoff
+  schedule, out-of-order position handling, the anonymous first-sighting alert,
+  retention purge of flights left with no positions and their RSSI recompute,
+  daily-summary error paths, metrics 1 h / 4 h buckets, database-swap cleanup
+  failures, background-migration failure isolation, and the pinned-IP HTTPS
+  connection in the SSRF guard.
+- **CI:** the Playwright browser install is capped at 4 minutes per attempt and
+  retried once (step limit 9 minutes, job limit 18). A slow Ubuntu mirror used
+  to run the job into its 10-minute timeout and cancel it.
+
 ## 2.29.4 — 2026-10-26
 
 Dependency release (Dependabot). No schema or API changes.

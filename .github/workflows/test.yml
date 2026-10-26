@@ -12,7 +12,9 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # 3.12 leg is ~6 min (coverage + build + Vitest + Playwright); headroom for
+    # the Playwright install retries below.
+    timeout-minutes: 18
     strategy:
       matrix:
         python-version: ["3.10", "3.11", "3.12"]
@@ -118,11 +120,21 @@ jobs:
       # 2026-05 redesigns (25 stale tests, fixed in #65) — so gate all of it.
       # ~1 min locally; tests/ui is excluded from the default run via
       # pyproject `norecursedirs`, hence the explicit path.
+      # The browser install normally takes 35-50 s, but the Azure Ubuntu apt
+      # mirror behind --with-deps is sometimes very slow (~85 KB/s seen), which
+      # used to run into the job timeout and cancel the whole leg. Cap each
+      # attempt and retry once (a retry often lands on a faster mirror), so a
+      # persistently slow mirror fails this step with a clear error instead.
       - name: Install Playwright extras + browsers
         if: matrix.python-version == '3.12'
+        timeout-minutes: 9
         run: |
           pip install -e ".[ui-tests]"
-          playwright install --with-deps webkit chromium
+          for attempt in 1 2; do
+            timeout 240 playwright install --with-deps webkit chromium && break
+            if [ "$attempt" = 2 ]; then echo "playwright install failed twice (slow apt mirror?)" >&2; exit 1; fi
+            echo "playwright install attempt $attempt stalled or failed; retrying" >&2
+          done
 
       - name: Run Playwright UI suite
         if: matrix.python-version == '3.12'

@@ -216,6 +216,18 @@ class TestValidateUrl:
     # such as the cloud metadata service. The policy blanket-rejects the
     # whole transition prefixes via `_ip_is_public`.
 
+    @pytest.mark.parametrize("bad", ["", "not-an-ip", "1.2.3", "1.2.3.4.5",
+                                     "999.1.1.1", "1.1.1.1/24", "zzzz::1"])
+    def test_ip_is_public_malformed_literal_is_false(self, bad):
+        """An unparseable address must be treated as non-public (fail closed),
+        not raise ValueError out of the egress policy."""
+        assert http_safe._ip_is_public(bad) is False
+
+    def test_ip_is_public_accepts_ordinary_public_addresses(self):
+        # Counterpart guard so the fail-closed branch can't swallow everything.
+        assert http_safe._ip_is_public("8.8.8.8") is True
+        assert http_safe._ip_is_public("2606:4700:4700::1111") is True
+
     def test_ip_is_public_rejects_nat64_embedded_metadata(self):
         # 64:ff9b::/96 well-known NAT64 prefix embedding 169.254.169.254.
         assert http_safe._ip_is_public("64:ff9b::169.254.169.254") is False
@@ -332,6 +344,73 @@ class TestUrllibPinnedConnection:
         assert conn._target_ip == "8.8.8.7"
         # `host` (used for Host: header AND SNI) must remain the hostname.
         assert conn.host == "example.com"
+
+    def test_connect_dials_pinned_ip_with_hostname_sni(self, monkeypatch):
+        """``connect()`` must TCP-connect to the pinned IP (no DNS) and wrap the
+        socket with the ORIGINAL hostname as SNI / cert-verification name."""
+        raw_sock, tls_sock = object(), object()
+        dialled = []
+
+        def fake_create_connection(address, timeout=None, **kw):
+            dialled.append((address, timeout))
+            return raw_sock
+
+        def no_dns(*a, **k):
+            raise AssertionError("connect() must not resolve DNS")
+
+        monkeypatch.setattr(http_safe.socket, "create_connection", fake_create_connection)
+        monkeypatch.setattr(http_safe.socket, "getaddrinfo", no_dns)
+        ctx = MagicMock()
+        ctx.wrap_socket.return_value = tls_sock
+
+        conn = http_safe._PinnedHTTPSConnection(
+            hostname="example.com", target_ip="8.8.8.7", port=8443,
+            timeout=7.5, context=ctx)
+        conn.connect()
+
+        assert dialled == [(("8.8.8.7", 8443), 7.5)]
+        ctx.wrap_socket.assert_called_once_with(raw_sock, server_hostname="example.com")
+        assert conn.sock is tls_sock
+
+    def test_pinned_opener_sends_request_through_pinned_connection(self, monkeypatch):
+        """End-to-end through urllib: the handler's ``https_open`` must route the
+        request via the pinned connection (dial the pinned IP, Host header = the
+        URL hostname) and return the parsed response."""
+        import io
+        import urllib.request
+
+        sent = []
+
+        class _TlsSock:
+            def sendall(self, data):
+                sent.append(bytes(data))
+            def makefile(self, *a, **k):
+                return io.BytesIO(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+            def close(self):
+                pass
+
+        dialled = []
+        monkeypatch.setattr(
+            http_safe.socket, "create_connection",
+            lambda address, timeout=None, **kw: dialled.append(address) or object())
+        ctx = MagicMock()
+        ctx.wrap_socket.return_value = _TlsSock()
+        handler = http_safe._PinnedHTTPSHandler(
+            hostname="example.com", target_ip="8.8.8.7", port=443,
+            timeout=5, context=ctx)
+        opener = urllib.request.build_opener(handler)
+
+        with opener.open("https://example.com/path") as resp:
+            assert resp.status == 200
+            assert resp.read() == b"ok"
+
+        assert dialled == [("8.8.8.7", 443)]
+        ctx.wrap_socket.assert_called_once()
+        assert ctx.wrap_socket.call_args.kwargs["server_hostname"] == "example.com"
+        request_bytes = b"".join(sent)
+        assert request_bytes.startswith(b"GET /path HTTP/1.1\r\n")
+        assert b"\r\nHost: example.com\r\n" in request_bytes
 
     def test_resolve_and_validate_returns_addrinfo_for_pinning(self, monkeypatch):
         """``_resolve_and_validate`` returns ``(parsed, infos)`` — the
@@ -648,6 +727,61 @@ class TestSafeHttpxGet:
         with pytest.raises(ValueError, match="redirect"):
             http_safe.safe_httpx_get(_FakeHttpxClient(resp),
                                       "https://example.com/", max_bytes=1024)
+
+    # -- compatibility branch: clients exposing only .get() (no .stream()) ----
+
+    def test_compat_get_only_client_returns_response(self, monkeypatch):
+        _patch_validate(monkeypatch)
+        resp = httpx.Response(200, content=b'{"ok": true}',
+                              request=httpx.Request("GET", "https://example.com/"))
+
+        class _GetOnly:
+            last_kwargs = None
+            def get(self, url, **kw):
+                self.last_kwargs = kw
+                return resp
+
+        client = _GetOnly()
+        assert not hasattr(client, "stream")
+        out = http_safe.safe_httpx_get(client, "https://example.com/", max_bytes=1024)
+        assert out is resp
+        assert client.last_kwargs["follow_redirects"] is False
+
+    def test_compat_get_only_client_followed_redirect_history_blocked(self, monkeypatch):
+        """Same defence-in-depth as the streaming branch, on the .get()-only
+        path (this is the branch test_followed_redirect_history_blocked does NOT
+        reach, because _FakeHttpxClient has .stream())."""
+        _patch_validate(monkeypatch)
+        resp = httpx.Response(
+            200, content=b"{}",
+            request=httpx.Request("GET", "https://example.com/"),
+            history=[httpx.Response(302, request=httpx.Request("GET", "https://example.com/"))],
+        )
+
+        class _GetOnly:
+            def get(self, url, **kw):
+                return resp
+
+        with pytest.raises(http_safe.UnsafeURLError, match="redirect chain blocked"):
+            http_safe.safe_httpx_get(_GetOnly(), "https://example.com/", max_bytes=1024)
+
+    def test_compat_get_only_client_redirect_status_and_size_cap(self, monkeypatch):
+        _patch_validate(monkeypatch)
+        req = httpx.Request("GET", "https://example.com/")
+
+        class _GetOnly:
+            def __init__(self, resp): self._resp = resp
+            def get(self, url, **kw): return self._resp
+
+        redirect = httpx.Response(302, headers={"Location": "https://evil.example/"},
+                                  request=req)
+        with pytest.raises(http_safe.UnsafeURLError, match="redirect blocked"):
+            http_safe.safe_httpx_get(_GetOnly(redirect), "https://example.com/",
+                                     max_bytes=1024)
+        big = httpx.Response(200, content=b"x" * 2000, request=req)
+        with pytest.raises(http_safe.UnsafeURLError, match="max_bytes"):
+            http_safe.safe_httpx_get(_GetOnly(big), "https://example.com/",
+                                     max_bytes=1024)
 
     def test_oversized_response_raises(self, monkeypatch):
         _patch_validate(monkeypatch)
