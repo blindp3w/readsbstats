@@ -317,7 +317,7 @@ current retention strategy is hard-cutoff only.
 
 ## Deployment security
 
-readsbstats ships **no authentication and no authorization by default**. The
+readsbstats ships **no authentication and no authorization**. The
 trust model is "bind to loopback, sit behind nginx on a trusted LAN."
 
 **What this means in practice:**

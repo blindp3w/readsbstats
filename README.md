@@ -133,7 +133,7 @@ Test and reload with `sudo nginx -t && sudo systemctl reload nginx`. The conf fi
 
 ## Security model
 
-readsbstats has **no built-in authentication or authorization by default**. It is designed to run bound to `127.0.0.1:8080` behind nginx on a **trusted LAN**. Anyone who can reach the web port can read all flight data and call every mutating endpoint (watchlist add/delete); those are guarded only by the CSRF header.
+readsbstats has **no built-in authentication or authorization**. It is designed to run bound to `127.0.0.1:8080` behind nginx on a **trusted LAN**. Anyone who can reach the web port can read all flight data and call every mutating endpoint (watchlist add/delete); those are guarded only by the CSRF header.
 
 - **The `X-Requested-With` CSRF header is not authentication.** It only blocks cross-site form posts from a browser; it does not identify or authorize a caller. Do not treat it as an access control.
 - **If you expose the UI beyond a trusted LAN, put an authenticating reverse proxy in front** (HTTP basic auth, an OAuth2 proxy, or a VPN/Tailscale). Do not publish `127.0.0.1:8080` directly to the internet.

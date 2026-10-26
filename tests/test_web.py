@@ -3885,7 +3885,7 @@ class TestApiTokenRemoved:
 # (CLAUDE.md non-negotiable; access control beyond CSRF belongs in a reverse
 # proxy, not in the app). The per-endpoint tests above
 # prove the watchlist routes behave; these tests prove no future POST/PUT/
-# DELETE/PATCH route can ship without the guards — the failure message names
+# DELETE/PATCH route can ship without the guard — the failure message names
 # the offending route.
 # ---------------------------------------------------------------------------
 
@@ -3898,7 +3898,7 @@ def _mutating_api_routes(app_):
     Walks included sub-routers via iter_api_routes(): FastAPI 0.137 no longer
     flattens include_router() routes into app.routes (they nest under
     _IncludedRouter), so a flat walk would find zero mutating routes and the
-    CSRF/auth guard below would pass vacuously."""
+    CSRF guard below would pass vacuously."""
     for route in iter_api_routes(app_.routes):
         for method in sorted((route.methods or set()) & _MUTATING_METHODS):
             yield method, route
