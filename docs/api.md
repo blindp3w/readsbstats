@@ -46,8 +46,8 @@ The web server exposes a JSON API at `http://YOUR_PI_IP/stats/api/`.
 | Method | Path | Description |
 |---|---|---|
 | GET | `/api/watchlist` | List all watchlist entries (with `airborne` flag) |
-| POST | `/api/watchlist` | Add entry: `{match_type, value, label?}`; `match_type` is `icao`, `registration` or `callsign_prefix` (the value is lower-cased and shape-checked per type). Returns 201; 422 on an invalid `match_type`/`value`; 409 if the entry already exists. Requires `X-Requested-With: XMLHttpRequest`. Also requires `Authorization: Bearer <token>` when `RSBS_API_TOKEN` is set. |
-| DELETE | `/api/watchlist/{id}` | Remove entry (204; 404 if unknown). Same auth requirements as POST. |
+| POST | `/api/watchlist` | Add entry: `{match_type, value, label?}`; `match_type` is `icao`, `registration` or `callsign_prefix` (the value is lower-cased and shape-checked per type). Returns 201; 422 on an invalid `match_type`/`value`; 409 if the entry already exists. Requires `X-Requested-With: XMLHttpRequest`. |
+| DELETE | `/api/watchlist/{id}` | Remove entry (204; 404 if unknown). Requires `X-Requested-With: XMLHttpRequest`, like POST. |
 
 The two watchlist writes are the only mutating (POST/DELETE) endpoints; everything else is read-only.
 
