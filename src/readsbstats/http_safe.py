@@ -68,8 +68,7 @@ except ImportError:  # pragma: no cover — httpx is a runtime dep
     httpx = None  # type: ignore[assignment]
 
 
-# Audit-13 A13-053: read-only view so downstream re-exports (notably
-# photo_sources.PHOTO_UA) can't be `.pop()`/`.update()`'d by accident
+# Audit-13 A13-053: read-only view so importers can't `.pop()`/`.update()` it by accident
 # and silently corrupt headers for every subsequent fetch. `dict(...)`
 # at the use sites already copies; the immutable wrapper enforces it.
 _USER_AGENT = MappingProxyType({"User-Agent": "readsbstats/1.0"})

@@ -14,8 +14,6 @@ fi
 
 export RSBS_DB_PATH="$DB"
 export RSBS_ROOT_PATH=""
-export RSBS_WEB_HOST="127.0.0.1"
-export RSBS_WEB_PORT="8080"
 
 echo "Starting web server → http://127.0.0.1:8080/"
 echo "  DB: $DB"

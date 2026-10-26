@@ -231,7 +231,7 @@ Full guides live in [`docs/`](docs/), grouped by reference / how-to / explanatio
 
 | Guide | Contents |
 |---|---|
-| [Configuration](docs/configuration.md) | All 84 `RSBS_*` env vars, logging, airspace config |
+| [Configuration](docs/configuration.md) | All 82 `RSBS_*` env vars, logging, airspace config |
 | [API Reference](docs/api.md) | All API endpoints, SPA routes, database schema |
 | [Integrations](docs/integrations.md) | Telegram setup, bot commands, ghost/GS filtering |
 | [Operations](docs/operations.md) | Updating code, DB sync, useful commands, backups |

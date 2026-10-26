@@ -39,10 +39,10 @@ ReadWritePaths=/mnt/ext/readsbstats
 ReadOnlyPaths=/run/readsb
 
 # Audit-13 A13-046: kernel + namespace hardening. Targets systemd-analyze
-# security score < 5. MemoryDenyWriteExecute is intentionally omitted —
-# DuckDB has known issues with MDWE on some builds. Verify on the Pi
-# with `systemd-analyze security readsbstats-collector.service` and add
-# `MemoryDenyWriteExecute=yes` once verified safe.
+# security score < 5. MemoryDenyWriteExecute is not set yet: it has not
+# been verified on the Pi against CPython and the loaded C extensions.
+# Check with `systemd-analyze security readsbstats-collector.service` and
+# add `MemoryDenyWriteExecute=yes` once verified safe.
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectKernelLogs=yes

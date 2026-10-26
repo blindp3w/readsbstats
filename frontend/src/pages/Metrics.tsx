@@ -39,8 +39,7 @@ interface Panel {
   valueFormat?: ValueFmt;
 }
 
-// 11 panels = v1 parity. Same metrics, same groupings — see static/js/metrics.js
-// CHART_GROUPS for the source-of-truth.
+// 10 panels, grouped as in the original v1 metrics page.
 const PANELS: Panel[] = [
   {
     // M2.1: rendered by <SignalSmallMultiples>, not <MetricChart>. 4

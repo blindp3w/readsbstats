@@ -27,8 +27,6 @@ import threading
 import time
 from collections import OrderedDict as _OrderedDict
 
-from . import config
-
 log = logging.getLogger("web")
 
 

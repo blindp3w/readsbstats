@@ -46,7 +46,7 @@ ProtectSystem=strict
 ReadWritePaths=/mnt/ext/readsbstats
 
 # Audit-13 A13-046: kernel + namespace hardening. See collector unit
-# comments. MemoryDenyWriteExecute omitted — DuckDB JIT touches W^X.
+# comments (MemoryDenyWriteExecute: not yet verified on the Pi).
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectKernelLogs=yes

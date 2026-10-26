@@ -331,11 +331,13 @@ export default function SettingsPage() {
       <header className="space-y-1">
         <h1 className="text-xl font-semibold">Settings</h1>
         <p className="text-sm text-[var(--color-text-dim)]">
-          Runtime configuration. Read-only — change via{' '}
+          Runtime configuration. Read-only — change it in{' '}
           <code className="rounded bg-[var(--color-surface-2)] px-1 py-0.5 text-xs">
-            systemctl edit readsbstats-web
-          </code>
-          .
+            /etc/readsbstats/readsbstats.env
+          </code>{' '}
+          (VDL2:{' '}
+          <code className="rounded bg-[var(--color-surface-2)] px-1 py-0.5 text-xs">vdl2.env</code>
+          ), then restart the services.
         </p>
       </header>
 
