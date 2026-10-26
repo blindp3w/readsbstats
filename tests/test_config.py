@@ -1,9 +1,20 @@
 """Tests for readsbstats.config — error paths and fallback behaviour."""
 
 import importlib
-import os
 
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def _restore_config_module(monkeypatch):
+    """Tests here ``importlib.reload(readsbstats.config)`` under patched env
+    vars. Reload once more after the env is restored so the module-level
+    constants other test modules read (config.GRID_FINE_RETENTION_DAYS, ...)
+    go back to their defaults instead of leaking this module's last value."""
+    yield
+    monkeypatch.undo()          # restore env BEFORE the clean reload
+    import readsbstats.config
+    importlib.reload(readsbstats.config)
 
 
 class TestIntHelper:
@@ -585,3 +596,10 @@ class TestVdl2Decoder:
         finally:
             monkeypatch.undo()
             self._reload()
+
+
+def test_config_module_state_restored_after_reload_tests():
+    """Guard for the fixture above: an earlier reload with a non-default env
+    must not leave its value behind."""
+    import readsbstats.config
+    assert readsbstats.config.GRID_FINE_RETENTION_DAYS == 14

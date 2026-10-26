@@ -448,7 +448,6 @@ class TestRunMetricsLoop:
         self.monkeypatch = monkeypatch
         self.db_path = str(tmp_path / "metrics.db")
         # Build a real DB so database.connect succeeds on reconnect
-        from readsbstats import database
         database.init_db(self.db_path)
 
         monkeypatch.setattr(config, "METRICS_ENABLED", True)
@@ -475,7 +474,6 @@ class TestRunMetricsLoop:
     def test_reconnects_on_operational_error(self):
         """A sqlite3.OperationalError on poll must close the bad conn,
         reopen via database.connect, and recover on the next iteration."""
-        from readsbstats import database
         call_count = {"n": 0}
         seen_conns: list[int] = []
 
@@ -514,7 +512,6 @@ class TestRunMetricsLoop:
         # Avoid spamming reconnects in this test — Exception is not
         # OperationalError, so reconnect shouldn't fire.
         connect_count = {"n": 0}
-        from readsbstats import database
         real_connect = database.connect
 
         def counting_connect(path):
@@ -652,7 +649,7 @@ def _insert_metric_row(conn, ts, signal=-15.0, noise=-35.0, messages=5000,
 
 
 # The Jinja /metrics page was deleted at v2.0.0 cutover; the React SPA at
-# /v2/metrics owns the UI. /api/metrics endpoint tests live in TestMetricsApi
+# /metrics owns the UI. /api/metrics endpoint tests live in TestMetricsApi
 # below; the "no data" hint is now rendered client-side from the empty
 # /api/metrics response, so server-side rendering tests no longer apply.
 

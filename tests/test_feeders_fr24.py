@@ -10,13 +10,12 @@ crossed, mirroring the pattern in http_safe.safe_httpx_get.
 """
 from __future__ import annotations
 
-import asyncio
 import json
 
 import httpx as _httpx
-import pytest
 
 from readsbstats.api import feeders
+from tests._helpers import run_async
 
 
 class _FakeStreamResp:
@@ -61,8 +60,7 @@ class _FakeClient:
         return self._resp
 
 
-def _run(coro):
-    return asyncio.get_event_loop().run_until_complete(coro)
+_run = run_async
 
 
 class TestFR24StreamingCap:

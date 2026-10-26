@@ -1,7 +1,6 @@
 """Tests for DB integrity-check logic: collector._startup_integrity_check and check_db.py."""
 
 import os
-import pathlib
 import sqlite3
 import sys
 import tempfile

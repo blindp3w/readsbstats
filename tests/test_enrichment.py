@@ -5,7 +5,6 @@ thread-safety of `_LRUDict` and the negative-cache behaviour of the
 lookup_* helpers under-asserted.  See improvements.md #131.
 """
 
-import sqlite3
 import threading
 
 import pytest

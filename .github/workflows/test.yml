@@ -36,16 +36,15 @@ jobs:
           pip install -r requirements-dev.txt
           pip install -e .
 
+      # The 3.12 leg runs the whole suite once, with coverage, after the
+      # frontend build (see below); a plain run here would be redundant.
       - name: Run tests
+        if: matrix.python-version != '3.12'
         run: pytest --tb=short -q
 
-      # Gate raised 90 → 93 after the 2026-06-11 coverage push (measured 98%
-      # statement / 97% with --cov-branch); ≥5% headroom so a legitimately
-      # hard-to-test branch never blocks an unrelated PR.
-      - name: Run tests with coverage
-        if: matrix.python-version == '3.12'
-        run: pytest --cov=readsbstats --cov-report=term-missing --cov-fail-under=93
-
+      # Frontend is built BEFORE the coverage run so the SPA-shell tests in
+      # tests/test_web.py (skipif frontend/dist is missing) really execute here
+      # instead of silently skipping.
       - name: Set up Node.js
         if: matrix.python-version == '3.12'
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -76,6 +75,13 @@ jobs:
         if: matrix.python-version == '3.12'
         working-directory: frontend
         run: npm run build
+
+      # Gate raised 90 → 93 after the 2026-06-11 coverage push (measured 98%
+      # statement / 97% with --cov-branch); ≥5% headroom so a legitimately
+      # hard-to-test branch never blocks an unrelated PR.
+      - name: Run tests with coverage
+        if: matrix.python-version == '3.12'
+        run: pytest --cov=readsbstats --cov-report=term-missing --cov-fail-under=93
 
       # Audit-15: strict gate. Errors and warnings both block merge. The
       # zero-warnings baseline was reached by:

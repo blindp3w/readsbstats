@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "readsbstats"
-version = "2.29.1"
+version = "2.29.2"
 requires-python = ">=3.10"
 dependencies = [
     "fastapi==0.143.2",
@@ -25,6 +25,11 @@ ui-tests = [
 testpaths = ["tests"]
 pythonpath = ["src", "scripts"]
 norecursedirs = ["tests/ui", "tests/js", ".git", "__pycache__", ".venv", "venv"]
+filterwarnings = [
+    # starlette 1.x warns that its TestClient will require httpx2; the suite
+    # (and fastapi.testclient itself) still imports it via httpx.
+    "ignore::starlette.exceptions.StarletteDeprecationWarning",
+]
 markers = [
     "ui: Playwright mobile smoke tests — run with: pytest tests/ui/ -v -m ui",
 ]

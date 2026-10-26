@@ -14,9 +14,7 @@ orphan states the audit cares about:
 """
 from __future__ import annotations
 
-import sqlite3
 
-import pytest
 
 from readsbstats import database
 

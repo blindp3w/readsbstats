@@ -5,10 +5,8 @@ Uses an in-memory SQLite database injected by patching _deps._db.
 
 import json
 import logging
-import math
 import sqlite3
 import time
-from unittest.mock import patch
 
 import pytest
 from fastapi import FastAPI
@@ -29,7 +27,7 @@ from readsbstats.photo_sources import PhotoResult
 # Shared DB fixture
 # ---------------------------------------------------------------------------
 
-from tests._helpers import insert_position, iter_api_routes, make_db  # noqa: E402 — kept under section header
+from tests._helpers import insert_position, iter_api_routes, make_db, run_async  # noqa: E402 — kept under section header
 
 
 @pytest.fixture()
@@ -123,15 +121,6 @@ class TestBearing:
         for dlat, dlon in [(-1, -1), (-1, 1), (1, -1), (1, 1)]:
             b = geo.bearing(0.0, 0.0, dlat, dlon)
             assert 0 <= b < 360
-
-
-class TestHaversineWeb:
-    def test_same_point(self):
-        assert geo.haversine_nm(52.0, 21.0, 52.0, 21.0) == pytest.approx(0.0, abs=1e-9)
-
-    def test_one_degree_latitude(self):
-        d = geo.haversine_nm(52.0, 21.0, 53.0, 21.0)
-        assert 59.8 < d < 60.2
 
 
 # ---------------------------------------------------------------------------
@@ -330,12 +319,6 @@ class TestApiFlights:
         r = client.get("/api/flights?limit=2&offset=3")
         assert r.status_code == 200
         assert len(r.json()["flights"]) == 2
-
-    def test_offset_beyond_total_returns_empty(self, client, db_conn):
-        insert_flight(db_conn)
-        r = client.get("/api/flights?offset=999")
-        assert r.status_code == 200
-        assert r.json()["flights"] == []
 
     def test_sort_by_invalid_column_falls_back_to_first_seen(self, client, db_conn):
         insert_flight(db_conn, icao="aa0001", first_seen=1_000_001)
@@ -1250,11 +1233,6 @@ class TestStartupMigrate:
 # ---------------------------------------------------------------------------
 
 class TestCompatRedirects:
-    def test_live_redirects_to_map(self, client):
-        r = client.get("/live", follow_redirects=False)
-        assert r.status_code == 302
-        assert r.headers["location"].endswith("/map")
-
     def test_live_redirect_guards_hostile_root_path(self):
         """A13-049 defence in depth: a reverse proxy injecting an absolute
         root_path ("//evil.com") must not turn /live into an open redirect —
@@ -1482,7 +1460,7 @@ class TestApiSettings:
         When the namespace's attributes equal the registered defaults
         (parsed to the right type), every customized flag is False."""
         from types import SimpleNamespace
-        from readsbstats import config, web as web_mod
+        from readsbstats import config
         # Build a stub namespace where every registered config_attr is set
         # to a value matching the registered default (after parsing).
         stub = SimpleNamespace()
@@ -1512,7 +1490,7 @@ class TestApiSettings:
 
     def test_metadata_customized_true_when_one_value_differs(self):
         from types import SimpleNamespace
-        from readsbstats import config, web as web_mod
+        from readsbstats import config
         # Same defaulted stub as above, but flip one int value.
         stub = SimpleNamespace()
         for payload_key, reg in config._META_REGISTRY.items():
@@ -1550,7 +1528,6 @@ class TestApiSettings:
         assert r.json()["_metadata"]["telegram_token"]["customized"] is False
         # Repeat with a real-looking value.
         monkeypatch.setattr(config, "TELEGRAM_TOKEN", "1234:secret")
-        from readsbstats import web as web_mod
         cache._cache.clear()
         r2 = client.get("/api/settings")
         assert r2.json()["_metadata"]["telegram_token"]["customized"] is True
@@ -1616,8 +1593,8 @@ class TestApiFeeders:
             return await _asyncio.gather(feeders.api_feeders(), feeders.api_feeders())
 
         # Use the shared loop (not asyncio.run, which closes it and breaks
-        # every later get_event_loop().run_until_complete() test in the suite).
-        results = _asyncio.get_event_loop().run_until_complete(drive())
+        # every later run_async() test in the suite).
+        results = run_async(drive())
         assert calls["n"] == 1
         assert all(r["has_feeders"] for r in results)
         assert all(r["feeders"][0]["name"] == "a" for r in results)
@@ -1835,26 +1812,23 @@ class TestFeederChecks:
     def test_check_systemd_unit_rejects_flag_like_name(self):
         """A13-042: a unit name starting with '-' would be parsed as a
         systemctl flag — rejected before any subprocess is spawned."""
-        import asyncio
-        result = asyncio.get_event_loop().run_until_complete(
+        result = run_async(
             feeders._check_systemd_unit("--evil"))
         assert result == {"systemd": "invalid-unit-name"}
 
     def test_feeder_details_mlat_rejects_flag_like_name(self):
         """A13-042 twin for journalctl."""
-        import asyncio
-        details = asyncio.get_event_loop().run_until_complete(
+        details = run_async(
             feeders._feeder_details_mlat("-o evil"))
         assert details == []
 
     def test_check_port_closed(self):
-        import asyncio
         import socket as _socket
         s = _socket.socket()
         s.bind(("127.0.0.1", 0))
         port = s.getsockname()[1]
         s.close()                          # nothing listening any more
-        result = asyncio.get_event_loop().run_until_complete(
+        result = run_async(
             feeders._check_port(port))
         assert result["port_status"] == "closed"
 
@@ -1866,7 +1840,7 @@ class TestFeederChecks:
             raise asyncio.TimeoutError()
 
         monkeypatch.setattr(asyncio, "wait_for", timing_out_wait_for)
-        result = asyncio.get_event_loop().run_until_complete(
+        result = run_async(
             feeders._check_port(30005))
         assert result["port_status"] == "timeout"
 
@@ -1879,11 +1853,10 @@ class TestFeederChecks:
         assert feeders._is_safe_status_url("http://[") is False
 
     def test_fetch_details_rejects_unsafe_piaware_path(self, caplog):
-        import asyncio
         feeder = {"name": "pia", "status_type": "piaware",
                   "status_path": "/etc/passwd"}
         with caplog.at_level("WARNING"):
-            details = asyncio.get_event_loop().run_until_complete(
+            details = run_async(
                 feeders._fetch_feeder_details(feeder))
         assert details == []
         assert any("rejecting status_path" in r.getMessage()
@@ -1892,7 +1865,6 @@ class TestFeederChecks:
     def test_fetch_details_exception_logged_returns_empty(self, monkeypatch, caplog):
         """audit-12 #151: a failing details fetch must be visible in the log,
         not silently swallowed as []."""
-        import asyncio
 
         async def boom(unit):
             raise RuntimeError("mlat details fail")
@@ -1900,7 +1872,7 @@ class TestFeederChecks:
         monkeypatch.setattr(feeders, "_feeder_details_mlat", boom)
         feeder = {"name": "m", "status_type": "mlat", "unit": "mlat-client.service"}
         with caplog.at_level("WARNING"):
-            details = asyncio.get_event_loop().run_until_complete(
+            details = run_async(
                 feeders._fetch_feeder_details(feeder))
         assert details == []
         assert any("details fetch failed" in r.getMessage()
@@ -1916,7 +1888,7 @@ class TestFeederChecks:
             return Proc()
 
         monkeypatch.setattr(asyncio, "create_subprocess_exec", mock_exec)
-        result = asyncio.get_event_loop().run_until_complete(feeders._check_systemd_unit("test.service"))
+        result = run_async(feeders._check_systemd_unit("test.service"))
         assert result["systemd"] == "active"
 
     def test_check_systemd_unit_not_found(self, monkeypatch):
@@ -1926,7 +1898,7 @@ class TestFeederChecks:
             raise FileNotFoundError("systemctl not found")
 
         monkeypatch.setattr(asyncio, "create_subprocess_exec", mock_exec)
-        result = asyncio.get_event_loop().run_until_complete(feeders._check_systemd_unit("test.service"))
+        result = run_async(feeders._check_systemd_unit("test.service"))
         assert result["systemd"] == "unavailable"
 
     def test_check_systemd_unit_timeout_kills_subprocess(self, monkeypatch):
@@ -1957,7 +1929,7 @@ class TestFeederChecks:
             raise asyncio.TimeoutError()
         monkeypatch.setattr(web.asyncio, "wait_for", insta_timeout)
 
-        result = asyncio.new_event_loop().run_until_complete(
+        result = run_async(
             feeders._check_systemd_unit("test.service")
         )
         assert result["systemd"] == "timeout"
@@ -1989,7 +1961,7 @@ class TestFeederChecks:
             raise asyncio.TimeoutError()
         monkeypatch.setattr(web.asyncio, "wait_for", insta_timeout)
 
-        result = asyncio.new_event_loop().run_until_complete(
+        result = run_async(
             feeders._feeder_details_mlat("test.service")
         )
         # On timeout, returns whatever details accumulated (empty list)
@@ -2007,22 +1979,21 @@ class TestFeederChecks:
             return None, Writer()
 
         monkeypatch.setattr(asyncio, "open_connection", mock_connect)
-        result = asyncio.get_event_loop().run_until_complete(feeders._check_port(30005))
+        result = run_async(feeders._check_port(30005))
         assert result["port_status"] == "open"
         assert result["port"] == 30005
 
-    def test_check_port_closed(self, monkeypatch):
+    def test_check_port_closed_connection_refused(self, monkeypatch):
         import asyncio
 
         async def mock_connect(host, port):
             raise ConnectionRefusedError()
 
         monkeypatch.setattr(asyncio, "open_connection", mock_connect)
-        result = asyncio.get_event_loop().run_until_complete(feeders._check_port(30005))
+        result = run_async(feeders._check_port(30005))
         assert result["port_status"] == "closed"
 
     def test_check_single_feeder_ok(self, monkeypatch):
-        import asyncio
 
         async def mock_systemd(unit):
             return {"systemd": "active"}
@@ -2033,31 +2004,29 @@ class TestFeederChecks:
         monkeypatch.setattr(feeders, "_check_systemd_unit", mock_systemd)
         monkeypatch.setattr(feeders, "_check_port", mock_port)
         feeder = {"name": "readsb", "unit": "readsb.service", "port": 30005}
-        result = asyncio.get_event_loop().run_until_complete(feeders._check_single_feeder(feeder))
+        result = run_async(feeders._check_single_feeder(feeder))
         assert result["overall"] == "ok"
         assert result["systemd"] == "active"
         assert result["port_status"] == "open"
 
     def test_check_single_feeder_error(self, monkeypatch):
-        import asyncio
 
         async def mock_systemd(unit):
             return {"systemd": "inactive"}
 
         monkeypatch.setattr(feeders, "_check_systemd_unit", mock_systemd)
         feeder = {"name": "test", "unit": "test.service"}
-        result = asyncio.get_event_loop().run_until_complete(feeders._check_single_feeder(feeder))
+        result = run_async(feeders._check_single_feeder(feeder))
         assert result["overall"] == "error"
 
     def test_check_single_feeder_unavailable(self, monkeypatch):
-        import asyncio
 
         async def mock_systemd(unit):
             return {"systemd": "unavailable"}
 
         monkeypatch.setattr(feeders, "_check_systemd_unit", mock_systemd)
         feeder = {"name": "test", "unit": "test.service"}
-        result = asyncio.get_event_loop().run_until_complete(feeders._check_single_feeder(feeder))
+        result = run_async(feeders._check_single_feeder(feeder))
         assert result["overall"] == "unknown"
 
 
@@ -2171,7 +2140,7 @@ class TestFeederDetailParsers:
             raise asyncio.TimeoutError()
 
         monkeypatch.setattr(asyncio, "open_connection", mock_connect)
-        result = asyncio.get_event_loop().run_until_complete(feeders._check_port(30005))
+        result = run_async(feeders._check_port(30005))
         # asyncio.TimeoutError is a subclass of OSError in Python 3.11+,
         # so it's caught as "closed" rather than "timeout"
         assert result["port_status"] in ("timeout", "closed")
@@ -2183,7 +2152,7 @@ class TestFeederDetailParsers:
             raise asyncio.TimeoutError()
 
         monkeypatch.setattr(asyncio, "create_subprocess_exec", mock_exec)
-        result = asyncio.get_event_loop().run_until_complete(feeders._check_systemd_unit("test.service"))
+        result = run_async(feeders._check_systemd_unit("test.service"))
         assert result["systemd"] == "timeout"
 
     def test_check_systemd_generic_error(self, monkeypatch):
@@ -2195,28 +2164,25 @@ class TestFeederDetailParsers:
             raise RuntimeError("boom secret /etc/path detail")
 
         monkeypatch.setattr(asyncio, "create_subprocess_exec", mock_exec)
-        result = asyncio.get_event_loop().run_until_complete(feeders._check_systemd_unit("test.service"))
+        result = run_async(feeders._check_systemd_unit("test.service"))
         assert result == {"systemd": "error"}
         assert "boom" not in result["systemd"]  # no raw exception text leaked
 
     def test_fetch_feeder_details_readsb_dispatch(self, monkeypatch, tmp_path):
-        import asyncio
         status_path = str(tmp_path)
         (tmp_path / "aircraft.json").write_text('{"aircraft": []}')
         # Bypass the /run/ allowlist so the dispatcher reaches the real fetcher.
         monkeypatch.setattr(feeders, "_is_safe_status_path", lambda _p: True)
         feeder = {"name": "readsb", "unit": "readsb.service", "status_type": "readsb", "status_path": status_path}
-        result = asyncio.get_event_loop().run_until_complete(feeders._fetch_feeder_details(feeder))
+        result = run_async(feeders._fetch_feeder_details(feeder))
         assert isinstance(result, list)
 
     def test_fetch_feeder_details_unknown_type(self):
-        import asyncio
         feeder = {"name": "x", "unit": "x.service", "status_type": "unknown"}
-        result = asyncio.get_event_loop().run_until_complete(feeders._fetch_feeder_details(feeder))
+        result = run_async(feeders._fetch_feeder_details(feeder))
         assert result == []
 
     def test_fr24_details_success(self, monkeypatch):
-        import asyncio
         import json
         import httpx as _httpx
 
@@ -2243,7 +2209,7 @@ class TestFeederDetailParsers:
             def stream(self, method, url): return FakeStream()
 
         monkeypatch.setattr(_httpx, "AsyncClient", lambda **kw: FakeClient())
-        result = asyncio.get_event_loop().run_until_complete(
+        result = run_async(
             feeders._feeder_details_fr24("http://localhost/monitor.json")
         )
         labels = {k for k, _ in result}
@@ -2258,7 +2224,6 @@ class TestFeederDetailParsers:
         assert any(v == "not ok" for k, v in result if k == "MLAT")
 
     def test_fr24_details_network_error(self, monkeypatch):
-        import asyncio
         import httpx as _httpx
 
         class FakeClient:
@@ -2267,7 +2232,7 @@ class TestFeederDetailParsers:
             def stream(self, method, url): raise ConnectionError("down")
 
         monkeypatch.setattr(_httpx, "AsyncClient", lambda **kw: FakeClient())
-        result = asyncio.get_event_loop().run_until_complete(
+        result = run_async(
             feeders._feeder_details_fr24("http://localhost/monitor.json")
         )
         assert result == []
@@ -2290,7 +2255,7 @@ class TestFeederDetailParsers:
             return Proc()
 
         monkeypatch.setattr(asyncio, "create_subprocess_exec", mock_exec)
-        result = asyncio.get_event_loop().run_until_complete(
+        result = run_async(
             feeders._feeder_details_mlat("test-mlat.service")
         )
         labels = {k for k, _ in result}
@@ -2306,13 +2271,12 @@ class TestFeederDetailParsers:
             raise FileNotFoundError("journalctl not found")
 
         monkeypatch.setattr(asyncio, "create_subprocess_exec", mock_exec)
-        result = asyncio.get_event_loop().run_until_complete(
+        result = run_async(
             feeders._feeder_details_mlat("test-mlat.service")
         )
         assert result == []
 
     def test_fetch_feeder_details_fr24_dispatch(self, monkeypatch):
-        import asyncio
 
         async def fake_fr24(url):
             return [("Version", "1.0")]
@@ -2321,39 +2285,36 @@ class TestFeederDetailParsers:
         # Loopback URL passes the SSRF allowlist.
         feeder = {"name": "fr24", "unit": "fr24.service", "status_type": "fr24",
                   "status_url": "http://127.0.0.1:8754/monitor.json"}
-        result = asyncio.get_event_loop().run_until_complete(feeders._fetch_feeder_details(feeder))
+        result = run_async(feeders._fetch_feeder_details(feeder))
         assert result == [("Version", "1.0")]
 
     def test_fetch_feeder_details_piaware_dispatch(self, monkeypatch, tmp_path):
-        import asyncio
         path = str(tmp_path / "status.json")
         (tmp_path / "status.json").write_text('{"piaware_version": "9"}')
         # Bypass the /run/ allowlist so the dispatcher reaches the real fetcher.
         monkeypatch.setattr(feeders, "_is_safe_status_path", lambda _p: True)
         feeder = {"name": "piaware", "unit": "piaware.service", "status_type": "piaware", "status_path": path}
-        result = asyncio.get_event_loop().run_until_complete(feeders._fetch_feeder_details(feeder))
+        result = run_async(feeders._fetch_feeder_details(feeder))
         assert any(k == "Version" for k, _ in result)
 
     def test_fetch_feeder_details_mlat_dispatch(self, monkeypatch):
-        import asyncio
 
         async def fake_mlat(unit):
             return [("Peers", "10")]
 
         monkeypatch.setattr(feeders, "_feeder_details_mlat", fake_mlat)
         feeder = {"name": "mlat", "unit": "mlat.service", "status_type": "mlat"}
-        result = asyncio.get_event_loop().run_until_complete(feeders._fetch_feeder_details(feeder))
+        result = run_async(feeders._fetch_feeder_details(feeder))
         assert result == [("Peers", "10")]
 
     def test_check_all_feeders(self, monkeypatch):
-        import asyncio
 
         async def mock_single(feeder):
             return {"name": feeder["name"], "overall": "ok"}
 
         monkeypatch.setattr(feeders, "_check_single_feeder", mock_single)
         monkeypatch.setattr(config, "FEEDERS", [{"name": "a", "unit": "a.service"}, {"name": "b", "unit": "b.service"}])
-        result = asyncio.get_event_loop().run_until_complete(feeders._check_all_feeders())
+        result = run_async(feeders._check_all_feeders())
         assert len(result) == 2
         assert result[0]["name"] == "a"
 
@@ -2409,7 +2370,6 @@ class TestFeederDetailParsers:
         assert not feeders._is_safe_status_url("not a url")
 
     def test_fetch_feeder_details_rejects_unsafe_status_path(self, monkeypatch):
-        import asyncio
         # Without the allowlist, this would call _read_json_file("/etc/hostname")
         # and could leak file existence / contents through error handling.
         feeder = {"name": "x", "unit": "x.service", "status_type": "readsb",
@@ -2421,12 +2381,11 @@ class TestFeederDetailParsers:
             return [("should not be called", "x")]
 
         monkeypatch.setattr(feeders, "_feeder_details_readsb", boom)
-        result = asyncio.get_event_loop().run_until_complete(feeders._fetch_feeder_details(feeder))
+        result = run_async(feeders._fetch_feeder_details(feeder))
         assert result == []
         assert called["hit"] is False
 
     def test_fetch_feeder_details_rejects_unsafe_status_url(self, monkeypatch):
-        import asyncio
         # Without the allowlist, this could SSRF cloud metadata.
         feeder = {"name": "x", "unit": "x.service", "status_type": "fr24",
                   "status_url": "http://169.254.169.254/latest/meta-data/"}
@@ -2437,7 +2396,7 @@ class TestFeederDetailParsers:
             return [("should not be called", "x")]
 
         monkeypatch.setattr(feeders, "_feeder_details_fr24", boom)
-        result = asyncio.get_event_loop().run_until_complete(feeders._fetch_feeder_details(feeder))
+        result = run_async(feeders._fetch_feeder_details(feeder))
         assert result == []
         assert called["hit"] is False
 
@@ -3674,11 +3633,6 @@ class TestApiWatchlist:
         assert data["match_type"] == "icao"
         assert data["value"] == "aabbcc"
 
-    def test_add_normalises_value_to_lowercase(self, client):
-        r = client.post("/api/watchlist", json={"match_type": "registration", "value": "SP-LRF"})
-        assert r.status_code == 201
-        assert r.json()["value"] == "sp-lrf"
-
     def test_add_with_label(self, client):
         r = client.post("/api/watchlist",
                         json={"match_type": "icao", "value": "aabbcc", "label": "My plane"})
@@ -3732,12 +3686,6 @@ class TestApiWatchlist:
     def test_delete_nonexistent_returns_404(self, client):
         r = client.delete("/api/watchlist/9999")
         assert r.status_code == 404
-
-    def test_callsign_prefix_entry(self, client):
-        r = client.post("/api/watchlist",
-                        json={"match_type": "callsign_prefix", "value": "LOT"})
-        assert r.status_code == 201
-        assert r.json()["value"] == "lot"
 
     # CSRF: state-changing endpoints require X-Requested-With (browsers cannot
     # set custom headers cross-origin without a CORS preflight that this app
@@ -4810,8 +4758,7 @@ class TestMapPrewarmer:
     def _acquire_sync(lock):
         # Acquire on a private throwaway loop WITHOUT touching the thread's
         # ambient event-loop slot (asyncio.run would unset it and break the
-        # get_event_loop().run_until_complete pattern used elsewhere in this
-        # file). locked()/release() afterwards are loop-free.
+        # run_async() shared-loop pattern used elsewhere in this file). locked()/release() afterwards are loop-free.
         import asyncio
         loop = asyncio.new_event_loop()
         try:
@@ -5198,12 +5145,6 @@ class TestApiAircraftPhoto:
         assert client.get("/api/aircraft/zzzzzz/photo").status_code == 404
         assert client.get("/api/aircraft/abc/photo").status_code == 404
 
-    def test_network_error_returns_null(self, client, monkeypatch):
-        monkeypatch.setattr(photo_sources, "fetch_photo", lambda icao: None)
-        r = client.get("/api/aircraft/aabbcc/photo")
-        assert r.status_code == 200
-        assert r.json() is None
-
     def test_specific_photo_annotated_with_is_type_photo_false(self, client, db_conn):
         db_conn.execute(
             "INSERT INTO photos VALUES (?,?,?,?,?,?)",
@@ -5250,19 +5191,16 @@ class TestFetchTypePhoto:
         db_conn.commit()
 
     def test_null_type_code_returns_none(self, client, db_conn):
-        import asyncio
-        result = asyncio.get_event_loop().run_until_complete(_photos._fetch_type_photo(None))
+        result = run_async(_photos._fetch_type_photo(None))
         assert result is None
 
     def test_empty_type_code_returns_none(self, client, db_conn):
-        import asyncio
-        result = asyncio.get_event_loop().run_until_complete(_photos._fetch_type_photo(""))
+        result = run_async(_photos._fetch_type_photo(""))
         assert result is None
 
     def test_type_photos_cache_hit(self, client, db_conn):
         self._seed_type_photo(db_conn, "B738", "https://plnspttrs.net/b738.jpg")
-        import asyncio
-        result = asyncio.get_event_loop().run_until_complete(_photos._fetch_type_photo("B738"))
+        result = run_async(_photos._fetch_type_photo("B738"))
         assert result is not None
         assert result["thumbnail_url"] == "https://plnspttrs.net/b738.jpg"
 
@@ -5270,7 +5208,6 @@ class TestFetchTypePhoto:
         """A competing request can resolve the type while we wait on the type
         lock — the second cache check under the lock must serve that row
         instead of refetching."""
-        import asyncio
 
         class InsertingLock:
             async def __aenter__(self):
@@ -5288,7 +5225,7 @@ class TestFetchTypePhoto:
         fetch_calls: list = []
         monkeypatch.setattr(photo_sources, "resolve_photo",
                             lambda *a, **k: fetch_calls.append(1))
-        result = asyncio.get_event_loop().run_until_complete(
+        result = run_async(
             _photos._fetch_type_photo("B738"))
         assert result is not None
         assert result["thumbnail_url"] == "https://plnspttrs.net/race.jpg"
@@ -5310,8 +5247,7 @@ class TestFetchTypePhoto:
             "VALUES ('B738', NULL, NULL, NULL, NULL, ?)", (int(time.time()),)
         )
         db_conn.commit()
-        import asyncio
-        result = asyncio.get_event_loop().run_until_complete(_photos._fetch_type_photo("B738"))
+        result = run_async(_photos._fetch_type_photo("B738"))
         assert result is None
 
     def test_db_join_reuses_cached_photo(self, client, db_conn, monkeypatch):
@@ -5320,8 +5256,7 @@ class TestFetchTypePhoto:
         fetch_calls = []
         monkeypatch.setattr(photo_sources, "fetch_photo",
                             lambda icao: fetch_calls.append(icao) or None)
-        import asyncio
-        result = asyncio.get_event_loop().run_until_complete(_photos._fetch_type_photo("B738"))
+        result = run_async(_photos._fetch_type_photo("B738"))
         assert result is not None
         assert result["thumbnail_url"] == "https://plnspttrs.net/cached.jpg"
         assert fetch_calls == []
@@ -5334,8 +5269,7 @@ class TestFetchTypePhoto:
             link_url=None,
             photographer="Alice",
         ))
-        import asyncio
-        result = asyncio.get_event_loop().run_until_complete(_photos._fetch_type_photo("EF2K"))
+        result = run_async(_photos._fetch_type_photo("EF2K"))
         assert result is not None
         assert result["thumbnail_url"] == "https://plnspttrs.net/ef2k.jpg"
         row = db_conn.execute("SELECT thumbnail_url FROM type_photos WHERE type_code='EF2K'").fetchone()
@@ -5344,8 +5278,7 @@ class TestFetchTypePhoto:
     def test_all_fail_stores_negative(self, client, db_conn, monkeypatch):
         self._seed_aircraft_db(db_conn, "probe01", "EF2K")
         monkeypatch.setattr(photo_sources, "fetch_photo", lambda icao: None)
-        import asyncio
-        result = asyncio.get_event_loop().run_until_complete(_photos._fetch_type_photo("EF2K"))
+        result = run_async(_photos._fetch_type_photo("EF2K"))
         assert result is None
         row = db_conn.execute("SELECT thumbnail_url FROM type_photos WHERE type_code='EF2K'").fetchone()
         assert row is not None

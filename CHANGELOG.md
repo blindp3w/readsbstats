@@ -5,6 +5,40 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 2.29.2 — 2026-10-26
+
+Test-suite release from the 2026-10 codebase audit. No production code changes.
+
+### Fixed
+
+- **Four tests never ran.** A later test with the same name in the same class
+  replaced them (shutdown, purge aggregate recompute, flights paging past the
+  end, feeder port check). Duplicates are removed and distinct scenarios renamed,
+  so all of them run again.
+- **Order-dependent failure.** Two Telegram message-limit tests failed in about
+  half of random test orders, because notifier caches whether Telegram is
+  configured. A suite-wide fixture now resets that cache for every test.
+- **CI ran none of the SPA-shell tests.** pytest ran before the frontend build,
+  so every test that needs `frontend/dist` (SPA shell, `/v2` redirects, cache
+  headers, asset 404s) was skipped. The Python 3.12 job now builds the frontend
+  first.
+- **Leaking config.** The config tests reloaded `config` with patched
+  environment variables and left the last value behind for later test modules;
+  the module is now reloaded with a clean environment after each test.
+- **Tests that could not fail** now assert what their names promise (message
+  formatting, antimeridian wrap, abstract notify socket, "must not raise" paths
+  that never reached the failure, `db_updater` main). One squawk test never ran
+  the path it named.
+- **Warnings.** One suite-wide event loop replaces deprecated
+  `get_event_loop()` calls and unclosed loops; the suite passes with
+  `-W error::DeprecationWarning`.
+
+### Changed
+
+- Duplicate tests consolidated (live-map redirect, SSRF policy re-tested through
+  photo-source aliases, haversine, database init, index checks, identical
+  bodies). Test count: 2442 pytest (from 2464), 610 Vitest.
+
 ## 2.29.1 — 2026-10-26
 
 Cleanup release from the 2026-10 codebase audit. No schema or API changes.

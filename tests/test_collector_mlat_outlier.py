@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pytest
 
-from readsbstats import collector, config, enrichment
+from readsbstats import collector, enrichment
 from tests._helpers import insert_position, make_db
 
 

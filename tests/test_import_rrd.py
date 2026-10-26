@@ -2,7 +2,6 @@
 Tests for scripts/import_rrd.py — RRD history import.
 """
 
-import sqlite3
 
 import pytest
 

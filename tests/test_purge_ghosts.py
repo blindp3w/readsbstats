@@ -1,13 +1,11 @@
 """Tests for purge_ghosts.py."""
 
 import logging
-import math
-import sqlite3
 
 import pytest
 
 from readsbstats import database, geo
-from purge_ghosts import apply_purge, find_ghost_ids, haversine_nm, max_distance_after_purge
+from purge_ghosts import apply_purge, find_ghost_ids, max_distance_after_purge
 
 RLAT = 52.24199
 RLON = 21.02872
@@ -73,9 +71,9 @@ class TestFindGhostIds:
         """After a ghost is rejected, the next real position is checked against
         the last good position — not against the ghost."""
         fid = insert_flight(self.conn)
-        p1 = insert_pos(self.conn, fid, 1000, 52.6, 20.75)   # real
+        insert_pos(self.conn, fid, 1000, 52.6, 20.75)   # real
         gid = insert_pos(self.conn, fid, 1005, 59.7, 21.5)   # ghost
-        p3 = insert_pos(self.conn, fid, 1070, 52.5, 20.6)    # real, 70 s after p1 → ~412 kts
+        insert_pos(self.conn, fid, 1070, 52.5, 20.6)    # real, 70 s after p1 → ~412 kts
 
         ghosts = find_ghost_ids(self.conn, MAX_SPEED)
         assert ghosts.get(fid, []) == [gid]   # only the ghost flagged
@@ -96,8 +94,8 @@ class TestFindGhostIds:
         (forward pass leaves only 1 survivor), the backward pass fallback must flag it."""
         fid = insert_flight(self.conn)
         g1 = insert_pos(self.conn, fid, 1000, 59.7, 21.5)   # ghost at 59°N (~449 nm from receiver)
-        p1 = insert_pos(self.conn, fid, 1070, 52.6, 20.75)  # real near Warsaw
-        p2 = insert_pos(self.conn, fid, 1130, 52.5, 20.6)   # real near Warsaw
+        insert_pos(self.conn, fid, 1070, 52.6, 20.75)  # real near Warsaw
+        insert_pos(self.conn, fid, 1130, 52.5, 20.6)   # real near Warsaw
 
         ghosts = find_ghost_ids(self.conn, MAX_SPEED)
         assert ghosts.get(fid, []) == [g1]  # ghost is pos1, not the Warsaw positions
@@ -395,17 +393,16 @@ class TestApplyPurge:
 # ---------------------------------------------------------------------------
 
 class TestMainCli:
-    def test_dry_run_no_ghosts(self, tmp_path, capsys):
+    def test_dry_run_no_ghosts(self, tmp_path, capsys, monkeypatch):
         from purge_ghosts import main
         db_path = str(tmp_path / "test.db")
         database.init_db(db_path)
-        import sys
-        sys.argv = ["purge_ghosts", "--db", db_path]
+        monkeypatch.setattr("sys.argv", ["purge_ghosts", "--db", db_path])
         main()
         out = capsys.readouterr().out
         assert "No ghost positions found" in out
 
-    def test_dry_run_with_ghosts(self, tmp_path, capsys):
+    def test_dry_run_with_ghosts(self, tmp_path, capsys, monkeypatch):
         from purge_ghosts import main
         db_path = str(tmp_path / "test.db")
         database.init_db(db_path)
@@ -421,14 +418,13 @@ class TestMainCli:
         insert_position(conn, fid, 1010, lat=80.0, lon=21.0)  # ghost
         conn.commit()
         conn.close()
-        import sys
-        sys.argv = ["purge_ghosts", "--db", db_path, "--max-speed", "2000"]
+        monkeypatch.setattr("sys.argv", ["purge_ghosts", "--db", db_path, "--max-speed", "2000"])
         main()
         out = capsys.readouterr().out
         assert "ghost position(s)" in out
         assert "dry-run" in out.lower() or "Dry-run" in out
 
-    def test_apply_mode(self, tmp_path, capsys):
+    def test_apply_mode(self, tmp_path, capsys, monkeypatch):
         from purge_ghosts import main
         db_path = str(tmp_path / "test.db")
         database.init_db(db_path)
@@ -443,9 +439,8 @@ class TestMainCli:
         insert_position(conn, fid, 1010, lat=80.0, lon=21.0)
         conn.commit()
         conn.close()
-        import sys
-        sys.argv = ["purge_ghosts", "--db", db_path, "--max-speed", "2000",
-                    "--apply", "--i-have-a-backup"]
+        monkeypatch.setattr("sys.argv", ["purge_ghosts", "--db", db_path, "--max-speed", "2000",
+                                         "--apply", "--i-have-a-backup"])
         main()
         out = capsys.readouterr().out
         assert "Done" in out
@@ -455,7 +450,7 @@ class TestMainCli:
         assert count == 2
         conn2.close()
 
-    def test_apply_takes_snapshot_by_default(self, tmp_path, capsys):
+    def test_apply_takes_snapshot_by_default(self, tmp_path, capsys, monkeypatch):
         """Without --i-have-a-backup, --apply must produce a backup-*.db
         sibling file before mutating."""
         from purge_ghosts import main
@@ -471,8 +466,7 @@ class TestMainCli:
         insert_position(conn, fid, 1010, lat=80.0, lon=21.0)
         conn.commit()
         conn.close()
-        import sys
-        sys.argv = ["purge_ghosts", "--db", db_path, "--max-speed", "2000", "--apply"]
+        monkeypatch.setattr("sys.argv", ["purge_ghosts", "--db", db_path, "--max-speed", "2000", "--apply"])
         main()
         out = capsys.readouterr().out
         assert "Snapshot:" in out
