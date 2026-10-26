@@ -12,9 +12,9 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-    # 3.12 leg is ~6 min (coverage + build + Vitest + Playwright); headroom for
-    # the Playwright install retries below.
-    timeout-minutes: 18
+    # 3.12 leg is ~3 min (coverage + build + lint + Vitest); the Playwright UI
+    # suite runs in its own job below.
+    timeout-minutes: 12
     strategy:
       matrix:
         python-version: ["3.10", "3.11", "3.12"]
@@ -112,30 +112,67 @@ jobs:
         working-directory: frontend
         run: npm run test:coverage
 
-      # Full Playwright UI suite (tests/ui, 84 tests): the device matrix
-      # (WebKit iPhone/iPad + Chromium Android/tablet) over every page, plus
-      # the Audit-15 regression locks (HealthStripe re-focus, History
-      # `+ filter…` reset, range-picker reopen). It used to run only those
-      # three locks here, and the rest drifted unnoticed for months after the
-      # 2026-05 redesigns (25 stale tests, fixed in #65) — so gate all of it.
-      # ~1 min locally; tests/ui is excluded from the default run via
-      # pyproject `norecursedirs`, hence the explicit path.
-      # The browser install normally takes 35-50 s, but the Azure Ubuntu apt
-      # mirror behind --with-deps is sometimes very slow (~85 KB/s seen), which
-      # used to run into the job timeout and cancel the whole leg. Cap each
-      # attempt and retry once (a retry often lands on a faster mirror), so a
-      # persistently slow mirror fails this step with a clear error instead.
-      - name: Install Playwright extras + browsers
-        if: matrix.python-version == '3.12'
-        timeout-minutes: 9
+  # Full Playwright UI suite (tests/ui, 84 tests): the device matrix (WebKit
+  # iPhone/iPad + Chromium Android/tablet) over every page, plus the Audit-15
+  # regression locks (HealthStripe re-focus, History `+ filter…` reset,
+  # range-picker reopen). It used to run only those three locks, and the rest
+  # drifted unnoticed for months after the 2026-05 redesigns (25 stale tests,
+  # fixed in #65) — so gate all of it. tests/ui is excluded from the default
+  # run via pyproject `norecursedirs`, hence the explicit path.
+  #
+  # Runs inside the official Playwright image, which ships WebKit + Chromium
+  # and their system libraries, so nothing is apt-installed. `playwright
+  # install --with-deps` on the bare runner went through the Azure apt mirror,
+  # which was sometimes slow enough (~85 KB/s) to time the job out, and the
+  # retry around it could not work: the timed-out apt-get ran as root and kept
+  # the dpkg lock. The image tag must equal the exact `playwright==` pin in
+  # pyproject.toml (tests/test_ci_workflow.py); bump both together.
+  # `--user 1001` = the runner user, as in Playwright's CI docs, so the
+  # setup-* actions and the workspace stay writable.
+  ui:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    container:
+      image: mcr.microsoft.com/playwright/python:v1.64.1-noble
+      options: --user 1001
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Install dependencies
         run: |
+          pip install -r requirements-dev.txt
           pip install -e ".[ui-tests]"
-          for attempt in 1 2; do
-            timeout 240 playwright install --with-deps webkit chromium && break
-            if [ "$attempt" = 2 ]; then echo "playwright install failed twice (slow apt mirror?)" >&2; exit 1; fi
-            echo "playwright install attempt $attempt stalled or failed; retrying" >&2
-          done
+
+      # The UI suite serves the built SPA, so build it here (same steps as the
+      # test job; see the npm 11 note there).
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Activate npm 11 via corepack
+        run: |
+          corepack enable
+          corepack prepare npm@11.0.0 --activate
+          npm --version
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci --no-audit --no-fund
+
+      - name: Build frontend (tsc + Vite)
+        working-directory: frontend
+        run: npm run build
 
       - name: Run Playwright UI suite
-        if: matrix.python-version == '3.12'
         run: pytest -q -m ui tests/ui

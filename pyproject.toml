@@ -17,7 +17,9 @@ where = ["src"]
 
 [project.optional-dependencies]
 ui-tests = [
-    "playwright>=1.64.1",
+    # Exact pin: must equal the Playwright image tag in .github/workflows/test.yml
+    # (tests/test_ci_workflow.py enforces it).
+    "playwright==1.64.1",
     "pytest-playwright>=0.10.0",
 ]
 
