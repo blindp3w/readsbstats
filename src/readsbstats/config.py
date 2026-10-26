@@ -327,8 +327,7 @@ MAP_TRAIL_WINDOW_SECONDS = _int(
 # ---------------------------------------------------------------------------
 # Web server
 # ---------------------------------------------------------------------------
-WEB_HOST           = os.getenv("RSBS_WEB_HOST",  "0.0.0.0")
-WEB_PORT           = _int("RSBS_WEB_PORT", "8080")
+# Bind host/port are uvicorn CLI flags (systemd unit, scripts/dev.sh), not env vars.
 ROOT_PATH          = os.getenv(*_register("root_path", "RSBS_ROOT_PATH", "/stats", "ROOT_PATH"))          # reverse-proxy subpath
 
 # ---------------------------------------------------------------------------

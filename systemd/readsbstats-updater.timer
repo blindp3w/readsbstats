@@ -3,7 +3,7 @@ Description=Run readsbstats db_updater weekly
 Requires=readsbstats-updater.service
 
 [Timer]
-# Run once at install time, then every Monday at 03:00
+# Run 2 minutes after every boot, then every Monday at 03:00 (Persistent catches up a missed run)
 OnBootSec=2min
 OnCalendar=Mon *-*-* 03:00:00
 Persistent=true

@@ -15,7 +15,7 @@ A `systemctl edit <unit>` drop-in with `Environment="NAME=value"` lines is an al
 
 ## Environment variables
 
-All 84 `RSBS_*` vars, grouped by section: the 83 read in `config.py` plus
+All 82 `RSBS_*` vars, grouped by section: the 81 read in `config.py` plus
 `RSBS_API_TOKEN`, which is read in `api/_deps.py`. Numeric values
 that fall below the documented minimum log a stderr warning and fall
 back to the listed default (see `_min_or_default_int`/`_float`).
@@ -193,8 +193,6 @@ Thresholds for the nine receiver-health checks. All effective values are also re
 
 | Variable | Default | Description |
 |---|---|---|
-| `RSBS_WEB_HOST` | `0.0.0.0` | Uvicorn bind address. The systemd unit overrides this to `127.0.0.1`; nginx fronts the port. |
-| `RSBS_WEB_PORT` | `8080` | Internal uvicorn port |
 | `RSBS_ROOT_PATH` | `/stats` | URL prefix for the nginx reverse proxy (trailing slash stripped) |
 | `RSBS_API_TOKEN` | _(empty)_ | Optional bearer-token gate on every mutating (POST/DELETE) `/api/*` endpoint. Empty = no auth (default trusted-LAN posture; the web server logs a one-line startup warning so the posture is never silent). When set, every mutating call must carry `Authorization: Bearer <token>` (the CSRF `X-Requested-With` header is required either way). Read endpoints are not gated. See [README — Security model](../README.md#security-model). |
 

@@ -23,8 +23,6 @@ from . import config, http_safe
 
 log = logging.getLogger("photo_sources")
 
-PHOTO_UA = http_safe._USER_AGENT
-
 # Per-source response cap — JSON payloads from Planespotters / airport-data /
 # hexdb are a few KB at most.  An adversarial upstream returning a multi-GB
 # response would otherwise OOM the collector.
