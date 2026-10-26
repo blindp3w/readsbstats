@@ -42,8 +42,7 @@ def api_watchlist_list() -> dict:
 
 
 @router.post("/api/watchlist", status_code=201,
-             dependencies=[Depends(_deps._csrf_check),
-                           Depends(_deps._auth_check)])
+             dependencies=[Depends(_deps._csrf_check)])
 def api_watchlist_add(body: _WatchlistEntry) -> dict:
     if body.match_type not in _VALID_MATCH_TYPES:
         raise HTTPException(422, "match_type must be icao, registration, or callsign_prefix")
@@ -76,8 +75,7 @@ def api_watchlist_add(body: _WatchlistEntry) -> dict:
 
 
 @router.delete("/api/watchlist/{entry_id}", status_code=204,
-               dependencies=[Depends(_deps._csrf_check),
-                             Depends(_deps._auth_check)])
+               dependencies=[Depends(_deps._csrf_check)])
 def api_watchlist_delete(entry_id: int) -> Response:
     row = _deps.db().execute("SELECT id FROM watchlist WHERE id = ?", (entry_id,)).fetchone()
     if not row:

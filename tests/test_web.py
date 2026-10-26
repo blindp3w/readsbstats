@@ -922,41 +922,35 @@ class TestApiMetricsBucketing:
 
 
 # ---------------------------------------------------------------------------
-# Startup auth-posture warning (_warn_if_auth_disabled)
+# Startup deprecation warning for the removed RSBS_API_TOKEN (_warn_if_api_token_set)
 # ---------------------------------------------------------------------------
 
-class TestAuthDisabledWarning:
-    def test_warns_when_token_unset(self, monkeypatch, caplog):
-        monkeypatch.setattr(_deps, "_API_TOKEN", None)
+class TestApiTokenDeprecationWarning:
+    def test_warns_when_token_still_set(self, monkeypatch, caplog):
+        monkeypatch.setenv("RSBS_API_TOKEN", "s3cret-value")
+        with caplog.at_level(logging.WARNING, logger="web"):
+            web._warn_if_api_token_set()
+        assert any(r.levelno == logging.WARNING
+                   and "RSBS_API_TOKEN is no longer supported" in r.message
+                   for r in caplog.records)
+        # Only truthiness is checked; the value must never reach the log.
+        assert not any("s3cret-value" in r.message for r in caplog.records)
+
+    def test_silent_when_token_unset(self, monkeypatch, caplog):
         monkeypatch.delenv("RSBS_API_TOKEN", raising=False)
         with caplog.at_level(logging.WARNING, logger="web"):
-            web._warn_if_auth_disabled()
-        assert any("RSBS_API_TOKEN is unset" in r.message for r in caplog.records)
-
-    def test_silent_when_token_set_via_env(self, monkeypatch, caplog):
-        monkeypatch.setattr(_deps, "_API_TOKEN", None)
-        monkeypatch.setenv("RSBS_API_TOKEN", "secret")
-        with caplog.at_level(logging.WARNING, logger="web"):
-            web._warn_if_auth_disabled()
-        assert not any("RSBS_API_TOKEN is unset" in r.message for r in caplog.records)
-
-    def test_silent_when_token_set_via_module_override(self, monkeypatch, caplog):
-        # _auth_check honours the _API_TOKEN module override; the warning must too.
-        monkeypatch.setattr(_deps, "_API_TOKEN", "secret")
-        monkeypatch.delenv("RSBS_API_TOKEN", raising=False)
-        with caplog.at_level(logging.WARNING, logger="web"):
-            web._warn_if_auth_disabled()
-        assert not any("RSBS_API_TOKEN is unset" in r.message for r in caplog.records)
+            web._warn_if_api_token_set()
+        assert not any("RSBS_API_TOKEN" in r.message for r in caplog.records)
 
     # --- Structural regression guards (the decorator-placement bug) ---------
-    # A plain `_warn_if_auth_disabled()` call worked "by accident" even when the
+    # A plain `_warn_if_api_token_set()` call worked "by accident" even when the
     # @asynccontextmanager decorator was mistakenly on it (the body ran eagerly
     # during CM construction), so a behavioural test can't catch the mix-up.
     # Pin the structure directly: the helper is a plain function and _lifespan
     # is the async-context-manager factory.
     def test_warn_helper_is_plain_function_not_context_manager(self, monkeypatch):
-        monkeypatch.setattr(_deps, "_API_TOKEN", "tok")  # suppress the warning side effect
-        assert web._warn_if_auth_disabled() is None
+        monkeypatch.delenv("RSBS_API_TOKEN", raising=False)  # suppress the warning side effect
+        assert web._warn_if_api_token_set() is None
 
     def test_lifespan_is_async_context_manager_factory(self):
         # Decorated -> calling it builds a context manager (un-started async gen
@@ -3853,93 +3847,45 @@ class TestApiWatchlist:
 
 
 # ---------------------------------------------------------------------------
-# SH-1 (Audit 2026-05-31): optional RSBS_API_TOKEN bearer auth on mutating
-# endpoints. No-op when unset (default trusted-LAN posture); when set,
-# Authorization: Bearer <token> is required on POST/DELETE.
+# RSBS_API_TOKEN was removed in v2.30.0: the SPA never sent the bearer token,
+# so setting it broke UI watchlist edits. Mutating endpoints are guarded by
+# CSRF (X-Requested-With) only; access control belongs in a reverse proxy.
+# A leftover RSBS_API_TOKEN is ignored (and warned about at startup).
 # ---------------------------------------------------------------------------
 
-class TestApiAuthToken:
-    def test_no_token_unset_means_no_auth_required(self, client, monkeypatch):
-        """When RSBS_API_TOKEN is unset, mutating endpoints behave exactly
-        as before — only CSRF is enforced (provided by the test client)."""
-        monkeypatch.setattr(_deps, "_API_TOKEN", "")
+class TestApiTokenRemoved:
+    def test_post_ignores_token_env(self, client, monkeypatch):
+        monkeypatch.setenv("RSBS_API_TOKEN", "secret")
         r = client.post("/api/watchlist",
                         json={"match_type": "icao", "value": "aabbcc"})
         assert r.status_code == 201
 
-    def test_token_set_post_without_bearer_rejected(self, client, monkeypatch):
-        monkeypatch.setattr(_deps, "_API_TOKEN", "secret")
-        r = client.post("/api/watchlist",
-                        json={"match_type": "icao", "value": "aabbcc"})
-        assert r.status_code == 401
-
-    def test_token_set_post_with_wrong_bearer_rejected(self, client, monkeypatch):
-        monkeypatch.setattr(_deps, "_API_TOKEN", "secret")
-        r = client.post("/api/watchlist",
-                        headers={"Authorization": "Bearer wrong"},
-                        json={"match_type": "icao", "value": "aabbcc"})
-        assert r.status_code == 401
-
-    def test_token_set_post_with_correct_bearer_accepted(self, client, monkeypatch):
-        monkeypatch.setattr(_deps, "_API_TOKEN", "secret")
-        r = client.post("/api/watchlist",
-                        headers={"Authorization": "Bearer secret"},
-                        json={"match_type": "icao", "value": "aabbcc"})
-        assert r.status_code == 201
-
-    def test_token_set_delete_requires_bearer(self, client, monkeypatch):
-        # First create an entry (without auth so we exercise the rejection
-        # on DELETE specifically).
-        monkeypatch.setattr(_deps, "_API_TOKEN", "")
+    def test_delete_ignores_token_env(self, client, monkeypatch):
+        monkeypatch.setenv("RSBS_API_TOKEN", "secret")
         r = client.post("/api/watchlist",
                         json={"match_type": "icao", "value": "aabbcc"})
         entry_id = r.json()["id"]
-
-        # Now turn auth on and verify DELETE without bearer is 401.
-        monkeypatch.setattr(_deps, "_API_TOKEN", "secret")
         r = client.delete(f"/api/watchlist/{entry_id}")
-        assert r.status_code == 401
-
-        # With bearer: 204.
-        r = client.delete(f"/api/watchlist/{entry_id}",
-                          headers={"Authorization": "Bearer secret"})
         assert r.status_code == 204
 
-    def test_read_endpoints_not_gated(self, client, monkeypatch):
-        """Read-only endpoints (GET /api/watchlist, /api/flights, etc.) are
-        NOT gated — token auth only applies to mutating endpoints."""
-        monkeypatch.setattr(_deps, "_API_TOKEN", "secret")
-        assert client.get("/api/watchlist").status_code == 200
-        assert client.get("/api/flights").status_code == 200
+    def test_csrf_still_required_with_token_env(self, raw_client, monkeypatch):
+        monkeypatch.setenv("RSBS_API_TOKEN", "secret")
+        r = raw_client.post("/api/watchlist",
+                            json={"match_type": "icao", "value": "aabbcc"})
+        assert r.status_code == 403
 
-    def test_token_picked_up_from_env_at_call_time(self, client, monkeypatch):
-        """Code-review follow-up: tests using monkeypatch.setenv (the
-        natural pytest pattern) must also work, not just
-        monkeypatch.setattr(_deps, '_API_TOKEN', ...). Before the fix,
-        _API_TOKEN was captured at module import time so setenv after
-        import was invisible to _auth_check, causing test assertions
-        of 401 to silently pass for the wrong reason."""
-        # Ensure the module-level binding is empty so the env-var path runs.
-        monkeypatch.setattr(_deps, "_API_TOKEN", None)
-        monkeypatch.setenv("RSBS_API_TOKEN", "env-secret")
-
-        # Without bearer → 401.
-        r = client.post("/api/watchlist",
-                        json={"match_type": "icao", "value": "aabbcc"})
-        assert r.status_code == 401
-
-        # With correct bearer → 201.
-        r = client.post("/api/watchlist",
-                        headers={"Authorization": "Bearer env-secret"},
-                        json={"match_type": "icao", "value": "aabbcc"})
-        assert r.status_code == 201
+    def test_deps_has_no_auth_gate(self):
+        assert not hasattr(_deps, "_auth_check")
+        assert not hasattr(_deps, "_API_TOKEN")
+        assert not hasattr(_deps, "_get_api_token")
 
 
 # ---------------------------------------------------------------------------
-# Route-guard invariant: every mutating endpoint must carry BOTH _csrf_check
-# and _auth_check (CLAUDE.md non-negotiable). The per-endpoint tests above
+# Route-guard invariant: every mutating endpoint must carry _csrf_check
+# (CLAUDE.md non-negotiable; access control beyond CSRF belongs in a reverse
+# proxy, not in the app). The per-endpoint tests above
 # prove the watchlist routes behave; these tests prove no future POST/PUT/
-# DELETE/PATCH route can ship without the guards — the failure message names
+# DELETE/PATCH route can ship without the guard — the failure message names
 # the offending route.
 # ---------------------------------------------------------------------------
 
@@ -3952,7 +3898,7 @@ def _mutating_api_routes(app_):
     Walks included sub-routers via iter_api_routes(): FastAPI 0.137 no longer
     flattens include_router() routes into app.routes (they nest under
     _IncludedRouter), so a flat walk would find zero mutating routes and the
-    CSRF/auth guard below would pass vacuously."""
+    CSRF guard below would pass vacuously."""
     for route in iter_api_routes(app_.routes):
         for method in sorted((route.methods or set()) & _MUTATING_METHODS):
             yield method, route
@@ -3974,8 +3920,8 @@ class TestMutatingRouteGuards:
     # route genuinely must skip a guard, so the exemption is visible in review.
     ALLOWLIST: set = set()
 
-    def test_every_mutating_route_has_csrf_and_auth_dependencies(self):
-        required = {_deps._csrf_check, _deps._auth_check}
+    def test_every_mutating_route_has_csrf_dependency(self):
+        required = {_deps._csrf_check}
         offenders = []
         for method, route in _mutating_api_routes(web.app):
             if (method, route.path) in self.ALLOWLIST:
@@ -3985,8 +3931,8 @@ class TestMutatingRouteGuards:
                 offenders.append(
                     (method, route.path, sorted(f.__name__ for f in missing)))
         assert not offenders, (
-            "Mutating routes missing CSRF/auth guards "
-            f"(add dependencies=[Depends(_csrf_check), Depends(_auth_check)]): {offenders}")
+            "Mutating routes missing the CSRF guard "
+            f"(add dependencies=[Depends(_csrf_check)]): {offenders}")
 
     def test_mutating_route_inventory_is_known(self):
         """Exact inventory of mutating routes. Adding an endpoint must fail

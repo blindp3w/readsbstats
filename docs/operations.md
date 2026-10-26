@@ -317,7 +317,7 @@ current retention strategy is hard-cutoff only.
 
 ## Deployment security
 
-readsbstats ships **no authentication and no authorization by default**. The
+readsbstats ships **no authentication and no authorization**. The
 trust model is "bind to loopback, sit behind nginx on a trusted LAN."
 
 **What this means in practice:**
@@ -331,14 +331,11 @@ trust model is "bind to loopback, sit behind nginx on a trusted LAN."
   logged-in browser. It does not identify, authenticate, or authorize the
   caller — a direct `curl` with that header passes it. Never treat it as access
   control.
-- **Optional bearer-token gate.** Setting
-  `RSBS_API_TOKEN=<value>` requires every mutating call to carry
-  `Authorization: Bearer <value>`; comparison uses `hmac.compare_digest`. No-op
-  when the env var is unset (default trusted-LAN posture unchanged). Read
-  endpoints are NOT gated — they were already public on the trusted LAN. This
-  is a thin extra layer for deployments where the LAN itself isn't fully
-  trusted; it is **not** a substitute for a reverse-proxy auth layer when the
-  app is reachable from the public internet.
+- **No bearer-token gate.** `RSBS_API_TOKEN` was removed in v2.30.0: the SPA
+  never sent the token, so setting it broke watchlist editing, and read
+  endpoints were never gated. If the variable is still set, the web server logs
+  a startup warning and ignores it. Use an authenticating reverse proxy for
+  access control.
 - **`flight_id` path params are integer-typed; `{icao_hex}` path params are
   validated** against `^~?[0-9a-fA-F]{6}$` before any DB or outbound work, and
   feeder `status_path` values are `realpath`-checked under `RSBS_FEEDER_STATUS_ROOT`.
@@ -348,8 +345,7 @@ trust model is "bind to loopback, sit behind nginx on a trusted LAN."
 **If you expose the UI beyond a trusted LAN**, put an authenticating layer in
 front of nginx — HTTP basic auth, an OAuth2 reverse proxy (e.g. oauth2-proxy),
 or a VPN / Tailscale tailnet. Do not publish `127.0.0.1:8080` or the nginx
-`/stats/` location to the public internet without one. `RSBS_API_TOKEN` alone
-is not enough for public exposure.
+`/stats/` location to the public internet without one.
 
 **Outbound HTTP** (photo + route enrichment) is centralised in `http_safe.py`
 with an SSRF guard (HTTPS-only, globally-reachable-IP-only, multicast-blocked,
