@@ -151,3 +151,48 @@ describe('History date param epoch mapping (BUG-1)', () => {
     expect(Number(params.get('from'))).toBeGreaterThan(0);
   });
 });
+
+describe('History has_acars param vs the VDL2 config flag', () => {
+  // settings: object → resolves with it; 'pending' → never resolves (still loading).
+  function stubSettings(settings: { vdl2_enabled: boolean } | 'pending') {
+    globalThis.fetch = vi.fn((input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : String(input);
+      if (url.includes('/api/settings')) {
+        return settings === 'pending'
+          ? new Promise<Response>(() => {})
+          : Promise.resolve(new Response(JSON.stringify(settings), { status: 200 }));
+      }
+      if (url.includes('/api/health')) {
+        return Promise.resolve(new Response(JSON.stringify({ vdl2: {} }), { status: 200 }));
+      }
+      return Promise.resolve(
+        new Response(JSON.stringify({ total: 0, limit: 100, offset: 0, flights: [] }), { status: 200 }),
+      );
+    }) as unknown as typeof fetch;
+  }
+  const lastParams = () => new URLSearchParams(flightsUrls().at(-1)!.split('?')[1]);
+
+  it('omits has_acars once settings say VDL2 is disabled', async () => {
+    stubSettings({ vdl2_enabled: false });
+    renderHistory('/history?has_acars=true');
+    await waitFor(() => {
+      expect(flightsUrls().length).toBeGreaterThan(0);
+      expect(lastParams().has('has_acars')).toBe(false);
+    });
+  });
+
+  it('still sends has_acars while settings are loading (no unfiltered flash)', async () => {
+    stubSettings('pending');
+    renderHistory('/history?has_acars=true');
+    await waitFor(() => expect(flightsUrls().length).toBeGreaterThan(0));
+    expect(flightsUrls().every((u) => u.includes('has_acars=true'))).toBe(true);
+  });
+
+  it('sends has_acars when VDL2 is enabled', async () => {
+    stubSettings({ vdl2_enabled: true });
+    renderHistory('/history?has_acars=true');
+    await waitFor(() => expect(flightsUrls().length).toBeGreaterThan(0));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(flightsUrls().every((u) => u.includes('has_acars=true'))).toBe(true);
+  });
+});

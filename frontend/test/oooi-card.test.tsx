@@ -12,6 +12,7 @@ import { OooiCard } from '@/components/vdl2/OooiCard';
 interface Stub {
   vdl2_enabled?: boolean;
   oooi?: unknown;
+  oooiFails?: boolean;
 }
 
 function stubFetch(s: Stub) {
@@ -21,6 +22,7 @@ function stubFetch(s: Stub) {
     if (url.includes('/api/settings')) body = { vdl2_enabled: s.vdl2_enabled ?? false };
     else if (url.includes('/api/health'))
       body = { vdl2: { enabled: s.vdl2_enabled ?? false, available: s.vdl2_enabled ?? false } };
+    else if (url.includes('/api/vdl2/oooi') && s.oooiFails) return new Response('boom', { status: 500 });
     else if (url.includes('/api/vdl2/oooi')) body = s.oooi ?? { dep: null, arr: null, dsta: null, has_oooi: false };
     return new Response(JSON.stringify(body), {
       status: 200,
@@ -211,5 +213,20 @@ describe('OooiCard', () => {
     await waitFor(() => {
       expect(container.querySelector('[data-testid="flight-oooi-card"]')).toBeNull();
     });
+  });
+
+  it('renders a muted error line (not null) when the OOOI query fails', async () => {
+    stubFetch({ vdl2_enabled: true, oooiFails: true });
+    wrap();
+    const el = await screen.findByTestId('flight-oooi-error');
+    expect(el.textContent).toMatch(/Failed to load/i);
+    expect(screen.queryByTestId('flight-oooi-card')).toBeNull();
+  });
+
+  it('stays silent on a query error when VDL2 is unavailable', async () => {
+    stubFetch({ vdl2_enabled: false, oooiFails: true });
+    const { container } = wrap();
+    await waitFor(() => expect(globalThis.fetch).toHaveBeenCalled());
+    expect(container.querySelector('[data-testid="flight-oooi-error"]')).toBeNull();
   });
 });

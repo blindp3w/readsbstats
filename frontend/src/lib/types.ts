@@ -108,6 +108,9 @@ export interface Vdl2StatsResponse {
   flights_overlap_pct?: number | null;
 }
 
+// `GET /api/vdl2/stats?summary=true` — only the three headline counters.
+export type Vdl2StatsSummary = Pick<Vdl2StatsResponse, 'total' | 'last_hour' | 'aircraft'>;
+
 // Bucketed VDL2 reception series for the Metrics page's two charts. Extends the
 // columnar /api/metrics shape (MetricsResp) so buildPanelOption /
 // buildSignalSmallMultiplesOption consume it directly.

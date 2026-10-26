@@ -3,7 +3,7 @@ import { CaretDownIcon, Cross2Icon, PlusIcon } from '@radix-ui/react-icons';
 import { useQuery } from '@tanstack/react-query';
 import { apiJson, apiUrl } from '@/lib/api';
 import { useSearchParam, useSearchParamBatch } from '@/hooks/useSearchParam';
-import { useVdl2AttachAvailable } from '@/hooks/useVdl2Enabled';
+import { useVdl2AttachAvailable, useVdl2EnabledState } from '@/hooks/useVdl2Enabled';
 import { cn } from '@/lib/cn';
 import { parseYMD } from '@/lib/dateParse';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
@@ -145,6 +145,7 @@ export default function HistoryPage() {
   // ignores has_acars when its own ATTACH is down) so a shared `?has_acars=true`
   // link doesn't flash unfiltered results while the health bit resolves.
   const vdl2AttachAvailable = useVdl2AttachAvailable();
+  const vdl2Configured = useVdl2EnabledState();
   const fieldDefs = vdl2AttachAvailable ? [...FIELD_DEFS, VDL2_FIELD_DEF] : FIELD_DEFS;
   const [sortByRaw] = useSearchParam('sort_by', 'first_seen');
   const [sortDirRaw] = useSearchParam('sort_dir', 'desc');
@@ -171,9 +172,12 @@ export default function HistoryPage() {
   if (flags) queryParams.set('flags', String(flags));
   if (squawk) queryParams.set('squawk', String(squawk));
   // Not gated on vdl2AttachAvailable: the backend ignores has_acars when its
-  // ATTACH is down, so sending it unconditionally avoids a shared-link flash of
-  // unfiltered results before the health bit resolves.
-  if (hasAcars) queryParams.set('has_acars', 'true');
+  // ATTACH is down, so sending it before the health bit resolves avoids a
+  // shared-link flash of unfiltered results. The one case we DO drop it: the
+  // config flag is KNOWN off (settings loaded, vdl2_enabled === false) — then
+  // the filter can never apply and a stale `?has_acars=true` just costs the
+  // backend a pointless parameter. null (loading/unknown) keeps sending it.
+  if (hasAcars && vdl2Configured !== false) queryParams.set('has_acars', 'true');
   queryParams.set('sort_by', sortBy);
   queryParams.set('sort_dir', sortDir);
   queryParams.set('limit', String(PAGE_SIZE));

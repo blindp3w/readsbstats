@@ -20,6 +20,7 @@ vi.mock('@/lib/api', () => ({ apiJson: vi.fn() }));
 import { apiJson } from '@/lib/api';
 import {
   useVdl2Enabled,
+  useVdl2EnabledState,
   useVdl2Health,
   useVdl2FlightWindow,
   useVdl2FlightMessages,
@@ -74,7 +75,47 @@ describe('useVdl2Enabled', () => {
   });
 });
 
+describe('useVdl2EnabledState', () => {
+  it('is null while settings load, then the real flag (true or false)', async () => {
+    let resolve!: (v: unknown) => void;
+    apiJsonMock.mockImplementation(() => new Promise((r) => (resolve = r)));
+    const { result } = renderHook(() => useVdl2EnabledState(), { wrapper: makeWrapper() });
+    expect(result.current).toBeNull(); // unknown ≠ off
+    resolve({ vdl2_enabled: false });
+    await waitFor(() => expect(result.current).toBe(false));
+  });
+
+  it('is true when the flag is on', async () => {
+    respondWith({ settings: { vdl2_enabled: true } });
+    const { result } = renderHook(() => useVdl2EnabledState(), { wrapper: makeWrapper() });
+    await waitFor(() => expect(result.current).toBe(true));
+  });
+
+  it('stays null when settings fail to load (flag unknown)', async () => {
+    apiJsonMock.mockRejectedValue(new Error('boom'));
+    const { result } = renderHook(() => useVdl2EnabledState(), { wrapper: makeWrapper() });
+    await waitFor(() => expect(apiJsonMock).toHaveBeenCalled());
+    expect(result.current).toBeNull();
+  });
+});
+
 describe('useVdl2Health', () => {
+  it('exposes isError when /api/health itself fails (distinct from available=false)', async () => {
+    apiJsonMock.mockRejectedValue(new Error('boom'));
+    const { result } = renderHook(() => useVdl2Health(), { wrapper: makeWrapper() });
+    await waitFor(() => expect(result.current.isError).toBe(true));
+    expect(result.current.available).toBe(false);
+    expect(result.current.isLoading).toBe(false);
+  });
+
+  it('isError is false when health loads with vdl2.available=false', async () => {
+    respondWith({ health: { vdl2: { available: false } } });
+    const { result } = renderHook(() => useVdl2Health(), { wrapper: makeWrapper() });
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    expect(result.current.isError).toBe(false);
+    expect(result.current.available).toBe(false);
+  });
+
   it('exposes the two capability bits independently', async () => {
     respondWith({
       health: { vdl2: { available: true, attach_available: false } },
