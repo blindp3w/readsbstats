@@ -57,32 +57,32 @@ Boolean vars accept `1`/`0`, `true`/`false`, `yes`/`no`, `on`/`off`
 ### Retention — what survives the horizon
 
 When `RSBS_RETENTION_DAYS` is set, the collector's hourly purge deletes raw
-`positions` rows older than the cutoff. Here is what that means in practice:
+`positions` rows older than the cutoff, then drops the flights that no longer
+have enough positions to be worth keeping. Here is what that means in practice:
 
 **Survives the horizon — kept forever:**
 
-- Every `flights` row, including its aggregated stats (total positions, max
-  altitude, max ground speed, ADS-B vs MLAT counts, max detection range,
-  bearing, bounding box). These are never touched by position retention.
 - The `grid_daily` coarse (0.1°) heatmap rollup and the `coverage_daily`
   rollup — both permanent. The all-time heatmap and coverage overlays
   therefore keep their full history even after positions are purged.
-- All-time statistics and leaderboards (top aircraft, airlines, routes,
-  airports, daily/DOW activity counts).
 
-**Bounded by the horizon — raw replay only:**
+**Bounded by the horizon — everything derived from `flights` and `positions`:**
 
-- Per-flight raw track replay: the altitude/speed chart and the flight-detail
-  map trace for flights older than `RETENTION_DAYS`. The flight card (date,
-  callsign, aircraft, duration, route, aggregate stats) remains. Only the
-  raw position log and the replay track are gone.
-- The 24h live-map path history is unaffected — it is recent by definition.
+- A flight whose positions have all aged out is **deleted** along with them:
+  the purge removes flights with fewer than `RSBS_MIN_POSITIONS` positions
+  left, `last_seen` before the cutoff and no active session. In practice
+  that is every flight that ended before the cutoff.
+- The History, Statistics and Aircraft pages and the leaderboards (top
+  aircraft, airlines, routes, airports, daily/DOW activity counts) are
+  computed from `flights`, so they cover only the retention window — they
+  are not all-time once retention is on.
+- Per-flight raw track replay (altitude/speed chart, flight-detail map
+  trace) exists only for flights inside the window.
 
-**Ghost-track handling:** flights that span the cutoff boundary have their
-per-flight aggregates recomputed from surviving positions. Flights whose
-position count falls below `RSBS_MIN_POSITIONS` *and* whose `last_seen` is
-before the cutoff are dropped (these are ghost tracks that would never have
-been surfaced anyway).
+**Boundary flights:** a flight that spans the cutoff keeps its surviving
+positions and has its per-flight aggregates (position counts, max altitude,
+max ground speed, max detection range, bearing, bounding box) recomputed from
+them.
 
 **First enablement against a backlog is safe.** The batched purge
 (50 000 rows per transaction, 200 ms sleep between batches) lets the
@@ -187,7 +187,7 @@ Thresholds for the nine receiver-health checks. All effective values are also re
 | Variable | Default | Description |
 |---|---|---|
 | `RSBS_MAP_HISTORY_HOURS` | `24` | How many hours back the rewind slider can reach (min `1`) |
-| `RSBS_MAP_TRAIL_WINDOW_SECONDS` | `3600` | How far back the per-aircraft trail on the live/replay map reaches. Bounds the SQL window used to rank position rows so a long flight with thousands of positions doesn't force SQLite to scan the whole partition for a 50-point trail. (min `60`) |
+| `RSBS_MAP_TRAIL_WINDOW_SECONDS` | `3600` | How far back the per-aircraft trail on the live map reaches (live mode only — replaying a past `at` is not bounded by it). Bounds the SQL window used to rank position rows so a long flight with thousands of positions doesn't force SQLite to scan the whole partition for a 50-point trail. (min `60`) |
 
 ### Web server
 
@@ -238,13 +238,15 @@ Thresholds for the nine receiver-health checks. All effective values are also re
 Both services log to journald at `INFO` level:
 
 ```bash
-journalctl -u readsbstats-collector -f   # collector: startup, flight events, errors
-journalctl -u readsbstats-web -f         # web: startup, route enricher, errors
+journalctl -u readsbstats-collector -f   # collector: startup, flight events, route/ADSBx enrichers, errors
+journalctl -u readsbstats-web -f         # web: startup, API errors
 ```
 
 The web server suppresses HTTP access logs (`--log-level warning`) to reduce I/O on the Pi.
 
 ## Route enricher logging
+
+The route enricher runs inside the collector, so these lines appear in `journalctl -u readsbstats-collector`:
 
 ```
 2026-04-16T00:07:00 INFO Route enricher background thread started
@@ -298,7 +300,7 @@ decoder runbook and the two-switch enablement model.
 
 The collector and web server both open the SQLite DB with `journal_mode = WAL` and `synchronous = NORMAL` (the default since v2.16.0; `FULL` was the default from v2.1.19 to v2.15.4). In WAL mode `NORMAL` is corruption-safe: a power cut can lose at most the last few commits, never the database itself. The per-commit fsync that `FULL` adds was measured at ~67 ms per flush on the production USB HDD — too expensive for the durability of a few final seconds of position data. Set `RSBS_DB_SYNCHRONOUS=FULL` to restore per-commit durability (see [ADR-0007](decisions/0007-sqlite-integrity-checks.md)).
 
-On startup, the collector writes a sentinel file at `<DB-dir>/.dirty_shutdown` and removes it only on graceful shutdown. If the sentinel is present at the next startup, the collector runs `PRAGMA quick_check(10)` and logs results to journald. Detected corruption is logged CRITICAL but the service continues (degraded) — observability over availability for the unattended Pi.
+On startup, the collector writes a sentinel file at `<DB-dir>/.dirty_shutdown` and removes it only on graceful shutdown. If the sentinel is present at the next startup, the collector runs `PRAGMA quick_check(10)` and logs results to journald. Detected corruption (or a failing check) is logged CRITICAL, a Telegram alert is sent, and the collector exits with code 2 without polling (fail-closed — it never writes to a possibly-corrupt DB). The sentinel is retained, so the check repeats on the next start until you recover; see [Database integrity & startup recovery](operations.md#database-integrity--startup-recovery).
 
 Two systemd timers run periodic integrity checks (configured via `systemd/readsbstats-dbcheck*.{service,timer}`):
 

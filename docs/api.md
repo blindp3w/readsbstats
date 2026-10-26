@@ -8,7 +8,7 @@ The web server exposes a JSON API at `http://YOUR_PI_IP/stats/api/`.
 |---|---|---|
 | GET | `/api/flights` | Flight list. Filters: `from`/`to` (Unix epoch, preferred — browser-local midnight), `date`, `date_from`/`date_to` (YYYY-MM-DD receiver local time, backward compat), `icao`, `callsign`, `registration`, `aircraft_type`, `source` (`adsb`/`mlat`/`mixed`/`other`), `flags` (`military`/`interesting`/`anonymous`), `squawk`. Sort with `sort_by` (`first_seen` (default), `icao_hex`, `callsign`, `registration`, `aircraft_type`, `primary_source`, `duration_sec`, `max_alt_baro`, `max_gs`, `max_distance_nm`, `total_positions`, `origin_icao`, `dest_icao`; unknown values fall back to `first_seen`) and `sort_dir` (`asc`, otherwise `desc`). Paginate with `limit` (default `RSBS_PAGE_SIZE`, max `RSBS_MAX_PAGE_SIZE` = 500) and `offset` (≤ 500000); returns `{total, limit, offset, flights}`. **When `RSBS_VDL2_ENABLED` (and `vdl2.db` is attachable), each row gains `has_acars` (0/1) and `has_acars=true` filters to flights with ACARS in their window; absent/ignored otherwise.** |
 | GET | `/api/flights/export.csv` | CSV export of the flight list. Same filters and `sort_by`/`sort_dir` as above (no `has_acars`, no `limit`/`offset`); capped at `RSBS_MAX_EXPORT` rows (default 50000), streamed. |
-| GET | `/api/flights/{id}` | Flight detail (metadata + other flights by the same aircraft). The raw position timeline is **not** embedded by default — `positions` is an empty list. Pass `?include_positions=true` to embed the full list (the SPA instead uses the two endpoints below). |
+| GET | `/api/flights/{id}` | Flight detail (metadata + other flights by the same aircraft). The raw position timeline is **not** embedded by default — `positions` is an empty list. Pass `?include_positions=true` to embed the full list (the SPA instead uses the two endpoints below). Also returns the configured `receiver_lat` / `receiver_lon`. |
 | GET | `/api/flights/{id}/positions` | Paginated raw positions for the inspection table. `limit` (default 1000, max 2000), `offset`. Returns `{total, limit, offset, positions}`. |
 | GET | `/api/flights/{id}/positions/chart` | LTTB-downsampled positions for chart/map rendering. `target` (default 500, max 2000). Returns `{total, target, positions}`. |
 | GET | `/api/flights/{id}/photo` | Aircraft photo via 6-step ladder: specific-ICAO cache → type cache → DB join → Planespotters/airport-data/hexdb fetch → type probe → Wikipedia. `is_type_photo: bool` in response. |
@@ -17,9 +17,9 @@ The web server exposes a JSON API at `http://YOUR_PI_IP/stats/api/`.
 
 | Method | Path | Description |
 |---|---|---|
-| GET | `/api/aircraft/{icao}/flights` | All flights by ICAO hex |
+| GET | `/api/aircraft/{icao}/flights` | All flights by ICAO hex. Same `sort_by` keys as `/api/flights` (default `first_seen`) and `sort_dir`; paginate with `limit` (default `RSBS_PAGE_SIZE`, max `RSBS_MAX_PAGE_SIZE`) and `offset` (≤ 500000). |
 | GET | `/api/aircraft/{icao}/photo` | Aircraft photo — same 6-step ladder; `is_type_photo: true` when serving a type-level fallback |
-| GET | `/api/aircraft/flagged` | Flagged aircraft (military / interesting / anonymous). `flags=military\|interesting\|anonymous` to filter one kind. Paginated. |
+| GET | `/api/aircraft/flagged` | Flagged aircraft (military / interesting / anonymous). `flags=military\|interesting\|anonymous` to filter one kind. Sort with `sort_by` (`last_seen` (default), `first_seen`, `flight_count`, `registration`, `aircraft_type`) and `sort_dir` (`asc`, otherwise `desc`); paginate with `limit` (default `RSBS_PAGE_SIZE`, max `RSBS_MAX_PAGE_SIZE`) and `offset` (≤ 500000). Cached 60 s. |
 
 ## Statistics
 
@@ -77,8 +77,8 @@ exposed at `/api/health` → `vdl2.available` (the SPA gates surfaces on it).
 
 | Method | Path | Description |
 |---|---|---|
-| GET | `/api/airlines/{prefix}/flights` | All flights by airline ICAO prefix (e.g. `LOT`) |
-| GET | `/api/types/{type}/flights` | All flights by aircraft type (e.g. `B738`) |
+| GET | `/api/airlines/{prefix}/flights` | All flights by airline ICAO prefix (e.g. `LOT`), newest first. Paginate with `limit` (default `RSBS_PAGE_SIZE`, max `RSBS_MAX_PAGE_SIZE`) and `offset` (≤ 500000). |
+| GET | `/api/types/{type}/flights` | All flights by aircraft type (e.g. `B738`), newest first. Paginate with `limit` (default `RSBS_PAGE_SIZE`, max `RSBS_MAX_PAGE_SIZE`) and `offset` (≤ 500000). |
 
 ## System
 

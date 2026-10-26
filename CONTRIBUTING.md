@@ -15,9 +15,24 @@ python3 -m venv .venv
 For local development with real data, copy the database from your Pi:
 
 ```bash
-rsync pi@your-pi:/mnt/ext/readsbstats/history.db ./db/
+mkdir -p db
+# 1. Snapshot on the Pi into RAM-backed /dev/shm (never /tmp: it is on the SD card).
+#    One read transaction, safe against the live WAL database. Check space first.
+echo "VACUUM INTO '/dev/shm/history.db'" | ssh pi@your-pi \
+  'df -h /dev/shm; nice -n19 ionice -c3 sqlite3 "file:/mnt/ext/readsbstats/history.db?mode=ro"'
+# 2. Pull it, then delete it on the Pi.
+rsync pi@your-pi:/dev/shm/history.db ./db/
+ssh pi@your-pi 'rm /dev/shm/history.db'
+# 3. Verify.
+sqlite3 db/history.db "PRAGMA integrity_check"
 bash scripts/dev.sh
 ```
+
+The database file is owned by `readsbstats` but world-readable, so your SSH user
+can run the `sqlite3` command itself. Never run `sqlite3 .backup` against the
+live database — it restarts on every collector write and never finishes. If you
+copy the raw files instead, copy `history.db` together with `history.db-wal`,
+delete the copied `-shm`, then run `integrity_check`.
 
 ### Frontend
 
@@ -51,7 +66,9 @@ locally before pushing UI changes.
 ## Dependency updates (Dependabot)
 
 Dependabot opens grouped PRs weekly (one each for npm, pip and GitHub Actions)
-plus grouped security-fix PRs as soon as an alert has a patch. Before merging:
+plus a separate, ungrouped PR per security fix as soon as an alert has a patch
+(the `groups` in `.github/dependabot.yml` set no `applies-to`, so they cover
+version updates only). Before merging:
 
 - CI must be green — it runs the backend suite, frontend build + lint + Vitest,
   and the full Playwright UI suite.
