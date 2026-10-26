@@ -5,6 +5,26 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 2.30.1 — 2026-10-26
+
+CI only. No production behaviour changes.
+
+### Changed
+
+- **CI: the Playwright UI suite runs in the official Playwright image**
+  (`mcr.microsoft.com/playwright/python:v1.64.1-noble`), in its own `ui` job.
+  The browsers and their system libraries are preinstalled, so nothing is
+  apt-installed. `playwright install --with-deps` on the bare runner went
+  through the Azure Ubuntu apt mirror, which was sometimes slow enough to time
+  the 3.12 leg out, and the v2.29.5 retry could not help: playwright runs
+  apt-get via sudo, the non-root `timeout` could not kill it, and the second
+  attempt always hit the dpkg lock. The `test` job timeout drops from 18 to
+  12 minutes.
+- `playwright` is pinned exactly (`==1.64.1`, the image's release).
+  `tests/test_ci_workflow.py` fails when the pin and the image tag drift
+  (Dependabot bumps only the pin) and forbids `playwright install` in the
+  workflow.
+
 ## 2.30.0 — 2026-10-26
 
 Removes the `RSBS_API_TOKEN` bearer gate. No schema or API shape changes.
