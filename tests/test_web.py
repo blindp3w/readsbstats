@@ -1312,10 +1312,47 @@ class TestSpaCatchAll:
         the /api guard still applies and needs no prefix handling."""
         monkeypatch.setattr(_deps, "_db", db_conn)
         monkeypatch.setattr(config, "PREWARM_MAP_CACHE", False)
-        monkeypatch.setattr(web.app, "root_path", "/stats")
+        monkeypatch.setattr(config, "ROOT_PATH", "/stats")
         with TestClient(web.app, headers={"X-Requested-With": "XMLHttpRequest"}) as c:
             assert c.get("/api/nope").status_code == 404
             assert c.get("/history").status_code == 200
+
+
+class TestRootPath:
+    """RSBS_ROOT_PATH reaches the ASGI scope through web's own middleware —
+    FastAPI(root_path=...) is deprecated since FastAPI 0.146."""
+
+    def test_import_emits_no_fastapi_deprecation_warning(self):
+        import subprocess
+        import sys
+        from pathlib import Path
+        repo = Path(__file__).resolve().parents[1]
+        r = subprocess.run(
+            [sys.executable, "-c",
+             "import warnings\n"
+             "from fastapi.exceptions import FastAPIDeprecationWarning as W\n"
+             "warnings.simplefilter('error', W)\n"
+             "import readsbstats.web"],
+            cwd=repo, env={**__import__("os").environ, "PYTHONPATH": str(repo / "src")},
+            capture_output=True, text=True, timeout=60,
+        )
+        assert r.returncode == 0, r.stderr[-2000:]
+
+    def test_root_path_prefixes_redirects(self, db_conn, monkeypatch):
+        monkeypatch.setattr(_deps, "_db", db_conn)
+        monkeypatch.setattr(config, "PREWARM_MAP_CACHE", False)
+        monkeypatch.setattr(config, "ROOT_PATH", "/stats")
+        with TestClient(web.app) as c:
+            r = c.get("/v2/history", follow_redirects=False)
+        assert r.headers["location"] == "/stats/history"
+
+    def test_empty_root_path_leaves_redirects_unprefixed(self, db_conn, monkeypatch):
+        monkeypatch.setattr(_deps, "_db", db_conn)
+        monkeypatch.setattr(config, "PREWARM_MAP_CACHE", False)
+        monkeypatch.setattr(config, "ROOT_PATH", "")
+        with TestClient(web.app) as c:
+            r = c.get("/v2/history", follow_redirects=False)
+        assert r.headers["location"] == "/history"
 
 
 class TestApiSettings:
@@ -1701,7 +1738,7 @@ class TestSpaMount:
         exact configuration the vulnerability surfaces in."""
         if not web.SPA_INDEX.is_file():
             pytest.skip("frontend/dist not built")
-        monkeypatch.setattr(web.app, "root_path", "")
+        monkeypatch.setattr(config, "ROOT_PATH", "")
 
         for hostile_path in (
             "/v2//evil.com",
@@ -1784,7 +1821,7 @@ class TestSpaMount:
         redirect."""
         if not web.SPA_INDEX.is_file():
             pytest.skip("frontend/dist not built")
-        monkeypatch.setattr(web.app, "root_path", "")
+        monkeypatch.setattr(config, "ROOT_PATH", "")
         # Defeat the real sanitizer
         monkeypatch.setattr(web, "_sanitize_v2_rest", lambda rest: "/evil.com")
 

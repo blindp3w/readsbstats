@@ -146,7 +146,23 @@ async def _lifespan(app_: FastAPI) -> AsyncIterator[None]:
     log.info("Web server stopped")
 
 
-app = FastAPI(root_path=config.ROOT_PATH, docs_url=None, redoc_url=None, lifespan=_lifespan)
+class _RootPathMiddleware:
+    """Put RSBS_ROOT_PATH into every request scope — what the deprecated
+    FastAPI(root_path=...) did (it overrode scope["root_path"] per call).
+    nginx strips /stats before proxying, so the prefix only feeds redirect
+    targets; read at call time so tests can monkeypatch config.ROOT_PATH."""
+
+    def __init__(self, app_):
+        self.app = app_
+
+    async def __call__(self, scope, receive, send):
+        if config.ROOT_PATH and scope["type"] in ("http", "websocket"):
+            scope["root_path"] = config.ROOT_PATH
+        await self.app(scope, receive, send)
+
+
+app = FastAPI(docs_url=None, redoc_url=None, lifespan=_lifespan)
+app.add_middleware(_RootPathMiddleware)
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 # `/static` still serves /api/airspace's bundled GeoJSON and the favicon
 # fallback. The old Jinja JS/CSS subtrees were removed at v2.0.0 cutover.

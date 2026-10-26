@@ -5,6 +5,25 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 2.29.4 — 2026-10-26
+
+Dependency release (Dependabot). No schema or API changes.
+
+### Changed
+
+- **Backend:** FastAPI 0.143.2 → 0.161.1; Playwright (UI tests) 1.64.0 → 1.64.1;
+  setuptools build requirement ≥ 84.2.1.
+- **Frontend:** MapLibre GL 6.14.0 → 6.15.0, TanStack Query 5.104.3 → 5.104.5,
+  TanStack Virtual 3.14.20 → 3.14.22, Zustand 5.0.15 → 5.0.16; dev tooling
+  ESLint 10.13, typescript-eslint 8.72, Vite 8.3.5.
+- **CI:** `github/codeql-action` 4.39.1, `actions/setup-python` 7.1.0.
+
+### Fixed
+
+- **No deprecation warning at web startup.** FastAPI 0.146 deprecated the
+  `root_path` constructor argument; the web app now applies `RSBS_ROOT_PATH`
+  through its own middleware. Behaviour is unchanged.
+
 ## 2.29.3 — 2026-10-26
 
 Documentation release from the 2026-10 codebase audit. No code changes.
