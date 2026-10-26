@@ -81,6 +81,13 @@ class TestParseResponse:
         assert self.parse({"response": {"flightroute": None}}) is None
         assert self.parse({"response": {"flightroute": {}}}) is None
 
+    def test_empty_origin_and_destination_returns_none(self):
+        # flightroute is present and truthy but carries no airports at all.
+        assert self.parse({"response": {"flightroute": {
+            "callsign": "LOT281", "origin": {}, "destination": {}}}}) is None
+        assert self.parse({"response": {"flightroute": {
+            "callsign": "LOT281", "origin": None, "destination": None}}}) is None
+
     def test_origin_only_still_parsed(self):
         data = {"response": {"flightroute": {
             "origin": {"icao_code": "EPWA", "name": "Warsaw", "country": "Poland",
@@ -675,6 +682,62 @@ class TestEnrichBatch:
         # permanent failures get a DB-backed TTL, not an in-memory cooldown.
         assert "PERM123" not in self.re._transient_failure_at
 
+    def test_negative_cache_persist_failure_is_logged_and_batch_continues(
+            self, monkeypatch, caplog):
+        """If writing the negative-cache row for a permanently failing callsign
+        itself hits a sqlite error, it is logged and the remaining callsigns in
+        the batch are still processed."""
+        import logging
+        monkeypatch.setattr(config, "ROUTE_CACHE_DAYS", 30)
+        monkeypatch.setattr(config, "ROUTE_BATCH_SIZE", 10)
+        monkeypatch.setattr(config, "ROUTE_RATE_LIMIT_SEC", 0.0)
+        insert_flight(self.conn, icao="aaaaaa", callsign="PERM123")
+        insert_flight(self.conn, icao="bbbbbb", callsign="GOOD123")
+
+        def fake_fetch(cs, client=None):
+            if cs == "PERM123":
+                raise self.re._PermanentError("size cap")
+            return self._mock_route()
+
+        real_store = self.re._store_route
+
+        def flaky_store(conn, cs, route):
+            if route is None:
+                raise sqlite3.OperationalError("database is locked")
+            return real_store(conn, cs, route)
+
+        monkeypatch.setattr(self.re, "_fetch_route", fake_fetch)
+        monkeypatch.setattr(self.re, "_store_route", flaky_store)
+
+        with caplog.at_level(logging.ERROR, logger=self.re.log.name):
+            count = self.re._enrich_batch(self.conn)
+
+        assert count == 2
+        recs = [r for r in caplog.records
+                if "Failed to persist negative cache for PERM123" in r.getMessage()]
+        assert len(recs) == 1
+        # No negative row was written for the failing callsign...
+        assert self.conn.execute(
+            "SELECT 1 FROM callsign_routes WHERE callsign='PERM123'").fetchone() is None
+        # ...and the healthy one was enriched.
+        assert self.conn.execute(
+            "SELECT origin_icao FROM flights WHERE callsign='GOOD123'"
+        ).fetchone()["origin_icao"] == "WAW"
+
+    def test_rate_limit_sleep_after_each_processed_callsign(self, monkeypatch):
+        monkeypatch.setattr(config, "ROUTE_CACHE_DAYS", 30)
+        monkeypatch.setattr(config, "ROUTE_BATCH_SIZE", 10)
+        monkeypatch.setattr(config, "ROUTE_RATE_LIMIT_SEC", 0.25)
+        insert_flight(self.conn, icao="aaaaaa", callsign="LOT111")
+        insert_flight(self.conn, icao="bbbbbb", callsign="LOT222")
+        sleeps = []
+        monkeypatch.setattr(self.re.time, "sleep", sleeps.append)
+        monkeypatch.setattr(self.re, "_fetch_route",
+                            lambda cs, client=None: self._mock_route())
+
+        assert self.re._enrich_batch(self.conn) == 2
+        assert sleeps == [0.25, 0.25]
+
     def test_all_permanent_failures_emit_batch_summary(self, monkeypatch, caplog):
         """Code review follow-up: when every callsign in a batch hits
         _PermanentError, the batch-level summary WARNING must still fire.
@@ -938,6 +1001,42 @@ class TestFetchRoute:
         assert result["origin_icao"] == "EPWA"
         assert result["dest_icao"] == "EGLL"
 
+    def test_supplied_client_is_used_and_not_closed(self, monkeypatch):
+        """Loop path: the long-lived client is used as-is (no one-shot
+        httpx.Client is opened) and is not entered/exited by _fetch_route."""
+        import httpx
+        self._bypass_validate(monkeypatch)
+
+        class FakeResp:
+            status_code = 200
+            content = b"{}"
+            def raise_for_status(self): pass
+            def json(self):
+                return {"response": {"flightroute": {
+                    "origin": {"icao_code": "EPWA", "iata_code": "WAW", "name": "Warsaw"},
+                    "destination": {"icao_code": "EGLL", "iata_code": "LHR", "name": "Heathrow"},
+                }}}
+
+        class SharedClient:
+            lifecycle = []
+            urls = []
+            def __enter__(self):
+                self.lifecycle.append("enter"); return self
+            def __exit__(self, *a):
+                self.lifecycle.append("exit")
+            def get(self, url, **kw):
+                self.urls.append(url); return FakeResp()
+
+        def no_new_client(**kw):
+            raise AssertionError("a one-shot client must not be created")
+
+        monkeypatch.setattr(httpx, "Client", no_new_client)
+        shared = SharedClient()
+        result = self.mod._fetch_route("LOT281", client=shared)
+        assert result["origin_icao"] == "EPWA" and result["dest_icao"] == "EGLL"
+        assert len(shared.urls) == 1 and "LOT281" in shared.urls[0]
+        assert shared.lifecycle == []
+
     def test_returns_none_on_404(self, monkeypatch):
         import httpx
         self._bypass_validate(monkeypatch)
@@ -1120,6 +1219,46 @@ class TestRunEnricherLoop:
         with pytest.raises(KeyboardInterrupt):
             route_enricher.run_enricher_loop(db_path)
         assert len(calls) == 2
+
+
+class _StopLoop(BaseException):
+    """Escapes the loop's ``except Exception`` so the test can end it."""
+
+
+class TestRunEnricherLoopBatchErrors:
+    def test_batch_error_is_logged_and_loop_keeps_going(self, monkeypatch, tmp_path, caplog):
+        import logging
+        from readsbstats import route_enricher
+        db_path = str(tmp_path / "test.db")
+        database.init_db(db_path)
+
+        calls, sleeps = [], []
+
+        def fake_enrich(conn, *, client=None):
+            calls.append(client)
+            if len(calls) == 1:
+                raise RuntimeError("adsbdb exploded")
+            return 0
+
+        def fake_sleep(s):
+            sleeps.append(s)
+            if len(sleeps) >= 2:
+                raise _StopLoop
+
+        monkeypatch.setattr(route_enricher, "_enrich_batch", fake_enrich)
+        monkeypatch.setattr(route_enricher.time, "sleep", fake_sleep)
+        monkeypatch.setattr(config, "ROUTE_ENRICH_INTERVAL", 42)
+
+        with caplog.at_level(logging.ERROR, logger=route_enricher.log.name):
+            with pytest.raises(_StopLoop):
+                route_enricher.run_enricher_loop(db_path)
+
+        # The failure did not end the loop: it slept the normal interval and
+        # ran a second batch on the same shared client.
+        assert len(calls) == 2 and calls[0] is calls[1] and calls[0] is not None
+        assert sleeps == [42, 42]
+        recs = [r for r in caplog.records if "Route enricher batch error" in r.getMessage()]
+        assert len(recs) == 1 and recs[0].exc_info is not None
 
 
 # ---------------------------------------------------------------------------

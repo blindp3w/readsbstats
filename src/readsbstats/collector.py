@@ -1120,7 +1120,8 @@ def _purge(conn: sqlite3.Connection) -> None:
         ).fetchall()
         total = len(prows)
         if total == 0:
-            # All positions purged — zero the count so step 4 can drop it.
+            # All positions purged — zero the count so step 4 drops it once its
+            # last_seen is behind the cutoff too (this purge or a later one).
             with conn:
                 conn.execute(
                     "UPDATE flights SET total_positions = 0 WHERE id = ?", (fid,)

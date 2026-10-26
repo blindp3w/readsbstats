@@ -558,6 +558,81 @@ class TestMigrate:
         conn.close()
 
 
+class TestBackgroundMigrationFailureIsolation:
+    """Background migrations run in a thread owned by the collector: a failing
+    step must be logged (with traceback) and swallowed so it can neither kill
+    the thread before the remaining steps run nor take the collector down."""
+
+    @staticmethod
+    def _bare_db(tmp_path):
+        """A database file with no project tables at all (every UPDATE fails
+        with 'no such table')."""
+        path = str(tmp_path / "bare.db")
+        conn = sqlite3.connect(path)
+        conn.execute("CREATE TABLE unrelated (x INTEGER)")
+        conn.commit()
+        conn.close()
+        return path
+
+    @staticmethod
+    def _errors(caplog, fn_name):
+        return [r for r in caplog.records
+                if r.levelname == "ERROR" and fn_name in r.getMessage()]
+
+    def test_backfill_primary_source_logs_and_does_not_raise(self, tmp_path, caplog):
+        path = self._bare_db(tmp_path)
+        with caplog.at_level("ERROR", logger="readsbstats.database"):
+            assert database._backfill_primary_source(path) is None
+        recs = self._errors(caplog, "_backfill_primary_source failed")
+        assert len(recs) == 1
+        assert "no such table" in str(recs[0].exc_info[1])
+
+    def test_backfill_flights_enrichment_logs_and_does_not_raise(self, tmp_path, caplog):
+        path = self._bare_db(tmp_path)
+        with caplog.at_level("ERROR", logger="readsbstats.database"):
+            assert database._backfill_flights_enrichment(path) is None
+        recs = self._errors(caplog, "_backfill_flights_enrichment failed")
+        assert len(recs) == 1
+        assert "no such table" in str(recs[0].exc_info[1])
+
+    def test_unopenable_database_is_logged_not_raised(self, tmp_path, caplog):
+        """connect() itself failing (directory missing) is also contained, and
+        the finally-block must cope with the connection never having existed."""
+        path = str(tmp_path / "no-such-dir" / "history.db")
+        with caplog.at_level("ERROR", logger="readsbstats.database"):
+            database._backfill_primary_source(path)
+            database._backfill_flights_enrichment(path)
+            database._drop_dead_watchlist_alerted_column(path)
+        assert len(self._errors(caplog, "_backfill_primary_source failed")) == 1
+        assert len(self._errors(caplog, "_backfill_flights_enrichment failed")) == 1
+        assert len(self._errors(caplog, "_drop_dead_watchlist_alerted_column failed")) == 1
+
+    def test_drop_dead_watchlist_alerted_column_failure_is_contained(
+            self, tmp_path, caplog):
+        """SQLite refuses DROP COLUMN on an indexed column -> OperationalError.
+        It must be logged and swallowed, leaving the column and data intact."""
+        path = str(tmp_path / "legacy.db")
+        conn = sqlite3.connect(path)
+        conn.execute("CREATE TABLE flights (id INTEGER PRIMARY KEY, "
+                     "icao_hex TEXT, watchlist_alerted INTEGER)")
+        conn.execute("CREATE INDEX idx_wl ON flights(watchlist_alerted)")
+        conn.execute("INSERT INTO flights (icao_hex, watchlist_alerted) VALUES ('aabbcc', 1)")
+        conn.commit()
+        conn.close()
+
+        with caplog.at_level("ERROR", logger="readsbstats.database"):
+            assert database._drop_dead_watchlist_alerted_column(path) is None
+
+        assert len(self._errors(caplog, "_drop_dead_watchlist_alerted_column failed")) == 1
+        conn = sqlite3.connect(path)
+        try:
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(flights)")}
+            assert "watchlist_alerted" in cols
+            assert conn.execute("SELECT COUNT(*) FROM flights").fetchone()[0] == 1
+        finally:
+            conn.close()
+
+
 class TestBackgroundMigrationsConcurrency:
     """The collector spawns `run_background_migrations` while still actively
     writing to `positions`.  CREATE INDEX takes the SQLite write lock, so a

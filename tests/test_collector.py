@@ -7,6 +7,7 @@ import datetime as _real_dt
 import json
 import os
 import signal
+import sqlite3
 import sys
 import tempfile
 import threading
@@ -129,6 +130,25 @@ class TestWatchdogLoop:
         monkeypatch.setattr(collector, "_running", False)
         thread.join(timeout=3)
         assert not thread.is_alive()
+
+    def test_shutdown_mid_sleep_returns_within_one_slice(self, monkeypatch):
+        """If _running flips while sleeping, the loop must bail out on the next
+        1 s slice (deterministic: the stubbed sleep flips the flag)."""
+        from readsbstats import collector
+        sent: list[str] = []
+        sleeps: list[float] = []
+        monkeypatch.setattr(collector, "_sd_notify", lambda m: sent.append(m))
+        monkeypatch.setattr(collector, "_WATCHDOG_INTERVAL_SEC", 10)
+        monkeypatch.setattr(collector, "_running", True)
+
+        def fake_sleep(secs):
+            sleeps.append(secs)
+            monkeypatch.setattr(collector, "_running", False)
+
+        monkeypatch.setattr(collector.time, "sleep", fake_sleep)
+        collector._watchdog_loop()
+        assert sent == ["WATCHDOG=1"]
+        assert sleeps == [1]   # 1 of 10 slices, then returned
 
     def test_does_not_emit_when_running_false_at_entry(self, monkeypatch):
         from readsbstats import collector
@@ -1778,6 +1798,63 @@ class TestPurge:
         assert row["max_distance_nm"] == pytest.approx(expected, rel=1e-6)
         assert row["max_distance_nm"] < 9999
 
+    def test_crossing_flight_rssi_range_recomputed_from_survivors(self, monkeypatch):
+        """min_rssi / max_rssi must reflect only the positions that survive
+        the purge (rssi is stored x10 via posenc; the stale values came from
+        the deleted fix)."""
+        monkeypatch.setattr("readsbstats.config.RETENTION_DAYS", 1)
+        monkeypatch.setattr("readsbstats.config.MIN_POSITIONS_KEEP", 2)
+        cutoff = int(time.time()) - 86400
+        fid = self._insert_flight(cutoff - 100, cutoff + 500, total_pos=3)
+        self.conn.execute(
+            "UPDATE flights SET min_rssi=-49.5, max_rssi=-1.0 WHERE id=?", (fid,))
+        self.conn.commit()
+        # Deleted: carries the stale extremes.
+        insert_position(self.conn, fid, cutoff - 50, lat=52.0, lon=21.0, rssi=-49.5)
+        insert_position(self.conn, fid, cutoff - 40, lat=52.0, lon=21.0, rssi=-1.0)
+        # Survivors, plus one without RSSI (must be ignored, not treated as 0).
+        insert_position(self.conn, fid, cutoff + 100, lat=52.0, lon=21.0, rssi=-20.5)
+        insert_position(self.conn, fid, cutoff + 200, lat=52.0, lon=21.0, rssi=-8.5)
+        insert_position(self.conn, fid, cutoff + 300, lat=52.0, lon=21.0)
+        self.conn.commit()
+        from readsbstats.collector import _purge
+        _purge(self.conn)
+        row = self.conn.execute(
+            "SELECT total_positions, min_rssi, max_rssi FROM flights WHERE id=?",
+            (fid,)).fetchone()
+        assert row["total_positions"] == 3
+        assert row["min_rssi"] == pytest.approx(-20.5)
+        assert row["max_rssi"] == pytest.approx(-8.5)
+
+    def test_crossing_flight_with_all_positions_purged_is_zeroed_then_dropped(
+            self, monkeypatch):
+        """A flight spanning the cutoff whose positions are ALL older than the
+        cutoff ends with total_positions == 0 (not the stale count). It is kept
+        while last_seen >= cutoff (step 4 only drops fully-expired flights) and
+        dropped by the purge that runs once its last_seen falls behind it."""
+        monkeypatch.setattr("readsbstats.config.RETENTION_DAYS", 1)
+        monkeypatch.setattr("readsbstats.config.MIN_POSITIONS_KEEP", 2)
+        cutoff = int(time.time()) - 86400
+        fid = self._insert_flight(cutoff - 100, cutoff + 500, total_pos=7)
+        self._insert_position(fid, cutoff - 90)
+        self._insert_position(fid, cutoff - 80)
+        from readsbstats.collector import _purge
+        _purge(self.conn)
+        assert self.conn.execute(
+            "SELECT COUNT(*) FROM positions WHERE flight_id=?", (fid,)
+        ).fetchone()[0] == 0
+        row = self.conn.execute(
+            "SELECT total_positions FROM flights WHERE id=?", (fid,)).fetchone()
+        assert row is not None and row["total_positions"] == 0
+
+        # Time passes: last_seen is now behind the cutoff -> step 4 removes it.
+        self.conn.execute(
+            "UPDATE flights SET last_seen = ? WHERE id = ?", (cutoff - 10, fid))
+        self.conn.commit()
+        _purge(self.conn)
+        assert self.conn.execute(
+            "SELECT 1 FROM flights WHERE id=?", (fid,)).fetchone() is None
+
     def test_retention_zero_skips_purge(self, monkeypatch):
         monkeypatch.setattr("readsbstats.config.RETENTION_DAYS", 0)
         fid = self._insert_flight(1, 2, total_pos=1)
@@ -2416,6 +2493,58 @@ class TestPollEdgeCases:
         collector._notifications_thread.join(timeout=1)
         assert len(int_calls) == 1
 
+    def test_out_of_order_position_is_dropped(self):
+        """A fix older than the flight's last_pos_ts must not be inserted
+        (strict `<`; the equal-ts case is covered by the ghost filter)."""
+        from readsbstats.collector import _poll, _active
+        now = int(time.time())
+        self._write_json(
+            [{"hex": "aabbcc", "lat": 52.0, "lon": 21.0, "seen_pos": 0}], now)
+        _poll(self.conn)
+        assert _active["aabbcc"]["last_pos_ts"] == now
+        assert self.conn.execute("SELECT COUNT(*) FROM positions").fetchone()[0] == 1
+
+        # Stale replay: same aircraft, position timestamped 30 s earlier.
+        self._write_json(
+            [{"hex": "aabbcc", "lat": 52.5, "lon": 21.5, "seen_pos": 0}], now - 30)
+        _poll(self.conn)
+
+        rows = self.conn.execute("SELECT ts FROM positions").fetchall()
+        assert [r["ts"] for r in rows] == [now]
+        assert _active["aabbcc"]["last_pos_ts"] == now
+
+    def test_anonymous_first_sighting_enqueues_anon_alert(self, monkeypatch):
+        """First sighting of a non-ICAO (anonymous) hex queues an "anon" alert
+        with the standard tuple shape, once per ICAO."""
+        from readsbstats import collector
+        monkeypatch.setattr(config, "TELEGRAM_ANONYMOUS_ALERT", 1)
+        queued = []
+        monkeypatch.setattr(collector, "_enqueue_alert", queued.append)
+
+        self._write_json([{"hex": "dd85cb", "lat": 52.0, "lon": 21.0, "seen_pos": 0}])
+        collector._poll(self.conn)
+
+        assert len(queued) == 1
+        item = queued[0]
+        assert item[0] == "anon" and item[1] == "dd85cb"
+        assert len(item) == 7   # same shape _dispatch_one expects for mil/int
+        assert "dd85cb" in collector._notified_icao
+
+        # Next poll of the same flight must not re-alert.
+        self._write_json([{"hex": "dd85cb", "lat": 52.0, "lon": 21.1, "seen_pos": 0}],
+                         time.time() + 5)
+        collector._poll(self.conn)
+        assert len(queued) == 1
+
+    def test_anonymous_alert_muted_by_config(self, monkeypatch):
+        from readsbstats import collector
+        monkeypatch.setattr(config, "TELEGRAM_ANONYMOUS_ALERT", 0)
+        queued = []
+        monkeypatch.setattr(collector, "_enqueue_alert", queued.append)
+        self._write_json([{"hex": "dd85cb", "lat": 52.0, "lon": 21.0, "seen_pos": 0}])
+        collector._poll(self.conn)
+        assert queued == []
+
     def test_notifications_run_in_daemon_thread(self, monkeypatch):
         """notify_military must be called from a non-main daemon thread."""
         import threading as _threading
@@ -2959,7 +3088,7 @@ class TestDispatchOne:
         # is visible in journalctl.
         from readsbstats import collector
         import logging
-        with caplog.at_level(logging.WARNING, logger="readsbstats.collector"):
+        with caplog.at_level(logging.WARNING, logger="collector"):
             collector._dispatch_one(("xyz", "abc123"))
         assert any("xyz" in rec.message for rec in caplog.records)
 
@@ -2972,7 +3101,7 @@ class TestDispatchOne:
         called = []
         monkeypatch.setattr(notifier, "notify_military",
                             lambda *a: called.append(a))
-        with caplog.at_level(logging.WARNING, logger="readsbstats.collector"):
+        with caplog.at_level(logging.WARNING, logger="collector"):
             collector._dispatch_one(("mil", "abc123"))   # 2 fields, expects 7
         assert called == []
         assert any("expected 7 fields, got 2" in rec.message
@@ -3164,6 +3293,91 @@ class TestCheckDailySummary:
 
         assert not sent
 
+    def test_non_numeric_summary_time_warns_once_and_disables(self, monkeypatch, caplog):
+        """'ab:cd' has the right shape but int() fails: warn exactly once across
+        repeated polls and never send."""
+        import logging
+        from readsbstats import collector, notifier
+        sent = []
+        monkeypatch.setattr(notifier, "send_daily_summary", lambda c: sent.append(1))
+        monkeypatch.setattr(config, "TELEGRAM_SUMMARY_TIME", "ab:cd")
+        self._patch_now(monkeypatch, _real_dt.datetime(2026, 4, 14, 21, 0))
+
+        assert collector._parse_summary_time() is None
+        conn = make_db()
+        with caplog.at_level(logging.WARNING, logger="collector"):
+            collector._check_daily_summary(conn)
+            collector._check_daily_summary(conn)
+        conn.close()
+
+        assert sent == []
+        warns = [r for r in caplog.records if "RSBS_SUMMARY_TIME" in r.getMessage()]
+        assert len(warns) == 1
+        assert "'ab:cd'" in warns[0].getMessage()
+        assert collector._summary_time_warned is True
+
+    def test_telegram_disabled_skips_summary(self, monkeypatch):
+        """Without a configured bot the summary is never built or sent, and no
+        last-summary date is recorded."""
+        from readsbstats import collector, notifier
+        sent = []
+        monkeypatch.setattr(notifier, "send_daily_summary", lambda c: sent.append(1))
+        monkeypatch.setattr(config, "TELEGRAM_TOKEN", "")
+        monkeypatch.setattr(config, "TELEGRAM_CHAT_ID", "")
+        monkeypatch.setattr(config, "TELEGRAM_SUMMARY_TIME", "21:00")
+        self._patch_now(monkeypatch, _real_dt.datetime(2026, 4, 14, 21, 0))
+
+        conn = make_db()
+        collector._check_daily_summary(conn)
+        row = conn.execute(
+            "SELECT 1 FROM meta WHERE key='last_summary_date'").fetchone()
+        conn.close()
+
+        assert sent == []
+        assert collector._last_summary_date is None
+        assert row is None
+
+    def test_load_last_summary_date_tolerates_missing_meta_table(self, monkeypatch):
+        """A sqlite error reading `meta` (e.g. table not there yet) must not
+        propagate out of startup, and leaves the in-memory gate untouched."""
+        from readsbstats import collector
+        conn = sqlite3.connect(":memory:")   # no schema at all
+        try:
+            collector._last_summary_date = _real_dt.date(2026, 1, 2)
+            collector._load_last_summary_date(conn)   # must not raise
+            assert collector._last_summary_date == _real_dt.date(2026, 1, 2)
+        finally:
+            conn.close()
+
+    def test_save_last_summary_date_logs_sqlite_error(self, caplog):
+        """Persistence failure is logged with a traceback and swallowed (the
+        summary itself must still go out)."""
+        import logging
+        from readsbstats import collector
+        conn = sqlite3.connect(":memory:")   # no meta table -> OperationalError
+        try:
+            with caplog.at_level(logging.ERROR, logger="collector"):
+                collector._save_last_summary_date(conn, _real_dt.date(2026, 4, 14))
+        finally:
+            conn.close()
+        recs = [r for r in caplog.records
+                if "could not persist last_summary_date" in r.getMessage()]
+        assert len(recs) == 1 and recs[0].exc_info is not None
+
+    def test_summary_still_sent_when_persistence_fails(self, monkeypatch):
+        from readsbstats import collector, notifier
+        sent = []
+        monkeypatch.setattr(notifier, "send_daily_summary", lambda c: sent.append(1))
+        monkeypatch.setattr(config, "TELEGRAM_SUMMARY_TIME", "21:00")
+        self._patch_now(monkeypatch, _real_dt.datetime(2026, 4, 14, 21, 0))
+        conn = sqlite3.connect(":memory:")   # no meta table
+        try:
+            collector._check_daily_summary(conn)
+        finally:
+            conn.close()
+        assert sent == [1]
+        assert collector._last_summary_date == _real_dt.date(2026, 4, 14)
+
     def test_invalid_summary_time_logs_warning(self, monkeypatch, caplog):
         """Invalid HH:MM like '25:00' or 'abc' logs a warning once."""
         import logging
@@ -3334,12 +3548,47 @@ class TestMain:
                             lambda timeout=5.0: (_ for _ in ()).throw(
                                 RuntimeError("stop fail")))
 
-        with caplog.at_level(logging.ERROR, logger="readsbstats.collector"):
+        with caplog.at_level(logging.ERROR, logger="collector"):
             collector.main()   # must not raise
 
         msgs = [r.message for r in caplog.records]
         assert any("Error during shutdown finalisation" in m for m in msgs)
         assert any("Error stopping notification consumer" in m for m in msgs)
+
+    def test_sentinel_unlink_failure_is_swallowed(self, monkeypatch, caplog):
+        """A failing sentinel removal at clean shutdown must not crash main():
+        teardown completes ("Collector stopped") and the DB connection closes."""
+        import logging
+        from readsbstats import collector, notifier
+
+        class _FakeSentinel:
+            def __init__(self):
+                self.unlink_calls = []
+            def exists(self):
+                return False
+            def touch(self):
+                pass
+            def unlink(self, missing_ok=False):
+                self.unlink_calls.append(missing_ok)
+                raise PermissionError("read-only fs")
+
+        fake = _FakeSentinel()
+        monkeypatch.setattr(collector, "_SENTINEL", fake)
+        conn = make_db()
+        monkeypatch.setattr(database, "init_db", lambda: None)
+        monkeypatch.setattr(database, "connect", lambda p=None: conn)
+        monkeypatch.setattr(notifier, "start_command_listener", lambda p: None)
+        monkeypatch.setattr(collector, "_poll", lambda c: None)
+        monkeypatch.setattr(collector, "_check_daily_summary", lambda c: None)
+        monkeypatch.setattr(time, "sleep", self._sleep_exit())
+
+        with caplog.at_level(logging.INFO, logger="collector"):
+            collector.main()   # must not raise
+
+        assert fake.unlink_calls == [True]
+        assert any("Collector stopped" in r.getMessage() for r in caplog.records)
+        with pytest.raises(sqlite3.ProgrammingError):
+            conn.execute("SELECT 1")   # closed before the sentinel step failed
 
     def test_purge_triggered(self, monkeypatch):
         from readsbstats import collector, notifier
@@ -3616,7 +3865,7 @@ class TestNotificationConsumer:
         monkeypatch.setattr(notifier, "notify_squawk",
                             lambda *a: ok_called.append(a))
 
-        with caplog.at_level(logging.ERROR, logger="readsbstats.collector"):
+        with caplog.at_level(logging.ERROR, logger="collector"):
             collector.start_notification_consumer()
             collector._notification_queue.put(
                 ("mil", "aabbcc", "REG1", None, "T", "T1", 100.0),
@@ -3840,7 +4089,7 @@ class TestNotificationQueueBounded:
         assert self._q.full()
         assert self._q.qsize() == 500
 
-        with caplog.at_level(logging.WARNING, logger="readsbstats.collector"):
+        with caplog.at_level(logging.WARNING, logger="collector"):
             # Must return normally (sheds load) rather than block or raise.
             collector._enqueue_alert(item)
 

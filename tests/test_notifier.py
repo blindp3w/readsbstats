@@ -1442,6 +1442,28 @@ class TestWatchlistBotCommands:
         assert "Usage" in sent[0]
         assert db_conn.execute("SELECT COUNT(*) FROM watchlist").fetchone()[0] == 0
 
+    def test_watch_remove_empty_value_sends_usage(self, db_conn, monkeypatch):
+        sent = []
+        monkeypatch.setattr(notifier, "_send", lambda txt: sent.append(txt))
+        db_conn.execute(
+            "INSERT INTO watchlist (match_type, value, label, created_at) VALUES (?,?,NULL,?)",
+            ("icao", "aabbcc", int(time.time())),
+        )
+        db_conn.commit()
+        notifier._watch_remove(db_conn, "   ")
+        assert len(sent) == 1
+        assert sent[0].startswith("Usage: /unwatch")
+        # Nothing removed by a bare /unwatch.
+        assert db_conn.execute("SELECT COUNT(*) FROM watchlist").fetchone()[0] == 1
+
+    def test_bare_unwatch_command_replies_with_usage(self, db_conn, monkeypatch):
+        sent = []
+        monkeypatch.setattr(notifier, "_send", lambda txt: sent.append(txt))
+        monkeypatch.setattr(config, "TELEGRAM_CHAT_ID", "99")
+        upd = {"update_id": 1, "message": {"chat": {"id": "99"}, "text": "/unwatch"}}
+        notifier._handle_update(upd, db_conn)
+        assert len(sent) == 1 and "Usage: /unwatch" in sent[0]
+
     def test_watch_add_value_too_long_rejected(self, db_conn, monkeypatch):
         sent = []
         monkeypatch.setattr(notifier, "_send", lambda txt: sent.append(txt))
@@ -1620,6 +1642,77 @@ class TestGetPhotoResult:
     @property
     def conn(self):
         return self._setup_conn
+
+    def test_explicit_conn_delegates_to_resolve_photo(self, monkeypatch):
+        """With an explicit connection the ladder is called on THAT connection
+        with the configured cache window; the thumbnail URL is unwrapped."""
+        calls = []
+
+        def fake_resolve(conn, icao, type_code, *, cache_seconds):
+            calls.append((conn, icao, type_code, cache_seconds))
+            return {"thumbnail_url": "https://example.com/x.jpg"}, True
+
+        monkeypatch.setattr(photo_sources, "resolve_photo", fake_resolve)
+        monkeypatch.setattr(config, "PHOTO_CACHE_DAYS", 3)
+        # DB_PATH is set by the fixture; make a fresh connection unusable so a
+        # fallback to it would be caught.
+        monkeypatch.setattr(database, "connect",
+                            lambda *a, **k: pytest.fail("must not open a connection"))
+        url, is_type = notifier._get_photo_result(
+            "abc123", "B738", conn=self.conn)
+        assert (url, is_type) == ("https://example.com/x.jpg", True)
+        assert calls == [(self.conn, "abc123", "B738", 3 * 86400)]
+
+    def test_resolve_photo_miss_returns_none_url(self, monkeypatch):
+        monkeypatch.setattr(photo_sources, "resolve_photo",
+                            lambda conn, icao, tc, *, cache_seconds: (None, False))
+        assert notifier._get_photo_result(
+            "abc123", None, conn=self.conn) == (None, False)
+
+    def test_thread_local_conn_is_used_when_no_explicit_conn(self, monkeypatch):
+        seen = []
+        monkeypatch.setattr(
+            photo_sources, "resolve_photo",
+            lambda conn, icao, tc, *, cache_seconds:
+                (seen.append(conn) or {"thumbnail_url": "https://example.com/t.jpg"}, False))
+        monkeypatch.setattr(database, "connect",
+                            lambda *a, **k: pytest.fail("must reuse thread-local conn"))
+        notifier._thread_local.conn = self.conn
+        try:
+            url, is_type = notifier._get_photo_result("abc123", None)
+        finally:
+            del notifier._thread_local.conn
+        assert (url, is_type) == ("https://example.com/t.jpg", False)
+        assert seen == [self.conn]
+
+    def test_no_connection_and_no_db_path_returns_miss(self, monkeypatch):
+        """Without an explicit/thread-local connection and with no configured
+        DB path there is nothing to look up: (None, False), no connection
+        attempt, no ladder call."""
+        monkeypatch.setattr(config, "DB_PATH", "")
+        monkeypatch.setattr(database, "connect",
+                            lambda *a, **k: pytest.fail("must not connect"))
+        monkeypatch.setattr(photo_sources, "resolve_photo",
+                            lambda *a, **k: pytest.fail("must not resolve"))
+        assert notifier._get_photo_result("abc123", "B738") == (None, False)
+
+    def test_resolve_photo_exception_is_swallowed_and_logged_at_debug(
+            self, monkeypatch, caplog):
+        """A failing ladder must never break an alert: returns (None, False),
+        logs at DEBUG only (project rule: photo failures are not warnings)."""
+        import logging
+
+        def boom(*a, **k):
+            raise RuntimeError("ladder exploded")
+
+        monkeypatch.setattr(photo_sources, "resolve_photo", boom)
+        with caplog.at_level(logging.DEBUG, logger=notifier.log.name):
+            result = notifier._get_photo_result("abc123", "B738", conn=self.conn)
+        assert result == (None, False)
+        recs = [r for r in caplog.records if "photo lookup failed" in r.getMessage()]
+        assert len(recs) == 1
+        assert recs[0].levelno == logging.DEBUG
+        assert "abc123" in recs[0].getMessage()
 
     def test_photos_cache_hit_returns_url_and_false(self, monkeypatch):
         now = int(time.time())
