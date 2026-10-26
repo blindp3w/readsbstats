@@ -5,6 +5,30 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 2.30.0 — 2026-10-26
+
+Removes the `RSBS_API_TOKEN` bearer gate. No schema or API shape changes.
+
+### Removed
+
+- **`RSBS_API_TOKEN`.** The opt-in bearer gate on the watchlist POST/DELETE
+  endpoints is gone. The SPA never sent the token, so setting it broke adding
+  and removing watchlist entries in the UI, and read endpoints were never gated.
+  Mutating endpoints are guarded by the CSRF header (`X-Requested-With:
+  XMLHttpRequest`) alone, as they were with the variable unset.
+  **Upgrade:** delete `RSBS_API_TOKEN` from `/etc/readsbstats/readsbstats.env`.
+  A leftover value is ignored, and the web server logs a one-line startup
+  warning (the value is never logged). For access control, put an
+  authenticating reverse proxy in front (see `docs/operations.md`).
+
+### Changed
+
+- The startup warning "RSBS_API_TOKEN is unset" is gone: an unset token is now
+  the only state.
+- Docs: the security model, deployment security, configuration reference (81
+  `RSBS_*` vars, all in `config.py`), API table and env example no longer
+  describe the gate.
+
 ## 2.29.5 — 2026-10-26
 
 Tests and CI. No production behaviour changes.
