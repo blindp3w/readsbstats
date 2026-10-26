@@ -67,11 +67,14 @@ Settings live in `/etc/readsbstats/readsbstats.env`, read by `readsbstats-collec
 
 ## RRD history import
 
-To backfill `receiver_stats` from existing graphs1090 RRD files:
+To backfill `receiver_stats` from existing graphs1090 RRD files (needs `rrdtool`: `apt install rrdtool`):
 
 ```bash
-/opt/readsbstats/venv/bin/python /opt/readsbstats/scripts/import_rrd.py
+/opt/readsbstats/venv/bin/python /opt/readsbstats/scripts/import_rrd.py \
+  --rrd-dir /path/to/dump1090-localhost [--db PATH] [--dry-run]
 ```
+
+`--rrd-dir` is the extracted graphs1090 directory containing the `.rrd` files; `--dry-run` shows what would be imported without writing.
 
 Maps 20 RRD files to 21 receiver metric columns. Uses `INSERT OR IGNORE` to preserve finer-grained data across multiple resolution tiers.
 
@@ -294,12 +297,14 @@ verify with `journalctl -u readsbstats-collector -f` that it completes
 (`Purge: deleted N expired positions`). It waits until the one-time rollup
 backfill has finished. Subsequent purges are incremental and quick.
 
-Flight-level aggregates in the `flights` table (per-flight max altitude,
-max speed, max distance, primary source, first/last seen) **persist
-independently** of any `positions` purge — historical Stats / Aircraft
-pages keep their summary numbers even after the per-position fixes age
-out. Only the position log on the Flight page and the per-flight chart
-endpoints lose detail.
+Retention is not limited to raw fixes: once a flight's positions have all aged
+out, the flight row itself is deleted (`RSBS_MIN_POSITIONS`, `last_seen`
+before the cutoff, no active session). The History, Statistics and Aircraft
+pages and the leaderboards therefore cover only the retention window. Only
+the coarse (0.1°) heatmap rollup and the coverage rollup are permanent, so
+the all-time heatmap and coverage overlays keep their full history.
+Flights that span the cutoff keep their surviving positions and have their
+aggregates recomputed. See [Configuration](configuration.md#retention--what-survives-the-horizon).
 
 The retention tunables are `RSBS_RETENTION_DAYS`, `RSBS_PURGE_INTERVAL` and
 `RSBS_GRID_FINE_RETENTION_DAYS`; the purge batch size is fixed at 50 000 rows.
@@ -352,7 +357,12 @@ redirect-blocked). Provider photo URLs are additionally checked against
 per-source CDN host allowlists before they are cached, and at the API response
 boundary on every photo emission, so cached
 off-allowlist URLs never reach the SPA regardless of `RSBS_PHOTO_HOST_ENFORCE`.
-The image-host and link-host allowlists are separate — see `docs/configuration.md`.
+The image-host and link-host allowlists are separate (HTTPS only; a host
+matches itself and its subdomains, `src/readsbstats/photo_sources.py`).
+Image URLs (`thumbnail_url`, `large_url`) must be on `plnspttrs.net`,
+`planespotters.net`, `airport-data.com`, `hexdb.io` or
+`upload.wikimedia.org`; link URLs (`link_url`) accept the same hosts plus
+`en.wikipedia.org`, which serves article pages, not images.
 
 ## Database integrity & startup recovery
 

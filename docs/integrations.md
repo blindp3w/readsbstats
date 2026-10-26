@@ -50,9 +50,9 @@ The bot only responds to the configured `RSBS_TELEGRAM_CHAT_ID`.
 - `/unwatch <icao|reg>` — remove an entry (also removes `callsign_prefix` entries added via the web UI)
 - `/help` (or `/start`) — list available commands
 
-### Collector failure alert
+### Service failure alert
 
-`notify-telegram@.service` fires automatically via systemd `OnFailure=` when the collector permanently fails (after exhausting its restart budget). The alert includes the last 30 lines of `systemctl status`. Reads `RSBS_TELEGRAM_TOKEN` / `RSBS_TELEGRAM_CHAT_ID` from `/etc/readsbstats/readsbstats.env`; without them the alert is not sent.
+`notify-telegram@.service` fires automatically via systemd `OnFailure=` when `readsbstats-collector` or `readsbstats-vdl2` permanently fails (after exhausting its restart budget), or when a `readsbstats-dbcheck` / `readsbstats-dbcheck-full` integrity check fails. The alert includes the last 30 lines of `systemctl status`. Reads `RSBS_TELEGRAM_TOKEN` / `RSBS_TELEGRAM_CHAT_ID` from `/etc/readsbstats/readsbstats.env`; without them the alert is not sent.
 
 ### Photo delivery
 

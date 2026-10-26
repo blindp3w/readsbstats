@@ -50,7 +50,7 @@ readsb and tar1090 give you a great live view — readsbstats adds the other hal
 - Aircraft watchlist — track by ICAO hex, registration, or callsign prefix
 - Receiver metrics dashboard with 10 time-series charts (Apache ECharts canvas, cross-panel hover sync, wheel/pinch zoom, LTTB downsampling) and 9 health checks
 - Statistics dashboard — receiver-wide aggregates (top aircraft/airlines/routes/airports, hourly & daily activity, DOW×hour heatmap, polar coverage range). Defaults to the **last 7 days** for fast loads; the all-time view is background-warmed so it stays snappy
-- Heatmap and coverage overlays served from collector-maintained daily rollup tables — millisecond responses at any history size, and the all-time views survive raw-position retention
+- Heatmap and coverage overlays served from collector-maintained daily rollup tables — millisecond responses at any history size, and the all-time heatmap and coverage views survive raw-position retention
 - Optional **VDL2 / ACARS** integration (frozen at 2.29.0, still supported as-is: [ADR-0021](docs/decisions/0021-vdl2-frozen.md)) — ingest VHF Data Link Mode 2 traffic from a separate SDR via [dumpvdl2](https://github.com/szpajder/dumpvdl2) (recommended) or, with reduced functionality, [vdlm2dec](https://github.com/TLeconte/vdlm2dec): a Messages tab (live feed, filters, full-text search, human-readable label names) plus an ACARS panel on flight pages with OOOI block times (Out/Off/On/In from Q-series reports), route confirmation, and the route the aircraft reports in its ATN logon, a "has ACARS" badge/filter in history, and a Stats card. Fully pluggable (`RSBS_VDL2_ENABLED`), stored in its own database (see [Operations](docs/operations.md#vdl2--acars-ingest))
   - Human-readable decoded ACARS message bodies in the Messages log (client-side [`@airframes/acars-decoder`](https://github.com/airframes/acars-decoder), lazy-loaded; raw body always retained as fallback)
   - Extra local decoders for media advisories, D-ATIS and weather requests, Ryanair door events (marked "probable"), and Air France / KLM ETA and route reports; earlier blocks of multi-block messages are hidden by default (a "Show partial blocks" toggle reveals them)
@@ -71,6 +71,9 @@ readsb and tar1090 give you a great live view — readsbstats adds the other hal
 ## Installation
 
 ```bash
+# 0. Build the SPA on your Mac/PC (Node 22+; frontend/dist/ is not in git and the Pi never installs Node)
+( cd frontend && npm ci && npm run build )
+
 # 1. Sync source to the Pi (from your Mac/PC)
 rsync -avz --delete \
   --exclude='.git' --exclude='__pycache__' --exclude='*.pyc' \
