@@ -505,3 +505,36 @@ class TestMarkSuperseded:
         ).fetchall()
         assert len(hits) == 2                       # fragment stays indexed (hidden, not deleted)
         conn.execute("INSERT INTO vdl2_fts(vdl2_fts) VALUES('integrity-check')")
+
+
+class TestHeavyIndexes:
+    """idx_vdl2_label_icao / idx_vdl2_flight serve the Stats card's top-labels /
+    top-airlines aggregates but cost a full-table scan to build, so they are built
+    by the collector in the background (build_heavy_indexes), never by migrate()."""
+
+    NAMES = {"idx_vdl2_label_icao", "idx_vdl2_flight"}
+
+    @staticmethod
+    def _index_names(conn):
+        return {r[1] for r in conn.execute("PRAGMA index_list(vdl2_messages)")}
+
+    def test_migrate_does_not_create_them(self):
+        conn = make_vdl2_db()
+        vdl2_db.migrate(conn)
+        vdl2_db.ensure_schema(conn, build_fts=False)
+        assert not (self.NAMES & self._index_names(conn))
+
+    def test_build_heavy_indexes_creates_them_and_is_idempotent(self):
+        conn = make_vdl2_db()
+        vdl2_db.insert_messages(conn, [_msg()])
+        conn.commit()
+        vdl2_db.build_heavy_indexes(conn)
+        assert self.NAMES <= self._index_names(conn)
+        vdl2_db.build_heavy_indexes(conn)   # second call must not raise
+        assert self.NAMES <= self._index_names(conn)
+
+    def test_heavy_indexes_survive_migrate(self):
+        conn = make_vdl2_db()
+        vdl2_db.build_heavy_indexes(conn)
+        vdl2_db.migrate(conn)
+        assert self.NAMES <= self._index_names(conn)
