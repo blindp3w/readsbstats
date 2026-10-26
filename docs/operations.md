@@ -60,7 +60,7 @@ systemctl restart readsbstats-collector readsbstats-web
 # Stop and disable everything
 systemctl disable --now readsbstats-collector readsbstats-web \
   readsbstats-updater.timer readsbstats-dbcheck.timer readsbstats-dbcheck-full.timer
-systemctl disable --now readsbstats-vdl2   # opt-in; skip if never enabled
+systemctl disable --now readsbstats-vdl2   # opt-in; skip if never enabled (decoder pipeline: see "Turning VDL2 off")
 ```
 
 Settings live in `/etc/readsbstats/readsbstats.env`, read by `readsbstats-collector`, `readsbstats-web` and `notify-telegram@` — edit it, then restart the services (see [Configuration](configuration.md)).
@@ -119,10 +119,9 @@ inserts. Watch ingest health via the periodic summary line:
 `journalctl -u readsbstats-vdl2 | grep 'vdl2 ingest:'`.
 
 **Decoder (run separately, owns the SDR).** [dumpvdl2](https://github.com/szpajder/dumpvdl2)
-is the recommended, supported decoder. Set `RSBS_VDL2_DECODER=dumpvdl2` in
-`/etc/readsbstats/vdl2.env` — the code default is still `vdlm2dec`, so without
-this line a dumpvdl2 feed is not parsed correctly — and restart
-`readsbstats-vdl2`. Feed line-delimited JSON over UDP to the listener (default
+is the recommended, supported decoder and the code default
+(`RSBS_VDL2_DECODER=dumpvdl2`; before 2.29.0 the default was `vdlm2dec`). Feed
+line-delimited JSON over UDP to the listener (default
 `127.0.0.1:5556` — 5555 is left free for SpyServer so the ingest listener can
 keep running while the SDR is handed to SpyServer):
 
@@ -141,9 +140,12 @@ rates — see [Running dumpvdl2 on an Airspy Mini](dumpvdl2-airspy-mini.md) for 
 tested IQ‑resampling recipe.
 
 **vdlm2dec (legacy, limited).** [vdlm2dec](https://github.com/TLeconte/vdlm2dec)
-works with the default `RSBS_VDL2_DECODER=vdlm2dec` but is ACARS only: no signal
-level or SNR (the Metrics charts stay hidden), no `sublabel`/`mfi` handling, no
-CPDLC, no CM logon routes and no ADS-C positions.
+works with `RSBS_VDL2_DECODER=vdlm2dec` (set it in `/etc/readsbstats/vdl2.env` and
+restart `readsbstats-vdl2`) but is ACARS only: no signal level or SNR (the Metrics
+charts stay hidden), no `sublabel`/`mfi` handling, no CPDLC, no CM logon routes and
+no ADS-C positions. If the decoder setting does not match the decoder's JSON
+dialect, datagrams arrive but nothing is stored; after 200 datagrams with no
+stored record the ingest logs a one-time warning to that effect.
 
 ```bash
 # vdlm2dec on an Airspy Mini, 4 PL channels, linearity gain 14:
@@ -187,10 +189,24 @@ feed. The
 loaded in that context.
 
 **Retention.** The ingest service prunes messages older than
-`RSBS_VDL2_RETENTION_DAYS` (default 90) every hour. Message volume is modest
+`RSBS_VDL2_RETENTION_DAYS` (default 90) once at startup and then every
+`RSBS_VDL2_PURGE_INTERVAL` seconds (default 3600). Message volume is modest
 (thousands–tens of thousands/day at a busy site); at ~1 KB/row stored that's
 well within the Pi's `/mnt/ext` headroom. Set `0` to keep everything and manage
 size yourself.
+
+**Indexes built in the background.** Two stats indexes, `idx_vdl2_label_icao` and
+`idx_vdl2_flight`, need a full pass over the table, so the ingest service builds
+them in a background thread after it reports ready (never on the web or startup
+path). Until they exist the Stats card's top-labels and top-airlines aggregates
+read the whole table: 2–4 minutes on a cold cache on a Raspberry Pi 4 with a USB
+disk. Results are cached, and concurrent requests share one computation. The
+build runs once and is a no-op afterwards.
+
+**Malformed input.** The ingest drops (and counts as malformed) any datagram line
+whose JSON has `NaN`/`Infinity`/out-of-range numbers or extreme nesting, instead
+of crashing. A failed database open in the prune thread is logged and retried on
+the next tick.
 
 ```bash
 # VDL2 ingest log / status
@@ -198,9 +214,33 @@ journalctl -u readsbstats-vdl2 -n 30
 systemctl is-active readsbstats-vdl2
 ```
 
-To disable entirely: `systemctl disable --now readsbstats-vdl2` and unset
-`RSBS_VDL2_ENABLED` on `readsbstats-web`. The tab, API, and ingest all
-disappear; `history.db` is unaffected.
+### Turning VDL2 off
+
+VDL2 is frozen as of 2.29.0 ([ADR-0021](decisions/0021-vdl2-frozen.md)): the code
+stays, opt-in and supported as-is, and turning it off is safe. With
+`RSBS_VDL2_ENABLED=false` the web server never opens or ATTACHes `vdl2.db`, the
+`/api/vdl2/*` router is not registered (unknown `/api` paths return a JSON `404`),
+and every VDL2 surface in the SPA hides itself (nav item, Messages tab, Stats and
+Metrics cards, ACARS panels, the History "Has ACARS" filter and the map ACARS
+layer). `history.db` is never touched by VDL2, and no alert depends on it.
+
+1. Set `RSBS_VDL2_ENABLED=false` in `/etc/readsbstats/vdl2.env`. The web unit reads
+   that file after `readsbstats.env`, so a value there wins; the ingest unit reads
+   only `vdl2.env`.
+2. `sudo systemctl restart readsbstats-web`
+3. `sudo systemctl disable --now readsbstats-vdl2` (started with the flag off, the
+   service sends `READY` and exits cleanly, so a leftover enabled unit is harmless).
+4. Stop the external decoder pipeline (`airspy_rx | … | dumpvdl2`, or `vdlm2dec`).
+   No unit in this repo manages it. Stopping it frees the SDR.
+5. `vdl2.db` (with `-wal`, `-shm` and `.vdl2_dirty_shutdown`) stays on disk
+   untouched. Nothing opens it while the flag is off, and retention pruning stops
+   (it runs in the ingest service). To reclaim the space delete
+   `/mnt/ext/readsbstats/vdl2.db*` and `.vdl2_dirty_shutdown`; to shrink a kept archive run `VACUUM` on it
+   offline while the services are stopped.
+
+To turn it back on, set the flag to `true`, restart `readsbstats-web`, run
+`systemctl enable --now readsbstats-vdl2` and start the decoder. On its first start
+the ingest service builds the two extra indexes in the background (see above).
 
 ## Polar range plot tuning
 

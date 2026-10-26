@@ -113,5 +113,5 @@ dumpvdl2 **replaces** (not augments) `vdlm2dec` unless you add a second SDR. vdl
 ---
 
 *In [readsbstats](https://github.com/blindp3w/readsbstats): set
-`RSBS_VDL2_DECODER=dumpvdl2` in `/etc/readsbstats/vdl2.env` (the code default is still `vdlm2dec`) and point the pipe's `--output decoded:json:udp:…` at the
+`RSBS_VDL2_DECODER=dumpvdl2` in `/etc/readsbstats/vdl2.env` (the code default since 2.29.0; before that it was `vdlm2dec`) and point the pipe's `--output decoded:json:udp:…` at the
 VDL2 listener — see [operations.md](operations.md#vdl2--acars-ingest).*
