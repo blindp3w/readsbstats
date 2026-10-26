@@ -550,3 +550,38 @@ class TestGridFineRetentionDays:
         import readsbstats.config
         importlib.reload(readsbstats.config)
         assert readsbstats.config.GRID_FINE_RETENTION_DAYS == 30
+
+
+class TestVdl2Decoder:
+    """RSBS_VDL2_DECODER: dumpvdl2 is the default and the invalid-value fallback."""
+
+    @staticmethod
+    def _reload():
+        import readsbstats.config
+        importlib.reload(readsbstats.config)
+        return readsbstats.config
+
+    def test_default_is_dumpvdl2(self, monkeypatch):
+        monkeypatch.delenv("RSBS_VDL2_DECODER", raising=False)
+        try:
+            assert self._reload().VDL2_DECODER == "dumpvdl2"
+        finally:
+            monkeypatch.undo()
+            self._reload()
+
+    def test_vdlm2dec_still_selectable(self, monkeypatch):
+        monkeypatch.setenv("RSBS_VDL2_DECODER", " VDLM2DEC ")
+        try:
+            assert self._reload().VDL2_DECODER == "vdlm2dec"
+        finally:
+            monkeypatch.undo()
+            self._reload()
+
+    def test_invalid_value_falls_back_to_dumpvdl2(self, monkeypatch, capsys):
+        monkeypatch.setenv("RSBS_VDL2_DECODER", "bogus")
+        try:
+            assert self._reload().VDL2_DECODER == "dumpvdl2"
+            assert "using 'dumpvdl2'" in capsys.readouterr().err
+        finally:
+            monkeypatch.undo()
+            self._reload()

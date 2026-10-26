@@ -2,11 +2,14 @@
 
 Run via ``python -m readsbstats.vdl2_collector`` (see
 systemd/readsbstats-vdl2.service). **Consume-only**: the operator runs an
-external decoder (dumpvdl2 recommended; set ``RSBS_VDL2_DECODER`` to match —
-the code default is still ``vdlm2dec``) and points it at this listener with
-line-delimited JSON over UDP, e.g. with the legacy vdlm2dec::
+external decoder (dumpvdl2 recommended and the code default; set
+``RSBS_VDL2_DECODER`` to match the decoder in use) and points it at this
+listener with line-delimited JSON over UDP, e.g. with dumpvdl2::
 
-    vdlm2dec -g 14 -j 127.0.0.1:5556 136.725 136.775 136.875 136.975
+    dumpvdl2 --output decoded:json:udp:address=127.0.0.1,port=5556 …
+
+(the legacy vdlm2dec works too with ``RSBS_VDL2_DECODER=vdlm2dec``:
+``vdlm2dec -g 14 -j 127.0.0.1:5556 136.725 136.775 136.875 136.975``).
 
 This service binds ``RSBS_VDL2_UDP_HOST:RSBS_VDL2_UDP_PORT``, normalizes each
 datagram into the separate ``vdl2.db`` (never touches ``history.db``), and
@@ -48,6 +51,7 @@ _RECV_TIMEOUT_SEC = 1.0  # also the idle-flush / shutdown-responsiveness cadence
 _MAX_DATAGRAM = 65535
 _MAX_PENDING = 5000      # cap the retry buffer so a stuck DB can't grow it unboundedly
 _SUMMARY_INTERVAL_SEC = 60
+_DIALECT_WARN_DATAGRAMS = 200   # datagrams with zero normalized records ⇒ likely wrong RSBS_VDL2_DECODER
 
 
 @dataclasses.dataclass
@@ -62,6 +66,7 @@ class _Counters:
     flush_failures: int = 0
     dropped: int = 0
     last_commit_ts: float = 0.0
+    dialect_warned: bool = False   # one-time "decoder dialect mismatch?" warning already emitted
 
 
 _stats = _Counters()
@@ -75,6 +80,16 @@ def _log_summary(pending_len: int) -> None:
         _stats.datagrams, _stats.records, _stats.malformed, _stats.committed,
         _stats.flush_failures, _stats.dropped, pending_len, age,
     )
+    # A decoder feeding the wrong JSON dialect yields datagrams that normalize to
+    # nothing — silent otherwise. Warn once per process.
+    if (not _stats.dialect_warned and _stats.records == 0
+            and _stats.datagrams >= _DIALECT_WARN_DATAGRAMS):
+        _stats.dialect_warned = True
+        log.warning(
+            "received %d datagrams but normalized 0 records — RSBS_VDL2_DECODER=%s "
+            "may not match the decoder's JSON dialect",
+            _stats.datagrams, config.VDL2_DECODER,
+        )
 
 
 def _sd_notify(msg: str) -> None:
@@ -99,26 +114,61 @@ def _watchdog_loop() -> None:
 
 def _prune_loop() -> None:
     """Retention prune on its OWN connection (writes from a separate thread must
-    not share the ingest connection). Waits on the stop event for responsive exit."""
-    conn = vdl2_db.connect()
+    not share the ingest connection). Prunes once right at thread start (a service
+    restarted more often than the interval would otherwise never prune), then every
+    ``VDL2_PURGE_INTERVAL_SEC``. The connection is (re)opened inside the try so a
+    transient open failure is logged and retried on the next tick instead of
+    silently killing the thread. Waits on the stop event for responsive exit.
+
+    The same thread builds the heavy stats indexes (``vdl2_db._DDL_HEAVY_INDEXES``)
+    right after the first successful prune: sequential on one connection, so the two
+    heavy writers never fight for the write lock (a long catch-up prune would starve
+    CREATE INDEX past busy_timeout), and on the already-pruned table. A failed build
+    is retried on the next tick; until it succeeds the stats queries stay slow."""
+    conn = None
+    indexes_ready = False
     try:
-        while not _stop.wait(max(1, config.VDL2_PURGE_INTERVAL_SEC)):
+        while not _stop.is_set():
             try:
+                if conn is None:
+                    conn = vdl2_db.connect()
                 removed = vdl2_db.prune(conn, config.VDL2_RETENTION_DAYS)
                 if removed:
                     log.info("retention: pruned %d messages older than %d days",
                              removed, config.VDL2_RETENTION_DAYS)
-            except Exception as exc:  # pragma: no cover - defensive
+                    conn.execute("PRAGMA optimize")   # refresh planner stats after a big delete
+            except Exception as exc:
                 log.warning("retention prune failed: %s", exc)
+            if conn is not None and not indexes_ready:
+                indexes_ready = _build_heavy_indexes(conn)
+            if _stop.wait(max(1, config.VDL2_PURGE_INTERVAL_SEC)):
+                break
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
+
+
+def _build_heavy_indexes(conn) -> bool:
+    """One attempt at the heavy-index build; True once the indexes exist. A full
+    table scan on a cold Pi, so it runs on the prune thread, never on startup."""
+    try:
+        log.info("vdl2: building heavy indexes in the background")
+        t0 = time.monotonic()
+        vdl2_db.build_heavy_indexes(conn)
+        log.info("vdl2: heavy indexes ready (%.1f s)", time.monotonic() - t0)
+        return True
+    except Exception as exc:
+        log.warning("vdl2: background index build failed (retrying next tick): %s", exc)
+        return False
 
 
 def _handle_datagram(data: bytes, pending: list[dict]) -> int:
     """Parse one UDP datagram (one or more newline-delimited JSON objects),
     normalize, and append records to ``pending``. Returns the number added.
     Malformed lines are counted (surfaced in the periodic summary, not logged
-    per-line) — never crashes the loop. Factored out for socket-free unit tests."""
+    per-line) — never crashes the loop: any exception from parsing or
+    normalizing one line (incl. RecursionError on deeply nested JSON) drops just
+    that line. Factored out for socket-free unit tests."""
     _stats.datagrams += 1
     added = 0
     for line in data.split(b"\n"):
@@ -126,11 +176,11 @@ def _handle_datagram(data: bytes, pending: list[dict]) -> int:
         if not line:
             continue
         try:
-            raw = json.loads(line)
-        except (ValueError, UnicodeDecodeError):
+            rec = normalize(json.loads(line))
+        except Exception as exc:   # untrusted UDP input: one bad line never escapes
             _stats.malformed += 1
+            log.debug("dropping malformed datagram line: %s", type(exc).__name__)
             continue
-        rec = normalize(raw)
         if rec is not None:
             pending.append(rec)
             added += 1

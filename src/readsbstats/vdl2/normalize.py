@@ -19,6 +19,7 @@ as a non-string. The Mode-S address goes through :func:`cleaners.valid_icao_hex`
 from __future__ import annotations
 
 import json
+import math
 import time
 
 from .. import config
@@ -41,15 +42,18 @@ def _ts(value: object) -> int:
     to the top of the feed forever. Old timestamps are left as-is (legit backfill)."""
     now = int(time.time())
     parsed: int | None = None
-    if isinstance(value, bool):
-        parsed = None
-    elif isinstance(value, (int, float)):
-        parsed = int(value)
-    elif isinstance(value, str):
-        try:
-            parsed = int(float(value))
-        except ValueError:
+    # NaN/±inf (json.loads accepts NaN/Infinity; "1e999" parses to inf) make int()
+    # raise, so treat them as unparseable instead of letting them escape.
+    try:
+        if isinstance(value, bool):
             parsed = None
+        elif isinstance(value, (int, float)):
+            parsed = int(value) if math.isfinite(value) else None
+        elif isinstance(value, str):
+            f = float(value)
+            parsed = int(f) if math.isfinite(f) else None
+    except (ValueError, OverflowError):
+        parsed = None
     if parsed is None:
         return now
     if parsed > now + 86400:        # > 1 day in the future → clock/decoder glitch

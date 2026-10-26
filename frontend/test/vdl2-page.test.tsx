@@ -199,3 +199,102 @@ describe('Nav VDL2 capability', () => {
     expect(document.querySelector('[data-testid="nav-desktop-vdl2"]')).toBeNull();
   });
 });
+
+describe('Vdl2 page pre-freeze fixes', () => {
+  const fetchUrls = () =>
+    (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls.map((c) => String(c[0]));
+
+  // Like stubFetch, but lets a test force individual endpoints to fail.
+  function stubFailing(fail: { health?: boolean; stats?: boolean }) {
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : (input as Request).url ?? String(input);
+      const json = (b: unknown) =>
+        new Response(JSON.stringify(b), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      if (url.includes('/api/settings')) return json({ vdl2_enabled: true });
+      if (url.includes('/api/health')) {
+        return fail.health ? new Response('boom', { status: 500 }) : json({ vdl2: { available: true } });
+      }
+      if (url.includes('/api/vdl2/stats')) {
+        return fail.stats ? new Response('boom', { status: 500 }) : json({ total: 1, last_hour: 1, aircraft: 1 });
+      }
+      if (url.includes('/api/vdl2/messages')) return json({ messages: [], next_before_id: null });
+      return json({});
+    }) as unknown as typeof fetch;
+  }
+
+  it('requests the narrow stats summary, not the full stats payload', async () => {
+    stubFetch({ vdl2_enabled: true, stats: { total: 5, last_hour: 2, aircraft: 3 } });
+    const { findByTestId } = renderPage();
+    await findByTestId('vdl2-empty');
+    const statsUrls = fetchUrls().filter((u) => u.includes('/api/vdl2/stats'));
+    expect(statsUrls.length).toBeGreaterThan(0);
+    expect(statsUrls.every((u) => u.includes('summary=true'))).toBe(true);
+  });
+
+  it('does not share its stats query key with the Stats-page card', async () => {
+    // Same client: the page's summary result must not be served to the card
+    // (which needs the full payload), nor vice versa.
+    stubFetch({ vdl2_enabled: true, stats: { total: 5, last_hour: 2, aircraft: 3 } });
+    const client = newClient();
+    render(
+      <QueryClientProvider client={client}>
+        <MemoryRouter initialEntries={['/vdl2']}>
+          <TooltipProvider delayDuration={0}>
+            <Vdl2Page />
+          </TooltipProvider>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    await waitFor(() => expect(fetchUrls().some((u) => u.includes('summary=true'))).toBe(true));
+    const keys = client.getQueryCache().getAll().map((q) => JSON.stringify(q.queryKey));
+    expect(keys).not.toContain(JSON.stringify(['vdl2-stats']));
+  });
+
+  it('hints that stats are unavailable when the stats query fails', async () => {
+    stubFailing({ stats: true });
+    const { findByTestId, getByTestId } = renderPage();
+    expect((await findByTestId('vdl2-stats-error')).textContent).toMatch(/unavailable/i);
+    expect(getByTestId('vdl2-stat-total').textContent).toContain('—');
+  });
+
+  it('shows no stats hint when stats load fine', async () => {
+    stubFailing({});
+    const { findByTestId, queryByTestId } = renderPage();
+    await waitFor(async () =>
+      expect((await findByTestId('vdl2-stat-total')).textContent).toContain('1'),
+    );
+    expect(queryByTestId('vdl2-stats-error')).toBeNull();
+  });
+
+  it('says status could not be loaded (not "DB unreachable") when /api/health fails', async () => {
+    stubFailing({ health: true });
+    const { findByTestId, queryByTestId } = renderPage();
+    const el = await findByTestId('vdl2-status-error');
+    expect(el.textContent).toMatch(/status/i);
+    expect(queryByTestId('vdl2-unavailable')).toBeNull();
+  });
+
+  describe('registration filter debounce', () => {
+    const messageUrls = () => fetchUrls().filter((u) => u.includes('/api/vdl2/messages'));
+
+    it('keeps the input responsive but queries once per pause', async () => {
+      stubFetch({ vdl2_enabled: true, messages: [] });
+      const { findByTestId, getByTestId } = renderPage();
+      await findByTestId('vdl2-empty');
+      const before = messageUrls().length;
+      const input = getByTestId('vdl2-reg') as HTMLInputElement;
+      fireEvent.change(input, { target: { value: 'S' } });
+      fireEvent.change(input, { target: { value: 'SP' } });
+      fireEvent.change(input, { target: { value: 'SP-' } });
+      // Input reflects every keystroke immediately…
+      expect(input.value).toBe('SP-');
+      // …but no request fires for the intermediate values.
+      expect(messageUrls().slice(before).some((u) => u.includes('reg='))).toBe(false);
+      await waitFor(() => expect(messageUrls().some((u) => u.includes('reg=SP-'))).toBe(true), {
+        timeout: 2000,
+      });
+      const regUrls = messageUrls().filter((u) => u.includes('reg='));
+      expect(regUrls.every((u) => u.includes('reg=SP-'))).toBe(true);
+    });
+  });
+});

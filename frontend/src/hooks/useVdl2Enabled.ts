@@ -8,12 +8,20 @@ import type { HealthResponse, Settings, Vdl2Message, Vdl2MessagesResponse } from
 // resolve. Drives the nav item + the Vdl2 page guard (config-level "is the
 // feature turned on").
 export function useVdl2Enabled(): boolean {
+  return useVdl2EnabledState() === true;
+}
+
+// Tri-state view of the same config flag: null while settings are loading (or
+// failed to load) — "unknown" — vs the real true/false once /api/settings has
+// answered. For callers that must tell "known off" from "not known yet" (e.g.
+// History skips a VDL2-only URL param only when the feature is KNOWN off).
+export function useVdl2EnabledState(): boolean | null {
   const { data } = useQuery({
     queryKey: ['settings'],
     queryFn: () => apiJson<Settings>('settings'),
     staleTime: 60_000,
   });
-  return data?.vdl2_enabled === true;
+  return data ? data.vdl2_enabled === true : null;
 }
 
 // Shared runtime-availability read from /api/health. Exposes the two INDEPENDENT
@@ -25,12 +33,15 @@ export function useVdl2Enabled(): boolean {
 //  - attachAvailable — the read-only ATTACH is usable (History "Has ACARS"
 //                      filter + badge — a different bit: the web_conn can work
 //                      while the cross-DB ATTACH fails, e.g. read-only mount).
+//  - isError         — /api/health itself failed (status unknown), which is not
+//                      the same as health answering with available=false.
 export function useVdl2Health(): {
   available: boolean;
   attachAvailable: boolean;
   isLoading: boolean;
+  isError: boolean;
 } {
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError } = useQuery({
     queryKey: ['health'],
     queryFn: () => apiJson<HealthResponse>('health'),
     staleTime: 30_000,
@@ -39,6 +50,7 @@ export function useVdl2Health(): {
     available: data?.vdl2?.available === true,
     attachAvailable: data?.vdl2?.attach_available === true,
     isLoading,
+    isError,
   };
 }
 

@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import time
 
+import pytest
+
 from readsbstats import config
 from readsbstats.vdl2 import m1bpos, normalize
 
@@ -28,6 +30,12 @@ SAMPLE_VDLM2DEC = {
 
 
 class TestNormalizeVdlm2dec:
+    @pytest.fixture(autouse=True)
+    def setup(self, monkeypatch):
+        # These samples are vdlm2dec's flat dialect; the code default is dumpvdl2.
+        monkeypatch.setattr(config, "VDL2_DECODER", "vdlm2dec")
+        yield
+
     def test_maps_core_fields(self):
         rec = normalize.normalize(SAMPLE_VDLM2DEC)
         assert rec is not None
@@ -587,3 +595,49 @@ class TestAcarsText:
         route = m1bpos.parse_route(text)
         assert route is not None
         assert route["dep"] == "EPWA" and route["arr"] == "ENGM(19R)"
+
+
+class TestNonFiniteNumbers:
+    """json.loads accepts NaN/Infinity (and '1e999' strings parse to inf): none of
+    them may raise out of normalize() or reach a numeric column."""
+
+    BAD = [float("nan"), float("inf"), float("-inf"), "nan", "inf", "1e999", 10 ** 400]
+
+    def test_ts_non_finite_falls_back_to_now(self):
+        now = int(time.time())
+        for bad in self.BAD:
+            assert abs(normalize._ts(bad) - now) <= 1, bad
+
+    def test_vdlm2dec_timestamp_non_finite_does_not_raise(self):
+        now = int(time.time())
+        for bad in self.BAD:
+            raw = {**SAMPLE_VDLM2DEC, "timestamp": bad}
+            rec = normalize.normalize(raw, decoder="vdlm2dec")
+            assert rec is not None and abs(rec["ts"] - now) <= 1, bad
+
+    def test_dumpvdl2_timestamp_non_finite_does_not_raise(self):
+        now = int(time.time())
+        for bad in self.BAD:
+            raw = _dump({"acars": {"label": "H1", "msg_text": "x"}})
+            raw["vdl2"]["t"] = {"sec": bad}
+            rec = normalize.normalize(raw, decoder="dumpvdl2")
+            assert rec is not None and abs(rec["ts"] - now) <= 1, bad
+
+    def test_vdlm2dec_numeric_fields_reject_non_finite(self):
+        for bad in self.BAD:
+            raw = {**SAMPLE_VDLM2DEC, "freq": bad, "lat": bad, "lon": bad,
+                   "alt": bad, "epu": bad}
+            rec = normalize.normalize(raw, decoder="vdlm2dec")
+            assert rec is not None
+            for k in ("freq", "lat", "lon", "alt", "epu"):
+                assert rec[k] is None, (k, bad)
+
+    def test_dumpvdl2_numeric_fields_reject_non_finite(self):
+        for bad in self.BAD:
+            raw = _xid([{"name": "ac_location",
+                         "value": {"loc": {"lat": bad, "lon": bad}, "alt": bad}}])
+            raw["vdl2"].update(freq=bad, sig_level=bad, noise_level=bad)
+            rec = normalize.normalize(raw, decoder="dumpvdl2")
+            assert rec is not None
+            for k in ("freq", "lat", "lon", "alt", "sig_level", "noise_level"):
+                assert rec[k] is None, (k, bad)

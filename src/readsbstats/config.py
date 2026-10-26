@@ -231,13 +231,13 @@ VDL2_RETENTION_DAYS = _int(*_register("vdl2_retention", "RSBS_VDL2_RETENTION_DAY
 VDL2_UDP_HOST       = os.getenv("RSBS_VDL2_UDP_HOST", "127.0.0.1")   # bind localhost; decoder feeds line-delimited JSON here
 VDL2_UDP_PORT       = _min_or_default_int("RSBS_VDL2_UDP_PORT", _int("RSBS_VDL2_UDP_PORT", "5556"), 1, 5556)
 # Decoder whose JSON dialect the ingest normalizer expects. dumpvdl2 is the
-# recommended, fully supported decoder; vdlm2dec is the limited legacy option
-# (ACARS only) and remains the code default for backward compatibility.
+# recommended, fully supported decoder and the code default; vdlm2dec is the
+# limited legacy option (ACARS only) — set RSBS_VDL2_DECODER=vdlm2dec to use it.
 _VDL2_DECODERS      = ("vdlm2dec", "dumpvdl2")
-_VDL2_DECODER_RAW   = os.getenv("RSBS_VDL2_DECODER", "vdlm2dec").strip().lower()
+_VDL2_DECODER_RAW   = os.getenv("RSBS_VDL2_DECODER", "dumpvdl2").strip().lower()
 if _VDL2_DECODER_RAW not in _VDL2_DECODERS:
-    print(f"ERROR: RSBS_VDL2_DECODER={_VDL2_DECODER_RAW!r} not in {_VDL2_DECODERS}, using 'vdlm2dec'", file=sys.stderr)
-VDL2_DECODER        = _VDL2_DECODER_RAW if _VDL2_DECODER_RAW in _VDL2_DECODERS else "vdlm2dec"
+    print(f"ERROR: RSBS_VDL2_DECODER={_VDL2_DECODER_RAW!r} not in {_VDL2_DECODERS}, using 'dumpvdl2'", file=sys.stderr)
+VDL2_DECODER        = _VDL2_DECODER_RAW if _VDL2_DECODER_RAW in _VDL2_DECODERS else "dumpvdl2"
 VDL2_PURGE_INTERVAL_SEC = _min_or_default_int("RSBS_VDL2_PURGE_INTERVAL", _int("RSBS_VDL2_PURGE_INTERVAL", "3600"), 60, 3600)
 # Floor at 256 so a typo'd 0/negative can't silently store empty bodies (which
 # would make every message body blank and FTS search useless).

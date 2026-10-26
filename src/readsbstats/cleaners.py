@@ -101,7 +101,7 @@ def valid_lat(value: object) -> float | None:
         return None
     try:
         f = float(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):   # OverflowError: int too large for float
         return None
     return f if math.isfinite(f) and -90.0 <= f <= 90.0 else None
 
@@ -115,7 +115,7 @@ def valid_lon(value: object) -> float | None:
         return None
     try:
         f = float(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):   # OverflowError: int too large for float
         return None
     return f if math.isfinite(f) and -180.0 <= f <= 180.0 else None
 

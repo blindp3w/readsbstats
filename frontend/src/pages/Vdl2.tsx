@@ -13,8 +13,9 @@ import { Alert } from '@/components/ui/Alert';
 import { PageSkeleton } from '@/components/PageSkeleton';
 import { MessageList } from '@/components/vdl2/MessageList';
 import { useVdl2Health } from '@/hooks/useVdl2Enabled';
+import { useDebouncedValue } from '@/hooks/useDebouncedValue';
 import { labelName } from '@/lib/vdl2Labels';
-import type { Settings, Vdl2MessagesResponse, Vdl2StatsResponse } from '@/lib/types';
+import type { Settings, Vdl2MessagesResponse, Vdl2StatsSummary } from '@/lib/types';
 
 // VDL2 / ACARS message feed (opt-in feature; the nav item + this page only
 // appear when RSBS_VDL2_ENABLED). Data comes from the SEPARATE vdl2.db via
@@ -30,7 +31,7 @@ export default function Vdl2Page() {
     staleTime: 60_000,
   });
   const enabled = settingsQ.data?.vdl2_enabled === true;
-  const { available, isLoading: healthLoading } = useVdl2Health();
+  const { available, isLoading: healthLoading, isError: healthError } = useVdl2Health();
 
   // Filters live in the URL so the view is shareable + back-button friendly.
   const [q, setQ] = useSearchParam('q', '');
@@ -40,6 +41,9 @@ export default function Vdl2Page() {
   // Show intermediate blocks of reassembled multi-block messages (hidden by default).
   const [frag, setFrag] = useSearchParam('frag', '');
   const showFragments = frag === '1';
+  // The registration box writes the URL on every keystroke (responsive input),
+  // but the backend scans per request — so the feed query follows a debounced copy.
+  const debouncedReg = useDebouncedValue(reg, 300);
 
   const updateFilters = useSearchParamBatch();
 
@@ -61,7 +65,7 @@ export default function Vdl2Page() {
   }
 
   const feed = useInfiniteQuery({
-    queryKey: ['vdl2-messages', { q, label, reg, hex, showFragments }],
+    queryKey: ['vdl2-messages', { q, label, reg: debouncedReg, hex, showFragments }],
     enabled,
     initialPageParam: undefined as number | undefined,
     queryFn: ({ pageParam }) => {
@@ -69,7 +73,7 @@ export default function Vdl2Page() {
       if (pageParam) p.set('before_id', String(pageParam));
       if (q) p.set('q', q);
       if (label) p.set('label', label);
-      if (reg) p.set('reg', reg);
+      if (debouncedReg) p.set('reg', debouncedReg);
       if (hex) p.set('hex', hex);
       if (showFragments) p.set('fragments', 'true');
       return apiJson<Vdl2MessagesResponse>('vdl2/messages?' + p.toString());
@@ -82,8 +86,9 @@ export default function Vdl2Page() {
   });
 
   const stats = useQuery({
-    queryKey: ['vdl2-stats'],
-    queryFn: () => apiJson<Vdl2StatsResponse>('vdl2/stats'),
+    // Own key: the Stats-page card caches the FULL payload under ['vdl2-stats'].
+    queryKey: ['vdl2-stats-summary'],
+    queryFn: () => apiJson<Vdl2StatsSummary>('vdl2/stats?summary=true'),
     enabled,
     refetchInterval: 15_000,
     staleTime: 5_000,
@@ -109,6 +114,16 @@ export default function Vdl2Page() {
         <Alert variant="info" data-testid="vdl2-disabled">
           The VDL2 / ACARS feature is disabled. Set <code>RSBS_VDL2_ENABLED=true</code> on the web
           and ingest services to enable it.
+        </Alert>
+      </div>
+    );
+  }
+  if (healthError && !available) {
+    // /api/health itself failed — we don't know whether the DB is reachable.
+    return (
+      <div className="mx-auto max-w-5xl px-4 py-6" data-testid="page-vdl2">
+        <Alert variant="warn" data-testid="vdl2-status-error">
+          Couldn’t load the VDL2 status (health check failed). Reload to retry.
         </Alert>
       </div>
     );
@@ -156,6 +171,11 @@ export default function Vdl2Page() {
         <Badge variant="muted">
           {stats.data ? stats.data.aircraft.toLocaleString() : '—'} aircraft
         </Badge>
+        {stats.isError && !stats.data && (
+          <span className="self-center text-xs text-[var(--color-text-dim)]" data-testid="vdl2-stats-error">
+            Stats unavailable
+          </span>
+        )}
       </div>
 
       {/* Filters */}

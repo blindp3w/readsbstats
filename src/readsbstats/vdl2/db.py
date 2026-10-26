@@ -76,11 +76,25 @@ CREATE INDEX IF NOT EXISTS idx_vdl2_icao     ON vdl2_messages(icao_hex, ts DESC)
 CREATE INDEX IF NOT EXISTS idx_vdl2_label_id ON vdl2_messages(label, id DESC);
 CREATE INDEX IF NOT EXISTS idx_vdl2_icao_id  ON vdl2_messages(icao_hex, id DESC);
 CREATE INDEX IF NOT EXISTS idx_vdl2_reg_id   ON vdl2_messages(registration COLLATE NOCASE, id DESC);
--- Map positions overlay (/api/vdl2/positions) runs two index-served candidate
--- queries (precise Label-16 bodies + coarse lat/lon columns), each ordered by
--- (ts DESC, id DESC). These cover them; a single OR query would full-scan.
+-- Map positions overlay (/api/vdl2/positions) runs five candidate queries; the
+-- label (`IN`), ADS-C (`label = 'B6'`) and coarse lat/lon ones are index-served
+-- (the `#M1BPOS` / `59,G` ones are time-bounded `body LIKE` scans), each ordered
+-- by (ts DESC, id DESC). These cover them; a single OR query would full-scan.
 CREATE INDEX IF NOT EXISTS idx_vdl2_label_ts_id ON vdl2_messages(label, ts DESC, id DESC);
 CREATE INDEX IF NOT EXISTS idx_vdl2_pos_ts_id   ON vdl2_messages(ts DESC, id DESC) WHERE lat IS NOT NULL AND lon IS NOT NULL;
+"""
+
+# Covering indexes for the Stats card's top-labels (`label`, `COUNT(DISTINCT
+# icao_hex)`) and top-airlines (`substr(flight,1,2)`) aggregates: without them the
+# first is a table-row lookup per message and the second a full table scan (143-222 s
+# cold on the Pi's USB disk). Deliberately NOT in _DDL_INDEXES: building them reads the
+# whole table (a ~660 MB scan on the Pi), and migrate() runs on web startup, on every
+# new web thread and in the collector BEFORE READY=1 (TimeoutStartSec=120). The
+# collector's prune thread builds them right after its startup prune via build_heavy_indexes().
+# Until they exist the stats queries still work, just slowly (and are cached).
+_DDL_HEAVY_INDEXES = """
+CREATE INDEX IF NOT EXISTS idx_vdl2_label_icao ON vdl2_messages(label, icao_hex);
+CREATE INDEX IF NOT EXISTS idx_vdl2_flight     ON vdl2_messages(flight);
 """
 
 # The update trigger fires on body changes only (FTS indexes just `body`), so
@@ -123,8 +137,21 @@ def connect(path: str | None = None) -> sqlite3.Connection:
         "PRAGMA busy_timeout = 30000;"
         "PRAGMA cache_size   = -16384;"
         "PRAGMA wal_autocheckpoint = 1000;"
+        # Bound PRAGMA optimize: before SQLite 3.46 (the Pi runs 3.45) it can run an
+        # unbounded ANALYZE of the whole table while holding the write lock. Same
+        # cap as the core DB (database._build_positions_indexes).
+        "PRAGMA analysis_limit = 1000;"
     )
     return conn
+
+
+def build_heavy_indexes(conn: sqlite3.Connection) -> None:
+    """Create the slow-to-build stats indexes (:data:`_DDL_HEAVY_INDEXES`).
+    Idempotent (``IF NOT EXISTS``); a no-op once built. Takes the write lock for the
+    duration of each ``CREATE INDEX``, so call it from the collector's background
+    thread on its own connection — never from migrate()/a request path."""
+    conn.executescript(_DDL_HEAVY_INDEXES)
+    conn.execute("PRAGMA optimize")
 
 
 def fts5_available(conn: sqlite3.Connection) -> bool:

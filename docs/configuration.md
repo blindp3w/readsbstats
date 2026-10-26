@@ -282,8 +282,8 @@ decoder runbook and the two-switch enablement model.
 | `RSBS_VDL2_RETENTION_DAYS` | `90` | Prune messages older than this. `0` = keep forever. |
 | `RSBS_VDL2_UDP_HOST` | `127.0.0.1` | Bind address for the JSON-over-UDP listener. |
 | `RSBS_VDL2_UDP_PORT` | `5556` | UDP port the decoder feeds (min `1`). (5555 left free for SpyServer.) |
-| `RSBS_VDL2_DECODER` | `vdlm2dec` | JSON dialect to expect: `dumpvdl2` (**recommended and supported**: also ATN CPDLC and CM logons, H1 sublabel/MFI, ADS-C positions, per-frame signal level/SNR) or `vdlm2dec` (limited legacy option: ACARS only — no signal level/SNR, no `sublabel`/`mfi` handling, no CPDLC, no CM logon routes, no ADS-C positions). The code default is still `vdlm2dec`, so **set `RSBS_VDL2_DECODER=dumpvdl2`** explicitly. Any other value logs an error and falls back to `vdlm2dec`. Decoder setup: [Operations → VDL2 / ACARS ingest](operations.md#vdl2--acars-ingest). |
-| `RSBS_VDL2_PURGE_INTERVAL` | `3600` | Seconds between retention prunes (batched; min `60`). |
+| `RSBS_VDL2_DECODER` | `dumpvdl2` | JSON dialect to expect: `dumpvdl2` (**recommended and supported**: also ATN CPDLC and CM logons, H1 sublabel/MFI, ADS-C positions, per-frame signal level/SNR) or `vdlm2dec` (limited legacy option: ACARS only — no signal level/SNR, no `sublabel`/`mfi` handling, no CPDLC, no CM logon routes, no ADS-C positions). Since 2.29.0 `dumpvdl2` is the code default; a `vdlm2dec` feed needs `RSBS_VDL2_DECODER=vdlm2dec`. Any other value logs an error and falls back to `dumpvdl2`. Decoder setup: [Operations → VDL2 / ACARS ingest](operations.md#vdl2--acars-ingest). |
+| `RSBS_VDL2_PURGE_INTERVAL` | `3600` | Seconds between retention prunes (batched; min `60`). The ingest also prunes once at startup. |
 | `RSBS_VDL2_BODY_MAX` | `4096` | Max stored message-body length (chars; floor 256). |
 | `RSBS_VDL2_RAW_MAX` | `8192` | Max stored verbatim `raw` decoder JSON (chars; floor 256). |
 
@@ -293,7 +293,8 @@ decoder runbook and the two-switch enablement model.
 (not in per-service drop-ins). `install.sh` seeds it from
 `systemd/readsbstats-vdl2.env.example` if absent. Runtime *availability*
 (is `vdl2.db` actually reachable) is reported separately at `/api/health`
-(`vdl2.available`), distinct from this config flag.
+(`vdl2.available`), distinct from this config flag. To turn the feature off, see
+[Operations → Turning VDL2 off](operations.md#turning-vdl2-off).
 
 ## Database crash safety
 

@@ -18,9 +18,11 @@ from tests._helpers import make_vdl2_db
 
 
 @pytest.fixture(autouse=True)
-def setup():
+def setup(monkeypatch):
     """Snapshot/restore the module-level counters and stop flag so tests that
-    mutate them can't leak into each other."""
+    mutate them can't leak into each other. Pins the decoder to vdlm2dec: the
+    samples below use its flat dialect (the code default is dumpvdl2)."""
+    monkeypatch.setattr(config, "VDL2_DECODER", "vdlm2dec")
     saved = dataclasses.asdict(vdl2_collector._stats)
     yield
     vdl2_collector._stats.__dict__.update(saved)
@@ -68,6 +70,51 @@ def test_handle_datagram_drops_empty_record():
     # valid JSON but no identity/body → normalizer returns None
     added = vdl2_collector._handle_datagram(json.dumps({"freq": 136.9}).encode(), pending)
     assert added == 0
+
+
+class TestDatagramRobustness:
+    """A hostile/buggy local sender must never escape _handle_datagram."""
+
+    def test_non_finite_timestamps_vdlm2dec_still_ingested(self):
+        for ts in ("NaN", "Infinity", "-Infinity", '"1e999"', "1e999"):
+            pending: list[dict] = []
+            data = ('{"timestamp": %s, "hex": "48e95d", "text": "x"}' % ts).encode()
+            assert vdl2_collector._handle_datagram(data, pending) == 1, ts
+            assert abs(pending[0]["ts"] - int(time.time())) <= 1
+
+    def test_non_finite_timestamps_dumpvdl2_still_ingested(self, monkeypatch):
+        monkeypatch.setattr(config, "VDL2_DECODER", "dumpvdl2")
+        for ts in ("NaN", "Infinity", '"1e999"'):
+            pending: list[dict] = []
+            data = ('{"vdl2": {"t": {"sec": %s}, "avlc": {"src": {"addr": "48E95D"}}}}'
+                    % ts).encode()
+            assert vdl2_collector._handle_datagram(data, pending) == 1, ts
+            assert abs(pending[0]["ts"] - int(time.time())) <= 1
+
+    def test_deep_nesting_counted_malformed_not_raised(self):
+        pending: list[dict] = []
+        before = vdl2_collector._stats.malformed
+        assert vdl2_collector._handle_datagram(b"[" * 100_000, pending) == 0
+        assert vdl2_collector._stats.malformed == before + 1
+        assert pending == []
+
+    def test_normalize_exception_counted_malformed(self, monkeypatch):
+        def boom(raw):
+            raise OverflowError("synthetic")
+        monkeypatch.setattr(vdl2_collector, "normalize", boom)
+        before = vdl2_collector._stats.malformed
+        assert vdl2_collector._handle_datagram(b'{"hex": "48e95d"}', []) == 0
+        assert vdl2_collector._stats.malformed == before + 1
+
+    def test_good_line_after_bad_line_still_ingested(self):
+        pending: list[dict] = []
+        before = vdl2_collector._stats.malformed
+        bad = b"[" * 100_000
+        good = json.dumps({"timestamp": 1, "hex": "aaaaaa", "text": "ok"}).encode()
+        added = vdl2_collector._handle_datagram(bad + b"\n" + good, pending)
+        assert added == 1
+        assert pending[0]["icao_hex"] == "aaaaaa"
+        assert vdl2_collector._stats.malformed == before + 1
 
 
 def test_flush_rolls_back_on_partial_failure():
@@ -179,6 +226,35 @@ def test_log_summary_numeric_age_after_commit(caplog):
     assert re.search(r"last_commit_age_s=\d+$", msg)
 
 
+def _dialect_warnings(caplog):
+    return [r for r in caplog.records if "may not match the decoder" in r.getMessage()]
+
+
+def test_summary_warns_once_when_datagrams_yield_no_records(caplog):
+    vdl2_collector._stats.datagrams = vdl2_collector._DIALECT_WARN_DATAGRAMS
+    vdl2_collector._stats.records = 0
+    with caplog.at_level("INFO", logger="vdl2"):
+        vdl2_collector._log_summary(0)
+        vdl2_collector._log_summary(0)   # second summary must not repeat it
+    warns = _dialect_warnings(caplog)
+    assert len(warns) == 1
+    assert warns[0].levelname == "WARNING"
+    msg = warns[0].getMessage()
+    assert "received 200 datagrams but normalized 0 records" in msg
+    assert f"RSBS_VDL2_DECODER={config.VDL2_DECODER}" in msg
+
+
+def test_summary_no_dialect_warning_below_threshold_or_with_records(caplog):
+    with caplog.at_level("INFO", logger="vdl2"):
+        vdl2_collector._stats.datagrams = vdl2_collector._DIALECT_WARN_DATAGRAMS - 1
+        vdl2_collector._stats.records = 0
+        vdl2_collector._log_summary(0)
+        vdl2_collector._stats.datagrams = 5000
+        vdl2_collector._stats.records = 1
+        vdl2_collector._log_summary(0)
+    assert _dialect_warnings(caplog) == []
+
+
 # ---------------------------------------------------------------------------
 # sd_notify wire protocol
 # ---------------------------------------------------------------------------
@@ -230,29 +306,104 @@ class _StopAfterOneWait(threading.Event):
         return self._waits > 1
 
 
-def test_prune_loop_prunes_once_and_closes_conn(monkeypatch, caplog):
-    conn = make_vdl2_db()
-    closed = []
+class _ConnWrap:
+    """Delegating wrapper around the in-memory test connection that records
+    close() (the real one is closed at the end so the test doesn't leak it)."""
+    def __init__(self, conn):
+        self._conn = conn
+        self.closed = False
 
-    class ClosingConn:
-        def close(self):
-            closed.append(True)
-            conn.close()
+    def close(self):
+        self.closed = True
+        self._conn.close()
 
-        def __getattr__(self, name):
-            return getattr(conn, name)
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
 
+
+def test_prune_loop_prunes_at_startup_then_each_tick_and_closes_conn(monkeypatch, caplog):
+    wrap = _ConnWrap(make_vdl2_db())
     prune_days = []
-    monkeypatch.setattr(vdl2_db, "connect", lambda *a, **k: ClosingConn())
+    monkeypatch.setattr(vdl2_db, "connect", lambda *a, **k: wrap)
     monkeypatch.setattr(vdl2_db, "prune",
                         lambda c, days: prune_days.append(days) or 3)
     monkeypatch.setattr(vdl2_collector, "_stop", _StopAfterOneWait())
     with caplog.at_level("INFO", logger="vdl2"):
         vdl2_collector._prune_loop()
-    assert prune_days == [config.VDL2_RETENTION_DAYS]
-    assert closed == [True]
+    # once right at thread start, once after the first interval wait
+    assert prune_days == [config.VDL2_RETENTION_DAYS] * 2
+    assert wrap.closed
     assert any("retention: pruned 3 messages" in r.getMessage()
                for r in caplog.records)
+
+
+def test_prune_loop_prunes_before_first_wait(monkeypatch):
+    """The first prune must not wait a whole purge interval (a service restarted
+    more often than that would never prune)."""
+    events = []
+
+    class StopOnFirstWait(threading.Event):
+        def wait(self, timeout=None):
+            events.append("wait")
+            return True
+
+    wrap = _ConnWrap(make_vdl2_db())
+    monkeypatch.setattr(vdl2_db, "connect", lambda *a, **k: wrap)
+    monkeypatch.setattr(vdl2_db, "prune", lambda c, days: events.append("prune") or 0)
+    monkeypatch.setattr(vdl2_collector, "_stop", StopOnFirstWait())
+    vdl2_collector._prune_loop()
+    assert events == ["prune", "wait"]
+
+
+def test_prune_loop_runs_pragma_optimize_only_after_removing_rows(monkeypatch):
+    executed = []
+
+    class Conn:
+        def execute(self, sql, *a):
+            executed.append(sql)
+
+        def close(self):
+            pass
+
+    removed = iter([5, 0])
+    monkeypatch.setattr(vdl2_db, "connect", lambda *a, **k: Conn())
+    monkeypatch.setattr(vdl2_db, "prune", lambda c, days: next(removed))
+    monkeypatch.setattr(vdl2_collector, "_stop", _StopAfterOneWait())
+    vdl2_collector._prune_loop()
+    assert executed == ["PRAGMA optimize"]   # first prune removed rows, second none
+
+
+def test_prune_loop_survives_connect_failure_and_retries(monkeypatch, caplog):
+    wrap = _ConnWrap(make_vdl2_db())
+    attempts = []
+
+    def flaky_connect(*a, **k):
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise sqlite3.OperationalError("unable to open database file")
+        return wrap
+
+    class StopAfterTwoWaits(threading.Event):
+        def __init__(self):
+            super().__init__()
+            self._waits = 0
+
+        def wait(self, timeout=None):
+            self._waits += 1
+            return self._waits > 2
+
+    pruned = []
+    monkeypatch.setattr(vdl2_db, "connect", flaky_connect)
+    monkeypatch.setattr(vdl2_db, "prune", lambda c, days: pruned.append(days) or 0)
+    monkeypatch.setattr(vdl2_collector, "_stop", StopAfterTwoWaits())
+    with caplog.at_level("WARNING", logger="vdl2"):
+        vdl2_collector._prune_loop()     # must not raise
+    assert len(attempts) == 2            # retried on the next tick
+    assert pruned == [config.VDL2_RETENTION_DAYS] * 2   # startup tick failed to connect; ticks 2+3 pruned
+    assert any("retention prune failed" in r.getMessage()
+               and "unable to open database file" in r.getMessage()
+               for r in caplog.records)
+    assert wrap.closed
 
 
 # ---------------------------------------------------------------------------
@@ -464,6 +615,63 @@ def test_main_idle_timeout_flushes_pending_and_logs_summary(monkeypatch, tmp_pat
     summaries = [r.getMessage() for r in caplog.records if "vdl2 ingest:" in r.getMessage()]
     assert summaries, "expected an idle-tick summary line"
     assert "pending=0" in summaries[0]         # flushed before the summary
+
+
+def test_prune_loop_builds_heavy_indexes_once_right_after_startup_prune(monkeypatch, caplog):
+    """The heavy-index build runs on the prune thread AFTER the startup prune —
+    sequentially on one connection, so the two heavy writers never contend for the
+    write lock (a long catch-up prune would otherwise starve CREATE INDEX past
+    busy_timeout) — and only once."""
+    events = []
+    wrap = _ConnWrap(make_vdl2_db())
+    monkeypatch.setattr(vdl2_db, "connect", lambda *a, **k: wrap)
+    monkeypatch.setattr(vdl2_db, "prune", lambda c, days: events.append("prune") or 0)
+    monkeypatch.setattr(vdl2_db, "build_heavy_indexes", lambda c: events.append("build"))
+    monkeypatch.setattr(vdl2_collector, "_stop", _StopAfterOneWait())
+    with caplog.at_level("INFO", logger="vdl2"):
+        vdl2_collector._prune_loop()
+    assert events == ["prune", "build", "prune"]
+    msgs = [r.getMessage() for r in caplog.records]
+    assert any("building heavy indexes" in m for m in msgs)
+    assert any("heavy indexes ready" in m for m in msgs)
+
+
+def test_prune_loop_retries_failed_heavy_index_build_next_tick(monkeypatch, caplog):
+    wrap = _ConnWrap(make_vdl2_db())
+    builds = []
+
+    def flaky_build(conn):
+        builds.append(1)
+        if len(builds) == 1:
+            raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(vdl2_db, "connect", lambda *a, **k: wrap)
+    monkeypatch.setattr(vdl2_db, "prune", lambda c, days: 0)
+    monkeypatch.setattr(vdl2_db, "build_heavy_indexes", flaky_build)
+    monkeypatch.setattr(vdl2_collector, "_stop", _StopAfterOneWait())
+    with caplog.at_level("WARNING", logger="vdl2"):
+        vdl2_collector._prune_loop()     # must not raise
+    assert len(builds) == 2              # failed at startup, retried on the next tick
+    assert any("database is locked" in r.getMessage() for r in caplog.records)
+    assert wrap.closed
+
+
+def test_main_starts_no_separate_index_thread(monkeypatch, tmp_path):
+    """Only the watchdog and prune threads: the index build lives on the prune thread."""
+    _scaffold_main(monkeypatch, tmp_path)
+    started = []
+
+    class FakeThread:
+        def __init__(self, target=None, name=None, daemon=None, **kw):
+            self.name = name
+
+        def start(self):
+            started.append(self.name)
+
+    monkeypatch.setattr(vdl2_collector.threading, "Thread", FakeThread)
+    monkeypatch.setattr(socket, "socket", lambda *a, **k: _StopImmediatelySock())
+    assert vdl2_collector.main() == 0
+    assert sorted(started) == ["vdl2-prune", "vdl2-watchdog"]
 
 
 def test_main_flushes_when_batch_threshold_reached(monkeypatch, tmp_path):

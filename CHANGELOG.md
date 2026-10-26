@@ -5,6 +5,59 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 2.29.0 — 2026-10-26
+
+VDL2 is frozen: development stops here and the feature stays opt-in and supported
+as-is ([ADR-0021](docs/decisions/0021-vdl2-frozen.md)). This release is the
+pre-freeze bug-fix pass. No `history.db` or core API changes.
+
+### Changed
+
+- **`RSBS_VDL2_DECODER` now defaults to `dumpvdl2`** (it was `vdlm2dec`), and an
+  invalid value falls back to `dumpvdl2`. Upgrade note: if you run `vdlm2dec`, set
+  `RSBS_VDL2_DECODER=vdlm2dec` in `/etc/readsbstats/vdl2.env`. When datagrams
+  arrive but none normalize (200 datagrams, 0 records since start), the ingest now
+  logs a one-time warning that the decoder setting may not match the decoder's JSON
+  dialect.
+- **`/api/vdl2/stats` takes `summary=true`**, which returns only `total`,
+  `last_hour` and `aircraft`. The Messages tab uses it; the Stats card still gets
+  the full payload.
+
+### Fixed
+
+- **Ingest no longer crashes on hostile JSON.** A datagram line with
+  `NaN`/`Infinity`/out-of-range numbers or extreme nesting is dropped and counted
+  as malformed instead of stopping the service.
+- **Retention prune.** It now runs once at startup and then every
+  `RSBS_VDL2_PURGE_INTERVAL` seconds, so a service restarted more often than the
+  interval still prunes. A failed database open in the prune thread is logged and
+  retried instead of ending the thread.
+- **Filed routes.** Teledyne `RTE` routes are parsed behind any H1 sublabel
+  prefix, not only `#T1B`. In a 90-day sample 131 Air China and LOT long-haul route
+  reports with sublabel `CF` were previously dropped.
+- **Faster VDL2 feed and stats.** The `hex` and `reg` filters now use indexes
+  (same results as before). Two covering indexes, `idx_vdl2_label_icao` and
+  `idx_vdl2_flight`, are built by the ingest service's prune thread right after the
+  startup prune (retried on the next tick if it fails); until they exist the Stats card's top-labels and top-airlines
+  aggregates read the whole table (2–4 minutes on a cold cache on a Raspberry Pi 4).
+  Concurrent stats cache misses now share one computation.
+- **Frontend errors.** The Messages tab shows "Stats unavailable" when the stats
+  request fails, says the status could not be loaded when the health check fails
+  (instead of claiming the database is unreachable), and debounces the registration
+  filter. The flight-page ACARS route card shows a short error line when its fetch
+  fails. History drops a stale `has_acars` URL parameter once settings say VDL2 is
+  off.
+
+### Documentation
+
+- **Turning VDL2 off.** Operations has a step-by-step procedure (flag, web restart,
+  ingest service, external decoder, what happens to `vdl2.db`, how to turn it back
+  on), replacing the incomplete one-line note.
+- **ADR-0021** records the freeze, the index rule (cheap indexes in migrate, heavy
+  ones built on the ingest's prune thread) and the known limitations.
+- Every mention of `vdlm2dec` as the code default is corrected. The API reference
+  covers `summary`, the new indexes and the `hex`/`reg` filter behaviour.
+
 ## 2.28.3 — 2026-10-24
 
 Documentation release. A full audit checked every public document against the

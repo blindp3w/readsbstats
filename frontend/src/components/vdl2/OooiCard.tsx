@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { CheckIcon, Cross2Icon } from '@radix-ui/react-icons';
 import { apiJson } from '@/lib/api';
+import { errMsg } from '@/lib/errMsg';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Badge } from '@/components/ui/Badge';
 import { useVdl2FlightWindow } from '@/hooks/useVdl2Enabled';
@@ -14,7 +15,8 @@ import type { Vdl2OooiRoute, Vdl2OooiSummary } from '@/lib/types';
 // logon (FMS flight + dep + dest) or a label-49 movement report (dep + dest).
 // Partial events are normal — TimeRow hides slots the feed didn't report.
 // A ✓/✗ chip confirms the reported route against the scheduled origin/dest.
-// Renders NOTHING when nothing parsed and there's no `dsta` or `route`.
+// Renders NOTHING when nothing parsed and there's no `dsta` or `route`; a failed
+// query renders a one-line muted error instead.
 
 interface Props {
   icao: string;
@@ -53,6 +55,15 @@ export function OooiCard({ icao, firstSeen, lastSeen, scheduledOrigin, scheduled
   });
 
   if (!available) return null;
+  // A failed fetch is not "nothing parsed": say so (muted, no card chrome) instead
+  // of silently vanishing. Cached data wins over a transient refetch error.
+  if (q.isError && !q.data) {
+    return (
+      <p className="text-xs text-[var(--color-text-dim)]" data-testid="flight-oooi-error">
+        Failed to load ACARS route: {errMsg(q.error)}
+      </p>
+    );
+  }
   const data = q.data;
   // Nothing meaningful parsed → don't show an empty card.
   if (!data || (!data.has_oooi && !data.dsta && !data.route)) return null;

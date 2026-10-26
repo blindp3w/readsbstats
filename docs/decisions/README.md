@@ -29,6 +29,7 @@ a date-stamped **Revision** note (see ADR-0010).
 | [0018](0018-dumpvdl2-sublabel-columns.md) | dumpvdl2 H1 sublabel/MFI as columns; body kept verbatim | Accepted | 2026-10-24 |
 | [0019](0019-vdl2-position-and-route-sources.md) | Precise positions and reported routes from more ACARS sources | Accepted | 2026-10-24 |
 | [0020](0020-vdl2-multiblock-fragments-and-local-decoders.md) | Hide superseded multi-block fragments; decode more ACARS labels locally; AF and KLM route sources | Accepted | 2026-10-24 |
+| [0021](0021-vdl2-frozen.md) | VDL2 frozen at 2.29.0 | Accepted | 2026-10-26 |
 
 ## Adding an ADR
 

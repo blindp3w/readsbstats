@@ -115,6 +115,104 @@ class TestMessagesFeed:
         assert data["messages"] == []   # 1-char MATCH honored, nothing matches 'x'
 
 
+class TestFeedFilterSemantics:
+    """hex/reg filters keep prefix, case-insensitive and literal-wildcard semantics
+    after being rewritten into index-friendly forms."""
+
+    @pytest.fixture()
+    def conn(self, monkeypatch):
+        conn = make_vdl2_db()
+        base = int(time.time())
+        vdl2_db.insert_messages(conn, [
+            {"ts": base - 5, "icao_hex": "48e95d", "registration": "SP-LYF", "label": "H1", "body": "a"},
+            {"ts": base - 4, "icao_hex": "48e95e", "registration": "sp-lyg", "label": "H1", "body": "b"},
+            {"ts": base - 3, "icao_hex": "4a0001", "registration": "D_ABC", "label": "H1", "body": "c"},
+            {"ts": base - 2, "icao_hex": "4a0002", "registration": "DXABC", "label": "H1", "body": "d"},
+            {"ts": base - 1, "icao_hex": None, "registration": "50%OFF", "label": "H1", "body": "e"},
+        ])
+        conn.commit()
+        monkeypatch.setattr(vdl2_db, "_conn", conn)
+        yield conn
+        conn.close()
+
+    @staticmethod
+    def _feed(**kw):
+        args = dict(limit=100, before_id=None, label=None, hex_=None, reg=None,
+                    since=None, until=None, q=None)
+        args.update(kw)
+        return vdl2_api._query_messages(**args)["messages"]
+
+    def test_hex_prefix_lengths(self, conn):
+        assert {m["icao_hex"] for m in self._feed(hex_="48")} == {"48e95d", "48e95e"}
+        assert {m["icao_hex"] for m in self._feed(hex_="48e95")} == {"48e95d", "48e95e"}
+        assert {m["icao_hex"] for m in self._feed(hex_="48e95d")} == {"48e95d"}
+        assert {m["icao_hex"] for m in self._feed(hex_="4")} == {"48e95d", "48e95e", "4a0001", "4a0002"}
+
+    def test_hex_is_case_insensitive(self, conn):
+        assert {m["icao_hex"] for m in self._feed(hex_="48E95D")} == {"48e95d"}
+        assert {m["icao_hex"] for m in self._feed(hex_="4A00")} == {"4a0001", "4a0002"}
+
+    def test_hex_non_hex_input_matches_nothing_without_error(self, conn):
+        assert self._feed(hex_="zz") == []
+        assert self._feed(hex_="48e95d1") == []          # longer than an address
+        assert self._feed(hex_="4_") == []               # '_' is literal, not a wildcard
+
+    def test_reg_prefix_is_case_insensitive(self, conn):
+        assert {m["registration"] for m in self._feed(reg="sp-ly")} == {"SP-LYF", "sp-lyg"}
+        assert {m["registration"] for m in self._feed(reg="SP-LYG")} == {"sp-lyg"}
+
+    def test_reg_wildcard_characters_match_literally(self, conn):
+        assert {m["registration"] for m in self._feed(reg="D_")} == {"D_ABC"}   # not DXABC
+        assert {m["registration"] for m in self._feed(reg="50%")} == {"50%OFF"}
+
+
+class TestFeedFilterUsesIndex:
+    """VM-step budget: the old `LIKE ? ESCAPE` forms full-scan the table even though
+    an index exists; the rewritten hex/reg filters must seek (a few hundred steps
+    vs tens of thousands for the 6000-row scan)."""
+
+    @pytest.fixture()
+    def conn(self, monkeypatch):
+        conn = make_vdl2_db()
+        base = int(time.time())
+        vdl2_db.insert_messages(conn, [
+            {"ts": base - i, "icao_hex": f"{i:06x}", "registration": f"SP-{i:04d}",
+             "label": "H1", "body": "x"} for i in range(6000)])
+        conn.commit()
+        monkeypatch.setattr(vdl2_db, "_conn", conn)
+        yield conn
+        conn.close()
+
+    @staticmethod
+    def _steps(conn, **kw):
+        n = [0]
+
+        def tick():
+            n[0] += 1
+            return 0
+        args = dict(limit=100, before_id=None, label=None, hex_=None, reg=None,
+                    since=None, until=None, q=None)
+        args.update(kw)
+        conn.set_progress_handler(tick, 1)
+        try:
+            msgs = vdl2_api._query_messages(**args)["messages"]
+        finally:
+            conn.set_progress_handler(None, 0)
+        return n[0], len(msgs)
+
+    def test_full_hex_seeks(self, conn):
+        steps, found = self._steps(conn, hex_="00012b")
+        assert found == 1 and steps < 1000
+
+    def test_prefix_hex_seeks(self, conn):
+        steps, found = self._steps(conn, hex_="0001a")
+        assert found == 16 and steps < 3000
+
+    def test_reg_prefix_seeks(self, conn):
+        steps, found = self._steps(conn, reg="sp-001")
+        assert found == 10 and steps < 1000
+
+
 class TestNoFtsFallback:
     """BUG-4/F09: on a build/DB without FTS5, search falls back to LIKE. A
     too-short term (<2 chars) is a useless `LIKE '%x%'` full scan, so it's
@@ -227,6 +325,113 @@ class TestStats:
         assert data["aircraft"] == 2
         assert data["last_hour"] == 3
 
+
+
+class TestStatsSingleFlight:
+    def test_concurrent_cache_misses_share_one_compute(self, monkeypatch):
+        calls = []
+        gate = threading.Event()
+
+        def slow_compute():
+            calls.append(1)
+            gate.wait(5)
+            return {"total": 7}
+
+        monkeypatch.setattr(vdl2_api, "_compute_stats", slow_compute)
+        results = []
+        threads = [threading.Thread(
+            target=lambda: results.append(vdl2_api.api_vdl2_stats(summary=False)))
+            for _ in range(2)]
+        for t in threads:
+            t.start()
+        deadline = time.time() + 2
+        while not calls and time.time() < deadline:
+            time.sleep(0.005)
+        time.sleep(0.1)          # let the second thread reach the lock
+        gate.set()
+        for t in threads:
+            t.join(5)
+        assert len(calls) == 1
+        assert results == [{"total": 7}, {"total": 7}]
+
+    def test_summary_misses_share_one_compute(self, monkeypatch):
+        calls = []
+        gate = threading.Event()
+
+        def slow_summary():
+            calls.append(1)
+            gate.wait(5)
+            return {"total": 1, "last_hour": 1, "aircraft": 1}
+
+        monkeypatch.setattr(vdl2_api, "_compute_stats_summary", slow_summary)
+        results = []
+        threads = [threading.Thread(
+            target=lambda: results.append(vdl2_api.api_vdl2_stats(summary=True)))
+            for _ in range(2)]
+        for t in threads:
+            t.start()
+        deadline = time.time() + 2
+        while not calls and time.time() < deadline:
+            time.sleep(0.005)
+        time.sleep(0.1)
+        gate.set()
+        for t in threads:
+            t.join(5)
+        assert len(calls) == 1 and len(results) == 2
+
+
+class TestStatsSummary:
+    def test_summary_returns_exactly_the_headline_keys(self, client):
+        data = client.get("/api/vdl2/stats?summary=true").json()
+        assert set(data) == {"total", "last_hour", "aircraft"}
+        assert data == {"total": 3, "last_hour": 3, "aircraft": 2}
+
+    def test_full_stats_unchanged(self, client):
+        data = client.get("/api/vdl2/stats").json()
+        assert {"top_labels", "top_airlines", "hourly", "flights_overlap_pct"} <= set(data)
+
+    def test_summary_does_not_run_the_full_compute(self, client, monkeypatch):
+        def boom():
+            raise AssertionError("full stats must not run for summary=true")
+        monkeypatch.setattr(vdl2_api, "_compute_stats", boom)
+        assert client.get("/api/vdl2/stats?summary=true").status_code == 200
+
+    def test_summary_cached_under_its_own_key(self, client, monkeypatch):
+        from readsbstats import cache
+        client.get("/api/vdl2/stats?summary=true")
+        assert cache._get_cache("vdl2-stats-summary") is not None
+        assert cache._get_cache("vdl2-stats") is None     # full not computed/cached
+        monkeypatch.setattr(vdl2_api, "_compute_stats_summary",
+                            lambda: pytest.fail("second call must hit the cache"))
+        assert client.get("/api/vdl2/stats?summary=true").status_code == 200
+
+    def test_summary_served_from_cached_full_stats(self, client, monkeypatch):
+        full = client.get("/api/vdl2/stats").json()
+        monkeypatch.setattr(vdl2_api, "_compute_stats_summary",
+                            lambda: pytest.fail("should reuse the cached full stats"))
+        data = client.get("/api/vdl2/stats?summary=true").json()
+        assert data == {k: full[k] for k in ("total", "last_hour", "aircraft")}
+
+
+class TestStatsHeavyIndexPlans:
+    """With the background-built indexes the two table-wide aggregates are
+    covering-index scans (no per-row table lookup / full table scan)."""
+
+    @staticmethod
+    def _plan(conn, sql):
+        return " | ".join(r[3] for r in conn.execute("EXPLAIN QUERY PLAN " + sql))
+
+    def test_top_labels_and_airlines_use_covering_indexes(self):
+        conn = make_vdl2_db()
+        vdl2_db.build_heavy_indexes(conn)
+        labels = self._plan(conn, vdl2_api._TOP_LABELS_SQL)
+        airlines = self._plan(conn, vdl2_api._TOP_AIRLINES_SQL)
+        assert "COVERING INDEX idx_vdl2_label_icao" in labels
+        assert "COVERING INDEX idx_vdl2_flight" in airlines
+
+    def test_airlines_cannot_use_the_flight_index_before_it_is_built(self):
+        conn = make_vdl2_db()      # migrate() deliberately does not build it
+        assert "idx_vdl2_flight" not in self._plan(conn, vdl2_api._TOP_AIRLINES_SQL)
 
 
 class TestStatsOverlap:
@@ -1474,6 +1679,9 @@ class TestFiledRoute:
              "body": "#M1BPOSN52086E019235,WA903,042142,277,NORKU"},
             {"ts": base - 20, "icao_hex": "48ae34", "label": "H1",
              "body": "#T1BRTE 1 05JUN26 1306 SP-LVS LOT377 EPWA/EDDF BCG59-U000-08E7 BCG38-0MFC-0017 L 1237 05JUN26"},
+            # dumpvdl2 row: libacars moved '#CFB' into sublabel, the body is bare.
+            {"ts": base - 15, "icao_hex": "48ae35", "label": "H1", "sublabel": "CF",
+             "body": "RTE 1 28JUL26 1302 LO SP-LRH LOT6NY EPWA/KJFK BCG4F-45LD-0077 C L 1053 28JUL26\nFDE 214124"},
         ])
         conn.commit()
         monkeypatch.setattr(vdl2_db, "_conn", conn)
@@ -1490,6 +1698,12 @@ class TestFiledRoute:
         assert m1b["filed_route"]["arr"] == "EHAM"
         assert m1b["filed_route"]["star"] == "NORK2A"
         assert m1b["filed_route"]["approach"] == "ILS 27.ARTIP"
+
+    def test_rte_behind_non_t1_sublabel_carries_filed_route(self, fr_client):
+        msgs = fr_client.get("/api/vdl2/messages").json()["messages"]
+        cf = next(m for m in msgs if m["icao_hex"] == "48ae35")
+        assert cf["filed_route"] == {"dep": "EPWA", "arr": "KJFK",
+                                     "company_route": "BCG4F-45LD-0077 C"}
 
     def test_non_m1bpos_row_has_no_filed_route(self, fr_client):
         msgs = fr_client.get("/api/vdl2/messages").json()["messages"]

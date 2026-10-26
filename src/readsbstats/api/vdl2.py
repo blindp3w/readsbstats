@@ -12,6 +12,7 @@ import contextlib
 import logging
 import re
 import sqlite3
+import threading
 import time
 
 from fastapi import APIRouter, HTTPException, Query
@@ -104,6 +105,10 @@ def _fts_match(q: str) -> str:
     return " AND ".join('"' + t.replace('"', '""') + '"' for t in terms[:8])
 
 
+_HEX_PREFIX_RE = re.compile(r"[0-9a-f]{1,6}")
+_LIKE_SPECIALS = frozenset("%_\\")
+
+
 def _like_prefix(value: str) -> str:
     """Escape LIKE wildcards in user input, then append ``%`` for a prefix match.
     Pair with ``ESCAPE '\\'`` in the SQL."""
@@ -131,7 +136,7 @@ def _rows_to_messages(rows) -> list[dict]:
             route = None
             if text.startswith("#M1BPOS"):
                 route = m1bpos.parse_route(text)
-            elif text.startswith("RTE ") or text.startswith("#T1BRTE"):
+            elif rte.is_rte(text):
                 route = rte.parse_route(text)
             if route is not None:
                 d["filed_route"] = route
@@ -162,11 +167,30 @@ def _query_messages(
         where.append("label = ?")
         params.append(label[:64].upper())
     if hex_:
-        where.append("icao_hex LIKE ? ESCAPE '\\'")
-        params.append(_like_prefix(hex_.lower()[:64]))
+        h = hex_.lower()[:64]
+        # A LIKE ... ESCAPE with a bound pattern can't use the index (full scan of
+        # the table), so express the common hex input as an equality / prefix range
+        # that idx_vdl2_icao_id serves. '~' sorts after every hex digit.
+        if _HEX_PREFIX_RE.fullmatch(h):
+            if len(h) == 6:
+                where.append("icao_hex = ?")
+                params.append(h)
+            else:
+                where.append("icao_hex >= ? AND icao_hex < ?")
+                params.extend([h, h + "~"])
+        else:
+            where.append("icao_hex LIKE ? ESCAPE '\\'")
+            params.append(_like_prefix(h))
     if reg:
-        where.append("registration LIKE ? ESCAPE '\\' COLLATE NOCASE")
-        params.append(_like_prefix(reg[:64]))
+        reg = reg[:64]
+        if _LIKE_SPECIALS.isdisjoint(reg):
+            # No wildcards to escape → plain LIKE (no ESCAPE), which the NOCASE
+            # idx_vdl2_reg_id serves; ESCAPE would force a full scan.
+            where.append("registration LIKE ? COLLATE NOCASE")
+            params.append(reg + "%")
+        else:
+            where.append("registration LIKE ? ESCAPE '\\' COLLATE NOCASE")
+            params.append(_like_prefix(reg))
     if since is not None:
         where.append("ts >= ?")
         params.append(since)
@@ -276,30 +300,76 @@ def _airline_names(codes: list[str]) -> dict[str, str]:
         return {}
 
 
-@router.get("/api/vdl2/stats", response_model=schemas.Vdl2StatsResponse,
-            response_model_exclude_unset=True)
-def api_vdl2_stats() -> dict:
-    """Counts + top labels/airlines + 24h hourly trend for the Stats card.
-    Cached (~30 s) since the page polls it and the aggregates scan the table."""
-    cached = cache._get_cache("vdl2-stats")
+# Stats single-flight: the full aggregates take minutes on a cold Pi, so concurrent
+# cache misses (the page polls; several tabs/threads can miss together) must share
+# one compute instead of each starting their own. Separate locks so the cheap
+# summary never queues behind a full compute.
+_stats_lock = threading.Lock()
+_stats_summary_lock = threading.Lock()
+_STATS_KEY = "vdl2-stats"
+_STATS_SUMMARY_KEY = "vdl2-stats-summary"
+_STATS_SUMMARY_FIELDS = ("total", "last_hour", "aircraft")
+
+
+def _single_flight(key: str, lock: threading.Lock, compute, what: str) -> dict:
+    """Cache-or-compute with the stampede guard: check cache → take ``lock`` →
+    re-check (a thread that waited finds the winner's result) → compute → cache."""
+    cached = cache._get_cache(key)
     if cached is not None:
         return cached
-    with _vdl2_guard():
-        t0 = time.perf_counter()
-        result = _compute_stats()
-        elapsed_ms = (time.perf_counter() - t0) * 1000
-        if elapsed_ms > 250:
-            log.warning("vdl2 stats query slow: %.0f ms", elapsed_ms)
-        cache._set_cache("vdl2-stats", result)
-        return result
+    with lock:
+        cached = cache._get_cache(key)
+        if cached is not None:
+            return cached
+        with _vdl2_guard():
+            t0 = time.perf_counter()
+            result = compute()
+            elapsed_ms = (time.perf_counter() - t0) * 1000
+            if elapsed_ms > 250:
+                log.warning("vdl2 %s query slow: %.0f ms", what, elapsed_ms)
+            cache._set_cache(key, result)
+            return result
 
 
-def _compute_stats() -> dict:
-    # Stats count received frames (incl. partial blocks and superseded fragments) by
-    # design — they measure the feed, not distinct messages.
-    conn = vdl2_db.web_conn()
-    now = int(time.time())
-    # Single table pass for the three headline counts.
+@router.get("/api/vdl2/stats", response_model=schemas.Vdl2StatsResponse,
+            response_model_exclude_unset=True)
+def api_vdl2_stats(summary: bool = Query(False)) -> dict:
+    """Counts + top labels/airlines + 24h hourly trend for the Stats card.
+    Cached (~30 s) since the page polls it and the aggregates scan the table;
+    concurrent misses share one compute. ``summary=true`` returns only the
+    headline ``total``/``last_hour``/``aircraft`` (cheap; served from the full
+    stats when those are already cached)."""
+    if not summary:
+        return _single_flight(_STATS_KEY, _stats_lock, _compute_stats, "stats")
+    full = cache._get_cache(_STATS_KEY)
+    if full is not None:
+        return {k: full[k] for k in _STATS_SUMMARY_FIELDS}
+    return _single_flight(_STATS_SUMMARY_KEY, _stats_summary_lock,
+                          _compute_stats_summary, "stats summary")
+
+
+# Top-N aggregates, module constants so the tests can EXPLAIN them. With the
+# background-built idx_vdl2_label_icao / idx_vdl2_flight both are covering-index
+# scans (see vdl2.db._DDL_HEAVY_INDEXES).
+_TOP_LABELS_SQL = (
+    "SELECT label, COUNT(*) AS messages, COUNT(DISTINCT icao_hex) AS aircraft "
+    "FROM vdl2_messages WHERE label IS NOT NULL "
+    "GROUP BY label ORDER BY messages DESC LIMIT 10"
+)
+# ACARS flight ids are IATA-format (e.g. 'LO6550'); group on the 2-char
+# operator prefix (NOT substr(,1,3), which would split 'LO6550' and 'LO0304'
+# into different keys) and resolve names via airlines.iata_code.
+_TOP_AIRLINES_SQL = (
+    "SELECT substr(flight, 1, 2) AS code, COUNT(*) AS messages "
+    "FROM vdl2_messages WHERE flight IS NOT NULL AND length(flight) >= 3 "
+    "GROUP BY code ORDER BY messages DESC LIMIT 10"
+)
+
+
+def _stats_headline(conn, now: int) -> dict:
+    """Single table pass for the three headline counts (stats counts received
+    frames, incl. partial blocks and superseded fragments, by design — they
+    measure the feed, not distinct messages)."""
     row = conn.execute(
         """
         SELECT COUNT(*)                        AS total,
@@ -309,24 +379,25 @@ def _compute_stats() -> dict:
         """,
         (now - 3600,),
     ).fetchone()
+    return {"total": row["total"], "last_hour": row["last_hour"],
+            "aircraft": row["aircraft"]}
+
+
+def _compute_stats_summary() -> dict:
+    return _stats_headline(vdl2_db.web_conn(), int(time.time()))
+
+
+def _compute_stats() -> dict:
+    conn = vdl2_db.web_conn()
+    now = int(time.time())
+    headline = _stats_headline(conn, now)
 
     top_labels = [
         {"label": r["label"], "messages": r["messages"], "aircraft": r["aircraft"]}
-        for r in conn.execute(
-            "SELECT label, COUNT(*) AS messages, COUNT(DISTINCT icao_hex) AS aircraft "
-            "FROM vdl2_messages WHERE label IS NOT NULL "
-            "GROUP BY label ORDER BY messages DESC LIMIT 10"
-        ).fetchall()
+        for r in conn.execute(_TOP_LABELS_SQL).fetchall()
     ]
 
-    # ACARS flight ids are IATA-format (e.g. 'LO6550'); group on the 2-char
-    # operator prefix (NOT substr(,1,3), which would split 'LO6550' and 'LO0304'
-    # into different keys) and resolve names via airlines.iata_code.
-    airline_rows = conn.execute(
-        "SELECT substr(flight, 1, 2) AS code, COUNT(*) AS messages "
-        "FROM vdl2_messages WHERE flight IS NOT NULL AND length(flight) >= 3 "
-        "GROUP BY code ORDER BY messages DESC LIMIT 10"
-    ).fetchall()
+    airline_rows = conn.execute(_TOP_AIRLINES_SQL).fetchall()
     names = _airline_names([r["code"] for r in airline_rows])
     top_airlines = [
         {"code": r["code"], "messages": r["messages"], "name": names.get(r["code"])}
@@ -337,9 +408,7 @@ def _compute_stats() -> dict:
     hourly = _rate_buckets(conn, now, 3600, 24)
 
     return {
-        "total": row["total"],
-        "last_hour": row["last_hour"],
-        "aircraft": row["aircraft"],
+        **headline,
         "top_labels": top_labels,
         "top_airlines": top_airlines,
         "hourly": hourly,
