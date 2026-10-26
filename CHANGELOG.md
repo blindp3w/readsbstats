@@ -5,6 +5,29 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 2.29.1 — 2026-10-26
+
+Cleanup release from the 2026-10 codebase audit. No schema or API changes.
+
+### Removed
+
+- **`RSBS_WEB_HOST` and `RSBS_WEB_PORT`.** They were documented as settings
+  but nothing read them: the uvicorn bind address and port are command-line
+  flags in `readsbstats-web.service` and `scripts/dev.sh`. Change those flags
+  (in a `systemctl edit` drop-in for the unit) to move the internal listener.
+  The configuration reference now lists 82 variables.
+- Unused internal re-export `photo_sources.PHOTO_UA` and an unused import.
+
+### Fixed
+
+- **Settings page** now says to change values in
+  `/etc/readsbstats/readsbstats.env` (and `vdl2.env` for VDL2), then restart
+  the services. It pointed at `systemctl edit readsbstats-web`, which never
+  reaches the collector's settings.
+- **systemd comments.** The `MemoryDenyWriteExecute` note no longer cites
+  DuckDB (removed in 2.17.0); the updater timer comment says it runs after every
+  boot, not once at install.
+
 ## 2.29.0 — 2026-10-26
 
 VDL2 is frozen: development stops here and the feature stays opt-in and supported
