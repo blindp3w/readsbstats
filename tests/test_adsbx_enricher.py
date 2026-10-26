@@ -4,12 +4,11 @@ Uses an in-memory SQLite database; no real network I/O.
 """
 
 import importlib
-import sqlite3
 import time
 
 import pytest
 
-from readsbstats import config, database, enrichment
+from readsbstats import config, enrichment
 
 
 # ---------------------------------------------------------------------------

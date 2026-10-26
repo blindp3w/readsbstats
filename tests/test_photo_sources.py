@@ -76,73 +76,21 @@ def _patch_safe_open(monkeypatch, body, headers=None):
     )
 
 
-def _fake_addrinfo(ip: str):
-    """Build a getaddrinfo result that returns a single given IP."""
-    return [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", (ip, 443))]
-
-
 # ---------------------------------------------------------------------------
-# _validate_url / _ip_is_public
+# SSRF primitives: alias wiring only.  The behaviour (scheme / IP-range /
+# DNS / size-cap / redirect / re-validation rules) is tested once, in
+# tests/test_http_safe.py.
 # ---------------------------------------------------------------------------
 
-class TestValidateUrl:
-    def test_https_with_public_ip_passes(self, monkeypatch):
-        monkeypatch.setattr(socket, "getaddrinfo",
-                            lambda h, p, **kw: _fake_addrinfo("1.1.1.1"))
-        monkeypatch.setattr("readsbstats.http_safe._real_getaddrinfo",
-                            lambda h, p, **kw: _fake_addrinfo("1.1.1.1"))
-        photo_sources._validate_url("https://example.com/")
+class TestHttpSafeAliases:
+    def test_aliases_are_the_http_safe_primitives(self):
+        assert photo_sources._validate_url is http_safe.validate_url
+        assert photo_sources._ip_is_public is http_safe._ip_is_public
+        assert photo_sources._safe_open is http_safe.safe_urlopen
+        assert photo_sources._NoRedirectHandler is http_safe._NoRedirectHandler
 
-    def test_http_rejected(self, monkeypatch):
-        monkeypatch.setattr(socket, "getaddrinfo",
-                            lambda h, p, **kw: _fake_addrinfo("1.1.1.1"))
-        monkeypatch.setattr("readsbstats.http_safe._real_getaddrinfo",
-                            lambda h, p, **kw: _fake_addrinfo("1.1.1.1"))
-        with pytest.raises(ValueError, match="non-https"):
-            photo_sources._validate_url("http://example.com/")
-
-    def test_loopback_rejected(self, monkeypatch):
-        monkeypatch.setattr("readsbstats.http_safe._real_getaddrinfo",
-                            lambda h, p, **kw: _fake_addrinfo("127.0.0.1"))
-        with pytest.raises(ValueError, match="non-public"):
-            photo_sources._validate_url("https://localhost/")
-
-    def test_private_rfc1918_rejected(self, monkeypatch):
-        monkeypatch.setattr("readsbstats.http_safe._real_getaddrinfo",
-                            lambda h, p, **kw: _fake_addrinfo("192.168.1.1"))
-        with pytest.raises(ValueError, match="non-public"):
-            photo_sources._validate_url("https://example.com/")
-
-    def test_link_local_metadata_rejected(self, monkeypatch):
-        monkeypatch.setattr("readsbstats.http_safe._real_getaddrinfo",
-                            lambda h, p, **kw: _fake_addrinfo("169.254.169.254"))
-        with pytest.raises(ValueError, match="non-public"):
-            photo_sources._validate_url("https://aws-meta/")
-
-    def test_multicast_rejected(self, monkeypatch):
-        monkeypatch.setattr("readsbstats.http_safe._real_getaddrinfo",
-                            lambda h, p, **kw: _fake_addrinfo("224.0.0.1"))
-        with pytest.raises(ValueError, match="non-public"):
-            photo_sources._validate_url("https://multicast/")
-
-    def test_dns_failure_rejected(self, monkeypatch):
-        def _gai(*a, **kw):
-            raise socket.gaierror("nodename nor servname provided")
-        monkeypatch.setattr("readsbstats.http_safe._real_getaddrinfo", _gai)
-        with pytest.raises(ValueError, match="DNS resolution failed"):
-            photo_sources._validate_url("https://nonexistent.invalid/")
-
-    def test_no_host_rejected(self):
-        with pytest.raises(ValueError, match="no host"):
-            photo_sources._validate_url("https:///")
-
-
-# ---------------------------------------------------------------------------
-# _safe_open — size cap & redirect handling
-# ---------------------------------------------------------------------------
-
-class TestSafeOpen:
-    def test_returns_body_and_headers(self, monkeypatch):
+    def test_safe_open_alias_fetches_through_pinned_opener(self, monkeypatch):
+        """End to end through the alias the fetchers actually call."""
         _patch_validate(monkeypatch, allow=True)
         _patch_opener(monkeypatch, _mock_resp(b"hello",
                                               headers={"Content-Type": "text/plain"}))
@@ -151,52 +99,6 @@ class TestSafeOpen:
         )
         assert body == b"hello"
         assert headers["Content-Type"] == "text/plain"
-
-    def test_oversize_response_rejected(self, monkeypatch):
-        _patch_validate(monkeypatch, allow=True)
-        _patch_opener(monkeypatch, _mock_resp(b"x" * 2000))
-        with pytest.raises(ValueError, match="max_bytes"):
-            photo_sources._safe_open(
-                "https://example.com/", timeout=2, max_bytes=1024,
-            )
-
-    def test_propagates_validate_error(self, monkeypatch):
-        _patch_validate(monkeypatch, allow=False)
-        with pytest.raises(ValueError, match="blocked by test"):
-            photo_sources._safe_open(
-                "https://example.com/", timeout=2, max_bytes=1024,
-            )
-
-    def test_redirect_handler_raises_http_error(self):
-        """_NoRedirectHandler.redirect_request must raise, not return a new request."""
-        handler = photo_sources._NoRedirectHandler()
-        req = MagicMock()
-        req.full_url = "https://example.com/"
-        with pytest.raises(urllib.error.HTTPError):
-            handler.redirect_request(req, MagicMock(), 302, "Found", {},
-                                      "https://169.254.169.254/")
-
-    def test_post_flight_revalidation_on_url_change(self, monkeypatch):
-        """If the response URL differs from the requested URL, revalidate it.
-        Phase 9 routes the validation through ``_resolve_and_validate`` (the
-        new internal helper that returns parsed_url + addrinfo) rather than
-        the public ``validate_url``."""
-        import urllib.parse as _up
-        calls = []
-        def fake_resolve(url):
-            calls.append(url)
-            return (_up.urlparse(url),
-                    [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP,
-                      "", ("1.1.1.1", 443))])
-        monkeypatch.setattr(http_safe, "_resolve_and_validate", fake_resolve)
-        # Response reports a different (assumed public) URL
-        _patch_opener(monkeypatch, _mock_resp(b"data",
-                                              url="https://example.com/elsewhere"))
-        photo_sources._safe_open(
-            "https://example.com/", timeout=2, max_bytes=1024,
-        )
-        assert "https://example.com/" in calls
-        assert "https://example.com/elsewhere" in calls
 
 
 # ---------------------------------------------------------------------------

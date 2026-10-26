@@ -2,7 +2,6 @@
 
 import math
 import sqlite3
-import tempfile
 from pathlib import Path
 
 import pytest

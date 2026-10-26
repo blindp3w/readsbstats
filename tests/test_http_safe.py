@@ -10,6 +10,7 @@ import httpx
 import pytest
 
 from readsbstats import http_safe
+from tests._helpers import run_async
 
 
 # ---------------------------------------------------------------------------
@@ -67,6 +68,10 @@ class TestValidateUrl:
         monkeypatch.setattr(http_safe, "_real_getaddrinfo",
                             lambda h, p, **kw: _fake_addrinfo("1.1.1.1"))
         http_safe.validate_url("https://example.com/")
+
+    def test_no_host_rejected(self):
+        with pytest.raises(http_safe.UnsafeURLError, match="no host"):
+            http_safe.validate_url("https:///")
 
     def test_http_rejected(self, monkeypatch):
         monkeypatch.setattr(socket, "getaddrinfo",
@@ -457,8 +462,7 @@ class TestHttpxAsyncRejection:
         finally:
             # AsyncClient holds a transport pool; close cleanly to avoid
             # ResourceWarning chatter.
-            import asyncio
-            asyncio.new_event_loop().run_until_complete(async_client.aclose())
+            run_async(async_client.aclose())
 
 
 # ---------------------------------------------------------------------------
@@ -656,7 +660,6 @@ class TestSafeHttpxGet:
     def test_non_https_rejected_before_get(self, monkeypatch):
         # leave validate_url un-patched so it really runs
         called = []
-        client = _FakeHttpxClient(None)
         # If get were called we'd notice
         class TripClient:
             def get(self, *a, **kw): called.append(1); return None

@@ -47,9 +47,11 @@ class TestDestinationPoint:
         assert lon == pytest.approx(self.REC_LON, abs=1e-9)
 
     def test_antimeridian_wrap(self):
-        # Start near 179°E, go 200 nm east — should wrap to negative (west) longitude
+        # Start near 179°E, go 200 nm east along the equator — 200 nm is
+        # 3.3333° of arc, so the longitude wraps past 180° to -177.669°.
         lat, lon = geo.destination_point(0.0, 179.0, 90.0, 200.0)
-        assert lon < 0 or lon > 179.0
+        assert lat == pytest.approx(0.0, abs=1e-9)
+        assert lon == pytest.approx(-177.66891, abs=1e-4)
 
 
 # ---------------------------------------------------------------------------
@@ -90,6 +92,29 @@ class TestHaversineNm:
         import math
         d = geo.haversine_nm(0.0, 0.0, 0.0, 180.0)
         assert d == pytest.approx(math.pi * geo.EARTH_RADIUS_NM, abs=0.1)
+
+    def test_pole_to_pole_is_half_earth_circumference(self):
+        import math
+        d = geo.haversine_nm(90.0, 0.0, -90.0, 0.0)
+        assert d == pytest.approx(math.pi * geo.EARTH_RADIUS_NM, abs=0.5)
+
+    def test_known_distance_warsaw_london(self):
+        # Warsaw -> London Heathrow is about 791 NM (+/- 5).
+        d = geo.haversine_nm(52.225, 20.940, 51.477, -0.461)
+        assert 786 < d < 796
+
+    def test_antimeridian_crossing_is_short(self):
+        # lon 179 -> -179 is 2 degrees of arc at the equator (~120 NM), not 358.
+        d = geo.haversine_nm(0.0, 179.0, 0.0, -179.0)
+        assert d == pytest.approx(120.0, abs=0.5)
+
+    def test_all_longitudes_converge_at_pole(self):
+        assert geo.haversine_nm(90.0, 45.0, 90.0, -135.0) == pytest.approx(0.0, abs=0.01)
+
+    def test_collector_reexports_geo_implementation(self):
+        # collector.haversine_nm is an alias, not a second implementation.
+        from readsbstats import collector
+        assert collector.haversine_nm is geo.haversine_nm
 
 
 class TestBearing:

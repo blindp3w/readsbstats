@@ -7,9 +7,7 @@ isinstance + strip + length-bound patterns into one tested module.
 """
 from __future__ import annotations
 
-import math
 
-import pytest
 
 from readsbstats.cleaners import (
     SQLITE_INT_MAX,

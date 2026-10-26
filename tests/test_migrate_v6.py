@@ -1,4 +1,5 @@
 """End-to-end test of the offline v5→v6 migration script."""
+import sqlite3
 import time
 
 import pytest
@@ -101,7 +102,7 @@ def test_migrate_v6_rolls_back_on_orphan_fk(tmp_path):
     conn.commit()
     conn.close()
 
-    with pytest.raises(Exception):
+    with pytest.raises(sqlite3.IntegrityError, match="FOREIGN KEY"):
         migrate(path)
 
     conn = database.connect(path)

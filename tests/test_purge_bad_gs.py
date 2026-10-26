@@ -13,10 +13,6 @@ from purge_bad_gs import (
     apply_purge,
     main,
     scan_flights,
-    _MIN_DT_ADSB,
-    _MIN_DT_OTHER,
-    _MAX_DT,
-    _MIN_GS_XVAL,
 )
 
 

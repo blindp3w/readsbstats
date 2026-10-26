@@ -2,7 +2,7 @@
 
 import pytest
 
-from readsbstats import config, database, health
+from readsbstats import config, health
 
 
 # ---------------------------------------------------------------------------

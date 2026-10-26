@@ -9,7 +9,7 @@ import sqlite3
 
 import pytest
 
-from readsbstats import database, db_updater
+from readsbstats import config, database, db_updater
 
 
 # ---------------------------------------------------------------------------
@@ -240,7 +240,7 @@ class TestUpdateAircraftDb:
             ["488003", "SP-NEW3", "B738", "0", ""],
         ))
 
-        with pytest.raises(Exception):
+        with pytest.raises(RuntimeError, match="simulated parse failure"):
             db_updater.update_aircraft_db(conn)
 
         rows = conn.execute(
@@ -380,7 +380,7 @@ class TestUpdateAircraftDb:
             ["488002", "SP-2", "B738", "0", ""],
             ["488003", "SP-3", "B738", "0", ""],
         ))
-        with pytest.raises(Exception):
+        with pytest.raises(RuntimeError, match="truncated"):
             db_updater.update_aircraft_db(conn)
 
         # Original 10 rows intact.
@@ -555,7 +555,7 @@ class TestUpdateAirlinesDb:
 
         # Upstream returns nothing parseable.
         monkeypatch.setattr(db_updater, "_fetch", lambda url: b"")
-        with pytest.raises(Exception):
+        with pytest.raises(RuntimeError):
             db_updater.update_airlines_db(conn)
 
         # All 10 originals intact.
@@ -581,7 +581,7 @@ class TestUpdateAirlinesDb:
             ["2", "Air Two",   r"\N", "A2", "ON2", "ON2", "France",  "Y"],
             ["3", "Air Three", r"\N", "A3", "ON3", "ON3", "Germany", "Y"],
         ))
-        with pytest.raises(Exception):
+        with pytest.raises(RuntimeError, match="truncated"):
             db_updater.update_airlines_db(conn)
 
         # Originals preserved, the 3 candidate rows were never committed.
@@ -759,17 +759,29 @@ class TestMain:
     def test_main_success(self, monkeypatch, tmp_path):
         db_path = str(tmp_path / "test.db")
         database.init_db(db_path)
-        monkeypatch.setattr(database, "init_db", lambda path=None: None)
-        monkeypatch.setattr(database, "connect", lambda path=None: database.connect.__wrapped__(db_path)
-            if hasattr(database.connect, "__wrapped__") else sqlite3.connect(db_path))
-        # Simplify: just patch connect to use our tmp db
         conn = database.connect(db_path)
-        monkeypatch.setattr(database, "init_db", lambda: None)
+        calls = []
+        monkeypatch.setattr(database, "init_db", lambda: calls.append("init_db"))
         monkeypatch.setattr(database, "connect", lambda: conn)
-        monkeypatch.setattr(db_updater, "update_aircraft_db", lambda c: 0)
-        monkeypatch.setattr(db_updater, "update_airlines_db", lambda c: 0)
-        monkeypatch.setattr(db_updater, "backfill_flights", lambda c: 0)
+        monkeypatch.setattr(db_updater, "update_aircraft_db",
+                            lambda c: calls.append(("aircraft", c)) or 0)
+        monkeypatch.setattr(db_updater, "update_airlines_db",
+                            lambda c: calls.append(("airlines", c)) or 0)
+        monkeypatch.setattr(db_updater, "backfill_flights",
+                            lambda c: calls.append(("backfill", c)) or 0)
+        monkeypatch.setattr(db_updater.adsbx_enricher, "purge_stale_overrides",
+                            lambda c, days: calls.append(("purge", c, days)) or 0)
         db_updater.main()  # should not raise
+        assert calls == [
+            "init_db",
+            ("aircraft", conn),
+            ("airlines", conn),
+            ("backfill", conn),
+            ("purge", conn, config.ADSBX_OVERRIDES_TTL_DAYS),
+        ]
+        # main() owns the connection and must close it on the way out
+        with pytest.raises(sqlite3.ProgrammingError):
+            conn.execute("SELECT 1")
 
     def test_main_failure_exits(self, monkeypatch, tmp_path):
         db_path = str(tmp_path / "test.db")

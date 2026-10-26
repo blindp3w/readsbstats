@@ -16,11 +16,41 @@ Avoid adding per-test logic that only one file consumes.
 
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 
 from fastapi.routing import APIRoute
 
 from readsbstats import database
+
+_loop: asyncio.AbstractEventLoop | None = None
+
+
+def run_async(coro):
+    """Run *coro* to completion on ONE suite-wide event loop.
+
+    Replaces ``asyncio.get_event_loop().run_until_complete(...)`` (deprecated
+    when no loop is set) and ad-hoc ``asyncio.new_event_loop()`` calls that
+    were never closed. The loop is created lazily, installed as the current
+    loop, and closed once at session end by ``tests/conftest.py`` via
+    ``close_async_loop()``. Deliberately NOT ``asyncio.run()``: that closes the
+    loop per call, which breaks asyncio primitives that stay bound to the first
+    loop that used them (e.g. the shared feeder-batch lock in ``api.feeders``).
+    """
+    global _loop
+    if _loop is None or _loop.is_closed():
+        _loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(_loop)
+    return _loop.run_until_complete(coro)
+
+
+def close_async_loop() -> None:
+    """Close the shared loop created by ``run_async`` (no-op if unused)."""
+    global _loop
+    if _loop is not None and not _loop.is_closed():
+        _loop.close()
+    asyncio.set_event_loop(None)
+    _loop = None
 
 
 def iter_api_routes(routes):

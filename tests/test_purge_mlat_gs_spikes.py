@@ -349,7 +349,7 @@ class TestScanStatisticalOutliers:
     def test_too_few_readings_skipped(self):
         """Flight with fewer than min_readings MLAT GS values must not be scanned."""
         fid = insert_flight(self.conn, max_gs=724.0)
-        spike_pid = insert_pos(self.conn, fid, 1000, 724.0)
+        insert_pos(self.conn, fid, 1000, 724.0)
         for t in range(2000, 2080, 10):  # 8 normal readings — total 9 < min 10
             insert_pos(self.conn, fid, t, 70.0)
         bad = scan_statistical_outliers(self.conn, outlier_factor=5.0, min_readings=10)
@@ -439,7 +439,6 @@ class TestScanStatisticalOutliers:
 # ---------------------------------------------------------------------------
 
 import os
-import sys
 import tempfile
 
 from purge_mlat_gs_spikes import main

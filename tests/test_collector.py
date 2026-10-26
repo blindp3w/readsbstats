@@ -5,10 +5,9 @@ Uses an in-memory SQLite database; no real aircraft.json or network I/O.
 
 import datetime as _real_dt
 import json
-import math
 import os
 import signal
-import sqlite3
+import sys
 import tempfile
 import threading
 import time
@@ -25,13 +24,6 @@ from readsbstats import config, database, enrichment
 from tests._helpers import CountingConn, insert_position, make_db  # noqa: E402 — kept under section header
 
 
-def _reset_telegram_state():
-    """Reset notifier telegram_enabled() cache between tests."""
-    from readsbstats import notifier
-    notifier._tg_enabled = None
-    notifier._tg_validated = False
-
-
 def _reset_collector_state():
     """Clear all module-level globals in collector between tests."""
     from readsbstats import collector
@@ -39,7 +31,6 @@ def _reset_collector_state():
     collector._notified_icao.clear()
     collector._squawk_notified.clear()
     collector._last_mtime = 0.0
-    _reset_telegram_state()
 
 
 # ---------------------------------------------------------------------------
@@ -55,7 +46,7 @@ class TestSdNotify:
     def test_sends_to_socket(self, monkeypatch):
         from readsbstats import collector
         import socket as _socket
-        import tempfile, shutil
+        import shutil
         tmpdir = tempfile.mkdtemp(dir="/tmp")
         sock_path = os.path.join(tmpdir, "n.sock")
         server = _socket.socket(_socket.AF_UNIX, _socket.SOCK_DGRAM)
@@ -72,20 +63,48 @@ class TestSdNotify:
     def test_abstract_socket(self, monkeypatch):
         """@ prefix should be converted to null byte for abstract sockets."""
         from readsbstats import collector
+        sent = []
+
+        class FakeSock:
+            def __init__(self, *a):
+                pass
+
+            def sendto(self, data, addr):
+                sent.append((data, addr))
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr(collector.socket, "socket", FakeSock)
         monkeypatch.setenv("NOTIFY_SOCKET", "@/test/notify")
+        collector._sd_notify("READY=1")
+        assert sent == [(b"READY=1", "\0/test/notify")]
+
+    @pytest.mark.skipif(not sys.platform.startswith("linux"),
+                        reason="abstract AF_UNIX sockets are Linux-only")
+    def test_abstract_socket_real_listener(self, monkeypatch):
+        """End to end: a datagram sent to '@name' reaches a socket bound to
+        the abstract address '\\0name'."""
+        from readsbstats import collector
+        import socket as _socket
+        name = f"rsbs-test-{os.getpid()}-{time.monotonic_ns()}"
+        server = _socket.socket(_socket.AF_UNIX, _socket.SOCK_DGRAM)
         try:
+            server.bind("\0" + name)
+            server.settimeout(2)
+            monkeypatch.setenv("NOTIFY_SOCKET", "@" + name)
             collector._sd_notify("READY=1")
-        except OSError:
-            pass  # expected — no listener
+            assert server.recv(256) == b"READY=1"
+        finally:
+            server.close()
 
 
 class TestShutdown:
-    def test_sets_running_false(self):
+    def test_sets_running_false(self, monkeypatch):
         from readsbstats import collector
-        collector._running = True
+        monkeypatch.setattr(collector, "_running", True)
         collector._shutdown(signal.SIGTERM, None)
         assert collector._running is False
-        collector._running = True  # reset
 
 
 class TestWatchdogLoop:
@@ -98,7 +117,7 @@ class TestWatchdogLoop:
         monkeypatch.setattr(collector, "_sd_notify", lambda m: sent.append(m))
         # Compress the interval so the test stays fast.
         monkeypatch.setattr(collector, "_WATCHDOG_INTERVAL_SEC", 1)
-        collector._running = True
+        monkeypatch.setattr(collector, "_running", True)
         thread = _t.Thread(target=collector._watchdog_loop, daemon=True)
         thread.start()
         # Wait for first beat.
@@ -107,20 +126,16 @@ class TestWatchdogLoop:
                 break
             time.sleep(0.05)
         assert sent and sent[0] == "WATCHDOG=1"
-        collector._running = False
+        monkeypatch.setattr(collector, "_running", False)
         thread.join(timeout=3)
         assert not thread.is_alive()
-        collector._running = True  # reset for other tests
 
     def test_does_not_emit_when_running_false_at_entry(self, monkeypatch):
         from readsbstats import collector
         sent: list[str] = []
         monkeypatch.setattr(collector, "_sd_notify", lambda m: sent.append(m))
-        collector._running = False
-        try:
-            collector._watchdog_loop()
-        finally:
-            collector._running = True
+        monkeypatch.setattr(collector, "_running", False)
+        collector._watchdog_loop()
         assert sent == []
 
 
@@ -153,61 +168,6 @@ class TestCoerceHelpers:
         from readsbstats.collector import _coerce_int
         assert _coerce_int(float("nan")) is None
         assert _coerce_int(float("inf")) is None
-
-
-# ---------------------------------------------------------------------------
-# haversine_nm
-# ---------------------------------------------------------------------------
-
-class TestHaversine:
-    def test_same_point_is_zero(self):
-        from readsbstats.collector import haversine_nm
-        assert haversine_nm(52.225, 20.940, 52.225, 20.940) == pytest.approx(0.0, abs=1e-9)
-
-    def test_symmetry(self):
-        from readsbstats.collector import haversine_nm
-        a = haversine_nm(52.225, 20.940, 48.853, 2.350)   # Warsaw → Paris
-        b = haversine_nm(48.853, 2.350, 52.225, 20.940)   # Paris → Warsaw
-        assert a == pytest.approx(b, rel=1e-9)
-
-    def test_one_degree_latitude(self):
-        """1° of latitude ≈ 60 NM (within 0.2 NM tolerance)."""
-        from readsbstats.collector import haversine_nm
-        d = haversine_nm(52.0, 20.0, 53.0, 20.0)
-        assert 59.8 < d < 60.2
-
-    def test_known_distance_warsaw_london(self):
-        """Warsaw → London Heathrow ≈ 1465 km ≈ 791 NM (±5 NM)."""
-        from readsbstats.collector import haversine_nm
-        d = haversine_nm(52.225, 20.940, 51.477, -0.461)
-        assert 786 < d < 796
-
-    def test_antipodal_points(self):
-        """Opposite sides of the globe ≈ π × R_earth."""
-        from readsbstats.collector import haversine_nm
-        R = 3440.065
-        d = haversine_nm(0.0, 0.0, 0.0, 180.0)
-        assert d == pytest.approx(math.pi * R, abs=0.5)
-
-    def test_positive_result(self):
-        from readsbstats.collector import haversine_nm
-        assert haversine_nm(0.0, 0.0, 1.0, 1.0) > 0
-
-    def test_north_pole_to_south_pole(self):
-        from readsbstats.collector import haversine_nm
-        R = 3440.065
-        d = haversine_nm(90.0, 0.0, -90.0, 0.0)
-        assert d == pytest.approx(math.pi * R, abs=0.5)
-
-    def test_antimeridian_crossing(self):
-        """Distance across the antimeridian (lon 179 → -179) should be small."""
-        from readsbstats.collector import haversine_nm
-        d = haversine_nm(0.0, 179.0, 0.0, -179.0)
-        assert d < 130  # ~2 degrees at equator ≈ 120 NM
-
-    def test_same_point_at_pole(self):
-        from readsbstats.collector import haversine_nm
-        assert haversine_nm(90.0, 45.0, 90.0, -135.0) == pytest.approx(0.0, abs=0.01)
 
 
 # ---------------------------------------------------------------------------
@@ -340,7 +300,6 @@ class TestOpenCloseFlight:
 
     def test_close_flight_deletes_if_too_few_positions(self):
         """Flight with < MIN_POSITIONS_KEEP total_positions must be deleted on close."""
-        from readsbstats import config
         from readsbstats.collector import _open_flight, _close_flight
         fid = _open_flight(
             self.conn, "aabbcc", 1000, None, None, None,
@@ -1926,7 +1885,7 @@ class TestPurge:
                         alt_baro=alt, source_type=source_type)
         self.conn.commit()
 
-    def test_crossing_flight_aggregates_recomputed(self, monkeypatch):
+    def test_crossing_flight_aggregates_recomputed_rich_positions(self, monkeypatch):
         from readsbstats import geo
         from readsbstats.collector import _purge
         monkeypatch.setattr("readsbstats.config.RETENTION_DAYS", 1)
@@ -2368,7 +2327,7 @@ class TestPollEdgeCases:
 
     def test_duplicate_pos_ts_skipped(self):
         """A position with the same ts as last_pos_ts must be ignored."""
-        from readsbstats.collector import _poll, _active
+        from readsbstats.collector import _poll
         now = time.time()
         self._write_json([{"hex": "aabbcc", "lat": 52.0, "lon": 21.0, "seen_pos": 0}], now)
         _poll(self.conn)
@@ -2730,37 +2689,6 @@ class TestReadAircraftJson:
 
 
 # ---------------------------------------------------------------------------
-# database.init_db
-# ---------------------------------------------------------------------------
-
-class TestInitDb:
-    def test_creates_all_tables(self, tmp_path):
-        db_path = str(tmp_path / "test.db")
-        database.init_db(db_path)
-        conn = database.connect(db_path)
-        tables = {r[0] for r in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'"
-        )}
-        conn.close()
-        for expected in ("flights", "positions", "active_flights",
-                         "aircraft_db", "airlines", "photos", "schema_version"):
-            assert expected in tables, f"missing table: {expected}"
-
-    def test_records_schema_version(self, tmp_path):
-        db_path = str(tmp_path / "test.db")
-        database.init_db(db_path)
-        conn = database.connect(db_path)
-        row = conn.execute("SELECT version FROM schema_version").fetchone()
-        conn.close()
-        assert row["version"] == database.SCHEMA_VERSION
-
-    def test_idempotent(self, tmp_path):
-        db_path = str(tmp_path / "test.db")
-        database.init_db(db_path)
-        database.init_db(db_path)  # must not raise
-
-
-# ---------------------------------------------------------------------------
 # enrichment — cache hit and short callsign paths
 # ---------------------------------------------------------------------------
 
@@ -2798,19 +2726,6 @@ class TestEnrichmentCachePaths:
         r1 = enrichment.lookup_aircraft(self.conn, "488001")
         r2 = enrichment.lookup_aircraft(self.conn, "488001")  # cache hit
         assert r1 is r2  # same dict object from cache
-
-
-# ---------------------------------------------------------------------------
-# _shutdown — lines 52-53
-# ---------------------------------------------------------------------------
-
-class TestShutdown:
-    def test_sets_running_false(self):
-        from readsbstats import collector
-        collector._running = True
-        collector._shutdown(signal.SIGTERM, None)
-        assert collector._running is False
-        collector._running = True  # restore for other tests
 
 
 # ---------------------------------------------------------------------------
@@ -2861,10 +2776,17 @@ class TestNotificationException:
 
     def test_squawk_notification_exception_does_not_crash_poll(self, monkeypatch):
         from readsbstats import notifier
+        # Telegram must be enabled, otherwise _poll() never enqueues the alert
+        # and the failure path below is silently skipped.
+        monkeypatch.setattr(config, "TELEGRAM_TOKEN", "tok")
+        monkeypatch.setattr(config, "TELEGRAM_CHAT_ID", "123")
         monkeypatch.setattr(notifier, "notify_military",    lambda *a: None)
         monkeypatch.setattr(notifier, "notify_interesting", lambda *a: None)
 
+        called = []
+
         def bad_squawk(*a):
+            called.append(a)
             raise RuntimeError("send failed")
         monkeypatch.setattr(notifier, "notify_squawk", bad_squawk)
 
@@ -2873,7 +2795,10 @@ class TestNotificationException:
         ])
 
         from readsbstats.collector import _poll
+        from readsbstats import collector
         _poll(self.conn)  # must not raise
+        collector._drain_notifications(timeout=1.0)  # alerts dispatch on the consumer thread
+        assert called, "notify_squawk was never reached - failure path not exercised"
 
 
 # ---------------------------------------------------------------------------
@@ -3064,16 +2989,14 @@ class TestCheckDailySummary:
         from readsbstats import collector
         collector._last_summary_date = None
         collector._summary_time_warned = False
-        _reset_telegram_state()
-        # Enable Telegram by default for daily summary tests
+            # Enable Telegram by default for daily summary tests
         monkeypatch.setattr(config, "TELEGRAM_TOKEN", "tok")
         monkeypatch.setattr(config, "TELEGRAM_CHAT_ID", "123")
         yield
         from readsbstats import collector as _collector
         _collector._last_summary_date = None
         _collector._summary_time_warned = False
-        _reset_telegram_state()
-
+    
     def _patch_now(self, monkeypatch, dt):
         from readsbstats import collector
 
@@ -3261,7 +3184,10 @@ class TestCheckDailySummary:
     def test_summary_exception_is_swallowed(self, monkeypatch):
         from readsbstats import collector, notifier
 
+        called = []
+
         def bad_summary(c):
+            called.append(c)
             raise RuntimeError("send failed")
 
         monkeypatch.setattr(notifier, "send_daily_summary", bad_summary)
@@ -3271,6 +3197,7 @@ class TestCheckDailySummary:
         conn = make_db()
         collector._check_daily_summary(conn)  # must not raise
         conn.close()
+        assert called, "send_daily_summary was never reached - failure path not exercised"
 
 
 # ---------------------------------------------------------------------------
@@ -3282,8 +3209,7 @@ class TestMain:
     def setup(self, monkeypatch):
         _reset_collector_state()
         enrichment.clear_cache()
-        from readsbstats import (adsbx_enricher, collector, database,
-                                 metrics_collector, route_enricher)
+        from readsbstats import (adsbx_enricher, collector, metrics_collector, route_enricher)
         collector._running = True
         # Stub the daemon threads main() spawns: the watchdog busy-loops with
         # monkeypatched sleep, and run_background_migrations would close the
@@ -3310,7 +3236,7 @@ class TestMain:
         return fake_sleep
 
     def test_basic_run(self, monkeypatch):
-        from readsbstats import collector, database, notifier
+        from readsbstats import collector, notifier
         conn = make_db()
         monkeypatch.setattr(database, "init_db", lambda: None)
         monkeypatch.setattr(database, "connect", lambda p=None: conn)
@@ -3329,7 +3255,7 @@ class TestMain:
         # monkeypatched) and called the patched sleep — flipping _running to
         # False before the main loop's first iteration, which made
         # test_purge_triggered flaky under load.
-        from readsbstats import collector, database, notifier
+        from readsbstats import collector, notifier
         conn = make_db()
         monkeypatch.setattr(database, "init_db", lambda: None)
         monkeypatch.setattr(database, "connect", lambda p=None: conn)
@@ -3345,22 +3271,28 @@ class TestMain:
         assert leaked == []
 
     def test_poll_exception_is_swallowed(self, monkeypatch):
-        from readsbstats import collector, database, notifier
+        from readsbstats import collector, notifier
         conn = make_db()
         monkeypatch.setattr(database, "init_db", lambda: None)
         monkeypatch.setattr(database, "connect", lambda p=None: conn)
         monkeypatch.setattr(notifier, "start_command_listener", lambda p: None)
-        monkeypatch.setattr(collector, "_poll",
-                            lambda c: (_ for _ in ()).throw(RuntimeError("poll error")))
+        called = []
+
+        def bad_poll(c):
+            called.append(c)
+            raise RuntimeError("poll error")
+
+        monkeypatch.setattr(collector, "_poll", bad_poll)
         monkeypatch.setattr(collector, "_check_daily_summary", lambda c: None)
         monkeypatch.setattr(time, "sleep", self._sleep_exit())
 
         collector.main()  # must not raise
+        assert called, "_poll was never reached - failure path not exercised"
 
     def test_telegram_enabled_starts_command_listener(self, monkeypatch):
         """With Telegram configured, startup must load the notified-set and
         start the command listener (skipped entirely when disabled)."""
-        from readsbstats import collector, database, notifier
+        from readsbstats import collector, notifier
         conn = make_db()
         monkeypatch.setattr(database, "init_db", lambda: None)
         monkeypatch.setattr(database, "connect", lambda p=None: conn)
@@ -3383,7 +3315,7 @@ class TestMain:
         """A raising _close_flight or consumer stop during shutdown must be
         logged and must not prevent the rest of the teardown."""
         import logging
-        from readsbstats import collector, database, notifier
+        from readsbstats import collector, notifier
         conn = make_db()
         monkeypatch.setattr(database, "init_db", lambda: None)
         monkeypatch.setattr(database, "connect", lambda p=None: conn)
@@ -3410,7 +3342,7 @@ class TestMain:
         assert any("Error stopping notification consumer" in m for m in msgs)
 
     def test_purge_triggered(self, monkeypatch):
-        from readsbstats import collector, database, notifier
+        from readsbstats import collector, notifier
         conn = make_db()
         monkeypatch.setattr(database, "init_db", lambda: None)
         monkeypatch.setattr(database, "connect", lambda p=None: conn)
@@ -3427,7 +3359,7 @@ class TestMain:
         assert purge_calls == [1]
 
     def test_purge_exception_is_swallowed(self, monkeypatch):
-        from readsbstats import collector, database, notifier
+        from readsbstats import collector, notifier
         conn = make_db()
         monkeypatch.setattr(database, "init_db", lambda: None)
         monkeypatch.setattr(database, "connect", lambda p=None: conn)
@@ -3435,14 +3367,20 @@ class TestMain:
         monkeypatch.setattr(collector, "_poll", lambda c: None)
         monkeypatch.setattr(collector, "_check_daily_summary", lambda c: None)
         monkeypatch.setattr(config, "PURGE_INTERVAL_SEC", 0)
-        monkeypatch.setattr(collector, "_purge",
-                            lambda c: (_ for _ in ()).throw(RuntimeError("purge error")))
+        called = []
+
+        def bad_purge(c):
+            called.append(c)
+            raise RuntimeError("purge error")
+
+        monkeypatch.setattr(collector, "_purge", bad_purge)
         monkeypatch.setattr(time, "sleep", self._sleep_exit())
 
         collector.main()  # must not raise
+        assert called, "_purge was never reached - failure path not exercised"
 
     def test_shutdown_closes_active_flights(self, monkeypatch):
-        from readsbstats import collector, database, notifier
+        from readsbstats import collector, notifier
         conn = make_db()
         conn.execute(
             "INSERT INTO flights (icao_hex, first_seen, last_seen, total_positions)"
@@ -3466,7 +3404,7 @@ class TestMain:
         assert "abc123" not in collector._active
 
     def test_shutdown_exception_is_swallowed(self, monkeypatch):
-        from readsbstats import collector, database, notifier
+        from readsbstats import collector, notifier
         conn = make_db()
         conn.execute(
             "INSERT INTO flights (icao_hex, first_seen, last_seen, total_positions)"
@@ -3484,11 +3422,17 @@ class TestMain:
         monkeypatch.setattr(notifier, "start_command_listener", lambda p: None)
         monkeypatch.setattr(collector, "_poll", lambda c: None)
         monkeypatch.setattr(collector, "_check_daily_summary", lambda c: None)
-        monkeypatch.setattr(collector, "_close_flight",
-                            lambda c, icao: (_ for _ in ()).throw(RuntimeError("close failed")))
+        called = []
+
+        def bad_close(c, icao):
+            called.append(icao)
+            raise RuntimeError("close failed")
+
+        monkeypatch.setattr(collector, "_close_flight", bad_close)
         monkeypatch.setattr(time, "sleep", self._sleep_exit())
 
         collector.main()  # must not raise
+        assert "abc123" in called, "_close_flight was never reached - failure path not exercised"
 
 
 # ---------------------------------------------------------------------------
@@ -3707,7 +3651,7 @@ class TestNotificationConsumer:
         pass) and still close the connection. Runs the consumer
         synchronously: a None sentinel pre-queued after the poison item
         makes it return without a thread."""
-        from readsbstats import collector, database, notifier
+        from readsbstats import collector, notifier
         # Ensure no background consumer thread can steal the queued items.
         collector.stop_notification_consumer(timeout=2.0)
 
@@ -3785,7 +3729,7 @@ class TestConsumerSqliteReuse:
     @pytest.fixture(autouse=True)
     def setup(self, monkeypatch, tmp_path):
         _reset_collector_state()
-        from readsbstats import collector, database, notifier
+        from readsbstats import collector, notifier
         # Stop any previously started consumer so we can start a fresh one
         # against our test DB path.
         if collector._consumer_thread and collector._consumer_thread.is_alive():
@@ -3814,7 +3758,7 @@ class TestConsumerSqliteReuse:
     def test_consumer_opens_one_connection_for_its_lifetime(self, monkeypatch):
         """Spawning the consumer should call database.connect() exactly once;
         subsequent alerts must reuse the same connection via the thread-local."""
-        from readsbstats import collector, database, notifier
+        from readsbstats import collector, notifier
 
         connect_calls = []
         real_connect = database.connect

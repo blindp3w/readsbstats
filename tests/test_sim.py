@@ -5,7 +5,6 @@ No real filesystem writes except where a tmp_path is provided.
 from __future__ import annotations
 
 import json
-import math
 import time
 
 import pytest

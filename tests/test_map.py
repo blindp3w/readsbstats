@@ -5,7 +5,7 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
-from readsbstats import config, database, enrichment, web
+from readsbstats import config, enrichment, web
 from readsbstats import cache
 from readsbstats.api import _deps
 
@@ -57,27 +57,6 @@ def insert_flight_with_position(
                     gs=gs, track=track, source_type=source_type)
     conn.commit()
     return fid
-
-
-# ---------------------------------------------------------------------------
-# Tests: index
-# ---------------------------------------------------------------------------
-
-class TestIndex:
-    def test_legacy_ts_composites_not_created_by_background_migration(self, tmp_path):
-        """Phase 2 (rollups): the ts-composite indexes are gone — heatmap and
-        coverage windows ≥7d read grid_daily/coverage_daily instead. The plain
-        idx_positions_ts remains for windowed raw scans (24h path)."""
-        from readsbstats import database
-        db_path = str(tmp_path / "idx.db")
-        database.init_db(db_path)
-        database._build_positions_indexes(db_path)
-        conn = database.connect(db_path)
-        indexes = {row[1] for row in conn.execute("PRAGMA index_list(positions)")}
-        conn.close()
-        assert "idx_positions_ts_flight" not in indexes
-        assert "idx_positions_ts_lat_lon" not in indexes
-        assert "idx_positions_ts" in indexes
 
 
 # ---------------------------------------------------------------------------
@@ -414,13 +393,6 @@ class TestMapSnapshot:
         assert "origin_icao" in ac
         assert "dest_icao" in ac
         assert ac["seconds_ago"] >= 0
-
-    def test_live_redirects_to_map(self, client):
-        # /live is a historical alias kept as a 302 after the Jinja UI was
-        # deleted; the SPA's catch-all serves /map natively.
-        r = client.get("/live", follow_redirects=False)
-        assert r.status_code == 302
-        assert r.headers["location"].endswith("/map")
 
     def test_api_live_picks_highest_ts_not_highest_id(self, client, db_conn):
         """api_live must return the latest fix by timestamp. Insert two

@@ -7,7 +7,7 @@ from __future__ import annotations
 import json
 import threading
 import time
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -245,14 +245,6 @@ class TestFmtSpd:
 # ---------------------------------------------------------------------------
 
 class TestTelegramEnabled:
-    @pytest.fixture(autouse=True)
-    def setup(self):
-        notifier._tg_enabled = None  # reset cached state
-        notifier._tg_validated = False
-        yield
-        notifier._tg_enabled = None
-        notifier._tg_validated = False
-
     def test_both_set_returns_true(self, monkeypatch):
         monkeypatch.setattr(config, "TELEGRAM_TOKEN", "123456:ABC")
         monkeypatch.setattr(config, "TELEGRAM_CHAT_ID", "99887766")
@@ -367,14 +359,6 @@ class TestTelegramEnabled:
 # ---------------------------------------------------------------------------
 
 class TestSend:
-    @pytest.fixture(autouse=True)
-    def setup(self):
-        notifier._tg_enabled = None
-        notifier._tg_validated = False
-        yield
-        notifier._tg_enabled = None
-        notifier._tg_validated = False
-
     def test_noop_no_token(self, monkeypatch):
         monkeypatch.setattr(config, "TELEGRAM_TOKEN", "")
         monkeypatch.setattr(config, "TELEGRAM_CHAT_ID", "123")
@@ -605,7 +589,10 @@ class TestNotifyInteresting:
         sent = []
         monkeypatch.setattr(notifier, "_send", lambda txt: sent.append(txt))
         notifier.notify_interesting("abc123", "SP-LRA", None, "Gulfstream", None, 100.0)
-        assert "(" not in sent[0] or "Interesting" in sent[0]
+        # No callsign → the registration is followed directly by the type,
+        # with no "(CALLSIGN)" group (the template has no other parentheses).
+        assert "(" not in sent[0]
+        assert "<b>SP-LRA</b> — Gulfstream" in sent[0]
 
     def test_message_contains_country(self, monkeypatch):
         sent = []
@@ -1228,14 +1215,6 @@ class TestGetUpdates:
 # ---------------------------------------------------------------------------
 
 class TestStartCommandListener:
-    @pytest.fixture(autouse=True)
-    def setup(self):
-        notifier._tg_enabled = None
-        notifier._tg_validated = False
-        yield
-        notifier._tg_enabled = None
-        notifier._tg_validated = False
-
     def test_noop_no_token(self, monkeypatch):
         monkeypatch.setattr(config, "TELEGRAM_TOKEN", "")
         monkeypatch.setattr(config, "TELEGRAM_CHAT_ID", "123")
@@ -1253,16 +1232,23 @@ class TestStartCommandListener:
     def test_spawns_named_daemon_thread(self, monkeypatch):
         monkeypatch.setattr(config, "TELEGRAM_TOKEN", "tok")
         monkeypatch.setattr(config, "TELEGRAM_CHAT_ID", "123")
-        # Replace the loop body so the thread exits immediately
-        monkeypatch.setattr(notifier, "_listener_loop", lambda path: None)
+        started = threading.Event()
+        release = threading.Event()
+        seen = {}
+
+        def fake_loop(path):
+            t = threading.current_thread()
+            seen["name"], seen["daemon"], seen["path"] = t.name, t.daemon, path
+            started.set()
+            release.wait(5)
+
+        monkeypatch.setattr(notifier, "_listener_loop", fake_loop)
         notifier.start_command_listener("/fake/db")
-        # Give the thread a moment to register
-        time.sleep(0.05)
-        names = [t.name for t in threading.enumerate()]
-        # The thread may already have exited (daemon + lambda returns immediately),
-        # so just verify no exception was raised and the function returned normally.
-        # The thread-name check is best-effort.
-        assert True  # reached here without exception
+        try:
+            assert started.wait(2), "listener thread never started"
+            assert seen == {"name": "tg-listener", "daemon": True, "path": "/fake/db"}
+        finally:
+            release.set()
 
 
 # ---------------------------------------------------------------------------
@@ -1915,13 +1901,9 @@ class TestMultipartPhoto:
 class TestSendPhoto:
     @pytest.fixture(autouse=True)
     def setup(self, monkeypatch):
-        notifier._tg_enabled = None
-        notifier._tg_validated = False
         monkeypatch.setattr(config, "TELEGRAM_TOKEN", "tok")
         monkeypatch.setattr(config, "TELEGRAM_CHAT_ID", "99")
         yield
-        notifier._tg_enabled = None
-        notifier._tg_validated = False
 
     def _patch_safe_open(self, monkeypatch, body, content_type="image/jpeg"):
         monkeypatch.setattr(
@@ -2043,8 +2025,6 @@ class TestSendPhoto:
 
     def test_telegram_disabled_returns_false(self, monkeypatch):
         monkeypatch.setattr(config, "TELEGRAM_TOKEN", "")
-        notifier._tg_enabled = None
-        notifier._tg_validated = False
         result = notifier._send_photo("https://example.com/photo.jpg", "caption")
         assert result is False
 
