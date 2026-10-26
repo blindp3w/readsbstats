@@ -159,9 +159,8 @@ def test_shutdown_drain_counts_toward_run_total(monkeypatch, tmp_path, caplog):
     monkeypatch.setattr(vdl2_db, "connect", lambda *a, **k: conn)
     # Schema already built by make_vdl2_db; don't rebuild on the live connection.
     monkeypatch.setattr(vdl2_db, "ensure_schema", lambda c: None)
-    # Don't let the prune / index threads touch our single in-memory connection.
+    # Don't let the prune thread touch our single in-memory connection.
     monkeypatch.setattr(vdl2_collector, "_prune_loop", lambda: None)
-    monkeypatch.setattr(vdl2_collector, "_build_indexes_bg", lambda: None)
 
     datagram = json.dumps({"timestamp": 1, "hex": "48e95d", "text": "drain"}).encode()
 
@@ -465,7 +464,6 @@ def _scaffold_main(monkeypatch, tmp_path):
     monkeypatch.setattr(vdl2_db, "connect", lambda *a, **k: conn)
     monkeypatch.setattr(vdl2_db, "ensure_schema", lambda c: None)
     monkeypatch.setattr(vdl2_collector, "_prune_loop", lambda: None)
-    monkeypatch.setattr(vdl2_collector, "_build_indexes_bg", lambda: None)
     return conn
 
 
@@ -490,7 +488,6 @@ def test_main_dirty_sentinel_failed_check_refuses_to_write(monkeypatch, tmp_path
     schema_calls = []
     monkeypatch.setattr(vdl2_db, "ensure_schema", lambda c: schema_calls.append(1))
     monkeypatch.setattr(vdl2_collector, "_prune_loop", lambda: None)
-    monkeypatch.setattr(vdl2_collector, "_build_indexes_bg", lambda: None)
     monkeypatch.setattr(vdl2_collector, "_quick_check", lambda c: False)
     sentinel = tmp_path / ".vdl2_dirty_shutdown"
     sentinel.touch()
@@ -620,69 +617,61 @@ def test_main_idle_timeout_flushes_pending_and_logs_summary(monkeypatch, tmp_pat
     assert "pending=0" in summaries[0]         # flushed before the summary
 
 
-def test_main_starts_index_builder_thread_after_ready(monkeypatch, tmp_path):
-    """The heavy-index build must start only after READY=1 (it is a full table scan,
-    far past the unit's TimeoutStartSec on a Pi) and not leak a real thread."""
-    _scaffold_main(monkeypatch, tmp_path)
+def test_prune_loop_builds_heavy_indexes_once_right_after_startup_prune(monkeypatch, caplog):
+    """The heavy-index build runs on the prune thread AFTER the startup prune —
+    sequentially on one connection, so the two heavy writers never contend for the
+    write lock (a long catch-up prune would otherwise starve CREATE INDEX past
+    busy_timeout) — and only once."""
     events = []
-    monkeypatch.setattr(vdl2_collector, "_sd_notify", lambda m: events.append(m))
-
-    started = []
-
-    class FakeThread:
-        def __init__(self, target=None, name=None, daemon=None, **kw):
-            self.target, self.name, self.daemon = target, name, daemon
-
-        def start(self):
-            started.append(self)
-            events.append(f"start:{self.name}")
-
-    monkeypatch.setattr(vdl2_collector.threading, "Thread", FakeThread)
-    monkeypatch.setattr(socket, "socket", lambda *a, **k: _StopImmediatelySock())
-    assert vdl2_collector.main() == 0
-    idx = [t for t in started if t.name == "vdl2-indexes"]
-    assert len(idx) == 1 and idx[0].daemon is True
-    assert idx[0].target is vdl2_collector._build_indexes_bg
-    assert events.index("READY=1") < events.index("start:vdl2-indexes")
-
-
-def test_build_indexes_bg_builds_logs_and_closes(monkeypatch, caplog):
     wrap = _ConnWrap(make_vdl2_db())
-    built = []
     monkeypatch.setattr(vdl2_db, "connect", lambda *a, **k: wrap)
-    monkeypatch.setattr(vdl2_db, "build_heavy_indexes", lambda c: built.append(c))
+    monkeypatch.setattr(vdl2_db, "prune", lambda c, days: events.append("prune") or 0)
+    monkeypatch.setattr(vdl2_db, "build_heavy_indexes", lambda c: events.append("build"))
+    monkeypatch.setattr(vdl2_collector, "_stop", _StopAfterOneWait())
     with caplog.at_level("INFO", logger="vdl2"):
-        vdl2_collector._build_indexes_bg()
-    assert built == [wrap]
-    assert wrap.closed
+        vdl2_collector._prune_loop()
+    assert events == ["prune", "build", "prune"]
     msgs = [r.getMessage() for r in caplog.records]
     assert any("building heavy indexes" in m for m in msgs)
     assert any("heavy indexes ready" in m for m in msgs)
 
 
-def test_build_indexes_bg_swallows_errors_and_closes(monkeypatch, caplog):
+def test_prune_loop_retries_failed_heavy_index_build_next_tick(monkeypatch, caplog):
     wrap = _ConnWrap(make_vdl2_db())
+    builds = []
+
+    def flaky_build(conn):
+        builds.append(1)
+        if len(builds) == 1:
+            raise sqlite3.OperationalError("database is locked")
+
     monkeypatch.setattr(vdl2_db, "connect", lambda *a, **k: wrap)
-
-    def boom(conn):
-        raise sqlite3.OperationalError("database is locked")
-
-    monkeypatch.setattr(vdl2_db, "build_heavy_indexes", boom)
+    monkeypatch.setattr(vdl2_db, "prune", lambda c, days: 0)
+    monkeypatch.setattr(vdl2_db, "build_heavy_indexes", flaky_build)
+    monkeypatch.setattr(vdl2_collector, "_stop", _StopAfterOneWait())
     with caplog.at_level("WARNING", logger="vdl2"):
-        vdl2_collector._build_indexes_bg()     # must not raise
+        vdl2_collector._prune_loop()     # must not raise
+    assert len(builds) == 2              # failed at startup, retried on the next tick
+    assert any("database is locked" in r.getMessage() for r in caplog.records)
     assert wrap.closed
-    assert any(r.levelname == "WARNING" and "database is locked" in r.getMessage()
-               for r in caplog.records)
 
 
-def test_build_indexes_bg_survives_connect_failure(monkeypatch, caplog):
-    def bad_connect(*a, **k):
-        raise sqlite3.OperationalError("unable to open database file")
+def test_main_starts_no_separate_index_thread(monkeypatch, tmp_path):
+    """Only the watchdog and prune threads: the index build lives on the prune thread."""
+    _scaffold_main(monkeypatch, tmp_path)
+    started = []
 
-    monkeypatch.setattr(vdl2_db, "connect", bad_connect)
-    with caplog.at_level("WARNING", logger="vdl2"):
-        vdl2_collector._build_indexes_bg()
-    assert any("unable to open database file" in r.getMessage() for r in caplog.records)
+    class FakeThread:
+        def __init__(self, target=None, name=None, daemon=None, **kw):
+            self.name = name
+
+        def start(self):
+            started.append(self.name)
+
+    monkeypatch.setattr(vdl2_collector.threading, "Thread", FakeThread)
+    monkeypatch.setattr(socket, "socket", lambda *a, **k: _StopImmediatelySock())
+    assert vdl2_collector.main() == 0
+    assert sorted(started) == ["vdl2-prune", "vdl2-watchdog"]
 
 
 def test_main_flushes_when_batch_threshold_reached(monkeypatch, tmp_path):

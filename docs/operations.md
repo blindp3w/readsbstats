@@ -197,8 +197,8 @@ size yourself.
 
 **Indexes built in the background.** Two stats indexes, `idx_vdl2_label_icao` and
 `idx_vdl2_flight`, need a full pass over the table, so the ingest service builds
-them in a background thread after it reports ready (never on the web or startup
-path). Until they exist the Stats card's top-labels and top-airlines aggregates
+them on its prune thread right after the startup prune (never on the web or
+startup path; a failed build is retried on the next prune tick). Until they exist the Stats card's top-labels and top-airlines aggregates
 read the whole table: 2–4 minutes on a cold cache on a Raspberry Pi 4 with a USB
 disk. Results are cached, and concurrent requests share one computation. The
 build runs once and is a no-op afterwards.

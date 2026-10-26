@@ -39,8 +39,10 @@ robustness and performance bugs found before the freeze.
 - **Index rule.** Cheap `vdl2.db` indexes stay in `_DDL_INDEXES`, which `migrate()`
   creates on open (web startup, each new web thread, and the ingest before it reports
   ready). Heavy indexes that need a full-table pass go in `_DDL_HEAVY_INDEXES` and
-  are built by the ingest service in a background thread after `READY=1`
-  (`idx_vdl2_label_icao`, `idx_vdl2_flight`). Building one reads the whole table
+  are built by the ingest service's prune thread right after its startup prune
+  (`idx_vdl2_label_icao`, `idx_vdl2_flight`), one heavy writer after the other on
+  one connection so they never fight for the write lock; a failed build is retried
+  on the next tick. Building one reads the whole table
   (about 0.7 GB at 90-day retention) from the Pi's USB disk, which must not stall a
   web request or the ingest start (systemd `TimeoutStartSec=120`).
 - **Stats are slow until the heavy indexes exist.** The top-labels and top-airlines

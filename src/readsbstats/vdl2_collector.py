@@ -118,8 +118,15 @@ def _prune_loop() -> None:
     restarted more often than the interval would otherwise never prune), then every
     ``VDL2_PURGE_INTERVAL_SEC``. The connection is (re)opened inside the try so a
     transient open failure is logged and retried on the next tick instead of
-    silently killing the thread. Waits on the stop event for responsive exit."""
+    silently killing the thread. Waits on the stop event for responsive exit.
+
+    The same thread builds the heavy stats indexes (``vdl2_db._DDL_HEAVY_INDEXES``)
+    right after the first successful prune: sequential on one connection, so the two
+    heavy writers never fight for the write lock (a long catch-up prune would starve
+    CREATE INDEX past busy_timeout), and on the already-pruned table. A failed build
+    is retried on the next tick; until it succeeds the stats queries stay slow."""
     conn = None
+    indexes_ready = False
     try:
         while not _stop.is_set():
             try:
@@ -132,6 +139,8 @@ def _prune_loop() -> None:
                     conn.execute("PRAGMA optimize")   # refresh planner stats after a big delete
             except Exception as exc:
                 log.warning("retention prune failed: %s", exc)
+            if conn is not None and not indexes_ready:
+                indexes_ready = _build_heavy_indexes(conn)
             if _stop.wait(max(1, config.VDL2_PURGE_INTERVAL_SEC)):
                 break
     finally:
@@ -139,22 +148,18 @@ def _prune_loop() -> None:
             conn.close()
 
 
-def _build_indexes_bg() -> None:
-    """Build the heavy stats indexes (see ``vdl2_db._DDL_HEAVY_INDEXES``) on their
-    own connection, after READY=1. A full-table scan on a cold Pi, so it must never
-    block startup; any failure is logged and the stats queries simply stay slow."""
-    conn = None
+def _build_heavy_indexes(conn) -> bool:
+    """One attempt at the heavy-index build; True once the indexes exist. A full
+    table scan on a cold Pi, so it runs on the prune thread, never on startup."""
     try:
-        conn = vdl2_db.connect()
         log.info("vdl2: building heavy indexes in the background")
         t0 = time.monotonic()
         vdl2_db.build_heavy_indexes(conn)
         log.info("vdl2: heavy indexes ready (%.1f s)", time.monotonic() - t0)
+        return True
     except Exception as exc:
-        log.warning("vdl2: background index build failed: %s", exc)
-    finally:
-        if conn is not None:
-            conn.close()
+        log.warning("vdl2: background index build failed (retrying next tick): %s", exc)
+        return False
 
 
 def _handle_datagram(data: bytes, pending: list[dict]) -> int:
@@ -261,8 +266,6 @@ def main() -> int:
     threading.Thread(target=_watchdog_loop, name="vdl2-watchdog", daemon=True).start()
     threading.Thread(target=_prune_loop, name="vdl2-prune", daemon=True).start()
     _sd_notify("READY=1")
-    # After READY: the index build scans the whole table (see _build_indexes_bg).
-    threading.Thread(target=_build_indexes_bg, name="vdl2-indexes", daemon=True).start()
 
     pending: list[dict] = []
     total = 0

@@ -538,3 +538,16 @@ class TestHeavyIndexes:
         vdl2_db.build_heavy_indexes(conn)
         vdl2_db.migrate(conn)
         assert self.NAMES <= self._index_names(conn)
+
+
+class TestConnectPragmas:
+    def test_connect_caps_analysis_limit(self, tmp_path):
+        """PRAGMA optimize (prune loop, build_heavy_indexes) must not turn into an
+        unbounded ANALYZE of the whole table on SQLite < 3.46 (the Pi's 3.45), which
+        holds the write lock long enough to starve ingest flushes — same cap as the
+        core DB (database._build_positions_indexes)."""
+        conn = vdl2_db.connect(str(tmp_path / "v.db"))
+        try:
+            assert conn.execute("PRAGMA analysis_limit").fetchone()[0] == 1000
+        finally:
+            conn.close()

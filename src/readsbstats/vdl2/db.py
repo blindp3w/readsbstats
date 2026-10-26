@@ -90,7 +90,7 @@ CREATE INDEX IF NOT EXISTS idx_vdl2_pos_ts_id   ON vdl2_messages(ts DESC, id DES
 # cold on the Pi's USB disk). Deliberately NOT in _DDL_INDEXES: building them reads the
 # whole table (a ~660 MB scan on the Pi), and migrate() runs on web startup, on every
 # new web thread and in the collector BEFORE READY=1 (TimeoutStartSec=120). The
-# collector builds them in a background thread after READY=1 via build_heavy_indexes().
+# collector's prune thread builds them right after its startup prune via build_heavy_indexes().
 # Until they exist the stats queries still work, just slowly (and are cached).
 _DDL_HEAVY_INDEXES = """
 CREATE INDEX IF NOT EXISTS idx_vdl2_label_icao ON vdl2_messages(label, icao_hex);
@@ -137,6 +137,10 @@ def connect(path: str | None = None) -> sqlite3.Connection:
         "PRAGMA busy_timeout = 30000;"
         "PRAGMA cache_size   = -16384;"
         "PRAGMA wal_autocheckpoint = 1000;"
+        # Bound PRAGMA optimize: before SQLite 3.46 (the Pi runs 3.45) it can run an
+        # unbounded ANALYZE of the whole table while holding the write lock. Same
+        # cap as the core DB (database._build_positions_indexes).
+        "PRAGMA analysis_limit = 1000;"
     )
     return conn
 
