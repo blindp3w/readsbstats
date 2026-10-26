@@ -12,7 +12,6 @@ locks), and cache state lives in ``cache`` (shared mutable runtime).
 
 from __future__ import annotations
 
-import hmac
 import os
 import re
 import sqlite3
@@ -114,40 +113,6 @@ _HAS_ACARS_EXPR = """
 # ---------------------------------------------------------------------------
 # CSRF dependency for mutating endpoints
 # ---------------------------------------------------------------------------
-
-# SH-1 (Audit 2026-05-31): optional bearer-token auth for mutating
-# endpoints. No-op when RSBS_API_TOKEN is unset (default trusted-LAN
-# posture — see README "Security" section). When set, every mutating
-# call must carry `Authorization: Bearer <token>` and the value is
-# compared with hmac.compare_digest.
-#
-# Read directly from os.getenv rather than via config.py to keep the
-# secret out of the parsed-config surface (which `/api/settings`
-# returns). Read at request time, not import time — so tests using
-# monkeypatch.setenv work and operators can SIGHUP-rotate the env var
-# without a full module reload. Production cost is negligible
-# (os.environ is a dict lookup).
-def _get_api_token() -> str:
-    return os.getenv("RSBS_API_TOKEN", "")
-
-
-# Module-level binding kept for back-compat with existing tests that
-# do `monkeypatch.setattr(_deps, "_API_TOKEN", "secret")`. When the
-# attribute is present and non-empty it overrides the env var; otherwise
-# _auth_check falls back to os.getenv.
-_API_TOKEN: str | None = None
-
-
-def _auth_check(authorization: str | None = Header(default=None)) -> None:
-    """Optional bearer-token gate. Apply alongside _csrf_check on every
-    mutating endpoint. No-op when no token is configured."""
-    token = _API_TOKEN if _API_TOKEN else _get_api_token()
-    if not token:
-        return
-    expected = f"Bearer {token}"
-    if not hmac.compare_digest(authorization or "", expected):
-        raise HTTPException(401, "Unauthorized")
-
 
 def _csrf_check(x_requested_with: str | None = Header(None)) -> None:
     # Browsers cannot set custom headers cross-origin without a CORS preflight,

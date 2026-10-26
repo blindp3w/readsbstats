@@ -13,6 +13,7 @@ unambiguous (catch-all must come LAST).
 
 import asyncio
 import logging
+import os
 import sqlite3
 import sys
 import urllib.parse
@@ -101,28 +102,28 @@ def _ensure_vdl2_schema() -> None:
         log.warning("VDL2 schema unavailable; continuing without VDL2 DB: %s", exc)
 
 
-def _warn_if_auth_disabled() -> None:
-    """One-line startup warning when mutating endpoints are unauthenticated.
+def _warn_if_api_token_set() -> None:
+    """One-line startup warning when the removed RSBS_API_TOKEN is still set.
 
-    RSBS_API_TOKEN unset is the default trusted-LAN posture (CSRF still applies),
-    so this is informational — but an operator who exposes the app beyond a
-    trusted LAN should set the token so ``_auth_check`` requires a bearer token.
-    Mirrors ``_auth_check``'s token resolution (module override OR env) so the
-    two can never disagree about whether auth is on.
+    The optional bearer-token gate was removed in v2.30.0 (the SPA never sent
+    the token, so setting it broke UI watchlist edits); mutating endpoints are
+    guarded by the CSRF header alone. An operator who still has the variable in
+    readsbstats.env must learn that it no longer protects anything. Only its
+    truthiness is checked — the value is never logged.
     """
-    if not (_deps._API_TOKEN or _deps._get_api_token()):
+    if os.getenv("RSBS_API_TOKEN"):
         log.warning(
-            "RSBS_API_TOKEN is unset — mutating endpoints (POST/DELETE) are "
-            "unauthenticated (the CSRF header is still required). Safe on a "
-            "trusted LAN; set RSBS_API_TOKEN to require a bearer token if the "
-            "app is reachable more widely. See docs/configuration.md."
+            "RSBS_API_TOKEN is no longer supported (removed in v2.30.0) and is "
+            "ignored; mutating endpoints rely on the CSRF header. Remove it from "
+            "readsbstats.env and put an authenticating reverse proxy in front if "
+            "the app is reachable beyond a trusted LAN."
         )
 
 
 @asynccontextmanager
 async def _lifespan(app_: FastAPI) -> AsyncIterator[None]:
     log.info("Starting web server — DB: %s", config.DB_PATH)
-    _warn_if_auth_disabled()
+    _warn_if_api_token_set()
     await asyncio.to_thread(_startup_migrate)
     # Audit 2026-06-01 W-3: background migrations AND route enrichment are
     # owned by the collector so two processes don't fight on the SQLite write
