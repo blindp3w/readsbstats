@@ -17,12 +17,13 @@ what you're trying to do.
 |---|---|
 | [Operations](operations.md) | Updating code, the aircraft/airline DB, backups, retention sizing, VDL2/ACARS ingest (dumpvdl2 first), deployment security, crash recovery |
 | [Integrations](integrations.md) | Telegram bot setup + commands, ghost-position and ground-speed filtering |
+| [MCP server](mcp.md) | Optional LLM access: enabling `readsbstats-mcp`, client tokens, connecting a client, the 19 tools, limits |
 | [Development](development.md) | Local setup, running the collector, tests, building the SPA, deploying to the Pi |
 | [dumpvdl2 on an Airspy Mini](dumpvdl2-airspy-mini.md) | Driving dumpvdl2, the recommended VDL2 decoder (ATN CPDLC/ADS-C/MIAM), from an Airspy Mini via external IQ resampling |
 
 ## Explanation — understand the why
 
-- [Architecture Decision Records](decisions/README.md) — the rationale behind key technical choices (21 ADRs).
+- [Architecture Decision Records](decisions/README.md) — the rationale behind key technical choices (22 ADRs).
 
 ## See also
 

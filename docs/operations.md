@@ -61,6 +61,7 @@ systemctl restart readsbstats-collector readsbstats-web
 systemctl disable --now readsbstats-collector readsbstats-web \
   readsbstats-updater.timer readsbstats-dbcheck.timer readsbstats-dbcheck-full.timer
 systemctl disable --now readsbstats-vdl2   # opt-in; skip if never enabled (decoder pipeline: see "Turning VDL2 off")
+systemctl disable --now readsbstats-mcp    # opt-in MCP server; skip if never enabled (see docs/mcp.md)
 ```
 
 Settings live in `/etc/readsbstats/readsbstats.env`, read by `readsbstats-collector`, `readsbstats-web` and `notify-telegram@` — edit it, then restart the services (see [Configuration](configuration.md)).
@@ -341,6 +342,7 @@ trust model is "bind to loopback, sit behind nginx on a trusted LAN."
   feeder `status_path` values are `realpath`-checked under `RSBS_FEEDER_STATUS_ROOT`.
   These are defence-in-depth (bounding side effects), **not** a substitute for
   network-level access control.
+- **The optional MCP server** (`readsbstats-mcp`, port 8765) is off by default. When enabled, it is the only way an LLM client should reach the data. It has its own per-client bearer tokens, scopes and limits, and it calls the web API on loopback only. Bind it to loopback or a VPN address, allow the port only from the intended clients, and never expose it to the internet. See [MCP server](mcp.md).
 
 **If you expose the UI beyond a trusted LAN**, put an authenticating layer in
 front of nginx — HTTP basic auth, an OAuth2 reverse proxy (e.g. oauth2-proxy),
