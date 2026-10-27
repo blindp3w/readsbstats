@@ -185,6 +185,7 @@ cp "$APP_DIR/systemd/readsbstats-dbcheck-full.service"  /etc/systemd/system/
 cp "$APP_DIR/systemd/readsbstats-dbcheck-full.timer"    /etc/systemd/system/
 cp "$APP_DIR/systemd/notify-telegram@.service"          /etc/systemd/system/
 cp "$APP_DIR/systemd/readsbstats-vdl2.service"          /etc/systemd/system/  # opt-in; enablement unchanged
+cp "$APP_DIR/systemd/readsbstats-mcp.service"           /etc/systemd/system/  # opt-in; enablement unchanged
 systemctl daemon-reload
 systemctl enable --now readsbstats-dbcheck.timer readsbstats-dbcheck-full.timer
 
@@ -209,6 +210,10 @@ if [[ "$MODE" == "code" || "$MODE" == "full" ]]; then
   # Opt-in VDL2 ingest: only restart it if the operator has it running.
   if systemctl is-active --quiet readsbstats-vdl2; then
     systemctl restart readsbstats-vdl2
+  fi
+  # Opt-in MCP server: depends on web, so restart it after web; only if running.
+  if systemctl is-active --quiet readsbstats-mcp; then
+    systemctl restart readsbstats-mcp
   fi
   sleep 2
   echo "==> Service status"

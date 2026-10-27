@@ -67,3 +67,49 @@ def test_install_sh_creates_env_file_mode_600():
     assert re.search(rf"chown root:root {re.escape(ENV_FILE)}", sh)
     # Guarded: an operator's existing file is never overwritten.
     assert re.search(rf"if \[ ! -f {re.escape(ENV_FILE)} \]", sh)
+
+
+# ---- readsbstats-mcp.service (opt-in, ADR-0022) ------------------------------
+MCP_UNIT = SYSTEMD / "readsbstats-mcp.service"
+
+
+def test_mcp_unit_reads_only_the_settings_file():
+    lines = _lines(MCP_UNIT)
+    assert OPTIONAL_LINE in lines
+    assert not any(ln.startswith("EnvironmentFile=") and "vdl2.env" in ln for ln in lines)
+
+
+def test_mcp_unit_runs_module_as_service_user():
+    lines = _lines(MCP_UNIT)
+    assert "User=readsbstats" in lines
+    exec_start = [ln for ln in lines if ln.startswith("ExecStart=")]
+    assert len(exec_start) == 1
+    assert "-m readsbstats.mcp_server" in exec_start[0]
+
+
+def test_mcp_unit_cannot_reach_the_database_directory():
+    lines = _lines(MCP_UNIT)
+    assert not any(ln.startswith("ReadWritePaths") for ln in lines)
+    assert "InaccessiblePaths=-/mnt/ext/readsbstats" in lines
+
+
+def test_mcp_unit_hardening_and_limits():
+    lines = _lines(MCP_UNIT)
+    assert "ProtectSystem=strict" in lines
+    assert "NoNewPrivileges=yes" in lines
+    assert "CPUQuota=25%" in lines
+    assert "MemoryMax=256M" in lines
+
+
+def test_mcp_unit_starts_after_web():
+    lines = _lines(MCP_UNIT)
+    after = next(ln for ln in lines if ln.startswith("After="))
+    assert "readsbstats-web.service" in after.split()
+    assert "Wants=readsbstats-web.service" in lines
+
+
+def test_install_sh_copies_mcp_unit_but_never_enables_it():
+    sh = (ROOT / "scripts/install.sh").read_text()
+    assert "systemd/readsbstats-mcp.service" in sh
+    code = [ln for ln in sh.splitlines() if not ln.strip().startswith("#")]
+    assert not any("enable" in ln and "readsbstats-mcp" in ln for ln in code)

@@ -1,0 +1,66 @@
+[Unit]
+Description=readsbstats MCP server (opt-in, LLM access)
+# Opt-in feature. NOT enabled by install.sh — create client tokens first
+# (scripts/mcp_token.py, see docs/mcp.md), then enable explicitly with
+#   sudo systemctl enable --now readsbstats-mcp
+# Listens on RSBS_MCP_HOST:RSBS_MCP_PORT (default 127.0.0.1:8765) and reaches
+# the data only through the local web API on loopback (ADR-0022).
+After=network.target readsbstats-web.service
+Wants=readsbstats-web.service
+OnFailure=notify-telegram@%n.service
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=readsbstats
+Group=readsbstats
+WorkingDirectory=/opt/readsbstats
+ExecStart=/opt/readsbstats/venv/bin/python -m readsbstats.mcp_server
+Restart=on-failure
+RestartSec=5
+
+# Single settings file shared by all readsbstats units (RSBS_* overrides,
+# Telegram token, ...). Optional (`-`): absent => built-in defaults. Read by
+# systemd as root before privileges drop. See systemd/readsbstats.env.example.
+EnvironmentFile=-/etc/readsbstats/readsbstats.env
+
+CPUQuota=25%
+MemoryMax=256M
+Nice=10
+
+# Security hardening
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectHome=yes
+ProtectSystem=strict
+# No ReadWritePaths= and the data directory is hidden outright: the MCP server
+# reaches data only through the local web API (ADR-0022) and must not be able
+# to open the database. The leading `-` keeps a missing path from failing
+# startup.
+InaccessiblePaths=-/mnt/ext/readsbstats
+
+# Audit-13 A13-046: kernel + namespace hardening. See collector unit
+# comments (MemoryDenyWriteExecute: not yet verified on the Pi).
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=readsbstats-mcp
+
+[Install]
+WantedBy=multi-user.target

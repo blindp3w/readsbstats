@@ -111,6 +111,10 @@ cp "$APP_DIR/systemd/notify-telegram@.service"          /etc/systemd/system/
 # To turn the feature on: set RSBS_VDL2_ENABLED=true there, restart web, then
 # `systemctl enable --now readsbstats-vdl2.service`. See docs/operations.md.
 cp "$APP_DIR/systemd/readsbstats-vdl2.service"          /etc/systemd/system/
+# Opt-in MCP server (LLM access, ADR-0022) — copied, NOT enabled here. Create
+# client tokens first (scripts/mcp_token.py, docs/mcp.md), then
+# `systemctl enable --now readsbstats-mcp`.
+cp "$APP_DIR/systemd/readsbstats-mcp.service"           /etc/systemd/system/
 mkdir -p /etc/readsbstats
 if [ ! -f /etc/readsbstats/vdl2.env ]; then
     cp "$APP_DIR/systemd/readsbstats-vdl2.env.example" /etc/readsbstats/vdl2.env
