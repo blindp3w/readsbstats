@@ -810,3 +810,240 @@ class TestSafeHttpxGet:
                                   max_bytes=1024, timeout=3.0)
         assert client.last_kwargs["follow_redirects"] is False
         assert client.last_kwargs["timeout"] == 3.0
+
+
+# ---------------------------------------------------------------------------
+# is_loopback_http_url / loopback_request — loopback-only helper for our own
+# local services (e.g. the MCP server -> 127.0.0.1:8080)
+# ---------------------------------------------------------------------------
+
+class TestIsLoopbackHttpUrl:
+    @pytest.mark.parametrize("url", [
+        "http://127.0.0.1/",
+        "http://127.0.0.1:8080/api/stats?x=1&y=2",
+        "http://localhost:8080/api/flights",
+        "http://[::1]:8080/api/health",
+        "http://[::1]/",
+        "http://127.0.0.1",
+    ])
+    def test_allowed(self, url):
+        assert http_safe.is_loopback_http_url(url) is True
+
+    @pytest.mark.parametrize("url", [
+        "https://127.0.0.1/",
+        "ftp://127.0.0.1/",
+        "file:///etc/passwd",
+        "http://u:p@127.0.0.1/",
+        "http://u@127.0.0.1/",
+        "http://127.0.0.1@evil.com/",
+        "http://evil.com@127.0.0.1/",
+        "http://127.0.0.2/",
+        "http://0.0.0.0/",
+        "http://localhost.evil.com/",
+        "http://evil.com/",
+        "http://2130706433/",
+        "http://0x7f000001/",
+        "http://017700000001/",
+        "http://127.1/",
+        "http://127.0.0.1:99999/",
+        "http://127.0.0.1:abc/",
+        "http://127.0.0.1 /",
+        "http://127.0.0.1\\@evil.com/",
+        "//127.0.0.1/",
+        "127.0.0.1",
+        "",
+        None,
+        123,
+    ])
+    def test_rejected(self, url):
+        assert http_safe.is_loopback_http_url(url) is False
+
+    def test_loopback_hosts_constant(self):
+        assert http_safe.LOOPBACK_HOSTS == ("127.0.0.1", "localhost", "::1")
+
+
+class TestLoopbackRequest:
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        self.calls: list[httpx.Request] = []
+        self._clients: list[httpx.AsyncClient] = []
+        yield
+        for c in self._clients:
+            run_async(c.aclose())
+
+    def _client(self, handler):
+        async def wrapped(request: httpx.Request) -> httpx.Response:
+            self.calls.append(request)
+            return handler(request)
+
+        c = httpx.AsyncClient(transport=httpx.MockTransport(wrapped))
+        self._clients.append(c)
+        return c
+
+    def _call(self, handler, method="GET", url="http://127.0.0.1:8080/api/x",
+              max_bytes=1024, timeout=2.0, **kw):
+        client = self._client(handler)
+        return run_async(http_safe.loopback_request(
+            client, method, url, max_bytes=max_bytes, timeout=timeout, **kw,
+        ))
+
+    # -- URL policy ---------------------------------------------------------
+
+    @pytest.mark.parametrize("url", [
+        "http://u:p@127.0.0.1/",
+        "https://127.0.0.1/",
+        "ftp://127.0.0.1/",
+        "http://127.0.0.2/",
+        "http://0.0.0.0/",
+        "http://localhost.evil.com/",
+        "http://evil.com/",
+        "http://2130706433/",
+        "http://0x7f000001/",
+        "http://127.0.0.1@evil.com/",
+    ])
+    def test_rejected_urls_never_reach_transport(self, url):
+        with pytest.raises(http_safe.UnsafeURLError):
+            self._call(lambda r: httpx.Response(200, content=b"x"), url=url)
+        assert self.calls == []
+
+    @pytest.mark.parametrize("url", [
+        "http://127.0.0.1:8080/a?b=1",
+        "http://localhost:8080/a",
+        "http://[::1]:8080/a",
+    ])
+    def test_allowed_urls_reach_transport(self, url):
+        status, _h, body = self._call(
+            lambda r: httpx.Response(200, content=b"ok"), url=url,
+        )
+        assert (status, body) == (200, b"ok")
+        assert len(self.calls) == 1
+
+    @pytest.mark.parametrize("method", ["PUT", "PATCH", "HEAD", "get", "", "TRACE"])
+    def test_disallowed_method(self, method):
+        with pytest.raises(ValueError):
+            self._call(lambda r: httpx.Response(200), method=method)
+        assert self.calls == []
+
+    # -- responses ----------------------------------------------------------
+
+    def test_200_body_status_headers(self):
+        status, headers, body = self._call(
+            lambda r: httpx.Response(
+                200, content=b'{"a":1}', headers={"X-Test": "yes"},
+            ),
+        )
+        assert status == 200
+        assert body == b'{"a":1}'
+        assert isinstance(headers, httpx.Headers)
+        assert headers["x-test"] == "yes"
+
+    @pytest.mark.parametrize("code", [400, 401, 404, 422, 500])
+    def test_error_status_returned_not_raised(self, code):
+        status, _h, body = self._call(
+            lambda r: httpx.Response(code, content=b'{"detail":"nope"}'),
+        )
+        assert status == code
+        assert body == b'{"detail":"nope"}'
+
+    @pytest.mark.parametrize("code", [301, 302, 303, 307, 308])
+    def test_redirect_blocked_and_not_followed(self, code):
+        def handler(request):
+            return httpx.Response(code, headers={"Location": "http://169.254.169.254/"})
+
+        with pytest.raises(http_safe.UnsafeURLError, match="redirect"):
+            self._call(handler)
+        assert len(self.calls) == 1
+
+    # -- size cap -----------------------------------------------------------
+
+    def test_body_exactly_max_bytes_ok(self):
+        _s, _h, body = self._call(
+            lambda r: httpx.Response(200, content=b"a" * 100), max_bytes=100,
+        )
+        assert len(body) == 100
+
+    def test_body_over_max_bytes_rejected(self):
+        with pytest.raises(http_safe.UnsafeURLError, match="max_bytes=100"):
+            self._call(
+                lambda r: httpx.Response(200, content=b"a" * 101), max_bytes=100,
+            )
+
+    def test_streamed_body_aborted_mid_stream(self):
+        consumed = []
+
+        async def gen():
+            for _ in range(1000):
+                consumed.append(1)
+                yield b"a" * 10
+
+        def handler(request):
+            return httpx.Response(200, content=gen())
+
+        with pytest.raises(http_safe.UnsafeURLError, match="max_bytes"):
+            self._call(handler, max_bytes=50)
+        assert len(consumed) < 1000
+
+    # -- request shaping ----------------------------------------------------
+
+    def test_post_json_and_headers(self):
+        seen = {}
+
+        def handler(request):
+            seen["method"] = request.method
+            seen["body"] = request.content
+            seen["ctype"] = request.headers.get("content-type")
+            seen["auth"] = request.headers.get("authorization")
+            return httpx.Response(201, content=b"{}")
+
+        status, _h, _b = self._call(
+            handler, method="POST",
+            json={"icao": "abc123", "n": 1},
+            headers={"Authorization": "Bearer t0k", "X-CSRF": "1"},
+        )
+        assert status == 201
+        assert seen["method"] == "POST"
+        import json as _json
+        assert _json.loads(seen["body"]) == {"icao": "abc123", "n": 1}
+        assert seen["ctype"].startswith("application/json")
+        assert seen["auth"] == "Bearer t0k"
+        assert self.calls[0].headers["x-csrf"] == "1"
+
+    def test_get_sends_no_body(self):
+        self._call(lambda r: httpx.Response(200))
+        assert self.calls[0].content == b""
+
+    def test_delete(self):
+        status, _h, body = self._call(
+            lambda r: httpx.Response(200, content=b"gone"), method="DELETE",
+        )
+        assert self.calls[0].method == "DELETE"
+        assert (status, body) == (200, b"gone")
+
+    # -- client / error propagation ----------------------------------------
+
+    def test_sync_client_rejected(self):
+        sync_client = httpx.Client(
+            transport=httpx.MockTransport(lambda r: httpx.Response(200)),
+        )
+        try:
+            with pytest.raises((TypeError, RuntimeError), match="AsyncClient"):
+                run_async(http_safe.loopback_request(
+                    sync_client, "GET", "http://127.0.0.1/",
+                    max_bytes=10, timeout=1.0,
+                ))
+        finally:
+            sync_client.close()
+
+    def test_timeout_propagates(self):
+        def handler(request):
+            raise httpx.ReadTimeout("slow", request=request)
+
+        with pytest.raises(httpx.TimeoutException):
+            self._call(handler)
+
+    def test_connect_error_propagates(self):
+        def handler(request):
+            raise httpx.ConnectError("refused", request=request)
+
+        with pytest.raises(httpx.ConnectError):
+            self._call(handler)

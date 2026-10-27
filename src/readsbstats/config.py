@@ -446,6 +446,23 @@ FEEDERS = _parse_feeders(os.getenv("RSBS_FEEDERS", ""))
 FEEDER_STATUS_ROOT = os.getenv("RSBS_FEEDER_STATUS_ROOT", "/run").rstrip("/") or "/"
 
 # ---------------------------------------------------------------------------
+# MCP server (opt-in, ADR-0022) — read only by readsbstats.mcp_server; not
+# registered with _register, so not shown on /api/settings.
+# ---------------------------------------------------------------------------
+MCP_HOST          = os.getenv("RSBS_MCP_HOST", "127.0.0.1")
+MCP_PORT          = _int("RSBS_MCP_PORT", "8765")
+# Extra Host-header values (host:port) the server accepts, comma-separated.
+MCP_ALLOWED_HOSTS = [h.strip() for h in os.getenv("RSBS_MCP_ALLOWED_HOSTS", "").split(",") if h.strip()]
+MCP_TOKENS_FILE   = os.getenv("RSBS_MCP_TOKENS_FILE", "/etc/readsbstats/mcp-tokens")
+# Validated (loopback http only) by the mcp_server entry point, not here.
+MCP_API_URL       = os.getenv("RSBS_MCP_API_URL", "http://127.0.0.1:8080")
+MCP_READ_PER_MIN    = _int("RSBS_MCP_READ_PER_MIN",    "30")   # read tool calls per client per minute
+MCP_WRITE_PER_HOUR  = _int("RSBS_MCP_WRITE_PER_HOUR",  "10")   # watchlist writes per client per hour
+MCP_PHOTO_PER_HOUR  = _int("RSBS_MCP_PHOTO_PER_HOUR",  "20")   # photo fetches per client per hour
+MCP_CONCURRENCY     = _int("RSBS_MCP_CONCURRENCY",     "2")    # concurrent API calls, all clients
+MCP_WATCHLIST_MAX   = _int("RSBS_MCP_WATCHLIST_MAX",   "100")  # watchlist size cap for MCP additions
+
+# ---------------------------------------------------------------------------
 # Range validation — clamp values that would cause busy loops, data loss,
 # or broken filtering.  Warn to stderr and fall back to defaults.
 # ---------------------------------------------------------------------------
@@ -486,6 +503,14 @@ if cleaners.valid_lon(RECEIVER_LON) is None:
     print(f"ERROR: RSBS_LON={RECEIVER_LON} is out of range [-180, 180], "
           f"using default {_RECEIVER_LON_DEFAULT}", file=sys.stderr)
     RECEIVER_LON = _RECEIVER_LON_DEFAULT
+
+# MCP server limits — zero would block every call or disable the guard
+MCP_PORT           = _min_or_default_int("RSBS_MCP_PORT",           MCP_PORT,           1, 8765)
+MCP_READ_PER_MIN   = _min_or_default_int("RSBS_MCP_READ_PER_MIN",   MCP_READ_PER_MIN,   1, 30)
+MCP_WRITE_PER_HOUR = _min_or_default_int("RSBS_MCP_WRITE_PER_HOUR", MCP_WRITE_PER_HOUR, 1, 10)
+MCP_PHOTO_PER_HOUR = _min_or_default_int("RSBS_MCP_PHOTO_PER_HOUR", MCP_PHOTO_PER_HOUR, 1, 20)
+MCP_CONCURRENCY    = _min_or_default_int("RSBS_MCP_CONCURRENCY",    MCP_CONCURRENCY,    1, 2)
+MCP_WATCHLIST_MAX  = _min_or_default_int("RSBS_MCP_WATCHLIST_MAX",  MCP_WATCHLIST_MAX,  1, 100)
 
 # Thresholds — zero would reject all positions or delete valid flights
 MIN_POSITIONS_KEEP   = _min_or_default_int("RSBS_MIN_POSITIONS",  MIN_POSITIONS_KEEP,   1, 2)

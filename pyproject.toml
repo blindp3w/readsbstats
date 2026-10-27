@@ -4,12 +4,15 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "readsbstats"
-version = "2.30.1"
+version = "2.31.0"
 requires-python = ">=3.10"
 dependencies = [
     "fastapi==0.161.1",
     "uvicorn==0.54.0",
     "httpx==0.28.1",
+    "mcp==2.3.0",
+    # Pulled in by mcp; pinned to a release at least two weeks old.
+    "httpx2==2.13.1",
 ]
 
 [tool.setuptools.packages.find]

@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 
 from fastapi import Header, HTTPException
 
-from .. import config, database, icao_ranges
+from .. import cleaners, config, database, icao_ranges
 
 
 # ---------------------------------------------------------------------------
@@ -431,6 +431,9 @@ def _build_flight_filter(
     from_ts: int | None = None,
     to_ts:   int | None = None,
     has_acars: bool | None = None,
+    origin: str | None = None,
+    dest: str | None = None,
+    airport: str | None = None,
 ) -> tuple[str, list]:
     """Return (WHERE clause, params list) for the shared flight filter params.
 
@@ -519,6 +522,21 @@ def _build_flight_filter(
     if squawk:
         conditions.append("f.squawk = ?")
         params.append(squawk.strip())
+
+    # Route filters hit idx_flights_origin / idx_flights_dest. `airport` matches
+    # either end. Invalid codes are rejected (400), never silently ignored.
+    for name, value in (("origin", origin), ("dest", dest), ("airport", airport)):
+        if not value:
+            continue
+        code = cleaners.valid_icao_code(value, 4)
+        if code is None:
+            raise HTTPException(400, f"{name} must be a 4-character ICAO airport code")
+        if name == "airport":
+            conditions.append("(f.origin_icao = ? OR f.dest_icao = ?)")
+            params += [code, code]
+        else:
+            conditions.append(f"f.{name}_icao = ?")
+            params.append(code)
 
     # Only emitted when the handler has confirmed vdl2db is attached (it passes
     # has_acars=None otherwise), so the vdl2db reference is always resolvable.

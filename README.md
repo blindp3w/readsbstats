@@ -48,6 +48,7 @@ readsb and tar1090 give you a great live view — readsbstats adds the other hal
 - Live map with **Live / Rewind / HIST** modes — rewind from "now" or jump to any moment within `map_history_hours` via a date+time picker; bottom command bar with playback scrubber, range pills, position heatmap, and coverage range overlay; responsive down to iPhone
 - Telegram notifications for military/interesting/anonymous/watchlist/emergency-squawk events; interactive bot commands
 - Aircraft watchlist — track by ICAO hex, registration, or callsign prefix
+- Optional **LLM access over MCP** ([`readsbstats-mcp`](docs/mcp.md), off by default): search flights, read statistics, live aircraft and receiver health, and edit the watchlist from an LLM client, with per-client bearer tokens, scopes and rate limits ([ADR-0022](docs/decisions/0022-llm-access-mcp.md))
 - Receiver metrics dashboard with 10 time-series charts (Apache ECharts canvas, cross-panel hover sync, wheel/pinch zoom, LTTB downsampling) and 9 health checks
 - Statistics dashboard — receiver-wide aggregates (top aircraft/airlines/routes/airports, hourly & daily activity, DOW×hour heatmap, polar coverage range). Defaults to the **last 7 days** for fast loads; the all-time view is background-warmed so it stays snappy
 - Heatmap and coverage overlays served from collector-maintained daily rollup tables — millisecond responses at any history size, and the all-time heatmap and coverage views survive raw-position retention
@@ -138,6 +139,7 @@ readsbstats has **no built-in authentication or authorization**. It is designed 
 - **The `X-Requested-With` CSRF header is not authentication.** It only blocks cross-site form posts from a browser; it does not identify or authorize a caller. Do not treat it as an access control.
 - **If you expose the UI beyond a trusted LAN, put an authenticating reverse proxy in front** (HTTP basic auth, an OAuth2 proxy, or a VPN/Tailscale). Do not publish `127.0.0.1:8080` directly to the internet.
 - Outbound HTTP (photo/route enrichment) is SSRF-guarded (`http_safe.py`) and provider photo URLs are host-allowlisted before caching (`RSBS_PHOTO_HOST_ENFORCE`) and at the API response boundary.
+- The optional MCP server ([`readsbstats-mcp`](docs/mcp.md), off by default) has its own per-client bearer tokens (stored as SHA-256 hashes), scopes and rate limits, and reaches the data only through loopback. Bind it to a trusted address and firewall its port.
 
 See [Operations → Deployment security](docs/operations.md#deployment-security) for the full trust model.
 
@@ -192,6 +194,7 @@ readsbstats/
 │   ├── geo.py                  # haversine_nm, bearing
 │   ├── sim.py                  # Dev-only aircraft.json simulator
 │   ├── vdl2_collector.py       # Opt-in VDL2/ACARS ingest service (UDP → vdl2.db)
+│   ├── mcp_server/             # Opt-in MCP server for LLM access (ADR-0022)
 │   └── vdl2/                   # VDL2/ACARS parsing + separate vdl2.db
 │       ├── db.py               # vdl2.db schema + idempotent migrate()
 │       ├── normalize.py        # vdlm2dec / dumpvdl2 JSON → one record
@@ -207,12 +210,13 @@ readsbstats/
 │   ├── backfill_vdl2_dumpvdl2.py # One-shot: backfill VDL2 rows after dumpvdl2-related upgrades
 │   ├── migrate_v6.py           # One-shot offline migration: schema v5 → v6
 │   ├── check_db.py             # SQLite integrity checker (also run by the systemd timers)
+│   ├── mcp_token.py            # MCP client tokens: add, new, list, revoke
 │   ├── import_rrd.py           # Import graphs1090 RRD history into receiver_stats
 │   ├── purge_ghosts.py         # One-shot: remove ghost positions
 │   ├── purge_bad_gs.py         # One-shot: null implausible gs values
 │   └── purge_mlat_gs_spikes.py # One-shot: null MLAT gs spikes
 ├── frontend/                   # React 19 + Vite 8 SPA (610 Vitest tests)
-├── tests/                      # pytest (2513 tests) + Playwright UI (84 tests)
+├── tests/                      # pytest (3249 tests) + Playwright UI (84 tests)
 ├── static/airspace/            # Bundled airspace GeoJSON
 ├── systemd/                    # Service + timer unit files
 └── docs/                       # Public documentation
@@ -221,6 +225,7 @@ readsbstats/
     ├── integrations.md         # Telegram setup + ghost/GS filtering
     ├── operations.md           # Updating, maintenance, useful commands
     ├── development.md          # Local dev, testing, build, deploy
+    ├── mcp.md                  # Optional MCP server (LLM access)
     ├── dumpvdl2-airspy-mini.md # Running dumpvdl2 on an Airspy Mini
     ├── README.md               # Documentation index
     ├── decisions/              # Architecture Decision Records
@@ -233,9 +238,10 @@ Full guides live in [`docs/`](docs/), grouped by reference / how-to / explanatio
 
 | Guide | Contents |
 |---|---|
-| [Configuration](docs/configuration.md) | All 82 `RSBS_*` env vars, logging, airspace config |
+| [Configuration](docs/configuration.md) | All 91 `RSBS_*` env vars, logging, airspace config |
 | [API Reference](docs/api.md) | All API endpoints, SPA routes, database schema |
 | [Integrations](docs/integrations.md) | Telegram setup, bot commands, ghost/GS filtering |
+| [MCP server](docs/mcp.md) | Optional LLM access: enabling, client tokens, client setup, tool list |
 | [Operations](docs/operations.md) | Updating code, DB sync, useful commands, backups |
 | [Development](docs/development.md) | Local setup, tests, build, deploy to Pi |
 | [dumpvdl2 on an Airspy Mini](docs/dumpvdl2-airspy-mini.md) | Driving dumpvdl2 from an Airspy Mini via external IQ resampling |

@@ -5,6 +5,46 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 2.31.0 — 2026-10-27
+
+Optional LLM access over MCP, and airport filters for the flight list. No schema
+changes.
+
+### Added
+
+- **MCP server for LLM clients** (`readsbstats-mcp`, opt-in, off by default;
+  [docs/mcp.md](docs/mcp.md), [ADR-0022](docs/decisions/0022-llm-access-mcp.md)).
+  Streamable HTTP on port 8765 (loopback by default) with 19 tools: flight search,
+  flight detail and profile, aircraft, airline and type history, photos, flagged
+  aircraft, live and historical sky, statistics, records, daily counts, range by
+  bearing, receiver health and metrics, and watchlist list/add/remove.
+  - Runs as its own dynamic user with its own `/etc/readsbstats/mcp.env`, cannot
+    open the database, and reads data only through the local web API via the new
+    loopback-only `http_safe.loopback_request()` and an allowlist of routes.
+  - One bearer token per client with scopes (`read`, `watchlist`, `location`). Only SHA-256
+    hashes are stored (`/etc/readsbstats/mcp-tokens`, root 0600, passed in with
+    `LoadCredential`); with no tokens every request is refused.
+    `scripts/mcp_token.py add --sha256` registers a token generated on the client.
+  - Per-client limits (30 reads/min, 10 watchlist writes/h, 20 photo lookups/h by
+    default), a global concurrency cap, cache-friendly stats windows only,
+    watchlist guards (callsign prefixes of at least 3 characters, a size cap) and
+    a log line for every accepted write.
+  - No absolute coordinates leave the server, only distances and bearings from
+    the receiver, unless the client has the opt-in `location` scope (aircraft
+    positions, the receiver position and flight track points, in `live_aircraft`,
+    `sky_at` and `flight_profile`). Flight bounding boxes are never returned.
+  - New dependencies: `mcp==2.3.0` and `httpx2==2.13.1`.
+- **`origin`, `dest` and `airport` filters** on `/api/flights` and
+  `/api/flights/export.csv` (4-character ICAO codes; `airport` matches either end;
+  an invalid code returns 400).
+
+### Upgrade
+
+Nothing changes unless you enable the MCP server: `update.sh` installs its unit
+but never starts it. To use it, follow [docs/mcp.md](docs/mcp.md): create a
+token, put any `RSBS_MCP_*` settings in `/etc/readsbstats/mcp.env`, then
+`sudo systemctl enable --now readsbstats-mcp`.
+
 ## 2.30.1 — 2026-10-27
 
 CI only. No production behaviour changes.

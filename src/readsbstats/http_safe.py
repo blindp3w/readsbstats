@@ -6,8 +6,14 @@ All outbound HTTP from readsbstats goes through one of:
     db_updater).
   * :func:`safe_httpx_get` for ``httpx``-style callers (route_enricher,
     adsbx_enricher).
+  * :func:`loopback_request` -- the third, **loopback-only** helper, for the
+    async ``httpx`` calls our own processes make to our own local services
+    (the MCP server talking to the web app on ``127.0.0.1:8080``, ADR-0022).
+    It is the deliberate opposite of the two helpers above: plain ``http://``
+    to ``127.0.0.1`` / ``localhost`` / ``::1`` only, never a public host. It
+    must never be used for third-party or user-influenced URLs.
 
-Both helpers enforce:
+The first two helpers enforce:
 
   * HTTPS only.
   * Hostname must resolve to a globally-reachable IP
@@ -19,6 +25,11 @@ Both helpers enforce:
     error.  This prevents a hostile or compromised upstream from bouncing us
     onto an internal endpoint such as the cloud metadata service.
   * Response body is capped at ``max_bytes``.
+
+:func:`loopback_request` replaces the first two rules with "scheme is http and
+the host is literally one of :data:`LOOPBACK_HOSTS`" (no DNS, no userinfo, no
+numeric IP spellings such as ``http://2130706433/``) and keeps the last two
+(no redirects, capped body).
 
 These properties match the frontend ``safeUrl()`` policy in
 ``frontend/src/lib/safeUrl.ts``.
@@ -514,3 +525,90 @@ def safe_httpx_get(
             f"(got {len(resp.content)})"
         )
     return resp
+
+
+# ---------------------------------------------------------------------------
+# Loopback-only helper (our own local services)
+# ---------------------------------------------------------------------------
+
+# Literal host names accepted by loopback_request. Deliberately a closed list
+# of spellings, not "anything that resolves/parses to a loopback address":
+# 127.0.0.2, 0.0.0.0, decimal/hex/octal IPs and DNS names all stay rejected.
+LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
+
+_LOOPBACK_METHODS = frozenset({"GET", "POST", "DELETE"})
+
+
+def is_loopback_http_url(url: str) -> bool:
+    """True only for ``http://`` URLs whose host is in :data:`LOOPBACK_HOSTS`,
+    with no userinfo."""
+    if not isinstance(url, str) or not url:
+        return False
+    # Whitespace / control chars / backslashes are parser-differential bait.
+    if any(c.isspace() or ord(c) < 0x20 or c == "\\" for c in url):
+        return False
+    try:
+        parsed = urllib.parse.urlparse(url)
+        parsed.port  # noqa: B018 — raises ValueError on a bad / out-of-range port
+    except ValueError:
+        return False
+    if parsed.scheme != "http":
+        return False
+    if "@" in parsed.netloc or parsed.username is not None or parsed.password is not None:
+        return False
+    return parsed.hostname in LOOPBACK_HOSTS
+
+
+async def loopback_request(
+    client: "httpx.AsyncClient",
+    method: str,
+    url: str,
+    *,
+    max_bytes: int,
+    timeout: float,
+    headers: dict | None = None,
+    json: object | None = None,
+) -> tuple[int, "httpx.Headers", bytes]:
+    """Async request to one of our own loopback services; returns
+    ``(status_code, headers, body)``.
+
+    Enforces: ``is_loopback_http_url(url)``; method in GET/POST/DELETE;
+    ``follow_redirects=False`` with any 3xx raising :class:`UnsafeURLError`;
+    the body is streamed and aborted with :class:`UnsafeURLError` once it
+    exceeds ``max_bytes``. Non-2xx statuses are returned, not raised, so the
+    caller can read 4xx bodies. httpx network / timeout exceptions propagate
+    unchanged. ``json`` is sent only when not ``None``.
+
+    Only an ``httpx.AsyncClient`` is accepted (``TypeError`` otherwise).
+    """
+    if httpx is not None and not isinstance(client, httpx.AsyncClient):
+        raise TypeError(
+            "loopback_request requires an httpx.AsyncClient "
+            f"(got {type(client).__name__})"
+        )
+    if method not in _LOOPBACK_METHODS:
+        raise ValueError(f"loopback_request: method {method!r} not allowed")
+    if not is_loopback_http_url(url):
+        raise UnsafeURLError(f"not a loopback http:// URL: {url!r}")
+
+    kwargs: dict = {"timeout": timeout, "follow_redirects": False}
+    if headers is not None:
+        kwargs["headers"] = headers
+    if json is not None:
+        kwargs["json"] = json
+
+    async with client.stream(method, url, **kwargs) as resp:
+        if resp.status_code in _REDIRECT_CODES:
+            raise UnsafeURLError(
+                f"redirect blocked: {method} {url} -> {resp.status_code} "
+                f"-> {resp.headers.get('Location', '?')!r}"
+            )
+        buf = bytearray()
+        async for chunk in resp.aiter_bytes():
+            buf.extend(chunk)
+            if len(buf) > max_bytes:
+                raise UnsafeURLError(
+                    f"response from {url} exceeded max_bytes={max_bytes} "
+                    f"(streamed {len(buf)} before cutoff)"
+                )
+        return resp.status_code, resp.headers, bytes(buf)
