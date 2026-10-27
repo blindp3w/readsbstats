@@ -220,16 +220,23 @@ class TestLocated:
         for p in shaping.shape_profile(raw)["points"]:
             assert "lat" not in p and "lon" not in p
 
-    def test_located_200_rows_fit_the_cap_or_are_truncated(self):
+    def test_located_200_rows_truncate_to_the_nearest(self):
         aircraft = [{"icao_hex": f"{i:06x}", "flight_id": 1000 + i, "callsign": f"LOT{i:04d}",
                      "registration": f"SP-L{i:03d}", "aircraft_type": "B738", "flags": 0,
                      "origin_icao": "EPWA", "dest_icao": "EGLL", "primary_source": "adsb",
                      "seconds_ago": i, "lat": 52.0 + i * 0.01234567, "lon": 21.0 + i * 0.01234567}
                     for i in range(200)]
-        out = shaping.shape_sky({"receiver_lat": RLAT, "receiver_lon": RLON,
-                                 "aircraft": aircraft}, limit=200, with_location=True)
-        out = shaping.cap_size(out)
-        assert shaping._size(out) <= shaping.MAX_RESPONSE_BYTES or out.get("truncated") is True
+        full = shaping.shape_sky({"receiver_lat": RLAT, "receiver_lon": RLON,
+                                  "aircraft": aircraft}, limit=200, with_location=True)
+        nearest = [a["icao_hex"] for a in full["aircraft"]]
+        out = shaping.cap_size(full)
+        # 200 located rows exceed the cap (~49 KB): the tail is cut, the nearest rows survive.
+        assert out["truncated"] is True
+        assert shaping._size(out) <= shaping.MAX_RESPONSE_BYTES
+        kept = [a["icao_hex"] for a in out["aircraft"]]
+        assert 100 <= len(kept) < 200
+        assert kept == nearest[:len(kept)]
+        assert all("lat" in a and "lon" in a for a in out["aircraft"])
 
 
 class TestStripLocation:

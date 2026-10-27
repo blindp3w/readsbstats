@@ -145,7 +145,7 @@ The server exposes 19 tools. Each returns JSON.
 | HTTP 421 | The `Host` header is not allowed. | Add the `host:port` value to `RSBS_MCP_ALLOWED_HOSTS`, then restart. |
 | HTTP 403 | The request carries an `Origin` header, as browsers send. | Use a non-browser MCP client. |
 | "this token lacks the 'watchlist' scope" | The client's token is read-only. | Revoke the client and `add` it again with `--scopes read,watchlist`. |
-| Results have no `lat`/`lon` | The token lacks the `location` scope. | Revoke the client and `add` it again with `--scopes read,location`. |
+| Results have no `lat`/`lon` | The token lacks the `location` scope. | Revoke the client and `add` it again with `location` added to its current scopes (for example `--scopes read,location` or `--scopes read,watchlist,location`). |
 | "rate limit for read calls reached; retry in N s" (`write`, `photo` likewise) | The client used up its budget. | Wait. The server instructions tell the model to stop calling tools. |
 | "server busy; retry in a few seconds" | All concurrent API slots stayed busy for 5 s. | Retry. If it persists, check `journalctl -u readsbstats-web`. |
 | "readsbstats API is unreachable" or "slow right now" | The web service is down or busy. | `systemctl status readsbstats-web`. |
