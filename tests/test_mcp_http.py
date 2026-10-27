@@ -97,6 +97,11 @@ class TestToolsList:
         for name, t in list_tools(http).items():
             assert len(t["description"]) > 30, name
 
+    def test_coordinate_tools_mention_the_location_scope(self, http):
+        tools = list_tools(http)
+        for name in ("live_aircraft", "sky_at", "flight_profile"):
+            assert "location" in tools[name]["description"], name
+
     def test_schemas_constrain_inputs(self, http):
         tools = list_tools(http)
         props = tools["search_flights"]["inputSchema"]["properties"]

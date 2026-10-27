@@ -1,10 +1,13 @@
 """Per-tool response shaping through output allowlists (ADR-0022, Decision 6).
 
 Raw API payloads carry the receiver's coordinates, flight bounding boxes,
-track points and many fields a model does not need. No absolute coordinates
-leave the server: aircraft are reported by distance and bearing only. Every tool builds its
-result from the allowlists below, then passes it through :func:`strip_location`
-(a backstop) and :func:`cap_size`. Free text from third parties is cleaned and
+track points and many fields a model does not need. Absolute coordinates leave
+the server only for a client with the opt-in ``location`` scope, and only from
+three tools (``live_aircraft``, ``sky_at``, ``flight_profile``: aircraft and track
+positions, plus the receiver's position); otherwise aircraft are reported by
+distance and bearing only. Every tool builds its result from the allowlists
+below, then passes it through :func:`strip_location` (a backstop) and
+:func:`cap_size`. Free text from third parties is cleaned and
 length-capped; times become local ISO strings; flag bits become names.
 """
 
@@ -30,8 +33,11 @@ FLAG_NAMES = {
     config.FLAG_ANONYMOUS: "anonymous",
 }
 
-_LOCATION_KEYS = frozenset({"receiver_lat", "receiver_lon", "lat_min", "lat_max",
+_LOCATION_KEYS = frozenset({"receiver", "receiver_lat", "receiver_lon", "lat_min", "lat_max",
                             "lon_min", "lon_max", "lat", "lon", "latitude", "longitude"})
+# What a located result may keep; the raw receiver_*/bounding-box keys never.
+LOCATED_KEEP = frozenset({"lat", "lon", "receiver"})
+_COORD_DIGITS = 4        # ~11 m
 
 
 # ---- scalar helpers ---------------------------------------------------------
@@ -58,6 +64,20 @@ def _rnd(value: Any, ndigits: int | None = None) -> int | float | None:
     if v is None:
         return None
     return round(v) if ndigits is None else round(v, ndigits)
+
+
+def _coord(value: Any, valid=cleaners.valid_lat) -> float | None:
+    """A coordinate rounded to 4 decimals, None if not a number in range."""
+    v = _num(value)
+    if v is None:
+        return None
+    v = valid(v)
+    return None if v is None else round(v, _COORD_DIGITS)
+
+
+def _lat_lon(lat: Any, lon: Any) -> tuple[float, float] | None:
+    la, lo = _coord(lat), _coord(lon, cleaners.valid_lon)
+    return None if la is None or lo is None else (la, lo)
 
 
 def _iso(value: Any) -> str | None:
@@ -142,23 +162,28 @@ def aircraft_info(info: Any) -> dict:
     return out
 
 
-def shape_profile(raw: dict) -> dict:
+def shape_profile(raw: dict, *, with_location: bool = False) -> dict:
     points = []
     for p in raw.get("positions") or []:
         if not isinstance(p, dict):
             continue
-        points.append(_build(p, (
+        point = _build(p, (
             ("time", "ts", "iso"), ("alt_ft", "alt_baro", "i"), ("gs_kt", "gs", "i"),
             ("track_deg", "track", "i"), ("vrate_fpm", "baro_rate", "i"),
             ("source", "source_type", "c"),
-        )))
+        ))
+        pos = _lat_lon(p.get("lat"), p.get("lon")) if with_location else None
+        if pos:
+            point["lat"], point["lon"] = pos
+        points.append(point)
     return {"total_positions": _rnd(raw.get("total")), "points": points}
 
 
 # ---- live / snapshot --------------------------------------------------------
-def live_aircraft(a: dict, rlat: Any, rlon: Any) -> dict:
+def live_aircraft(a: dict, rlat: Any, rlon: Any, *, with_location: bool = False) -> dict:
     """One aircraft. Distance and bearing are computed from the exact receiver
-    location; neither that location nor the aircraft's own coordinates are
+    location. The aircraft's own coordinates (4 decimals) are added only with
+    ``with_location``; without it neither they nor the receiver's location are
     returned (an absolute position plus a distance and bearing would give the
     receiver's position away)."""
     out = _build(a, (
@@ -171,6 +196,10 @@ def live_aircraft(a: dict, rlat: Any, rlon: Any) -> dict:
     ))
     source = a.get("source_type") or a.get("primary_source")
     _put(out, "source", _text(source, CODE_LIMIT))
+    if with_location:
+        pos = _lat_lon(a.get("lat"), a.get("lon"))
+        if pos:
+            out["lat"], out["lon"] = pos
     lat, lon = _num(a.get("lat")), _num(a.get("lon"))
     if lat is not None and lon is not None:
         rl, ro = _num(rlat), _num(rlon)
@@ -180,16 +209,20 @@ def live_aircraft(a: dict, rlat: Any, rlon: Any) -> dict:
     return out
 
 
-def shape_sky(raw: dict, limit: int) -> dict:
+def shape_sky(raw: dict, limit: int, *, with_location: bool = False) -> dict:
     rlat, rlon = raw.get("receiver_lat"), raw.get("receiver_lon")
-    rows = [live_aircraft(a, rlat, rlon) for a in raw.get("aircraft") or []
-            if isinstance(a, dict)]
+    rows = [live_aircraft(a, rlat, rlon, with_location=with_location)
+            for a in raw.get("aircraft") or [] if isinstance(a, dict)]
     rows.sort(key=lambda r: (r.get("distance_nm") is None, r.get("distance_nm") or 0.0))
     out: dict = {}
     if "at" in raw:
         _put(out, "at", _iso(raw.get("at")))
     if "is_live" in raw:
         out["is_live"] = bool(raw.get("is_live"))
+    if with_location:
+        pos = _lat_lon(rlat, rlon)
+        if pos:
+            out["receiver"] = {"lat": pos[0], "lon": pos[1]}
     out["count"] = len(rows)
     out["aircraft"] = rows[:limit]
     if len(rows) > limit:
@@ -421,12 +454,14 @@ def watchlist_entry(e: Any) -> dict:
 
 
 # ---- final passes -----------------------------------------------------------
-def strip_location(obj: Any) -> Any:
-    """Recursively drop receiver coordinates and flight bounding boxes."""
+def strip_location(obj: Any, keep: frozenset = frozenset()) -> Any:
+    """Recursively drop receiver coordinates and flight bounding boxes, except
+    the keys in ``keep``."""
     if isinstance(obj, dict):
-        return {k: strip_location(v) for k, v in obj.items() if k not in _LOCATION_KEYS}
+        return {k: strip_location(v, keep) for k, v in obj.items()
+                if k in keep or k not in _LOCATION_KEYS}
     if isinstance(obj, list):
-        return [strip_location(v) for v in obj]
+        return [strip_location(v, keep) for v in obj]
     return obj
 
 

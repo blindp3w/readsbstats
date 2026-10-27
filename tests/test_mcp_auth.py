@@ -49,8 +49,14 @@ class TestHashAndScopes:
         with pytest.raises(ValueError):
             normalize_scopes(spec)
 
+    def test_location_implies_read(self):
+        assert normalize_scopes("location") == frozenset({"read", "location"})
+
+    def test_watchlist_and_location(self):
+        assert normalize_scopes("watchlist,location") == frozenset({"read", "watchlist", "location"})
+
     def test_scopes_const(self):
-        assert auth.SCOPES == frozenset({"read", "watchlist"})
+        assert auth.SCOPES == frozenset({"read", "watchlist", "location"})
 
 
 # ---- parse_tokens ------------------------------------------------------------

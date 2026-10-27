@@ -21,7 +21,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 
 log = logging.getLogger(__name__)
 
-SCOPES = frozenset({"read", "watchlist"})
+SCOPES = frozenset({"read", "watchlist", "location"})
 NAME_RE = re.compile(r"^[a-z0-9-]{1,32}$")
 HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 
@@ -41,7 +41,7 @@ def hash_token(token: str) -> str:
 
 
 def normalize_scopes(spec: str) -> frozenset[str]:
-    """``"read,watchlist"`` -> frozenset; ``watchlist`` implies ``read``."""
+    """``"read,watchlist"`` -> frozenset; ``watchlist`` and ``location`` imply ``read``."""
     parts = [p.strip() for p in spec.split(",")]
     if not spec.strip() or any(not p for p in parts):
         raise ValueError(f"empty scope in {spec!r}; use a comma-separated list of {sorted(SCOPES)}")
@@ -49,7 +49,7 @@ def normalize_scopes(spec: str) -> frozenset[str]:
     if unknown:
         raise ValueError(f"unknown scope {unknown[0]!r}; valid scopes: {', '.join(sorted(SCOPES))}")
     scopes = set(parts)
-    if "watchlist" in scopes:
+    if scopes & {"watchlist", "location"}:
         scopes.add("read")
     return frozenset(scopes)
 

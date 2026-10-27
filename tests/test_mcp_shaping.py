@@ -162,7 +162,94 @@ class TestLiveAircraft:
         assert out["count"] == 0 and out["aircraft"] == []
 
 
+class TestLocated:
+    AC = {"icao_hex": "48c1ea", "callsign": "LOT1", "lat": 52.5678912, "lon": 21.9876543}
+
+    def test_live_aircraft_with_location(self):
+        out = shaping.live_aircraft(self.AC, RLAT, RLON, with_location=True)
+        assert out["lat"] == 52.5679 and out["lon"] == 21.9877
+        assert out["distance_nm"] > 0 and "receiver_lat" not in out
+
+    def test_live_aircraft_without_location(self):
+        out = shaping.live_aircraft(self.AC, RLAT, RLON)
+        assert "lat" not in out and "lon" not in out
+        out = shaping.live_aircraft(self.AC, RLAT, RLON, with_location=False)
+        assert "lat" not in out and "lon" not in out
+
+    @pytest.mark.parametrize("lat,lon", [(None, 21.0), (52.0, None), (91.0, 21.0),
+                                         (52.0, 181.0), ("x", "y"), (True, 21.0),
+                                         (float("nan"), 21.0)])
+    def test_live_aircraft_invalid_position_adds_nothing(self, lat, lon):
+        out = shaping.live_aircraft({"icao_hex": "48c1ea", "lat": lat, "lon": lon},
+                                    RLAT, RLON, with_location=True)
+        assert "lat" not in out and "lon" not in out
+
+    def test_shape_sky_with_location(self):
+        raw = {"receiver_lat": RLAT, "receiver_lon": RLON, "aircraft": [self.AC]}
+        out = shaping.shape_sky(raw, limit=5, with_location=True)
+        assert out["receiver"] == {"lat": 52.1234, "lon": 21.4321}
+        assert out["aircraft"][0]["lat"] == 52.5679
+        assert "receiver_lat" not in out and "receiver_lon" not in out
+
+    def test_shape_sky_receiver_is_rounded(self):
+        out = shaping.shape_sky({"receiver_lat": 52.123456, "receiver_lon": 21.432149,
+                                 "aircraft": []}, limit=5, with_location=True)
+        assert out["receiver"] == {"lat": 52.1235, "lon": 21.4321}
+
+    def test_shape_sky_without_location(self):
+        raw = {"receiver_lat": RLAT, "receiver_lon": RLON, "aircraft": [self.AC]}
+        for out in (shaping.shape_sky(raw, limit=5),
+                    shaping.shape_sky(raw, limit=5, with_location=False)):
+            assert "receiver" not in out
+            assert "lat" not in out["aircraft"][0] and "lon" not in out["aircraft"][0]
+
+    @pytest.mark.parametrize("rlat,rlon", [(None, RLON), (RLAT, None), (200.0, RLON),
+                                           (RLAT, 200.0), (None, None), ("x", RLON)])
+    def test_shape_sky_invalid_receiver_is_omitted(self, rlat, rlon):
+        out = shaping.shape_sky({"receiver_lat": rlat, "receiver_lon": rlon,
+                                 "aircraft": [self.AC]}, limit=5, with_location=True)
+        assert "receiver" not in out
+
+    def test_shape_profile_with_location(self):
+        raw = {"total": 2, "positions": [
+            {"ts": 1_700_000_000, "lat": 52.123456, "lon": 21.654321, "alt_baro": 1000},
+            {"ts": 1_700_000_060, "lat": None, "lon": 21.0, "alt_baro": 2000}]}
+        p0, p1 = shaping.shape_profile(raw, with_location=True)["points"]
+        assert p0["lat"] == 52.1235 and p0["lon"] == 21.6543 and p0["alt_ft"] == 1000
+        assert "lat" not in p1 and "lon" not in p1
+        for p in shaping.shape_profile(raw)["points"]:
+            assert "lat" not in p and "lon" not in p
+
+    def test_located_200_rows_fit_the_cap_or_are_truncated(self):
+        aircraft = [{"icao_hex": f"{i:06x}", "flight_id": 1000 + i, "callsign": f"LOT{i:04d}",
+                     "registration": f"SP-L{i:03d}", "aircraft_type": "B738", "flags": 0,
+                     "origin_icao": "EPWA", "dest_icao": "EGLL", "primary_source": "adsb",
+                     "seconds_ago": i, "lat": 52.0 + i * 0.01234567, "lon": 21.0 + i * 0.01234567}
+                    for i in range(200)]
+        out = shaping.shape_sky({"receiver_lat": RLAT, "receiver_lon": RLON,
+                                 "aircraft": aircraft}, limit=200, with_location=True)
+        out = shaping.cap_size(out)
+        assert shaping._size(out) <= shaping.MAX_RESPONSE_BYTES or out.get("truncated") is True
+
+
 class TestStripLocation:
+    def test_keep_lat_lon_receiver_only(self):
+        obj = {"receiver": {"lat": 1.0, "lon": 2.0}, "receiver_lat": 1, "receiver_lon": 2,
+               "aircraft": [{"lat": 3.0, "lon": 4.0, "lat_min": 5, "lat_max": 6, "lon_min": 7,
+                             "lon_max": 8, "latitude": 9, "longitude": 10, "ok": 1}]}
+        keep = frozenset({"lat", "lon", "receiver"})
+        assert shaping.strip_location(obj, keep=keep) == {
+            "receiver": {"lat": 1.0, "lon": 2.0}, "aircraft": [{"lat": 3.0, "lon": 4.0, "ok": 1}]}
+
+    def test_keep_does_not_retain_other_keys(self):
+        obj = {"receiver": {"lat": 1.0}, "receiver_lat": 1, "lat_min": 2, "a": {"lon_max": 3}}
+        out = shaping.strip_location(obj, keep=frozenset({"lat", "lon", "receiver"}))
+        assert out == {"receiver": {"lat": 1.0}, "a": {}}
+
+    def test_default_strips_receiver_and_lat_lon(self):
+        obj = {"receiver": {"lat": 1.0, "lon": 2.0}, "x": {"lat": 1, "lon": 2, "ok": 1}}
+        assert shaping.strip_location(obj) == {"x": {"ok": 1}}
+
     def test_recursive(self):
         obj = {"receiver_lat": 1, "a": [{"lat_min": 1, "keep": 2, "x": {"lon_max": 3, "ok": 1}}],
                "b": {"receiver_lon": 1, "lat_max": 2, "lon_min": 3, "z": [1, {"lon_max": 4}]}}

@@ -47,8 +47,9 @@ the operator's home.
    - the server sends the CSRF header itself, because the header guards against
      browsers, not against this process;
    - each route has its own timeout and size cap.
-3. **One bearer token per client, with scopes.** Scopes are `read` and `watchlist`
-   (`watchlist` implies `read`). The tokens file (`/etc/readsbstats/mcp-tokens`,
+3. **One bearer token per client, with scopes.** Scopes are `read`, `watchlist` and
+   `location` (`watchlist` and `location` each imply `read`; `location` is opt-in and
+   only adds output, no tool requires it). The tokens file (`/etc/readsbstats/mcp-tokens`,
    `root:root 0600`) stores `<name> <scopes> <sha256>`, never a token. The unit passes it
    in as a credential (`LoadCredential=`): systemd reads it as root and gives the service
    a private read-only copy, which `RSBS_MCP_TOKENS_FILE` points at (`%d/mcp-tokens`), and
@@ -80,10 +81,14 @@ the operator's home.
    - Every accepted write is logged with the client name, and the full removed row is
      logged so it can be restored.
 6. **Responses are shaped per tool through output allowlists.**
-   - No absolute coordinates are returned at all: no `receiver_*`, no flight bounding
-     boxes, no track coordinates in flight profiles, no aircraft positions in live and
-     snapshot results (aircraft are given as distance and bearing from the receiver), no
-     feeder radar codes or ids.
+   - The exact location is withheld unless a client is granted the opt-in `location`
+     scope (aircraft positions, track points and the receiver position in three tools);
+     the location is often already known to feeder networks and to the operator's own
+     agent, so it is a per-client choice, off by default. Without the scope there are no
+     `receiver_*`, no track coordinates in flight profiles and no aircraft positions in
+     live and snapshot results (aircraft are given as distance and bearing from the
+     receiver). Flight bounding boxes, `receiver_*` keys and feeder radar codes or ids are
+     never returned.
    - Times become local ISO strings and flag bits become names.
    - Free-text fields from third parties (callsigns, database fields, airport names,
      photographer, labels) are cleaned and length-capped.
@@ -101,11 +106,14 @@ the operator's home.
 - **New dependency `mcp` (2.3.0).** It brings Starlette extras, pydantic, `pyjwt[crypto]`
   and `httpx2`, which is pinned. Once `httpx2` is installed, Starlette's `TestClient`
   uses it instead of `httpx`.
-- **Location: no coordinates, but distances and bearings remain.** The server returns
-  no absolute coordinates, only distances and bearings relative to the receiver. A client
-  that correlates those with public flight-tracking data (callsign and time give a
-  position) can still derive the receiver's location, so clients must be trusted with the
-  approximate location. Feeding public networks already discloses it roughly.
+- **Location: withheld by default, granted per client.** Without the `location` scope
+  the server returns no absolute coordinates, only distances and bearings relative to the
+  receiver. A client that correlates those with public flight-tracking data (callsign and
+  time give a position) can still derive the receiver's location, so clients must be
+  trusted with the approximate location. Feeding public networks already discloses it
+  roughly. A client with `location` receives aircraft positions, the receiver position
+  and track points (4 decimals), and they reach that client's LLM provider like any tool
+  result, so grant the scope only to clients trusted with the location.
 - **Not every GET is read-only for the database.** An aircraft photo cache miss writes
   the photo cache tables, as it does when the web UI asks for a photo. User data
   changes only through the watchlist tools.

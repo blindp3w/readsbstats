@@ -149,6 +149,19 @@ class TestListRevoke:
         assert "alice" in out and "bob" in out and "watchlist" in out
         assert H1 not in out and H2 not in out and not any(len(w) >= 40 for w in out.split())
 
+    def test_location_scope_round_trips_through_list(self, tf, capsys):
+        assert run("add", "x", "--scopes", "read,location", "--sha256", H1, "--file", tf) == 0
+        capsys.readouterr()
+        assert run("list", "--file", tf) == 0
+        assert "x\tlocation,read" in capsys.readouterr().out
+        assert auth.load_tokens(tf)[H1].scopes == frozenset({"read", "location"})
+
+    @pytest.mark.parametrize("sub", ["add", "new"])
+    def test_help_mentions_location(self, sub, capsys):
+        with pytest.raises(SystemExit):
+            run(sub, "--help")
+        assert "location" in capsys.readouterr().out
+
     def test_list_empty_or_missing(self, tf, capsys):
         assert run("list", "--file", tf) == 0
         assert not os.path.exists(tf)

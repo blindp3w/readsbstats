@@ -9,6 +9,9 @@ the Pi:
     sudo /opt/readsbstats/venv/bin/python /opt/readsbstats/scripts/mcp_token.py add alice \\
         --scopes read --sha256 <64 hex>
 
+Scopes: ``read``, ``watchlist`` (add/remove watchlist entries) and ``location``
+(opt-in: absolute coordinates in three tools); the last two imply ``read``.
+
 ``add`` registers a hash of a token generated on the client host, so the
 secret never reaches the receiver. ``new`` generates a token and prints it
 once, only to a terminal. The server loads the credential copy at startup:
@@ -155,7 +158,7 @@ def build_parser() -> argparse.ArgumentParser:
         if with_name:
             sp.add_argument("name")
         if scopes:
-            sp.add_argument("--scopes", required=True, help="read[,watchlist]")
+            sp.add_argument("--scopes", required=True, help="read[,watchlist][,location]")
         if sha:
             sp.add_argument("--sha256", required=True, help="hex sha256 of the client's token")
         sp.set_defaults(func=fn)

@@ -17,7 +17,7 @@ from starlette.testclient import TestClient
 from readsbstats import cache, config, enrichment, photo_sources, web
 from readsbstats.api import _deps, _photos
 from readsbstats.api import feeders as feeders_mod
-from readsbstats.mcp_server.auth import Client, hash_token
+from readsbstats.mcp_server.auth import Client, hash_token, normalize_scopes
 from readsbstats.mcp_server.client import ApiClient
 from readsbstats.mcp_server.limits import Limiter
 from readsbstats.mcp_server.server import build_app
@@ -34,7 +34,7 @@ FORBIDDEN = ["receiver_lat", "receiver_lon", "lat_min", "lat_max", "lon_min", "l
 
 
 COORDINATE_KEYS = frozenset({"lat", "lon", "latitude", "longitude", "lat_min", "lat_max",
-                             "lon_min", "lon_max", "receiver_lat", "receiver_lon"})
+                             "lon_min", "lon_max", "receiver_lat", "receiver_lon", "receiver"})
 
 
 def coordinate_keys(obj) -> set:
@@ -150,7 +150,9 @@ def db(monkeypatch):
 
 
 TOKENS = {hash_token("tok-rw"): Client("rw", frozenset({"read", "watchlist"})),
-          hash_token("tok-ro"): Client("ro", frozenset({"read"}))}
+          hash_token("tok-ro"): Client("ro", frozenset({"read"})),
+          hash_token("tok-loc"): Client("loc", frozenset({"read", "watchlist", "location"})),
+          hash_token("tok-loconly"): Client("loconly", normalize_scopes("location"))}
 
 
 @pytest.fixture()
@@ -293,6 +295,16 @@ class TestFlightTools:
         text = json.dumps(out)
         assert '"lat"' not in text and '"lon"' not in text
 
+    def test_flight_profile_with_location(self, mcp):
+        fid = self._fid(mcp)
+        out = mcp.call("flight_profile", {"flight_id": fid, "points": 4}, token="tok-loc")
+        assert len(out["points"]) == 4
+        for p in out["points"]:
+            assert isinstance(p["lat"], float) and isinstance(p["lon"], float)
+            assert p["lat"] == round(p["lat"], 4) and p["lon"] == round(p["lon"], 4)
+            assert 52.0 < p["lat"] < 53.0 and 21.0 <= p["lon"] < 22.0
+            assert "alt_ft" in p and "time" in p
+
     def test_flight_profile_points_bounds(self, mcp):
         fid = self._fid(mcp)
         mcp.err("flight_profile", {"flight_id": fid, "points": 1})
@@ -379,6 +391,20 @@ class TestSkyTools:
         a = next(x for x in out["aircraft"] if x["icao_hex"] == "3c6444")
         assert a["alt_ft"] == 12000 and "distance_nm" in a and "trail" not in a
         assert "lat" not in a and "lon" not in a
+
+    def test_live_with_location(self, mcp):
+        out = mcp.call("live_aircraft", token="tok-loc")
+        a = out["aircraft"][0]
+        assert a["lat"] == 52.6789 and a["lon"] == 21.8765
+        assert a["distance_nm"] > 0
+        assert out["receiver"] == {"lat": 52.1234, "lon": 21.4321}
+        assert "receiver_lat" not in out and "receiver_lon" not in out
+
+    def test_sky_at_now_with_location(self, mcp):
+        out = mcp.call("sky_at", {"time": "now"}, token="tok-loc")
+        a = next(x for x in out["aircraft"] if x["icao_hex"] == "3c6444")
+        assert a["lat"] == 52.6789 and a["lon"] == 21.8765 and "trail" not in a
+        assert out["receiver"] == {"lat": 52.1234, "lon": 21.4321}
 
     def test_sky_at_past_iso(self, mcp):
         ts = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(NOW - 7200 + 1200 + 30))
@@ -667,6 +693,47 @@ class TestCrossCutting:
             leaked = coordinate_keys(res["structuredContent"])
             assert not leaked, f"{name} returned absolute coordinates: {leaked}"
         assert len(seen) == 19
+
+    def test_location_token_gets_coordinates_in_three_tools_only(self, mcp):
+        fid = mcp.call("search_flights", {"period": "all"})["flights"][0]["id"]
+        gone = ["receiver_lat", "receiver_lon", "lat_min", "lat_max", "lon_min", "lon_max",
+                "Radar", "T-EPWA", "fr24feed"]
+        three = {"live_aircraft", "sky_at", "flight_profile"}
+        with_coords = set()
+        for name, args in ALL_CALLS:
+            if args == "FID":
+                args = {"flight_id": fid}
+            res = mcp.raw(name, args, token="tok-loc")
+            text = res["content"][0]["text"]
+            assert not res.get("isError"), f"{name}: {text}"
+            structured = json.dumps(res["structuredContent"])
+            for bad in gone:
+                assert bad not in text, f"{name} leaked {bad!r}"
+                assert bad not in structured, f"{name} leaked {bad!r} in structuredContent"
+            keys = coordinate_keys(res["structuredContent"])
+            if keys:
+                with_coords.add(name)
+                assert name in three, f"{name} returned coordinates: {keys}"
+                assert keys <= {"lat", "lon", "receiver"}, f"{name}: {keys}"
+            for lit in ("52.1234", "21.4321"):
+                if name not in ("live_aircraft", "sky_at"):
+                    assert lit not in text, f"{name} leaked the receiver position"
+        assert with_coords == three
+
+    def test_loconly_token_reads_with_coordinates_but_cannot_write(self, mcp):
+        assert mcp.call("records", token="tok-loconly")
+        out = mcp.call("live_aircraft", token="tok-loconly")
+        assert out["aircraft"][0]["lat"] == 52.6789 and "receiver" in out
+        assert "lacks the 'watchlist' scope" in mcp.err(
+            "watchlist_add", {"match_type": "icao", "value": "48c1ea"}, token="tok-loconly")
+
+    def test_interleaved_clients_do_not_share_coordinates(self, mcp):
+        a = mcp.call("live_aircraft", token="tok-loc")
+        b = mcp.call("live_aircraft", token="tok-ro")
+        c = mcp.call("live_aircraft", token="tok-loc")
+        assert "lat" in a["aircraft"][0] and "receiver" in a
+        assert coordinate_keys(b) == set()
+        assert "lat" in c["aircraft"][0] and "receiver" in c
 
     def test_text_is_compact_json(self, mcp):
         res = mcp.raw("records")

@@ -21,7 +21,7 @@ changes.
   - Runs as its own dynamic user with its own `/etc/readsbstats/mcp.env`, cannot
     open the database, and reads data only through the local web API via the new
     loopback-only `http_safe.loopback_request()` and an allowlist of routes.
-  - One bearer token per client with scopes (`read`, `watchlist`). Only SHA-256
+  - One bearer token per client with scopes (`read`, `watchlist`, `location`). Only SHA-256
     hashes are stored (`/etc/readsbstats/mcp-tokens`, root 0600, passed in with
     `LoadCredential`); with no tokens every request is refused.
     `scripts/mcp_token.py add --sha256` registers a token generated on the client.
@@ -29,9 +29,10 @@ changes.
     default), a global concurrency cap, cache-friendly stats windows only,
     watchlist guards (callsign prefixes of at least 3 characters, a size cap) and
     a log line for every accepted write.
-  - No absolute coordinates leave the server: no receiver position, flight
-    bounding boxes or aircraft positions, only distances and bearings from the
-    receiver.
+  - No absolute coordinates leave the server, only distances and bearings from
+    the receiver, unless the client has the opt-in `location` scope (aircraft
+    positions, the receiver position and flight track points, in `live_aircraft`,
+    `sky_at` and `flight_profile`). Flight bounding boxes are never returned.
   - New dependencies: `mcp==2.3.0` and `httpx2==2.13.1`.
 - **`origin`, `dest` and `airport` filters** on `/api/flights` and
   `/api/flights/export.csv` (4-character ICAO codes; `airport` matches either end;
