@@ -43,6 +43,9 @@ def api_flights(
     source: str | None = Query(None, description="adsb | mlat | mixed | other"),
     flags: str | None = Query(None, description="military | interesting | anonymous"),
     squawk: str | None = Query(None),
+    origin: str | None = Query(None, description="departure airport, 4-char ICAO code"),
+    dest: str | None = Query(None, description="destination airport, 4-char ICAO code"),
+    airport: str | None = Query(None, description="airport at either end, 4-char ICAO code"),
     has_acars: bool | None = Query(None, description="only flights with VDL2/ACARS (opt-in)"),
     sort_by: str | None = Query(None),
     sort_dir: str | None = Query(None, description="asc | desc"),
@@ -60,6 +63,7 @@ def api_flights(
     where, params = _deps._build_flight_filter(
         date, icao, callsign, registration, aircraft_type, source, flags, squawk,
         date_from=date_from, date_to=date_to, from_ts=from_ts, to_ts=to_ts,
+        origin=origin, dest=dest, airport=airport,
         has_acars=(True if (has_acars and show_acars) else None),
     )
 
@@ -110,6 +114,9 @@ def api_flights_export(
     source: str | None = Query(None, description="adsb | mlat | mixed | other"),
     flags: str | None = Query(None, description="military | interesting | anonymous"),
     squawk: str | None = Query(None),
+    origin: str | None = Query(None, description="departure airport, 4-char ICAO code"),
+    dest: str | None = Query(None, description="destination airport, 4-char ICAO code"),
+    airport: str | None = Query(None, description="airport at either end, 4-char ICAO code"),
     sort_by: str | None = Query(None),
     sort_dir: str | None = Query(None, description="asc | desc"),
 ) -> Response:
@@ -119,6 +126,7 @@ def api_flights_export(
     where, params = _deps._build_flight_filter(
         date, icao, callsign, registration, aircraft_type, source, flags, squawk,
         date_from=date_from, date_to=date_to, from_ts=from_ts, to_ts=to_ts,
+        origin=origin, dest=dest, airport=airport,
     )
     sort_col = _deps._SORT_COLS.get(sort_by or "", "f.first_seen")
     sort_order = "ASC" if sort_dir == "asc" else "DESC"
