@@ -1,7 +1,8 @@
 """Per-tool response shaping through output allowlists (ADR-0022, Decision 6).
 
 Raw API payloads carry the receiver's coordinates, flight bounding boxes,
-track points and many fields a model does not need. Every tool builds its
+track points and many fields a model does not need. No absolute coordinates
+leave the server: aircraft are reported by distance and bearing only. Every tool builds its
 result from the allowlists below, then passes it through :func:`strip_location`
 (a backstop) and :func:`cap_size`. Free text from third parties is cleaned and
 length-capped; times become local ISO strings; flag bits become names.
@@ -30,7 +31,7 @@ FLAG_NAMES = {
 }
 
 _LOCATION_KEYS = frozenset({"receiver_lat", "receiver_lon", "lat_min", "lat_max",
-                            "lon_min", "lon_max"})
+                            "lon_min", "lon_max", "lat", "lon", "latitude", "longitude"})
 
 
 # ---- scalar helpers ---------------------------------------------------------
@@ -156,8 +157,10 @@ def shape_profile(raw: dict) -> dict:
 
 # ---- live / snapshot --------------------------------------------------------
 def live_aircraft(a: dict, rlat: Any, rlon: Any) -> dict:
-    """One aircraft; distance/bearing use the exact receiver location, which is
-    then dropped. Aircraft positions are kept at 3 decimals (~100 m)."""
+    """One aircraft. Distance and bearing are computed from the exact receiver
+    location; neither that location nor the aircraft's own coordinates are
+    returned (an absolute position plus a distance and bearing would give the
+    receiver's position away)."""
     out = _build(a, (
         ("icao_hex", "icao_hex", "hex"), ("flight_id", "flight_id", "i"),
         ("callsign", "callsign", "t"), ("registration", "registration", "t"),
@@ -170,7 +173,6 @@ def live_aircraft(a: dict, rlat: Any, rlon: Any) -> dict:
     _put(out, "source", _text(source, CODE_LIMIT))
     lat, lon = _num(a.get("lat")), _num(a.get("lon"))
     if lat is not None and lon is not None:
-        out["lat"], out["lon"] = round(lat, 3), round(lon, 3)
         rl, ro = _num(rlat), _num(rlon)
         if rl is not None and ro is not None:
             out["distance_nm"] = round(geo.haversine_nm(rl, ro, lat, lon), 1)

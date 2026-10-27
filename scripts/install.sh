@@ -112,8 +112,11 @@ cp "$APP_DIR/systemd/notify-telegram@.service"          /etc/systemd/system/
 # `systemctl enable --now readsbstats-vdl2.service`. See docs/operations.md.
 cp "$APP_DIR/systemd/readsbstats-vdl2.service"          /etc/systemd/system/
 # Opt-in MCP server (LLM access, ADR-0022) — copied, NOT enabled here. Create
-# client tokens first (scripts/mcp_token.py, docs/mcp.md), then
-# `systemctl enable --now readsbstats-mcp`.
+# client tokens first (scripts/mcp_token.py writes /etc/readsbstats/mcp-tokens,
+# which the unit loads as a credential; docs/mcp.md), then
+# `systemctl enable --now readsbstats-mcp`. Optional settings go in
+# /etc/readsbstats/mcp.env (copy systemd/readsbstats-mcp.env.example); it is
+# deliberately NOT created here and the unit does not read readsbstats.env.
 cp "$APP_DIR/systemd/readsbstats-mcp.service"           /etc/systemd/system/
 mkdir -p /etc/readsbstats
 if [ ! -f /etc/readsbstats/vdl2.env ]; then

@@ -33,6 +33,24 @@ FORBIDDEN = ["receiver_lat", "receiver_lon", "lat_min", "lat_max", "lon_min", "l
              "Radar", "T-EPWA", "52.1234", "21.4321", "fr24feed"]
 
 
+COORDINATE_KEYS = frozenset({"lat", "lon", "latitude", "longitude", "lat_min", "lat_max",
+                             "lon_min", "lon_max", "receiver_lat", "receiver_lon"})
+
+
+def coordinate_keys(obj) -> set:
+    """Every coordinate-like key anywhere in a structured result (recursive walk)."""
+    found = set()
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if k in COORDINATE_KEYS:
+                found.add(k)
+            found |= coordinate_keys(v)
+    elif isinstance(obj, list):
+        for v in obj:
+            found |= coordinate_keys(v)
+    return found
+
+
 def generous_limiter(**kw):
     args = dict(read_per_min=1000, write_per_hour=1000, photo_per_hour=1000, concurrency=4)
     args.update(kw)
@@ -350,7 +368,7 @@ class TestSkyTools:
         a = out["aircraft"][0]
         assert a["icao_hex"] == "3c6444" and a["callsign"] == "DLH457"
         assert a["origin_icao"] == "EDDF" and a["dest_icao"] == "EPWA"
-        assert a["lat"] == 52.679 and a["lon"] == 21.877
+        assert "lat" not in a and "lon" not in a
         assert a["distance_nm"] > 0 and 0 <= a["bearing_deg"] < 360
         assert "receiver_lat" not in out
         mcp.err("live_aircraft", {"limit": 201})
@@ -360,6 +378,7 @@ class TestSkyTools:
         assert out["count"] >= 1 and out["is_live"] is True
         a = next(x for x in out["aircraft"] if x["icao_hex"] == "3c6444")
         assert a["alt_ft"] == 12000 and "distance_nm" in a and "trail" not in a
+        assert "lat" not in a and "lon" not in a
 
     def test_sky_at_past_iso(self, mcp):
         ts = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(NOW - 7200 + 1200 + 30))
@@ -399,6 +418,17 @@ class TestStatsTools:
                                       {"sections": ["receiver_lat"]}, {"sections": ["lifetime"]}])
     def test_stats_errors(self, mcp, args):
         mcp.err("stats", args)
+
+    @pytest.mark.parametrize("period", ["24h", "7d", "30d", "90d", "today", "yesterday",
+                                        "2026-07-01", "all", " 7D "])
+    def test_stats_allowed_periods(self, mcp, period):
+        assert "period" in mcp.call("stats", {"period": period})
+
+    @pytest.mark.parametrize("period", ["2026-07-01..2026-09-30", "13d", "6h", "91d", "92d",
+                                        "1d", "720h", "2026-7-1"])
+    def test_stats_rejects_other_periods(self, mcp, period):
+        text = mcp.err("stats", {"period": period})
+        assert "24h" in text and "90d" in text and "YYYY-MM-DD" in text and "all" in text
 
     def test_same_period_is_snapped(self, api, monkeypatch):
         seen = []
@@ -629,10 +659,13 @@ class TestCrossCutting:
             text = res["content"][0]["text"]
             assert not res.get("isError"), f"{name}: {text}"
             seen.add(name)
+            assert "structuredContent" in res
+            structured = json.dumps(res["structuredContent"])
             for bad in FORBIDDEN:
                 assert bad not in text, f"{name} leaked {bad!r}"
-            assert "structuredContent" in res
-            assert bad not in json.dumps(res["structuredContent"])
+                assert bad not in structured, f"{name} leaked {bad!r} in structuredContent"
+            leaked = coordinate_keys(res["structuredContent"])
+            assert not leaked, f"{name} returned absolute coordinates: {leaked}"
         assert len(seen) == 19
 
     def test_text_is_compact_json(self, mcp):

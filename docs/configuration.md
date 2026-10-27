@@ -233,14 +233,14 @@ Thresholds for the nine receiver-health checks. All effective values are also re
 
 ### MCP server (opt-in)
 
-Off by default. These variables are read by `readsbstats-mcp` only. Setup, client tokens and the tool list are in [MCP server](mcp.md).
+Off by default. These variables live in `/etc/readsbstats/mcp.env` (template: `systemd/readsbstats-mcp.env.example`) and are read by `readsbstats-mcp` only, not by the collector or web; the unit does not read `readsbstats.env`. Setup, client tokens and the tool list are in [MCP server](mcp.md).
 
 | Variable | Default | Description |
 |---|---|---|
 | `RSBS_MCP_HOST` | `127.0.0.1` | Listen address. Keep it on loopback unless clients connect from another host; then firewall the port. |
 | `RSBS_MCP_PORT` | `8765` | Listen port (min `1`). |
 | `RSBS_MCP_ALLOWED_HOSTS` | _(empty)_ | Extra accepted `Host` header values (`host:port`), comma-separated, for non-loopback binds. Loopback names are always accepted. |
-| `RSBS_MCP_TOKENS_FILE` | `/etc/readsbstats/mcp-tokens` | Per-client token file: `<name> <scopes> <sha256>` lines, hashes only. Must not be group- or world-writable. |
+| `RSBS_MCP_TOKENS_FILE` | `/etc/readsbstats/mcp-tokens` | Per-client token file: `<name> <scopes> <sha256>` lines, hashes only. Must not be group- or world-writable. Set by the unit to the credential copy (`%d/mcp-tokens`, loaded from `/etc/readsbstats/mcp-tokens`); do not set it in `mcp.env`. |
 | `RSBS_MCP_API_URL` | `http://127.0.0.1:8080` | Local web API the server calls. Must be `http://` on a loopback host, with no path. |
 | `RSBS_MCP_READ_PER_MIN` | `30` | Read tool calls per client per minute (min `1`). |
 | `RSBS_MCP_WRITE_PER_HOUR` | `10` | Watchlist write calls per client per hour (min `1`). |

@@ -120,7 +120,7 @@ class TestLiveAircraft:
         b = geo.bearing(RLAT, RLON, 52.5678912, 21.9876543)
         assert out["distance_nm"] == round(d, 1)
         assert out["bearing_deg"] == round(b) % 360
-        assert out["lat"] == 52.568 and out["lon"] == 21.988
+        assert "lat" not in out and "lon" not in out
         assert out["seconds_ago"] == 4 and out["callsign"] == "LOT1"
         assert "receiver_lat" not in out and "last_seen" not in out
 
@@ -132,12 +132,13 @@ class TestLiveAircraft:
         assert out["alt_ft"] == 12000 and out["gs_kt"] == 301 and out["track_deg"] == 181
         assert out["flags"] == ["military"]
         assert "trail" not in out and "callsign" not in out and "category" not in out
+        assert "lat" not in out and "lon" not in out
 
     def test_missing_receiver_or_position(self):
         out = shaping.live_aircraft({"icao_hex": "48c1ea", "lat": None, "lon": None}, RLAT, RLON)
         assert "distance_nm" not in out and "lat" not in out
         out = shaping.live_aircraft({"icao_hex": "48c1ea", "lat": 1.0, "lon": 1.0}, None, None)
-        assert "distance_nm" not in out and out["lat"] == 1.0
+        assert "distance_nm" not in out and "lat" not in out and "lon" not in out
 
     def test_shape_sky_sorts_by_distance_and_limits(self):
         raw = {"receiver_lat": RLAT, "receiver_lon": RLON, "aircraft": [
@@ -152,6 +153,7 @@ class TestLiveAircraft:
         assert [a["icao_hex"] for a in out["aircraft"]][-1] == "000003"
         assert "truncated" not in out
         assert "receiver_lat" not in out
+        assert all("lat" not in a and "lon" not in a for a in out["aircraft"])
 
     def test_shape_sky_extras(self):
         out = shaping.shape_sky({"receiver_lat": RLAT, "receiver_lon": RLON, "aircraft": [],

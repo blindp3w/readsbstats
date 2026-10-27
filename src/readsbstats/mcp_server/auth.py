@@ -92,7 +92,7 @@ def load_tokens(path: str) -> dict[str, Client]:
     with f:
         # fstat on the open handle: no window between the check and the read.
         if os.fstat(f.fileno()).st_mode & 0o022:
-            raise ValueError(f"{path} is group- or world-writable; run chmod 640 on it")
+            raise ValueError(f"{path} is group- or world-writable; run chmod go-w on it")
         return parse_tokens(f.read())
 
 

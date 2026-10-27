@@ -32,9 +32,9 @@ def mode(path):
 
 
 class TestAdd:
-    def test_creates_file_0640(self, tf, capsys):
+    def test_creates_file_0600(self, tf, capsys):
         assert run("add", "alice", "--scopes", "read", "--sha256", H1, "--file", tf) == 0
-        assert mode(tf) == 0o640
+        assert mode(tf) == 0o600
         toks = auth.load_tokens(tf)
         assert toks[H1] == auth.Client("alice", frozenset({"read"}))
         assert "Restart the server to apply: sudo systemctl restart readsbstats-mcp" in capsys.readouterr().out
@@ -42,7 +42,7 @@ class TestAdd:
     def test_second_add_rewrites_keeps_mode_and_entries(self, tf):
         run("add", "alice", "--scopes", "read", "--sha256", H1, "--file", tf)
         assert run("add", "bob", "--scopes", "read,watchlist", "--sha256", H2.upper(), "--file", tf) == 0
-        assert mode(tf) == 0o640
+        assert mode(tf) == 0o600
         toks = auth.load_tokens(tf)
         assert toks[H2].name == "bob" and toks[H2].scopes == frozenset({"read", "watchlist"})
         assert toks[H1].name == "alice"
@@ -91,14 +91,14 @@ class TestAdd:
     def test_malformed_existing_file_refused(self, tf):
         with open(tf, "w") as f:
             f.write("garbage\n")
-        os.chmod(tf, 0o640)
+        os.chmod(tf, 0o600)
         assert run("add", "alice", "--scopes", "read", "--sha256", H1, "--file", tf) == 1
         assert open(tf).read() == "garbage\n"
 
     def test_comments_in_existing_file_are_dropped_but_valid(self, tf):
         with open(tf, "w") as f:
             f.write(f"# mine\nalice read {H1}\n")
-        os.chmod(tf, 0o640)
+        os.chmod(tf, 0o600)
         assert run("add", "bob", "--scopes", "read", "--sha256", H2, "--file", tf) == 0
         assert set(auth.load_tokens(tf)) == {H1, H2}
 
@@ -120,7 +120,7 @@ class TestNew:
         assert len(token) > 40
         toks = auth.load_tokens(tf)
         assert toks[auth.hash_token(token)] == auth.Client("alice", frozenset({"read", "watchlist"}))
-        assert mode(tf) == 0o640
+        assert mode(tf) == 0o600
         assert token not in open(tf).read()
 
     def test_two_new_tokens_differ(self, tf, monkeypatch, capsys):
@@ -159,7 +159,7 @@ class TestListRevoke:
         capsys.readouterr()
         assert run("revoke", "alice", "--file", tf) == 0
         assert list(auth.load_tokens(tf)) == [H2]
-        assert mode(tf) == 0o640
+        assert mode(tf) == 0o600
         assert "Restart the server to apply" in capsys.readouterr().out
 
     def test_revoke_last_leaves_valid_empty_file(self, tf):
@@ -183,33 +183,29 @@ class TestListRevoke:
 
 
 class TestRoot:
-    def test_chown_called_when_root(self, tf, monkeypatch):
+    def test_chown_root_root_when_root(self, tf, monkeypatch):
         calls = []
         monkeypatch.setattr(os, "geteuid", lambda: 0)
-        monkeypatch.setattr(mcp_token.grp, "getgrnam", lambda n: type("G", (), {"gr_gid": 4242})())
         monkeypatch.setattr(os, "fchown", lambda fd, u, g: calls.append((u, g)))
         assert run("add", "alice", "--scopes", "read", "--sha256", H1, "--file", tf) == 0
         run("add", "bob", "--scopes", "read", "--sha256", H2, "--file", tf)
-        assert calls == [(0, 4242), (0, 4242)]
+        assert calls == [(0, 0), (0, 0)]
+        assert mode(tf) == 0o600
 
-    def test_missing_group_exits_1(self, tf, monkeypatch, capsys):
-        monkeypatch.setattr(os, "geteuid", lambda: 0)
-
-        def boom(n):
-            raise KeyError(n)
-        monkeypatch.setattr(mcp_token.grp, "getgrnam", boom)
-        assert run("add", "alice", "--scopes", "read", "--sha256", H1, "--file", tf) == 1
-        assert "readsbstats" in capsys.readouterr().err
-        assert not os.path.exists(tf)
+    def test_no_group_lookup(self):
+        assert not hasattr(mcp_token, "grp")
 
     def test_no_chown_when_not_root(self, tf, monkeypatch):
         monkeypatch.setattr(os, "fchown", lambda *a: pytest.fail("chown as non-root"))
         monkeypatch.setattr(os, "geteuid", lambda: 1000)
         assert run("add", "alice", "--scopes", "read", "--sha256", H1, "--file", tf) == 0
+        assert mode(tf) == 0o600
 
 
-def test_default_file_from_config(monkeypatch):
+def test_default_file_is_the_literal_credential_source(monkeypatch):
+    # Inside the service config.MCP_TOKENS_FILE points at the credential copy
+    # (%d/mcp-tokens); the CLI must always edit the source file.
     from readsbstats import config
-    monkeypatch.setattr(config, "MCP_TOKENS_FILE", "/x/y")
+    monkeypatch.setattr(config, "MCP_TOKENS_FILE", "/run/credentials/readsbstats-mcp.service/mcp-tokens")
     ns = mcp_token.build_parser().parse_args(["list"])
-    assert ns.file == "/x/y"
+    assert ns.file == "/etc/readsbstats/mcp-tokens" == mcp_token.DEFAULT_FILE

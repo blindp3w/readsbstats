@@ -27,7 +27,11 @@ the operator's home.
    and listens on port 8765 (`RSBS_MCP_HOST`/`RSBS_MCP_PORT`, default `127.0.0.1`). It
    runs in its own process and has no access to the database: the unit sets
    `InaccessiblePaths=-/mnt/ext/readsbstats`, and the package never imports `database`
-   or `api.*`.
+   or `api.*`. It runs as its own dynamic user (`DynamicUser=yes`, with
+   `SupplementaryGroups=readsbstats` to read `/opt/readsbstats`), because under the
+   collector's uid it could open the database through `/proc/<pid>/fd` and signal the
+   collector and web. It reads its own optional `/etc/readsbstats/mcp.env`, not the
+   shared `readsbstats.env`, which holds the Telegram token and other secrets.
 2. **Data only through the local API, via a narrow client.** Every call goes to
    `http://127.0.0.1:8080/api/...`, with no `/stats` prefix, through a new
    `http_safe.loopback_request()`. That function accepts only http on a loopback host,
@@ -44,10 +48,12 @@ the operator's home.
      browsers, not against this process;
    - each route has its own timeout and size cap.
 3. **One bearer token per client, with scopes.** Scopes are `read` and `watchlist`
-   (`watchlist` implies `read`). The tokens file (`RSBS_MCP_TOKENS_FILE`, default
-   `/etc/readsbstats/mcp-tokens`, `root:readsbstats 0640`) stores
-   `<name> <scopes> <sha256>`, never a token. The server loads it at startup, refuses a
-   group- or world-writable file, and fails closed: with no valid entries every request
+   (`watchlist` implies `read`). The tokens file (`/etc/readsbstats/mcp-tokens`,
+   `root:root 0600`) stores `<name> <scopes> <sha256>`, never a token. The unit passes it
+   in as a credential (`LoadCredential=`): systemd reads it as root and gives the service
+   a private read-only copy, which `RSBS_MCP_TOKENS_FILE` points at (`%d/mcp-tokens`), and
+   the unit does not start until the file exists. The server loads it at startup, refuses
+   a group- or world-writable file, and fails closed: with no valid entries every request
    gets 401. Checking is done by a plain ASGI middleware:
    - the presented token is hashed and compared to every entry with
      `hmac.compare_digest`;
@@ -61,9 +67,10 @@ the operator's home.
    write budget per hour and a photo budget per hour. A global semaphore with a short
    acquire timeout caps concurrent API calls. Windows for `/api/stats` are snapped (named
    days to local midnight, relative windows floored), so repeated questions hit the
-   response cache instead of recomputing under the stats lock. Windows are bounded: at
-   most 92 days for stats, or the prewarmed all-time payload; at most 7 days for receiver
-   metrics.
+   response cache instead of recomputing under the stats lock. Windows are bounded: for
+   stats only a fixed set (`24h`, `7d`, `30d`, `90d`, `today`, `yesterday`, one day
+   `YYYY-MM-DD`, or the prewarmed all-time payload), because any other window would miss
+   the cache; at most 7 days for receiver metrics.
 5. **Watchlist writes are guarded beyond the API's rules.**
    - Removal is by value, and the server finds the id itself.
    - Adding an existing entry returns that entry.
@@ -73,8 +80,10 @@ the operator's home.
    - Every accepted write is logged with the client name, and the full removed row is
      logged so it can be restored.
 6. **Responses are shaped per tool through output allowlists.**
-   - The exact receiver location is withheld: no `receiver_*`, no flight bounding boxes,
-     no track coordinates in flight profiles, no feeder radar codes or ids.
+   - No absolute coordinates are returned at all: no `receiver_*`, no flight bounding
+     boxes, no track coordinates in flight profiles, no aircraft positions in live and
+     snapshot results (aircraft are given as distance and bearing from the receiver), no
+     feeder radar codes or ids.
    - Times become local ISO strings and flag bits become names.
    - Free-text fields from third parties (callsigns, database fields, airport names,
      photographer, labels) are cleaned and length-capped.
@@ -92,9 +101,11 @@ the operator's home.
 - **New dependency `mcp` (2.3.0).** It brings Starlette extras, pydantic, `pyjwt[crypto]`
   and `httpx2`, which is pinned. Once `httpx2` is installed, Starlette's `TestClient`
   uses it instead of `httpx`.
-- **Location: the exact point is hidden, the area is not.** Aircraft positions in live
-  and historical snapshots, distances and range-by-bearing are still returned, and from
-  them the receiver's area can be estimated.
+- **Location: no coordinates, but distances and bearings remain.** The server returns
+  no absolute coordinates, only distances and bearings relative to the receiver. A client
+  that correlates those with public flight-tracking data (callsign and time give a
+  position) can still derive the receiver's location, so clients must be trusted with the
+  approximate location. Feeding public networks already discloses it roughly.
 - **Not every GET is read-only for the database.** An aircraft photo cache miss writes
   the photo cache tables, as it does when the web UI asks for a photo. User data
   changes only through the watchlist tools.
@@ -104,7 +115,7 @@ the operator's home.
   unknown Host header get 421, and any browser Origin gets 403. Over an untrusted LAN, use
   an SSH tunnel or a VPN rather than plain HTTP.
 - **Rotation and revocation** edit the tokens file and need
-  `systemctl restart readsbstats-mcp`.
+  `systemctl restart readsbstats-mcp`, since systemd copies the credential at start.
 
 ## Alternatives considered
 

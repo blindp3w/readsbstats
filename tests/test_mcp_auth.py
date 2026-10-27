@@ -103,6 +103,10 @@ class TestLoadTokens:
         for mode in (0o640, 0o600, 0o644):
             assert H1 in load_tokens(self._write(tmp_path, mode))
 
+    def test_read_only_credential_copy_loads(self, tmp_path):
+        # systemd LoadCredential= hands the service a 0400 copy.
+        assert H1 in load_tokens(self._write(tmp_path, 0o400))
+
     @pytest.mark.parametrize("mode", [0o664, 0o646, 0o660, 0o666])
     def test_writable_rejected(self, tmp_path, mode):
         with pytest.raises(ValueError, match="writable"):

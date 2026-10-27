@@ -1,31 +1,35 @@
 #!/usr/bin/env python3
 """Manage the MCP server's per-client token file (ADR-0022).
 
-The file holds ``<name> <scopes> <sha256>`` lines, never a token. Run as root
-on the Pi:
+The file holds ``<name> <scopes> <sha256>`` lines, never a token. It is
+``root:root 0600``: the service does not read it directly, systemd reads it as
+root (``LoadCredential=``) and hands the service a private copy. Run as root on
+the Pi:
 
     sudo /opt/readsbstats/venv/bin/python /opt/readsbstats/scripts/mcp_token.py add alice \\
         --scopes read --sha256 <64 hex>
 
 ``add`` registers a hash of a token generated on the client host, so the
 secret never reaches the receiver. ``new`` generates a token and prints it
-once, only to a terminal. The server loads the file at startup: restart it
-after every change.
+once, only to a terminal. The server loads the credential copy at startup:
+restart it after every change.
+
+``--file`` defaults to the literal ``/etc/readsbstats/mcp-tokens`` (the source
+of the credential), not ``RSBS_MCP_TOKENS_FILE``, which inside the service
+points at the credential copy.
 """
 
 from __future__ import annotations
 
 import argparse
-import grp
 import os
 import secrets
 import sys
 
-from readsbstats import config
 from readsbstats.mcp_server import auth
 
-FILE_MODE = 0o640
-GROUP = "readsbstats"
+FILE_MODE = 0o600
+DEFAULT_FILE = "/etc/readsbstats/mcp-tokens"
 RESTART_HINT = "Restart the server to apply: sudo systemctl restart readsbstats-mcp"
 _HEADER = "# readsbstats-mcp tokens: <name> <scopes> <sha256>. Hashes only; edit with scripts/mcp_token.py\n"
 
@@ -36,16 +40,6 @@ class CliError(Exception):
         self.code = code
 
 
-def _gid() -> int | None:
-    """Group id for the file when running as root; None when not root."""
-    if os.geteuid() != 0:
-        return None
-    try:
-        return grp.getgrnam(GROUP).gr_gid
-    except KeyError:
-        raise CliError(f"group '{GROUP}' does not exist; create it or run the installer first") from None
-
-
 def _render(tokens: dict[str, auth.Client]) -> str:
     lines = [_HEADER]
     for digest, c in tokens.items():
@@ -53,10 +47,10 @@ def _render(tokens: dict[str, auth.Client]) -> str:
     return "".join(lines)
 
 
-def _write_fd(fd: int, text: str, gid: int | None) -> None:
+def _write_fd(fd: int, text: str) -> None:
     os.fchmod(fd, FILE_MODE)
-    if gid is not None:
-        os.fchown(fd, 0, gid)
+    if os.geteuid() == 0:
+        os.fchown(fd, 0, 0)
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         f.write(text)
         f.flush()
@@ -64,20 +58,19 @@ def _write_fd(fd: int, text: str, gid: int | None) -> None:
 
 
 def _save(path: str, tokens: dict[str, auth.Client]) -> None:
-    gid = _gid()                      # resolve first: fail before touching the file
     text = _render(tokens)
     if not os.path.exists(path):
         try:
             fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, FILE_MODE)
         except FileExistsError:
             raise CliError(f"{path} appeared concurrently; retry") from None
-        _write_fd(fd, text, gid)
+        _write_fd(fd, text)
         return
     tmp = os.path.join(os.path.dirname(os.path.abspath(path)),
                        f".{os.path.basename(path)}.{os.getpid()}.tmp")
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, FILE_MODE)
     try:
-        _write_fd(fd, text, gid)
+        _write_fd(fd, text)
         os.replace(tmp, path)
     except BaseException:
         try:
@@ -156,8 +149,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     def add_cmd(name, fn, help_, scopes=False, sha=False, with_name=True):
         sp = sub.add_parser(name, help=help_)
-        sp.add_argument("--file", default=config.MCP_TOKENS_FILE,
-                        help="tokens file (default: RSBS_MCP_TOKENS_FILE)")
+        sp.add_argument("--file", default=DEFAULT_FILE,
+                        help=f"tokens file (default: {DEFAULT_FILE}, the source of the service's "
+                             "credential; not RSBS_MCP_TOKENS_FILE)")
         if with_name:
             sp.add_argument("name")
         if scopes:
