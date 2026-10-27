@@ -43,6 +43,9 @@ def parse_instant(s: str, *, now: float | None = None) -> int:
         return int(time.time() if now is None else now)
     if _DATE_RE.match(text):
         return _midnight(_parse_date(text))
+    # Python 3.10's fromisoformat rejects a trailing "Z" (3.11+ accepts it).
+    if text[-1:] in ("Z", "z"):
+        text = text[:-1] + "+00:00"
     try:
         return int(datetime.fromisoformat(text).timestamp())
     except ValueError:
