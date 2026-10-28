@@ -25,6 +25,46 @@ a Pi 4 with a USB disk) and needs free space roughly equal to the DB size.
 After a restart the web server's cache prewarmer rebuilds the map caches, so the
 first heatmap/coverage request can take a while to render — that is not an error.
 
+## Data directory
+
+`history.db` and `vdl2.db` live in one directory, set by `RSBS_DATA_DIR` (default `/var/lib/readsbstats`). `RSBS_DB_PATH` defaults to `$RSBS_DATA_DIR/history.db` and `RSBS_VDL2_DB_PATH` to `$RSBS_DATA_DIR/vdl2.db`; an explicit value for either still wins. Before v2.32.0 the path was hard-coded to a mount point on the reference Pi's USB disk.
+
+`RSBS_DATA_DIR` is a deploy-time setting. Put it in `/etc/readsbstats/readsbstats.env`; it is not shown in `/api/settings`. Allowed characters are `A-Z a-z 0-9 . _ - /`, the path must be absolute, and `..` is refused.
+
+The units in `systemd/` contain a `@DATA_DIR@` placeholder. `scripts/install.sh` and `scripts/update.sh` render it into `/etc/systemd/system/` (shared helper `scripts/_deploy_lib.sh`), filling in the sandbox `ReadWritePaths=`, `Environment=RSBS_DATA_DIR=`, and `RequiresMountsFor=`. Copying a unit by hand with `cp` no longer works, because the placeholder is left unrendered.
+
+The data directory is resolved in this order:
+
+1. `RSBS_DATA_DIR` in `readsbstats.env`.
+2. Migration for existing installs that have no setting yet: the `ReadWritePaths=` of the installed collector unit is appended once to `readsbstats.env`, with a `# Added by update.sh (v2.32.0)` comment and `RSBS_DATA_DIR=<dir>`.
+3. The default, `/var/lib/readsbstats`.
+
+`update.sh` prints `Data dir: <dir> (source: env|migrated|default)`. If an installed collector unit exists but `<dir>/history.db` does not, it aborts before changing anything.
+
+`RequiresMountsFor=` makes the collector, web, VDL2 ingest, updater and both dbcheck services wait for the mount that holds the data directory. This matters for a separate disk, such as a USB drive in `/etc/fstab` with `nofail`. When the directory is on the root filesystem, the directive has no effect.
+
+**Moving the data directory.** Stop the services, move the files (including `-wal`, `-shm` and the sentinels), set the new path, and re-run `update.sh`:
+
+```bash
+sudo systemctl stop readsbstats-collector readsbstats-web readsbstats-vdl2
+sudo mkdir -p /srv/readsbstats
+# A glob with no matches makes mv print an error for that pattern; that is harmless.
+sudo mv /var/lib/readsbstats/history.db* /var/lib/readsbstats/vdl2.db* \
+        /var/lib/readsbstats/.*_shutdown /srv/readsbstats/
+sudo chown -R readsbstats:readsbstats /srv/readsbstats
+echo 'RSBS_DATA_DIR=/srv/readsbstats' | sudo tee -a /etc/readsbstats/readsbstats.env
+sudo bash /opt/readsbstats/scripts/update.sh
+```
+
+`update.sh` re-renders the units for the new path and restarts the services. The MCP unit gets `InaccessiblePaths=-` on the same directory, so it cannot read the data either way.
+
+**One-shot scripts** run by hand do not get the units' environment. Pass the setting on the command line, or give an explicit `--db`:
+
+```bash
+sudo -u readsbstats env RSBS_DATA_DIR=/srv/readsbstats \
+    /opt/readsbstats/venv/bin/python /opt/readsbstats/scripts/check_db.py
+```
+
 ## Aircraft & airline database
 
 Registration, aircraft type, and airline name data is updated weekly by a systemd timer:
@@ -178,7 +218,7 @@ feed. Expect a few minutes on a Raspberry Pi 4 for a 90-day database, because th
 ```bash
 sudo -u readsbstats /opt/readsbstats/venv/bin/python \
     /opt/readsbstats/scripts/backfill_vdl2_dumpvdl2.py \
-    --db /mnt/ext/readsbstats/vdl2.db
+    --db /var/lib/readsbstats/vdl2.db   # your RSBS_DATA_DIR/vdl2.db
 # add --dry-run to count what would change without writing
 # add --chunk N to change the rows per transaction (default 2000)
 ```
@@ -196,7 +236,7 @@ loaded in that context.
 `RSBS_VDL2_RETENTION_DAYS` (default 90) once at startup and then every
 `RSBS_VDL2_PURGE_INTERVAL` seconds (default 3600). Message volume is modest
 (thousands–tens of thousands/day at a busy site); at ~1 KB/row stored that's
-well within the Pi's `/mnt/ext` headroom. Set `0` to keep everything and manage
+well within the data disk's headroom. Set `0` to keep everything and manage
 size yourself.
 
 **Indexes built in the background.** Two stats indexes, `idx_vdl2_label_icao` and
@@ -239,7 +279,7 @@ layer). `history.db` is never touched by VDL2, and no alert depends on it.
 5. `vdl2.db` (with `-wal`, `-shm` and `.vdl2_dirty_shutdown`) stays on disk
    untouched. Nothing opens it while the flag is off, and retention pruning stops
    (it runs in the ingest service). To reclaim the space delete
-   `/mnt/ext/readsbstats/vdl2.db*` and `.vdl2_dirty_shutdown`; to shrink a kept archive run `VACUUM` on it
+   `$RSBS_DATA_DIR/vdl2.db*` and `$RSBS_DATA_DIR/.vdl2_dirty_shutdown` (default `/var/lib/readsbstats`); to shrink a kept archive run `VACUUM` on it
    offline while the services are stopped.
 
 To turn it back on, set the flag to `true`, restart `readsbstats-web`, run
@@ -264,7 +304,7 @@ All purge scripts auto-snapshot to `<db>.backup-<ts>.db` before mutating. Skip w
 # Manual snapshot
 /opt/readsbstats/venv/bin/python -c "
 from readsbstats.database import snapshot_db
-snapshot_db('/mnt/ext/readsbstats/history.db')
+snapshot_db('/var/lib/readsbstats/history.db')  # your RSBS_DATA_DIR/history.db
 "
 ```
 
@@ -364,25 +404,53 @@ Image URLs (`thumbnail_url`, `large_url`) must be on `plnspttrs.net`,
 
 ## Database integrity & startup recovery
 
-The collector writes a `.dirty_shutdown` sentinel next to the database on
-startup and removes it only on a clean shutdown. If the sentinel is present at
-the next boot (i.e. the previous run crashed or was power-cut), the collector
-runs `PRAGMA quick_check(10)` **before** it begins polling.
+The collector and the VDL2 ingest write a sentinel next to their database on startup (`.dirty_shutdown`, or `.vdl2_dirty_shutdown` for VDL2) and remove it only on a clean shutdown. If the sentinel is present at the next start (the previous run crashed or lost power), the service runs `PRAGMA quick_check(10)` **before** it writes anything. The collector runs this check before `init_db()` (schema and migrations, which write).
 
-**Fail-closed behaviour:** if the check finds corruption — or if `quick_check`
-cannot even run — the collector sends a Telegram alert, notifies systemd, and
-exits with code `2` **without** starting the poll loop, so it never writes to a
-possibly-corrupt database. The sentinel is left in place, so the check repeats
-on every restart until an operator intervenes. `Restart=on-failure` with
-`StartLimitBurst=5` / `StartLimitIntervalSec=120` bounds this to ~5 restarts
-before systemd parks the unit in `failed` state (which fires
-`OnFailure=notify-telegram@…`).
+The check runs in a worker thread while systemd waits for the service to start. Every 10 s the service extends systemd's start timeout and updates its status line, visible in `systemctl status`, for example `STATUS=collector: quick_check running, 95 s`. The extension stops after `RSBS_STARTUP_CHECK_MAX_SEC` (default `1800`, minimum `60`; an internal tunable, not in `/api/settings`), so a check that hangs, for example on a dead disk, is still killed by `TimeoutStartSec`. A passing check logs `DB integrity check passed; checkpointing WAL` and `collector: quick_check finished in N s`.
+
+**Stopping during the check.** `systemctl stop` interrupts a running check and returns within seconds. The service exits 0, writes nothing and keeps the sentinel, so the next start runs the check again.
+
+**The web UI waits for the check.** `readsbstats-web` is ordered after the collector, so after an unclean boot `/stats/` and `/api/health` come up only once the collector's check has passed (minutes on a large database on a slow disk). That is deliberate: the UI never reads a database that has not been checked.
+
+**Fail-closed behaviour** is unchanged. If the check finds corruption, or if `quick_check` cannot run at all, the service notifies systemd and exits without writing: the collector sends a Telegram alert and exits with code `2`; VDL2 ingest exits with code `1`, and its unit's `OnFailure=` sends the generic failure alert. The sentinel is left in place, so the check repeats on every restart until an operator intervenes.
+
+**Start limits.** `Restart=on-failure` with `StartLimitBurst=5` / `StartLimitIntervalSec=120` bounds fast failures such as corruption (exit 2): after about 5 restarts systemd parks the unit in `failed` state, which fires `OnFailure=notify-telegram@…`. A slow check does not reach that limit. Before v2.32.0 the start timeout killed a slow check and the unit looped on it indefinitely.
+
+### Telling the cases apart
+
+```bash
+journalctl -u readsbstats-collector -n 100 | grep -E 'start operation timed out|DB CORRUPTION DETECTED'
+```
+
+- `start operation timed out` means the start timeout fired. This should not happen any more, except when a check runs past `RSBS_STARTUP_CHECK_MAX_SEC`. A hung disk is the usual cause.
+- `DB CORRUPTION DETECTED` means `quick_check` found damage. Use the recovery steps below.
+
+### Manual way out when the check itself is too slow
+
+On a slow disk the check can take minutes (about 3 minutes for a 1.8 GB database on a USB HDD). To run it yourself, stop the unit and run the check outside the unit, which has no CPU or memory limits:
+
+```bash
+sudo systemctl stop readsbstats-collector
+DB=/var/lib/readsbstats/history.db   # your RSBS_DATA_DIR/history.db
+sudo -u readsbstats sqlite3 "$DB" 'PRAGMA quick_check(10);'
+```
+
+Only if the output is exactly `ok`, remove the sentinel and start the unit:
+
+```bash
+sudo rm -f "$(dirname "$DB")/.dirty_shutdown"
+sudo systemctl start readsbstats-collector
+```
+
+Any other output means corruption: do not clear the sentinel, and follow the recovery steps.
+
+If you still need different limits on one machine, use a drop-in rather than editing the unit: `sudo systemctl edit readsbstats-collector` (or `readsbstats-vdl2`) writes `/etc/systemd/system/<unit>.d/override.conf`. `update.sh` re-renders the main unit files but never touches drop-ins. The v2.32.0 limits are `CPUQuota=50%` and `MemoryMax=1G` for the collector, and `CPUQuota=50%` and `MemoryMax=768M` for VDL2 ingest. `MemoryMax` counts page cache.
 
 **Recovery steps** (run as root, collector stopped):
 
 ```bash
 systemctl stop readsbstats-collector
-DB=/mnt/ext/readsbstats/history.db
+DB=/var/lib/readsbstats/history.db   # your RSBS_DATA_DIR/history.db
 
 # 1. Snapshot the corrupt file first (forensics / second attempt).
 cp "$DB" "$DB.corrupt-$(date +%s)"
@@ -398,7 +466,7 @@ sqlite3 "$DB" ".recover" | sqlite3 "$DB.recovered"
 mv "$DB.recovered" "$DB"
 
 # 3. Clear the sentinel so the integrity check passes on next start.
-rm -f /mnt/ext/readsbstats/.dirty_shutdown
+rm -f "$(dirname "$DB")/.dirty_shutdown"
 
 systemctl start readsbstats-collector
 ```

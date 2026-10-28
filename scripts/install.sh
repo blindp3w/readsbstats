@@ -11,16 +11,17 @@ set -euo pipefail
 trap 'echo "ERROR: install failed at line $LINENO (exit $?)" >&2' ERR
 
 APP_DIR="/opt/readsbstats"
-DATA_DIR="/mnt/ext/readsbstats"
 SRC_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 SERVICE_USER="readsbstats"
 AIRCRAFT_JSON="/run/readsb/aircraft.json"
 PYTHON="python3"
 
+# shellcheck source=/dev/null
+source "$SRC_DIR/scripts/_deploy_lib.sh"
+
 echo "=== readsbstats installer ==="
 echo "    Source : $SRC_DIR"
 echo "    App    : $APP_DIR"
-echo "    Data   : $DATA_DIR"
 echo ""
 
 # ---- Must be root ------------------------------------------------------------
@@ -35,6 +36,13 @@ if [[ ! -f "$SRC_DIR/src/readsbstats/collector.py" || ! -f "$SRC_DIR/src/readsbs
   echo "       (missing src/readsbstats/collector.py or web.py)" >&2
   exit 1
 fi
+
+# ---- Data directory (RSBS_DATA_DIR; default /var/lib/readsbstats) ----------
+# Taken from /etc/readsbstats/readsbstats.env, else migrated from an installed
+# unit, else the default. The systemd units are rendered from it below.
+resolve_data_dir
+echo "    Data   : $DATA_DIR (source: $DATA_DIR_SOURCE)"
+echo ""
 
 # ---- Python 3.10+ ------------------------------------------------------------
 PY_VERSION=$($PYTHON -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null || echo "0.0")
@@ -97,27 +105,21 @@ else
 fi
 
 # ---- Systemd services --------------------------------------------------------
-cp "$APP_DIR/systemd/readsbstats-collector.service"     /etc/systemd/system/
-cp "$APP_DIR/systemd/readsbstats-web.service"           /etc/systemd/system/
-cp "$APP_DIR/systemd/readsbstats-updater.service"       /etc/systemd/system/
-cp "$APP_DIR/systemd/readsbstats-updater.timer"         /etc/systemd/system/
-cp "$APP_DIR/systemd/readsbstats-dbcheck.service"       /etc/systemd/system/
-cp "$APP_DIR/systemd/readsbstats-dbcheck.timer"         /etc/systemd/system/
-cp "$APP_DIR/systemd/readsbstats-dbcheck-full.service"  /etc/systemd/system/
-cp "$APP_DIR/systemd/readsbstats-dbcheck-full.timer"    /etc/systemd/system/
-cp "$APP_DIR/systemd/notify-telegram@.service"          /etc/systemd/system/
-# Opt-in VDL2/ACARS ingest — copied so it's available, but NOT enabled here.
-# The shared flag lives in /etc/readsbstats/vdl2.env (read by web + ingest).
-# To turn the feature on: set RSBS_VDL2_ENABLED=true there, restart web, then
-# `systemctl enable --now readsbstats-vdl2.service`. See docs/operations.md.
-cp "$APP_DIR/systemd/readsbstats-vdl2.service"          /etc/systemd/system/
-# Opt-in MCP server (LLM access, ADR-0022) — copied, NOT enabled here. Create
-# client tokens first (scripts/mcp_token.py writes /etc/readsbstats/mcp-tokens,
-# which the unit loads as a credential; docs/mcp.md), then
-# `systemctl enable --now readsbstats-mcp`. Optional settings go in
-# /etc/readsbstats/mcp.env (copy systemd/readsbstats-mcp.env.example); it is
-# deliberately NOT created here and the unit does not read readsbstats.env.
-cp "$APP_DIR/systemd/readsbstats-mcp.service"           /etc/systemd/system/
+# Units are rendered from $APP_DIR/systemd: @DATA_DIR@ is replaced by the data
+# directory resolved above (see scripts/_deploy_lib.sh).
+# The opt-in VDL2/ACARS ingest unit is installed so it's available, but NOT
+# enabled here. The shared flag lives in /etc/readsbstats/vdl2.env (read by
+# web + ingest). To turn the feature on: set RSBS_VDL2_ENABLED=true there,
+# restart web, then `systemctl enable --now readsbstats-vdl2.service`. See
+# docs/operations.md.
+# The opt-in MCP server (LLM access, ADR-0022) is installed, NOT enabled here.
+# Create client tokens first (scripts/mcp_token.py writes
+# /etc/readsbstats/mcp-tokens, which the unit loads as a credential;
+# docs/mcp.md), then `systemctl enable --now readsbstats-mcp`. Optional
+# settings go in /etc/readsbstats/mcp.env (copy
+# systemd/readsbstats-mcp.env.example); it is deliberately NOT created here and
+# the unit does not read readsbstats.env.
+render_units "$DATA_DIR" "$APP_DIR/systemd"
 mkdir -p /etc/readsbstats
 if [ ! -f /etc/readsbstats/vdl2.env ]; then
     cp "$APP_DIR/systemd/readsbstats-vdl2.env.example" /etc/readsbstats/vdl2.env
@@ -148,7 +150,8 @@ fi
 # ---- Initial database download -----------------------------------------------
 echo ""
 echo "Downloading aircraft & airline databases (~30 s)…"
-runuser -u "$SERVICE_USER" -- "$APP_DIR/venv/bin/python" -m readsbstats.db_updater \
+# runuser does not read readsbstats.env: hand over the resolved data dir.
+runuser -u "$SERVICE_USER" -- env RSBS_DATA_DIR="$DATA_DIR" "$APP_DIR/venv/bin/python" -m readsbstats.db_updater \
   && echo "Database downloaded and imported" \
   || echo "WARNING: db_updater failed — run manually: bash scripts/update.sh --db-only"
 

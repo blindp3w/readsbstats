@@ -24,7 +24,7 @@ import sys
 import threading
 import time
 
-from . import adsbx_enricher, config, database, enrichment, geo, icao_ranges, metrics_collector, notifier, posenc, rollups, route_enricher
+from . import adsbx_enricher, config, database, enrichment, geo, icao_ranges, metrics_collector, notifier, posenc, rollups, route_enricher, startup_check
 from .cleaners import clean_short_text
 
 # 24-bit Mode-S address, lowercase hex. Validated *after* stripping the
@@ -78,6 +78,9 @@ logging.basicConfig(
     datefmt="%Y-%m-%dT%H:%M:%S",
     stream=sys.stdout,
 )
+# httpx logs every request at INFO — half of the journal; keep warnings only.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 log = logging.getLogger("collector")
 
 # ---------------------------------------------------------------------------
@@ -1389,26 +1392,47 @@ class StartupIntegrityError(RuntimeError):
     """
 
 
+class StartupCheckInterrupted(Exception):
+    """A shutdown signal arrived while the startup quick_check was running.
+
+    Not an error: main() exits 0 without writing anything and keeps the dirty
+    sentinel, so the check simply runs again on the next start.
+    """
+
+
 def _startup_integrity_check(conn: sqlite3.Connection, sentinel: pathlib.Path) -> None:
     """Run quick_check when previous shutdown was unclean.
 
-    On a clean result: checkpoint the WAL and remove the sentinel. On
+    On a clean result: checkpoint the WAL and keep the sentinel (main() created
+    it for this run; only a clean shutdown removes it, so a crash during this
+    run is still detected next time). On
     corruption — or if quick_check itself fails to run — leave the sentinel in
     place and raise StartupIntegrityError so the caller fails closed instead of
-    writing to a possibly-corrupt database.
+    writing to a possibly-corrupt database. If a shutdown signal arrives
+    mid-check, raise StartupCheckInterrupted (sentinel kept).
+
+    The PRAGMA runs in a worker thread (startup_check) so systemd's start
+    timeout is extended while it makes progress and SIGTERM stays responsive.
     """
     log.warning("Unclean shutdown detected; running PRAGMA quick_check…")
     try:
-        rows = conn.execute("PRAGMA quick_check(10)").fetchall()
+        rows = startup_check.run_quick_check(
+            conn, label="collector",
+            notify=lambda m: _sd_notify(m),
+            stopping=lambda: not _running,
+            max_sec=config.STARTUP_CHECK_MAX_SEC,
+        )
     except Exception as exc:
         log.exception("quick_check failed to run")
         raise StartupIntegrityError("quick_check failed to run") from exc
+    if rows is None:
+        log.warning("quick_check interrupted by shutdown; sentinel kept")
+        raise StartupCheckInterrupted
     if len(rows) == 1 and rows[0][0] == "ok":
         log.info("DB integrity check passed; checkpointing WAL")
         row = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
         if row and row[0] > 0:
             log.debug("WAL checkpoint partial — %d page(s) pending (busy readers)", row[0])
-        sentinel.unlink(missing_ok=True)
         return
     issues = [r[0] for r in rows]
     log.critical(
@@ -1431,12 +1455,19 @@ def main() -> None:
     except OSError:
         log.warning("Cannot write sentinel file %s — skipping crash detection", _SENTINEL)
 
-    database.init_db()
+    # Verify integrity BEFORE init_db(): it writes (swap recovery, DDL,
+    # migrations, INSERT), which must never touch a possibly-corrupt DB
+    # (ADR-0007). A missing DB file never has a sentinel, so connect() creating
+    # it first is harmless.
     conn = database.connect()
 
     if _sentinel_existed:
         try:
             _startup_integrity_check(conn, _SENTINEL)
+        except StartupCheckInterrupted:
+            # SIGTERM during the check: nothing was written, sentinel stays.
+            conn.close()
+            raise SystemExit(0)
         except StartupIntegrityError as exc:
             # Fail closed: do NOT load active flights, start background
             # threads, or enter the poll loop — writing to a corrupt DB would
@@ -1458,6 +1489,7 @@ def main() -> None:
             log.critical("Exiting (code 2): DB integrity check failed; sentinel retained")
             raise SystemExit(2)
 
+    database.init_db()
     _load_active(conn)
     if notifier.telegram_enabled():
         _load_notified(conn)

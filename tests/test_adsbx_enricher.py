@@ -474,6 +474,36 @@ class TestFetchArea:
         with pytest.raises(self.enricher._TransientError):
             self.enricher._fetch_area()
 
+    def test_http_error_logged_as_one_line(self, monkeypatch, caplog, tmp_path):
+        """httpx's HTTPStatusError text has a second 'For more information'
+        line that journald splits into a separate entry — one record, no \\n."""
+        import logging
+        import httpx
+        from readsbstats import http_safe
+
+        def fake_safe_get(client, url, **kwargs):
+            resp = httpx.Response(403, request=httpx.Request("GET", url))
+            resp.raise_for_status()
+
+        class _Stop(BaseException):
+            pass
+
+        def stop_sleep(_):
+            raise _Stop
+
+        monkeypatch.setattr(http_safe, "safe_httpx_get", fake_safe_get)
+        monkeypatch.setattr(config, "ADSBX_ENABLED", True)
+        monkeypatch.setattr(self.enricher.time, "sleep", stop_sleep)
+        monkeypatch.setattr(self.enricher, "_poll_area",
+                            lambda conn, client: self.enricher._fetch_area(client))
+        with caplog.at_level(logging.WARNING, logger="adsbx_enricher"):
+            with pytest.raises(_Stop):
+                self.enricher.run_enricher_loop(str(tmp_path / "t.db"))
+        recs = [r for r in caplog.records if "poll failed" in r.getMessage()]
+        assert len(recs) == 1
+        msg = recs[0].getMessage()
+        assert "403" in msg and "\n" not in msg
+
     def test_fetch_raises_permanent_on_redirect(self, monkeypatch):
         """The airplanes.live API doesn't legitimately redirect; treat a 3xx
         as PERMANENT (audit-13 A13-021) — retries will hit the same failure.

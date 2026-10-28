@@ -15,8 +15,9 @@ Snapshot `history.db` from the Pi for real data locally:
 mkdir -p db
 # 1. Snapshot on the Pi into RAM-backed /dev/shm (never /tmp: it is on the SD card).
 #    One read transaction, safe against the live WAL database. Check space first.
+#    The path is your RSBS_DATA_DIR/history.db (default /var/lib/readsbstats).
 echo "VACUUM INTO '/dev/shm/history.db'" | ssh your-pi.local \
-  'df -h /dev/shm; nice -n19 ionice -c3 sqlite3 "file:/mnt/ext/readsbstats/history.db?mode=ro"'
+  'df -h /dev/shm; nice -n19 ionice -c3 sqlite3 "file:/var/lib/readsbstats/history.db?mode=ro"'
 # 2. Pull it, then delete it on the Pi.
 rsync your-pi.local:/dev/shm/history.db ./db/
 ssh your-pi.local 'rm /dev/shm/history.db'
@@ -58,7 +59,7 @@ RSBS_AIRCRAFT_JSON=/tmp/rsbs_sim.json RSBS_DB_PATH=./db/history.db \
 ## Running tests
 
 ```bash
-.venv/bin/pytest                                              # 3249 Python tests
+.venv/bin/pytest                                              # 3367 Python tests
 ( cd frontend && npm test )                                   # 610 Vitest tests
 
 # Coverage (CI gates the backend at 93%; frontend report is informational)

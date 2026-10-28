@@ -97,6 +97,29 @@ class TransientError(Exception):
     """
 
 
+def describe_exc(exc: BaseException) -> str:
+    """One-line text for logging an upstream-fetch failure.
+
+    ``str(httpx.HTTPStatusError)`` ends with a second "For more information
+    check: https://developer.mozilla.org/..." line, which journald stores as a
+    separate entry. Log status + request URL instead, and collapse whitespace
+    in any other message. Not for urllib/Telegram errors — those go through
+    ``notifier._describe_exc`` (the request URL there carries the bot token)."""
+    if httpx is not None and isinstance(exc, httpx.HTTPStatusError):
+        resp = exc.response
+        code = getattr(resp, "status_code", "?")
+        try:
+            req = exc.request  # raises RuntimeError when none was attached
+        except RuntimeError:
+            req = None
+        if req is not None:
+            return f"HTTP {code} for {req.method} {req.url}"
+        return f"HTTP {code}"
+    msg = " ".join(str(exc).split())
+    name = type(exc).__name__
+    return f"{name}: {msg}" if msg else name
+
+
 class UnsafeURLError(ValueError):
     """Raised when a URL or response violates a security policy.
 

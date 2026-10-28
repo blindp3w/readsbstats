@@ -60,7 +60,7 @@ def db() -> sqlite3.Connection:
 #
 # mode=ro on a WAL DB works on SQLite >= 3.22 when the -shm/-wal exist or the
 # directory is writable (both true here — the collector is the live writer and
-# /mnt/ext is writable). On a read-only mount the attach fails and the feature
+# the data directory is writable). On a read-only mount the attach fails and the feature
 # degrades, surfaced honestly via the `vdl2.attach_available` bit in /api/health.
 # ---------------------------------------------------------------------------
 def _vdl2_ro_uri() -> str:

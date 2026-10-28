@@ -32,7 +32,7 @@ import sys
 import threading
 import time
 
-from . import config
+from . import config, startup_check
 from .vdl2 import db as vdl2_db
 from .vdl2.normalize import normalize
 
@@ -42,6 +42,9 @@ logging.basicConfig(
     datefmt="%Y-%m-%dT%H:%M:%S",
     stream=sys.stdout,
 )
+# httpx logs every request at INFO — half of the journal; keep warnings only.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 log = logging.getLogger("vdl2")
 
 _stop = threading.Event()   # set by signal handlers; threads wait on it
@@ -198,14 +201,28 @@ def _dirty_sentinel_path() -> str:
     return os.path.join(d, ".vdl2_dirty_shutdown")
 
 
-def _quick_check(conn) -> bool:
-    """PRAGMA quick_check(10) → True iff the DB reports 'ok'. Mirrors core ADR-0007."""
+def _quick_check(conn) -> bool | None:
+    """PRAGMA quick_check(10) → True iff the DB reports 'ok'. Mirrors core ADR-0007.
+
+    Returns False on corruption or a failing PRAGMA, and None when a shutdown
+    signal interrupted the check (not a verdict: the caller exits cleanly and
+    keeps the sentinel). Runs in a worker thread (startup_check) so systemd's
+    start timeout is extended while it makes progress and SIGTERM stays
+    responsive.
+    """
     try:
-        rows = conn.execute("PRAGMA quick_check(10)").fetchall()
-        return len(rows) == 1 and rows[0][0] == "ok"
+        rows = startup_check.run_quick_check(
+            conn, label="vdl2",
+            notify=lambda m: _sd_notify(m),
+            stopping=_stop.is_set,
+            max_sec=config.STARTUP_CHECK_MAX_SEC,
+        )
     except sqlite3.Error as exc:
         log.error("vdl2 quick_check raised: %s", exc)
         return False
+    if rows is None:
+        return None
+    return len(rows) == 1 and rows[0][0] == "ok"
 
 
 def main() -> int:
@@ -228,7 +245,12 @@ def main() -> int:
     sentinel = _dirty_sentinel_path()
     if os.path.exists(sentinel):
         log.warning("vdl2: unclean previous shutdown — running quick_check on %s", config.VDL2_DB_PATH)
-        if not _quick_check(conn):
+        ok = _quick_check(conn)
+        if ok is None:
+            log.warning("vdl2: quick_check interrupted by shutdown; sentinel kept")
+            conn.close()
+            return 0
+        if not ok:
             log.critical("vdl2.db failed quick_check — refusing to write; investigate or restore")
             _sd_notify("STATUS=vdl2.db integrity check failed")
             conn.close()

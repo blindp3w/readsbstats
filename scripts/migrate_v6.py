@@ -6,7 +6,7 @@ schema_version < 6 and runs this automatically during deploy:
 
     systemctl stop readsbstats-collector readsbstats-web
     sudo -u readsbstats /opt/readsbstats/venv/bin/python \\
-        /opt/readsbstats/scripts/migrate_v6.py /mnt/ext/readsbstats/history.db
+        /opt/readsbstats/scripts/migrate_v6.py /var/lib/readsbstats/history.db
 
 Rebuilds positions with scaled-INTEGER columns (posenc codecs), recreates
 the two permanent indexes, stamps v6, ANALYZEs, then VACUUMs to reclaim

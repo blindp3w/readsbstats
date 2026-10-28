@@ -15,7 +15,7 @@ WARNING repeats this.
 Usage:
     python3 scripts/import_rrd.py \\
         --rrd-dir /tmp/rrd_peek/localhost/dump1090-localhost \\
-        --db /mnt/ext/readsbstats/history.db
+        --db /var/lib/readsbstats/history.db
 
     python3 scripts/import_rrd.py --rrd-dir ... --db ... --dry-run
 """

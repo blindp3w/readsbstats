@@ -124,7 +124,9 @@ def test_mcp_unit_gets_tokens_through_a_credential():
 def test_mcp_unit_cannot_reach_the_database_directory():
     lines = _lines(MCP_UNIT)
     assert not any(ln.startswith("ReadWritePaths") for ln in lines)
-    assert "InaccessiblePaths=-/mnt/ext/readsbstats" in lines
+    assert "InaccessiblePaths=-@DATA_DIR@" in lines
+    assert not any(ln.startswith(("RequiresMountsFor", "Environment=RSBS_DATA_DIR"))
+                   for ln in lines)
 
 
 def test_mcp_unit_hardening_and_limits():
@@ -142,8 +144,113 @@ def test_mcp_unit_starts_after_web():
     assert "Wants=readsbstats-web.service" in lines
 
 
-def test_install_sh_copies_mcp_unit_but_never_enables_it():
+def test_install_sh_installs_mcp_unit_but_never_enables_it():
     sh = (ROOT / "scripts/install.sh").read_text()
-    assert "systemd/readsbstats-mcp.service" in sh
+    # Rendered with the whole systemd/ dir (includes readsbstats-mcp.service).
+    assert 'render_units "$DATA_DIR" "$APP_DIR/systemd"' in sh
     code = [ln for ln in sh.splitlines() if not ln.strip().startswith("#")]
     assert not any("enable" in ln and "readsbstats-mcp" in ln for ln in code)
+
+
+# ---- configurable data directory (RSBS_DATA_DIR) -----------------------------
+DATA_UNITS = ("collector", "web", "vdl2", "updater", "dbcheck", "dbcheck-full")
+
+
+def _unit(name: str) -> Path:
+    return SYSTEMD / f"readsbstats-{name}.service"
+
+
+def test_data_units_use_the_data_dir_placeholder():
+    for name in DATA_UNITS:
+        lines = _lines(_unit(name))
+        assert "RequiresMountsFor=@DATA_DIR@" in lines, name
+        assert "ReadWritePaths=@DATA_DIR@" in lines, name
+        assert "Environment=RSBS_DATA_DIR=@DATA_DIR@" in lines, name
+
+
+def test_requires_mounts_for_sits_in_the_unit_section():
+    for name in DATA_UNITS:
+        text = _unit(name).read_text()
+        unit_sec = text.split("[Service]")[0]
+        assert "RequiresMountsFor=@DATA_DIR@" in unit_sec, name
+
+
+def test_mcp_unit_has_no_mount_ordering_or_data_env():
+    text = MCP_UNIT.read_text()
+    assert "RequiresMountsFor" not in text
+    assert "RSBS_DATA_DIR" not in text
+
+
+def test_collector_and_vdl2_resource_limits():
+    col = _lines(_unit("collector"))
+    assert "CPUQuota=50%" in col and "MemoryMax=1G" in col
+    vdl2 = _lines(_unit("vdl2"))
+    assert "CPUQuota=50%" in vdl2 and "MemoryMax=768M" in vdl2
+    for lines in (col, vdl2):
+        assert not any(ln.startswith("MemoryHigh") for ln in lines)
+        assert "Nice=10" in lines
+
+
+def test_no_hardcoded_personal_mount_in_shipped_files():
+    needle = "/mnt/" + "ext"
+    offenders = []
+    for sub in ("systemd", "scripts", "src", "tests"):
+        for path in (ROOT / sub).rglob("*"):
+            if not path.is_file() or "__pycache__" in path.parts:
+                continue
+            if path.suffix in (".pyc", ".db"):
+                continue
+            try:
+                text = path.read_text()
+            except UnicodeDecodeError:
+                continue
+            if needle in text:
+                offenders.append(str(path.relative_to(ROOT)))
+    assert not offenders, offenders
+
+
+def test_env_example_documents_data_dir():
+    text = (SYSTEMD / "readsbstats.env.example").read_text()
+    assert "# RSBS_DATA_DIR=/var/lib/readsbstats" in text
+
+
+# ---- updater + dbcheck scheduling (2026-10-28 incident) ----------------------
+
+def test_updater_timer_does_not_fire_on_boot():
+    # OnBootSec held the collector down ~3 min after every boot; Persistent=
+    # already catches up a missed Monday run.
+    lines = _lines(SYSTEMD / "readsbstats-updater.timer")
+    assert not any(ln.startswith("OnBootSec=") for ln in lines)
+    assert "Persistent=true" in lines
+
+
+def test_updater_skips_while_collector_is_starting():
+    lines = _lines(SYSTEMD / "readsbstats-updater.service")
+    cond = [ln for ln in lines if ln.startswith("ExecCondition=")]
+    assert len(cond) == 1
+    assert "readsbstats-collector.service" in cond[0] and "activating" in cond[0]
+
+
+def test_updater_not_ordered_after_collector():
+    # After= on the collector would deadlock ExecStopPost's `systemctl start
+    # readsbstats-collector`: systemd orders the updater's stop job before the
+    # collector's start job, and that stop job is waiting on ExecStopPost.
+    for ln in _lines(SYSTEMD / "readsbstats-updater.service"):
+        if ln.startswith(("After=", "Before=")):
+            assert "readsbstats-collector" not in ln, ln
+
+
+def _timeout_start(unit: str) -> int:
+    ln = next(ln for ln in _lines(SYSTEMD / unit) if ln.startswith("TimeoutStartSec="))
+    return int(ln.split("=", 1)[1])
+
+
+def test_dbcheck_timeouts_fit_a_cold_large_db():
+    assert _timeout_start("readsbstats-dbcheck.service") >= 1800
+    assert _timeout_start("readsbstats-dbcheck-full.service") >= 3600
+
+
+def test_updater_restarts_collector_without_blocking():
+    post = [ln for ln in _lines(SYSTEMD / "readsbstats-updater.service")
+            if ln.startswith("ExecStopPost=")]
+    assert post == ["ExecStopPost=+/bin/systemctl --no-block start readsbstats-collector.service"]

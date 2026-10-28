@@ -18,8 +18,9 @@ For local development with real data, copy the database from your Pi:
 mkdir -p db
 # 1. Snapshot on the Pi into RAM-backed /dev/shm (never /tmp: it is on the SD card).
 #    One read transaction, safe against the live WAL database. Check space first.
+#    The path is your RSBS_DATA_DIR/history.db (default /var/lib/readsbstats).
 echo "VACUUM INTO '/dev/shm/history.db'" | ssh pi@your-pi \
-  'df -h /dev/shm; nice -n19 ionice -c3 sqlite3 "file:/mnt/ext/readsbstats/history.db?mode=ro"'
+  'df -h /dev/shm; nice -n19 ionice -c3 sqlite3 "file:/var/lib/readsbstats/history.db?mode=ro"'
 # 2. Pull it, then delete it on the Pi.
 rsync pi@your-pi:/dev/shm/history.db ./db/
 ssh pi@your-pi 'rm /dev/shm/history.db'

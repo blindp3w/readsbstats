@@ -15,8 +15,8 @@ investigation surfaced three gaps:
    (malformed main-DB pages written before the crash).
 3. No periodic check catches slow-developing corruption between outages.
 
-The XFS mount on `/mnt/ext` has write barriers enabled by default; no
-mitigation needed at the filesystem layer.
+The XFS data mount on the reference deployment has write barriers enabled by
+default; no mitigation needed at the filesystem layer.
 
 ## Decision
 
@@ -79,3 +79,26 @@ pass, 1 on corruption, 2 on open/query error.
   `database.init_db()` raises before the integrity check helper can run.
   Systemd retries, eventually OnFailure fires the Telegram alert — generic
   "service failed" rather than "DB corruption detected". Acceptable.
+
+## Amendment (v2.32.0)
+
+The fail-closed decision above stands. Its implementation changed in v2.32.0.
+On 2026-10-28 a ~1.8 GB database on a USB HDD needed about 3 min 17 s for
+`quick_check`, but the unit limits of the time (`CPUQuota=15%`, `MemoryMax=192M`,
+which counts page cache) and `TimeoutStartSec=300` killed the check every time.
+The sentinel stayed, so the service looped indefinitely, and SIGTERM was ignored
+during the check, so a stop ended in SIGKILL after 90 s.
+
+- The check runs in a worker thread. The service sends `EXTEND_TIMEOUT_USEC` and
+  a `STATUS=` line every 10 s until `RSBS_STARTUP_CHECK_MAX_SEC` (default 1800) is
+  reached, so a hung check is still killed by `TimeoutStartSec`.
+- SIGTERM interrupts the check (`sqlite3` `interrupt()`). The service exits 0,
+  writes nothing and keeps the sentinel, so the next start checks again.
+- The collector runs the check before `init_db()`, so schema migrations never
+  write to a database that has not been checked.
+- A passing check no longer deletes the collector's sentinel. `main()` had
+  already re-created it for the new run, so deleting it meant a second crash
+  during that run went undetected. As decided above, only a graceful shutdown
+  removes it.
+- Unit limits are raised: collector `CPUQuota=50%`, `MemoryMax=1G`; VDL2 ingest
+  `CPUQuota=50%`, `MemoryMax=768M`.

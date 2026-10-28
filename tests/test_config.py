@@ -431,6 +431,89 @@ class TestStringNormalization:
         assert "RSBS_DB_PATH" in capsys.readouterr().err
 
 
+class TestStartupCheckMaxSec:
+    """RSBS_STARTUP_CHECK_MAX_SEC — cap on extending systemd's start timeout."""
+
+    def _reload(self):
+        import readsbstats.config
+        importlib.reload(readsbstats.config)
+        return readsbstats.config
+
+    def test_default(self, monkeypatch):
+        monkeypatch.delenv("RSBS_STARTUP_CHECK_MAX_SEC", raising=False)
+        assert self._reload().STARTUP_CHECK_MAX_SEC == 1800
+
+    def test_override(self, monkeypatch):
+        monkeypatch.setenv("RSBS_STARTUP_CHECK_MAX_SEC", "3600")
+        assert self._reload().STARTUP_CHECK_MAX_SEC == 3600
+
+    def test_below_minimum_falls_back(self, monkeypatch, capsys):
+        monkeypatch.setenv("RSBS_STARTUP_CHECK_MAX_SEC", "10")
+        assert self._reload().STARTUP_CHECK_MAX_SEC == 1800
+        assert "RSBS_STARTUP_CHECK_MAX_SEC" in capsys.readouterr().err
+
+    def test_not_in_settings_registry(self):
+        assert all(m["env_var"] != "RSBS_STARTUP_CHECK_MAX_SEC"
+                   for m in self._reload()._META_REGISTRY.values())
+
+
+class TestDataDir:
+    """RSBS_DATA_DIR — deploy-time data directory; DB paths default under it."""
+
+    def _reload(self):
+        import readsbstats.config
+        importlib.reload(readsbstats.config)
+        return readsbstats.config
+
+    def test_default_is_var_lib(self, monkeypatch):
+        for var in ("RSBS_DATA_DIR", "RSBS_DB_PATH", "RSBS_VDL2_DB_PATH"):
+            monkeypatch.delenv(var, raising=False)
+        cfg = self._reload()
+        assert cfg.DATA_DIR == "/var/lib/readsbstats"
+        assert cfg.DB_PATH == "/var/lib/readsbstats/history.db"
+        assert cfg.VDL2_DB_PATH == "/var/lib/readsbstats/vdl2.db"
+
+    def test_db_paths_follow_data_dir(self, monkeypatch):
+        monkeypatch.setenv("RSBS_DATA_DIR", "/srv/rsbs")
+        monkeypatch.delenv("RSBS_DB_PATH", raising=False)
+        monkeypatch.delenv("RSBS_VDL2_DB_PATH", raising=False)
+        cfg = self._reload()
+        assert cfg.DATA_DIR == "/srv/rsbs"
+        assert cfg.DB_PATH == "/srv/rsbs/history.db"
+        assert cfg.VDL2_DB_PATH == "/srv/rsbs/vdl2.db"
+
+    def test_registered_defaults_follow_data_dir(self, monkeypatch):
+        monkeypatch.setenv("RSBS_DATA_DIR", "/srv/rsbs")
+        cfg = self._reload()
+        assert cfg._META_REGISTRY["db_path"]["default"] == "/srv/rsbs/history.db"
+        assert cfg._META_REGISTRY["vdl2_db_path"]["default"] == "/srv/rsbs/vdl2.db"
+        assert cfg._META_REGISTRY["db_path"]["secret"] is True
+
+    def test_explicit_db_paths_win(self, monkeypatch):
+        monkeypatch.setenv("RSBS_DATA_DIR", "/srv/rsbs")
+        monkeypatch.setenv("RSBS_DB_PATH", "/elsewhere/h.db")
+        monkeypatch.setenv("RSBS_VDL2_DB_PATH", "/elsewhere/v.db")
+        cfg = self._reload()
+        assert cfg.DB_PATH == "/elsewhere/h.db"
+        assert cfg.VDL2_DB_PATH == "/elsewhere/v.db"
+
+    @pytest.mark.parametrize("value", ["", "   "])
+    def test_empty_data_dir_falls_back_with_error(self, monkeypatch, capsys, value):
+        monkeypatch.setenv("RSBS_DATA_DIR", value)
+        monkeypatch.delenv("RSBS_DB_PATH", raising=False)
+        cfg = self._reload()
+        assert cfg.DATA_DIR == "/var/lib/readsbstats"
+        assert cfg.DB_PATH == "/var/lib/readsbstats/history.db"
+        assert "RSBS_DATA_DIR" in capsys.readouterr().err
+
+    def test_data_dir_is_not_a_surfaced_setting(self, monkeypatch):
+        monkeypatch.setenv("RSBS_DATA_DIR", "/srv/rsbs")
+        cfg = self._reload()
+        assert "data_dir" not in cfg._META_REGISTRY
+        assert all(m["env_var"] != "RSBS_DATA_DIR"
+                   for m in cfg._META_REGISTRY.values())
+
+
 class TestTimeFormat:
     """RSBS_TIME_FORMAT — allow-list (24h | 12h), invalid falls back to 24h."""
 

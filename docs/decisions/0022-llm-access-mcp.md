@@ -26,7 +26,7 @@ the operator's home.
    readsbstats.mcp_server`, speaks MCP over Streamable HTTP (stateless, JSON responses)
    and listens on port 8765 (`RSBS_MCP_HOST`/`RSBS_MCP_PORT`, default `127.0.0.1`). It
    runs in its own process and has no access to the database: the unit sets
-   `InaccessiblePaths=-/mnt/ext/readsbstats`, and the package never imports `database`
+   `InaccessiblePaths=-` on the data directory (`@DATA_DIR@`, rendered at install), and the package never imports `database`
    or `api.*`. It runs as its own dynamic user (`DynamicUser=yes`, with
    `SupplementaryGroups=readsbstats` to read `/opt/readsbstats`), because under the
    collector's uid it could open the database through `/proc/<pid>/fd` and signal the

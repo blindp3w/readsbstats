@@ -526,6 +526,53 @@ def test_main_dirty_sentinel_failed_check_refuses_to_write(monkeypatch, tmp_path
     assert any("failed quick_check" in r.getMessage() for r in caplog.records)
 
 
+def test_main_dirty_sentinel_interrupted_check_exits_clean_and_keeps_sentinel(
+        monkeypatch, tmp_path):
+    """SIGTERM during the startup quick_check: exit 0, write nothing, keep the
+    sentinel so the check repeats on the next start."""
+    monkeypatch.setattr(config, "VDL2_ENABLED", True)
+    monkeypatch.setattr(config, "VDL2_DB_PATH", str(tmp_path / "vdl2.db"))
+    conn = make_vdl2_db()
+    monkeypatch.setattr(vdl2_db, "connect", lambda *a, **k: conn)
+    schema_calls = []
+    monkeypatch.setattr(vdl2_db, "ensure_schema", lambda c: schema_calls.append(1))
+    monkeypatch.setattr(vdl2_collector, "_prune_loop", lambda: None)
+    monkeypatch.setattr(vdl2_collector, "_quick_check", lambda c: None)
+    sd_msgs = []
+    monkeypatch.setattr(vdl2_collector, "_sd_notify", lambda m: sd_msgs.append(m))
+    monkeypatch.setattr(socket, "socket",
+                        lambda *a, **k: pytest.fail("must not bind the socket"))
+    sentinel = tmp_path / ".vdl2_dirty_shutdown"
+    sentinel.touch()
+    assert vdl2_collector.main() == 0
+    assert schema_calls == []
+    assert sentinel.exists()
+    assert "READY=1" not in sd_msgs
+    with pytest.raises(sqlite3.ProgrammingError):   # connection was closed
+        conn.execute("SELECT 1")
+
+
+def test_quick_check_none_when_interrupted_by_shutdown():
+    """_quick_check reports None (not False) when run_quick_check was
+    interrupted, so main() can tell shutdown from corruption."""
+    class _Conn:
+        def execute(self, sql):
+            raise sqlite3.OperationalError("interrupted")
+
+        def interrupt(self):
+            pass
+
+    vdl2_collector._stop.set()
+    try:
+        assert vdl2_collector._quick_check(_Conn()) is None
+    finally:
+        vdl2_collector._stop.clear()
+
+
+def test_quick_check_true_on_ok_db():
+    assert vdl2_collector._quick_check(make_vdl2_db()) is True
+
+
 def test_main_sentinel_write_failure_logs_and_continues(monkeypatch, tmp_path, caplog):
     _scaffold_main(monkeypatch, tmp_path)
     # Sentinel path under a missing directory: the startup open() raises

@@ -259,7 +259,8 @@ def _fetch_area(client: httpx.Client | None = None) -> dict:
         raise _PermanentError(str(exc)) from exc
     except Exception as exc:
         # Includes DNS failures (plain ValueError), network errors, 5xx, etc.
-        raise _TransientError(str(exc)) from exc
+        # describe_exc: one line (httpx's own text would split in journald).
+        raise _TransientError(http_safe.describe_exc(exc)) from exc
 
 
 # ---------------------------------------------------------------------------

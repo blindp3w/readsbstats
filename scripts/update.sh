@@ -29,6 +29,24 @@ if [[ ! -f "$SRC_DIR/src/readsbstats/collector.py" || ! -f "$SRC_DIR/src/readsbs
   exit 1
 fi
 
+# ---- Resolve the data directory ----------------------------------------------
+# RSBS_DATA_DIR from the env file, else migrated from the installed collector
+# unit (and persisted once), else /var/lib/readsbstats. MUST run before the
+# backup, the rsync and the v6 migration, which all use $DB_FILE.
+# shellcheck source=/dev/null
+source "$SRC_DIR/scripts/_deploy_lib.sh"
+resolve_data_dir
+echo "Data dir: $DATA_DIR (source: $DATA_DIR_SOURCE)"
+DB_FILE="$DATA_DIR/history.db"
+# An existing install must find its database where we resolved the data dir;
+# otherwise we'd render units that sandbox the wrong directory. Abort before
+# touching anything.
+if [[ -f "$UNIT_DEST/readsbstats-collector.service" && ! -f "$DB_FILE" ]]; then
+  echo "ERROR: data directory resolved to $DATA_DIR, but there is no history.db there." >&2
+  echo "       Set RSBS_DATA_DIR=<dir holding history.db> in $RSBS_ENV_FILE and re-run." >&2
+  exit 1
+fi
+
 # ---- Validate frontend build freshness (if frontend/ exists) ----------------
 # The React SPA is built on the dev machine; the Pi never installs Node. We
 # ship the dist/ tree via rsync. Without a freshness check, "git pull && bash
@@ -54,8 +72,6 @@ if [[ -d "$FRONTEND_DIR/src" ]]; then
   fi
 fi
 
-DB_FILE="/mnt/ext/readsbstats/history.db"
-
 # ---- Backup database before any changes --------------------------------------
 if [[ -f "$DB_FILE" ]]; then
   BACKUP="$DB_FILE.backup.$(date +%Y%m%d_%H%M%S)"
@@ -66,14 +82,9 @@ if [[ -f "$DB_FILE" ]]; then
   # wait up to 30 s for any in-flight write transaction to finish (the default
   # busy_timeout is 0, which would fail immediately if the collector is writing).
   sqlite3 -cmd ".timeout 30000" "$DB_FILE" "VACUUM INTO '$BACKUP'"
-  # Keep only the 3 most recent backups. Use find+sort over modification
-  # time instead of parsing `ls` output (shellcheck SC2012 / audit-13).
-  find "$(dirname "$DB_FILE")" -maxdepth 1 -name "$(basename "$DB_FILE").backup.*" \
-    -printf '%T@\t%p\n' 2>/dev/null \
-    | sort -nr \
-    | tail -n +4 \
-    | cut -f2- \
-    | xargs -r rm --
+  # Keep only the RSBS_KEEP_BACKUPS (default 3) newest backups.
+  KEEP_BACKUPS="$(keep_backups_value)"
+  prune_backups "$DB_FILE" "$KEEP_BACKUPS"
 fi
 
 # ---- Always sync code --------------------------------------------------------
@@ -164,7 +175,7 @@ if [[ -f "$DB_FILE" ]]; then
   if [[ "$CUR_VER" -lt 6 ]]; then
     echo "==> Schema v$CUR_VER < 6 — running offline positions migration (services stopped)"
     systemctl stop readsbstats-collector readsbstats-web 2>/dev/null || true
-    runuser -u "$SERVICE_USER" -- \
+    runuser -u "$SERVICE_USER" -- env RSBS_DATA_DIR="$DATA_DIR" \
       "$APP_DIR/venv/bin/python" "$APP_DIR/scripts/migrate_v6.py" "$DB_FILE"
     if [[ "$MODE" == "db" ]]; then
       # code/full modes restart later; db-only has no later restart for web —
@@ -175,17 +186,9 @@ if [[ -f "$DB_FILE" ]]; then
 fi
 
 echo "==> Reloading systemd"
-cp "$APP_DIR/systemd/readsbstats-collector.service"     /etc/systemd/system/
-cp "$APP_DIR/systemd/readsbstats-web.service"           /etc/systemd/system/
-cp "$APP_DIR/systemd/readsbstats-updater.service"       /etc/systemd/system/
-cp "$APP_DIR/systemd/readsbstats-updater.timer"         /etc/systemd/system/
-cp "$APP_DIR/systemd/readsbstats-dbcheck.service"       /etc/systemd/system/
-cp "$APP_DIR/systemd/readsbstats-dbcheck.timer"         /etc/systemd/system/
-cp "$APP_DIR/systemd/readsbstats-dbcheck-full.service"  /etc/systemd/system/
-cp "$APP_DIR/systemd/readsbstats-dbcheck-full.timer"    /etc/systemd/system/
-cp "$APP_DIR/systemd/notify-telegram@.service"          /etc/systemd/system/
-cp "$APP_DIR/systemd/readsbstats-vdl2.service"          /etc/systemd/system/  # opt-in; enablement unchanged
-cp "$APP_DIR/systemd/readsbstats-mcp.service"           /etc/systemd/system/  # opt-in; enablement unchanged
+# Units are rendered (@DATA_DIR@ -> $DATA_DIR) from the freshly synced tree. The
+# opt-in vdl2 and mcp units are installed too; their enablement is unchanged.
+render_units "$DATA_DIR" "$APP_DIR/systemd"
 systemctl daemon-reload
 systemctl enable --now readsbstats-dbcheck.timer readsbstats-dbcheck-full.timer
 
@@ -229,7 +232,8 @@ if [[ "$MODE" == "db" || "$MODE" == "full" ]]; then
   echo "==> Stopping collector for database update"
   systemctl stop readsbstats-collector
   echo "==> Updating aircraft & airline databases"
-  runuser -u "$SERVICE_USER" -- "$APP_DIR/venv/bin/python" -m readsbstats.db_updater
+  # runuser does not read readsbstats.env: hand over the resolved data dir.
+  runuser -u "$SERVICE_USER" -- env RSBS_DATA_DIR="$DATA_DIR" "$APP_DIR/venv/bin/python" -m readsbstats.db_updater
   echo "==> Starting collector"
   systemctl start readsbstats-collector
 fi

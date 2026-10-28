@@ -53,7 +53,7 @@ ProtectSystem=strict
 # reaches data only through the local web API (ADR-0022) and must not be able
 # to open the database. The leading `-` keeps a missing path from failing
 # startup.
-InaccessiblePaths=-/mnt/ext/readsbstats
+InaccessiblePaths=-@DATA_DIR@
 
 # Audit-13 A13-046: kernel + namespace hardening. See collector unit
 # comments (MemoryDenyWriteExecute: not yet verified on the Pi).

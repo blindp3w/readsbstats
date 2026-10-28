@@ -5,6 +5,84 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 2.32.0 — 2026-10-28
+
+Recovery after an unclean shutdown on a large database, a configurable data
+directory, and quieter, cheaper health and logging. No schema changes.
+
+### Added
+
+- **`RSBS_DATA_DIR`** (default `/var/lib/readsbstats`): the directory holding
+  `history.db` and `vdl2.db`. `RSBS_DB_PATH` and `RSBS_VDL2_DB_PATH` now default
+  to files under it instead of a hard-coded mount path. The units in `systemd/`
+  carry a `@DATA_DIR@` placeholder that `install.sh` and `update.sh` render
+  (`scripts/_deploy_lib.sh`), so copying units by hand no longer works. See
+  [Operations → Data directory](docs/operations.md#data-directory).
+- **`RequiresMountsFor=`** on the data directory for the collector, web, VDL2
+  ingest, updater and both dbcheck units. They no longer fail with 226/NAMESPACE
+  when they start before an fstab `nofail` data mount.
+- **`RSBS_STARTUP_CHECK_MAX_SEC`** (default 1800, minimum 60): how long the
+  startup integrity check may keep extending systemd's start timeout.
+- **`RSBS_KEEP_BACKUPS`** for `update.sh` (default 3). Only timestamped
+  `history.db.backup.YYYYmmdd_HHMMSS` files are pruned.
+- `scripts/check_db.py` prints how long the check took.
+
+### Changed
+
+- **Unit limits.** Collector `CPUQuota` 15% → 50% and `MemoryMax` 192M → 1G;
+  VDL2 ingest `CPUQuota` 10% → 50% and `MemoryMax` 256M → 768M. `MemoryMax`
+  counts page cache too.
+- **The updater timer no longer runs 2 min after every boot.** That run stopped
+  the collector for about 3 minutes on each boot. `Persistent=true` still catches
+  up a missed Monday run, and the updater skips a run while the collector is
+  still starting.
+- **dbcheck timeouts for large databases.** `TimeoutStartSec` 600 → 1800 s for
+  dbcheck and 1800 → 3600 s for dbcheck-full.
+- **`/api/health`: the `vdl2` block no longer has `messages`.** The count needed a
+  full table scan, which took 20–37 s on a cold disk after a restart. Exact totals
+  stay in `/api/vdl2/stats`. **API change.**
+- httpx and httpcore request lines are logged only from WARNING up.
+- ADR-0007 amended for the startup integrity check.
+
+### Fixed
+
+- **Startup integrity check could loop forever.** After an unclean shutdown on a
+  large database on a slow disk, `PRAGMA quick_check` ran past `TimeoutStartSec`.
+  systemd killed it, the dirty sentinel stayed, and every restart repeated the
+  full check. The start limit never triggered because each attempt took minutes.
+  The check now runs in a worker thread and extends the start timeout while it
+  runs, up to `RSBS_STARTUP_CHECK_MAX_SEC`. This covers the collector and VDL2
+  ingest.
+- **SIGTERM during that check was ignored until SIGKILL (90 s).** It now
+  interrupts the check, and the service exits 0 without writing and keeps the
+  sentinel.
+- **The collector wrote to the database before the integrity check.** After an
+  unclean shutdown, schema setup and migrations in `init_db()` ran before the
+  check. The check now runs first and fails closed (ADR-0007).
+- **A crash right after a recovery went undetected.** A passing startup check
+  deleted the dirty sentinel that the collector had just created for the new
+  run, so the next unclean shutdown skipped the check. The sentinel is now kept
+  until a clean shutdown.
+- **Upstream HTTP errors logged twice.** airplanes.live and adsbdb errors were
+  written as two journal entries. Each is now one line (`http_safe.describe_exc`).
+
+### Upgrade notes
+
+- **Existing installs need no action.** On the first `update.sh` run the data
+  directory is taken from the installed collector unit and written once to
+  `/etc/readsbstats/readsbstats.env` as `RSBS_DATA_DIR`. `update.sh` prints
+  `Data dir: … (source: …)` and aborts before changing anything if no
+  `history.db` is found there.
+- **One-shot scripts run by hand** (`sudo -u readsbstats … scripts/…`) do not see
+  the units' environment. Pass `RSBS_DATA_DIR=…` or `--db`, or they look in
+  `/var/lib/readsbstats`.
+- **Local drop-ins can be removed.** Drop-ins that only raised `CPUQuota`,
+  `MemoryMax` or `TimeoutStartSec` for the collector or VDL2 ingest, or added
+  `RequiresMountsFor=`, are no longer needed. Delete the drop-in file, then run
+  `sudo systemctl daemon-reload`. Do not use `systemctl revert` for this.
+- **Clients reading `vdl2.messages` from `/api/health`** should use
+  `/api/vdl2/stats` instead.
+
 ## 2.31.0 — 2026-10-27
 
 Optional LLM access over MCP, and airport filters for the flight list. No schema

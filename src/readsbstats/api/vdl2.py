@@ -47,13 +47,20 @@ def _check_window(since: int | None, until: int | None) -> None:
         raise HTTPException(400, "until must be greater than since")
 
 
+# MAX(ts) is a single descent of idx_vdl2_ts (ts DESC) — O(1). Don't add
+# COUNT(*) here: it scans the whole (hundreds of MB) table and made /api/health
+# take tens of seconds on a cold disk right after a restart.
+_HEALTH_NEWEST_SQL = "SELECT MAX(ts) AS newest FROM vdl2_messages"
+
+
 def vdl2_health() -> dict:
     """VDL2 status block for /api/health (the single source of the runtime
     availability bits the SPA gates on). Never raises — a broken vdl2.db yields
     `available: false` with the rest omitted, not a 500.
 
-    Cached briefly: /api/health is polled by the SPA and the row-`COUNT(*)` is a
-    full table scan on a large store, so we don't want it per-poll on the Pi.
+    Cached briefly: /api/health is polled by the SPA, so we avoid per-poll DB
+    work on the Pi. The probe itself is cheap (an index lookup, no row count —
+    exact totals are in /api/vdl2/stats).
     `available` = vdl2.db queryable (drives the Messages tab/Stats); `attach_available`
     = the read-only ATTACH usable (drives the History has_acars filter/badge)."""
     cached = cache._get_cache("vdl2-health")
@@ -68,10 +75,7 @@ def vdl2_health() -> dict:
         conn = vdl2_db.web_conn()
         out["schema_version"] = conn.execute("PRAGMA user_version").fetchone()[0]
         out["fts"] = vdl2_db.has_fts(conn)
-        row = conn.execute(
-            "SELECT COUNT(*) AS n, MAX(ts) AS newest FROM vdl2_messages"
-        ).fetchone()
-        out["messages"] = row["n"]
+        row = conn.execute(_HEALTH_NEWEST_SQL).fetchone()
         out["newest_ts"] = row["newest"]
         out["newest_age_sec"] = (
             int(time.time()) - row["newest"] if row["newest"] is not None else None

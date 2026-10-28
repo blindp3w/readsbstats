@@ -7,6 +7,7 @@ Safe to run against a live WAL writer — opens read-only via URI.
 import argparse
 import sqlite3
 import sys
+import time
 from pathlib import Path
 
 from readsbstats import config
@@ -36,6 +37,7 @@ def main() -> None:
 
     pragma = "quick_check" if args.mode == "quick" else "integrity_check"
     print(f"Running PRAGMA {pragma} on {args.db} …")
+    t0 = time.monotonic()
     try:
         rows = conn.execute(f"PRAGMA {pragma}").fetchall()
     except sqlite3.Error as exc:
@@ -43,12 +45,13 @@ def main() -> None:
         conn.close()
         sys.exit(2)
     conn.close()
+    elapsed = int(time.monotonic() - t0)
 
     if len(rows) == 1 and rows[0][0] == "ok":
-        print(f"OK — PRAGMA {pragma} passed")
+        print(f"OK — PRAGMA {pragma} passed in {elapsed} s")
         sys.exit(0)
 
-    print(f"CORRUPTION DETECTED — {len(rows)} issue(s):", file=sys.stderr)
+    print(f"CORRUPTION DETECTED — {len(rows)} issue(s) in {elapsed} s:", file=sys.stderr)
     for r in rows[:20]:
         print(f"  {r[0]}", file=sys.stderr)
     if len(rows) > 20:
