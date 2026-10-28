@@ -27,7 +27,7 @@ Two engine-quirks are documented in `src/readsbstats/analytics.py`:
   points may bucket differently (cosmetic).
 
 DuckDB requires a writable home directory for its extension cache. The `readsbstats` system user
-has no `/home`, so `RSBS_DUCKDB_HOME_DIR` (default `/mnt/ext/readsbstats/duckdb-home`) points
+has no `/home`, so `RSBS_DUCKDB_HOME_DIR` (then defaulting to a `duckdb-home` directory on the reference Pi's USB data disk) points
 DuckDB at a writable location before `INSTALL sqlite_scanner`.
 
 ## Consequences

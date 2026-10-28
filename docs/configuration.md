@@ -15,7 +15,7 @@ A `systemctl edit <unit>` drop-in with `Environment="NAME=value"` lines is an al
 
 ## Environment variables
 
-All 91 `RSBS_*` vars, grouped by section, all read in `config.py`. Numeric
+All 93 `RSBS_*` vars, grouped by section, all read in `config.py`. Numeric
 values that fall below the documented minimum log a stderr warning and fall
 back to the listed default (see `_min_or_default_int`/`_float`).
 Boolean vars accept `1`/`0`, `true`/`false`, `yes`/`no`, `on`/`off`
@@ -47,10 +47,12 @@ Boolean vars accept `1`/`0`, `true`/`false`, `yes`/`no`, `on`/`off`
 
 | Variable | Default | Description |
 |---|---|---|
-| `RSBS_DB_PATH` | `/mnt/ext/readsbstats/history.db` | SQLite database path. Empty string falls back to the default — an empty path silently creates an in-memory DB. |
+| `RSBS_DATA_DIR` | `/var/lib/readsbstats` | Directory holding `history.db` and `vdl2.db`. Deploy-time: the systemd units are rendered from it, so after changing it move the files and re-run `update.sh` (see [Operations → Data directory](operations.md#data-directory)). Not shown in `/api/settings`. |
+| `RSBS_DB_PATH` | `$RSBS_DATA_DIR/history.db` | SQLite database path. Empty string falls back to the default — an empty path silently creates an in-memory DB. |
 | `RSBS_DB_SYNCHRONOUS` | `NORMAL` | SQLite `synchronous` level: `NORMAL` or `FULL`. In WAL mode `NORMAL` is corruption-safe — a power cut can lose at most the last few commits, never the database. `FULL` fsyncs every commit (per-commit durability) at a measurable cost on USB HDDs. Invalid values log an error and fall back to `NORMAL`. See [Database crash safety](#database-crash-safety). |
 | `RSBS_RETENTION_DAYS` | `0` | Days to keep raw `positions` rows (`0` = keep forever). **Recommended value for a Pi-class install: `180`.** See [Retention — what survives the horizon](#retention--what-survives-the-horizon) below. |
 | `RSBS_PURGE_INTERVAL` | `3600` | Seconds between retention-purge passes (min `1`; only fires when `RETENTION_DAYS > 0`). The purge deletes expired rows in 50 000-row batches with short sleeps between batches so the collector and web readers are not locked out. |
+| `RSBS_STARTUP_CHECK_MAX_SEC` | `1800` | Upper limit (seconds) for the startup `quick_check` after an unclean shutdown, in the collector and VDL2 ingest. While the check runs, systemd's start timeout keeps being extended; past this limit the extension stops, so a hung check is still killed by `TimeoutStartSec` (min `60`). Internal tunable, not in `/api/settings`. See [Database integrity & startup recovery](operations.md#database-integrity--startup-recovery). |
 | `RSBS_GRID_FINE_RETENTION_DAYS` | `14` | Days of fine-scale (0.01°) heatmap rollup rows to keep in `grid_daily` (min `8` — the 7d window needs 7 full days + today). Only the fine grid is pruned; the coarse (0.1°) grid and `coverage_daily` rows are permanent, so the 30d/all-time heatmap and coverage views keep working even if raw positions are ever purged. |
 
 ### Retention — what survives the horizon
@@ -293,7 +295,7 @@ decoder runbook and the two-switch enablement model.
 | Variable | Default | Description |
 |---|---|---|
 | `RSBS_VDL2_ENABLED` | `false` | Master switch. Set on **both** `readsbstats-web` (tab + `/api/vdl2`) and `readsbstats-vdl2` (ingest). |
-| `RSBS_VDL2_DB_PATH` | `/mnt/ext/readsbstats/vdl2.db` | Separate message store (FTS5 + WAL). Never the core DB. |
+| `RSBS_VDL2_DB_PATH` | `$RSBS_DATA_DIR/vdl2.db` | Separate message store (FTS5 + WAL). Never the core DB. |
 | `RSBS_VDL2_RETENTION_DAYS` | `90` | Prune messages older than this. `0` = keep forever. |
 | `RSBS_VDL2_UDP_HOST` | `127.0.0.1` | Bind address for the JSON-over-UDP listener. |
 | `RSBS_VDL2_UDP_PORT` | `5556` | UDP port the decoder feeds (min `1`). (5555 left free for SpyServer.) |
