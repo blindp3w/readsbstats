@@ -149,7 +149,24 @@ MLAT_OUTLIER_MIN_READINGS = _int("RSBS_MLAT_OUTLIER_MIN",       "10")    # minim
 # ---------------------------------------------------------------------------
 # Database
 # ---------------------------------------------------------------------------
-DB_PATH            = os.getenv(*_register("db_path",        "RSBS_DB_PATH",         "/mnt/ext/readsbstats/history.db", "DB_PATH", secret=True))
+# Data directory: where history.db / vdl2.db live. A deploy-time setting (the
+# systemd units' ReadWritePaths=/RequiresMountsFor= are rendered from it by
+# install.sh/update.sh), so deliberately NOT in _register — it must not appear
+# in /api/settings. RSBS_DB_PATH / RSBS_VDL2_DB_PATH still override the files.
+_DATA_DIR_DEFAULT = "/var/lib/readsbstats"
+DATA_DIR = os.getenv("RSBS_DATA_DIR", _DATA_DIR_DEFAULT).strip()
+if not DATA_DIR:
+    print(f"ERROR: RSBS_DATA_DIR is empty, using default {_DATA_DIR_DEFAULT}",
+          file=sys.stderr)
+    DATA_DIR = _DATA_DIR_DEFAULT
+
+# Startup quick_check after an unclean shutdown (collector + vdl2): how long it
+# may keep extending systemd's start timeout (EXTEND_TIMEOUT_USEC) before a
+# check that makes no progress is left to TimeoutStartSec. Internal tunable.
+STARTUP_CHECK_MAX_SEC = _min_or_default_int(
+    "RSBS_STARTUP_CHECK_MAX_SEC", _int("RSBS_STARTUP_CHECK_MAX_SEC", "1800"), 60, 1800)
+
+DB_PATH            = os.getenv(*_register("db_path",        "RSBS_DB_PATH",         os.path.join(DATA_DIR, "history.db"), "DB_PATH", secret=True))
 RETENTION_DAYS     = _int(*_register("retention_days", "RSBS_RETENTION_DAYS",  "0",    "RETENTION_DAYS"))      # 0 = keep forever
 PURGE_INTERVAL_SEC = _int(*_register("purge_interval", "RSBS_PURGE_INTERVAL",  "3600", "PURGE_INTERVAL_SEC"))
 
@@ -224,7 +241,7 @@ STATS_JSON       = os.getenv(*_register("stats_json",   "RSBS_STATS_JSON", "/run
 # See internal_docs/features/vdl2-research.md + vdl2-ui-integration.md.
 VDL2_ENABLED        = _bool(*_register("vdl2_enabled",  "RSBS_VDL2_ENABLED", False, "VDL2_ENABLED"))
 VDL2_DB_PATH        = os.getenv(*_register("vdl2_db_path", "RSBS_VDL2_DB_PATH",
-                                "/mnt/ext/readsbstats/vdl2.db", "VDL2_DB_PATH", secret=True))
+                                os.path.join(DATA_DIR, "vdl2.db"), "VDL2_DB_PATH", secret=True))
 VDL2_RETENTION_DAYS = _int(*_register("vdl2_retention", "RSBS_VDL2_RETENTION_DAYS", "90", "VDL2_RETENTION_DAYS"))  # 0 = keep forever
 # Internal tunables (not surfaced via /api/settings). Range-validated per the
 # project rule (parse via _int, floor via _min_or_default_int).
@@ -559,7 +576,7 @@ ADSBX_API_URL     = ADSBX_API_URL.rstrip("/")     if ADSBX_API_URL     else ADSB
 
 # DB_PATH — empty string causes sqlite3.connect("") which is an in-memory DB
 # that silently loses all data on restart
-_DB_PATH_DEFAULT = "/mnt/ext/readsbstats/history.db"
+_DB_PATH_DEFAULT = os.path.join(DATA_DIR, "history.db")
 if not DB_PATH.strip():
     print(f"ERROR: RSBS_DB_PATH is empty, using default {_DB_PATH_DEFAULT}",
           file=sys.stderr)

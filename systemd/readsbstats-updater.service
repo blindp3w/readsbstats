@@ -3,10 +3,17 @@ Description=readsbstats aircraft/airline database updater
 After=network-online.target
 Wants=network-online.target
 
+# Wait for the data directory's mount when it is a separate one (e.g. an fstab
+# `nofail` USB disk). No-op when the directory lives on the root filesystem.
+RequiresMountsFor=@DATA_DIR@
+
 [Service]
 Type=oneshot
 User=readsbstats
 Group=readsbstats
+# Rendered by install.sh/update.sh. Keeps the app's default DB paths aligned
+# with the ReadWritePaths= sandbox below.
+Environment=RSBS_DATA_DIR=@DATA_DIR@
 # v2.12.2: stop the collector before the updater body runs and restart it
 # after, so the weekly timer path can't collide with concurrent writers on
 # the v2.11.7+ single-transaction aircraft_db swap. `+` runs as root,
@@ -23,7 +30,7 @@ PrivateTmp=yes
 PrivateDevices=yes
 ProtectHome=yes
 ProtectSystem=strict
-ReadWritePaths=/mnt/ext/readsbstats
+ReadWritePaths=@DATA_DIR@
 # v2.12.2: 300 → 900 — the v2.11.7+ single-transaction swap holds
 # BEGIN IMMEDIATE for the full CREATE + chunked INSERT + rename sequence;
 # on Pi-4 SD/USB that's 3–5 min for 620 k rows. 900 s gives ~3× headroom.

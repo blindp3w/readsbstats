@@ -1,6 +1,7 @@
 """Tests for DB integrity-check logic: collector._startup_integrity_check and check_db.py."""
 
 import os
+import re
 import sqlite3
 import sys
 import tempfile
@@ -196,7 +197,9 @@ class TestMainFailClosed:
             collector.main()
 
         assert ei.value.code == 2
-        assert called == ["init_db"]  # nothing past the integrity check ran
+        # Fail closed: init_db() WRITES (DDL, migrations, INSERT), so it must
+        # not run before the check passes, and nothing past the check runs.
+        assert called == []
         assert sentinel.exists()  # sentinel retained for operator
         assert sent_alerts and "integrity" in sent_alerts[0].lower()
         assert any("STATUS=" in m and "integrity" in m.lower() for m in sd_msgs)
@@ -235,6 +238,137 @@ class TestMainFailClosed:
         assert any("Failed to send DB integrity alert" in rec.message
                    for rec in caplog.records)
         assert any("STATUS=" in m and "integrity" in m.lower() for m in sd_msgs)
+
+
+# ---------------------------------------------------------------------------
+# main() ordering / interruption / start-timeout extension
+# ---------------------------------------------------------------------------
+
+class _FakeCloseConn:
+    def __init__(self):
+        self.closed = False
+
+    def close(self):
+        self.closed = True
+
+
+class TestMainStartupCheckFlow:
+    @pytest.fixture(autouse=True)
+    def setup(self, monkeypatch, tmp_path):
+        self.sentinel = tmp_path / ".dirty_shutdown"
+        self.sentinel.touch()
+        monkeypatch.setattr(collector, "_SENTINEL", self.sentinel)
+        self.called: list[str] = []
+        self.sd_msgs: list[str] = []
+        monkeypatch.setattr(database, "init_db", lambda: self.called.append("init_db"))
+        monkeypatch.setattr(collector, "_sd_notify", lambda m: self.sd_msgs.append(m))
+        for name in ("_load_active", "_load_notified", "_load_last_summary_date"):
+            monkeypatch.setattr(collector, name, lambda *a, n=name: self.called.append(n))
+        monkeypatch.setattr(
+            collector.adsbx_enricher, "start_background_enricher",
+            lambda *a, **k: self.called.append("adsbx"))
+        monkeypatch.setattr(
+            collector.route_enricher, "start_background_enricher",
+            lambda *a, **k: self.called.append("route_enricher"))
+        monkeypatch.setattr(
+            collector.metrics_collector, "start_metrics_collector",
+            lambda *a, **k: self.called.append("metrics"))
+        monkeypatch.setattr(
+            collector, "start_notification_consumer",
+            lambda *a, **k: self.called.append("notify_consumer"))
+        yield
+        collector._running = True
+
+    def test_interrupted_check_exits_0_without_touching_anything(self, monkeypatch, caplog):
+        import logging
+        conn = _FakeCloseConn()
+        monkeypatch.setattr(database, "connect", lambda *a, **k: conn)
+        monkeypatch.setattr(
+            collector.startup_check, "run_quick_check", lambda *a, **k: None)
+
+        with caplog.at_level(logging.WARNING, logger="collector"):
+            with pytest.raises(SystemExit) as ei:
+                collector.main()
+
+        assert ei.value.code == 0
+        assert self.sentinel.exists()      # kept: the check never finished
+        assert self.called == []           # no init_db, no loaders, no threads
+        assert "READY=1" not in self.sd_msgs
+        assert conn.closed
+        assert any("quick_check interrupted by shutdown; sentinel kept" in r.getMessage()
+                   for r in caplog.records)
+
+    def test_check_runs_before_init_db(self, monkeypatch):
+        order: list[str] = []
+        conn = _FakeCloseConn()
+        monkeypatch.setattr(database, "connect", lambda *a, **k: conn)
+        monkeypatch.setattr(database, "init_db", lambda: order.append("init_db"))
+        monkeypatch.setattr(
+            collector, "_startup_integrity_check",
+            lambda c, s: order.append("check"))
+
+        class _Done(Exception):
+            pass
+
+        def stop_at_ready(msg):
+            if msg == "READY=1":
+                raise _Done
+        monkeypatch.setattr(collector, "_sd_notify", stop_at_ready)
+        monkeypatch.setattr(collector, "_load_active", lambda *a: None)
+        monkeypatch.setattr(collector.notifier, "telegram_enabled", lambda: False)
+        with pytest.raises(_Done):
+            collector.main()
+        assert order == ["check", "init_db"]
+
+    def test_slow_check_extends_start_timeout_before_ready(self, monkeypatch, tmp_path):
+        import threading
+        from readsbstats import startup_check
+
+        release = threading.Event()
+
+        class SlowConn:
+            def execute(self, sql):
+                if "quick_check" in sql:
+                    release.wait(5)
+                    return self
+                return self
+
+            def fetchall(self):
+                return [("ok",)]
+
+            def fetchone(self):
+                return (0, 0, 0)
+
+            def interrupt(self):
+                release.set()
+
+            def close(self):
+                pass
+
+        threading.Timer(0.3, release.set).start()
+        monkeypatch.setattr(database, "connect", lambda *a, **k: SlowConn())
+        real = startup_check.run_quick_check
+        monkeypatch.setattr(
+            collector.startup_check, "run_quick_check",
+            lambda conn, **kw: real(conn, **{**kw, "heartbeat_sec": 0.02, "poll_sec": 0.02}))
+
+        class _Done(Exception):
+            pass
+
+        def stop_at_ready(msg):
+            self.sd_msgs.append(msg)
+            if msg == "READY=1":
+                raise _Done
+        monkeypatch.setattr(collector, "_sd_notify", stop_at_ready)
+        monkeypatch.setattr(collector.notifier, "telegram_enabled", lambda: False)
+
+        with pytest.raises(_Done):
+            collector.main()
+
+        ready = self.sd_msgs.index("READY=1")
+        extends = [i for i, m in enumerate(self.sd_msgs) if m.startswith("EXTEND_TIMEOUT_USEC=")]
+        assert len(extends) >= 2 and all(i < ready for i in extends)
+        assert not self.sentinel.exists()   # clean result → sentinel removed
 
 
 # ---------------------------------------------------------------------------
@@ -277,6 +411,17 @@ class TestCheckDbScript:
         captured = capsys.readouterr()
         assert rc == 0
         assert "OK" in captured.out
+
+    def test_reports_duration(self, capsys):
+        # The weekly timer's TimeoutStartSec is sized from these numbers; the
+        # journal must carry them on success and on corruption alike.
+        conn = make_file_db(self.db_path)
+        conn.close()
+        self._run(self.db_path, mode="quick")
+        assert re.search(r"passed in \d+ s", capsys.readouterr().out)
+        corrupt_db_file(self.db_path)
+        self._run(self.db_path, mode="quick")
+        assert re.search(r"in \d+ s", capsys.readouterr().err)
 
     def test_clean_db_full_exits_0(self, capsys):
         conn = make_file_db(self.db_path)

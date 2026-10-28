@@ -6,10 +6,17 @@ OnFailure=notify-telegram@%n.service
 # a still-running quick check — full supersedes it, so no coverage is lost.
 Conflicts=readsbstats-dbcheck.service
 
+# Wait for the data directory's mount when it is a separate one (e.g. an fstab
+# `nofail` USB disk). No-op when the directory lives on the root filesystem.
+RequiresMountsFor=@DATA_DIR@
+
 [Service]
 Type=oneshot
 User=readsbstats
 Group=readsbstats
+# Rendered by install.sh/update.sh. Keeps the app's default DB paths aligned
+# with the ReadWritePaths= sandbox below.
+Environment=RSBS_DATA_DIR=@DATA_DIR@
 ExecStart=/opt/readsbstats/venv/bin/python /opt/readsbstats/scripts/check_db.py --mode full
 WorkingDirectory=/opt/readsbstats
 # Security hardening
@@ -18,7 +25,7 @@ PrivateTmp=yes
 PrivateDevices=yes
 ProtectHome=yes
 ProtectSystem=strict
-ReadWritePaths=/mnt/ext/readsbstats
+ReadWritePaths=@DATA_DIR@
 # integrity_check is far heavier than quick_check (it cross-checks indexes vs
 # tables) and reads the whole DB off the USB disk. Scaled up alongside the
 # quick-check bump: on a multi-GB DB with a busy collector this can run many

@@ -2,10 +2,17 @@
 Description=readsbstats weekly DB quick_check
 OnFailure=notify-telegram@%n.service
 
+# Wait for the data directory's mount when it is a separate one (e.g. an fstab
+# `nofail` USB disk). No-op when the directory lives on the root filesystem.
+RequiresMountsFor=@DATA_DIR@
+
 [Service]
 Type=oneshot
 User=readsbstats
 Group=readsbstats
+# Rendered by install.sh/update.sh. Keeps the app's default DB paths aligned
+# with the ReadWritePaths= sandbox below.
+Environment=RSBS_DATA_DIR=@DATA_DIR@
 ExecStart=/opt/readsbstats/venv/bin/python /opt/readsbstats/scripts/check_db.py --mode quick
 WorkingDirectory=/opt/readsbstats
 # Security hardening
@@ -14,7 +21,7 @@ PrivateTmp=yes
 PrivateDevices=yes
 ProtectHome=yes
 ProtectSystem=strict
-ReadWritePaths=/mnt/ext/readsbstats
+ReadWritePaths=@DATA_DIR@
 # quick_check is read-only but reads every page off the (USB) disk while the
 # collector writes; a read-only WAL reader also walks the -wal frames, so wall
 # time scales with DB + WAL size and disk contention, not CPU. Measured ~60 s

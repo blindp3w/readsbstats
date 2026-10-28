@@ -28,7 +28,7 @@ pass ``--db`` explicitly:
 
     sudo -u readsbstats /opt/readsbstats/venv/bin/python \\
         /opt/readsbstats/scripts/backfill_vdl2_dumpvdl2.py \\
-        --db /mnt/ext/readsbstats/vdl2.db
+        --db /var/lib/readsbstats/vdl2.db
 
 ``--dry-run`` reports what would change without writing (and without running
 the schema migration). The supersede pass is skipped on a dry run (it depends on

@@ -4,10 +4,17 @@ After=network.target readsbstats-collector.service
 StartLimitIntervalSec=120
 StartLimitBurst=5
 
+# Wait for the data directory's mount when it is a separate one (e.g. an fstab
+# `nofail` USB disk). No-op when the directory lives on the root filesystem.
+RequiresMountsFor=@DATA_DIR@
+
 [Service]
 Type=simple
 User=readsbstats
 Group=readsbstats
+# Rendered by install.sh/update.sh. Keeps the app's default DB paths aligned
+# with the ReadWritePaths= sandbox below.
+Environment=RSBS_DATA_DIR=@DATA_DIR@
 WorkingDirectory=/opt/readsbstats
 ExecStart=/opt/readsbstats/venv/bin/uvicorn readsbstats.web:app \
     --host 127.0.0.1 \
@@ -43,7 +50,7 @@ PrivateTmp=yes
 PrivateDevices=yes
 ProtectHome=yes
 ProtectSystem=strict
-ReadWritePaths=/mnt/ext/readsbstats
+ReadWritePaths=@DATA_DIR@
 
 # Audit-13 A13-046: kernel + namespace hardening. See collector unit
 # comments (MemoryDenyWriteExecute: not yet verified on the Pi).

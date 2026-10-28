@@ -12,11 +12,19 @@ OnFailure=notify-telegram@%n.service
 StartLimitIntervalSec=120
 StartLimitBurst=5
 
+# Wait for the data directory's mount when it is a separate one (e.g. an fstab
+# `nofail` USB disk). No-op when the directory lives on the root filesystem.
+RequiresMountsFor=@DATA_DIR@
+
 [Service]
 Type=notify
 WatchdogSec=60
 User=readsbstats
 Group=readsbstats
+# Rendered by install.sh/update.sh. Keeps the app's default DB paths aligned
+# with the ReadWritePaths= sandbox below. This unit reads only vdl2.env (not
+# readsbstats.env), so it needs the variable here.
+Environment=RSBS_DATA_DIR=@DATA_DIR@
 WorkingDirectory=/opt/readsbstats
 ExecStart=/opt/readsbstats/venv/bin/python -m readsbstats.vdl2_collector
 Restart=on-failure
@@ -30,9 +38,14 @@ TimeoutStartSec=120
 # starts, sends READY, and exits cleanly (dormant — see vdl2_collector.main).
 EnvironmentFile=-/etc/readsbstats/vdl2.env
 
-# Be polite to the Pi — readsb/tar1090 and the core collector come first
-CPUQuota=10%
-MemoryMax=256M
+# Be polite to the Pi — readsb/tar1090 and the core collector come first.
+# MemoryMax counts page cache too. After an unclean shutdown the startup
+# PRAGMA quick_check streams the whole vdl2.db through it (the core DB took
+# ~3 min for 1.8 GB from a cold USB HDD); at the old 10% / 256M caps the check
+# thrashed and never finished inside the start timeout. Nice=10 +
+# IOSchedulingPriority=7 already keep readsb ahead of this service.
+CPUQuota=50%
+MemoryMax=768M
 Nice=10
 IOSchedulingClass=best-effort
 IOSchedulingPriority=7
@@ -43,7 +56,7 @@ PrivateTmp=yes
 PrivateDevices=yes
 ProtectHome=yes
 ProtectSystem=strict
-ReadWritePaths=/mnt/ext/readsbstats
+ReadWritePaths=@DATA_DIR@
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectKernelLogs=yes
