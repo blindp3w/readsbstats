@@ -148,3 +148,47 @@ render_units() {
   done
   return 0
 }
+
+# keep_backups_value — print how many history.db backups update.sh keeps:
+# RSBS_KEEP_BACKUPS from the env file, an integer 1..9999, default 3. Anything
+# else (0, negative, text, a leading zero) warns on stderr and yields 3. An
+# empty/absent value is the default, silently.
+keep_backups_value() {
+  local default=3 raw
+  raw="$(env_value RSBS_KEEP_BACKUPS)"
+  if [[ -z "$raw" ]]; then
+    echo "$default"
+  elif [[ "$raw" =~ ^[1-9][0-9]{0,3}$ ]]; then
+    echo "$raw"
+  else
+    echo "WARNING: invalid RSBS_KEEP_BACKUPS '$raw' (want an integer >= 1); keeping $default backups" >&2
+    echo "$default"
+  fi
+}
+
+# prune_backups DB_FILE KEEP — delete all but the KEEP newest
+# DB_FILE.backup.YYYYmmdd_HHMMSS files. "Newest" is by name: the timestamp
+# suffix sorts lexicographically = chronologically, and (unlike mtime) that
+# needs no GNU-only `find -printf`/`stat`. Files with any other suffix
+# (e.g. a hand-made .backup.pre-v6) and other databases' backups are never
+# touched. The glob expands in sorted order; bash 3.2 safe (no empty-array
+# expansion under `set -u`).
+prune_backups() {
+  local db="${1-}" keep="${2-}" f n=0 i=0
+  local -a found=()
+  if [[ -z "$db" || ! "$keep" =~ ^[1-9][0-9]{0,3}$ ]]; then
+    echo "ERROR: prune_backups needs DB_FILE and an integer KEEP >= 1" >&2
+    return 1
+  fi
+  for f in "$db".backup.*; do
+    [[ -f "$f" ]] || continue
+    [[ "${f##*.backup.}" =~ ^[0-9]{8}_[0-9]{6}$ ]] || continue
+    found[n]="$f"
+    n=$((n + 1))
+  done
+  while (( i < n - keep )); do
+    rm -- "${found[i]}"
+    i=$((i + 1))
+  done
+  return 0
+}

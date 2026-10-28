@@ -1047,3 +1047,39 @@ class TestLoopbackRequest:
 
         with pytest.raises(httpx.ConnectError):
             self._call(handler)
+
+
+# ---------------------------------------------------------------------------
+# describe_exc — one-line exception text for the journal
+# ---------------------------------------------------------------------------
+
+class TestDescribeExc:
+    @staticmethod
+    def _status_error(code: int, url: str = "https://api.example.org/v1/x"):
+        resp = httpx.Response(code, request=httpx.Request("GET", url))
+        with pytest.raises(httpx.HTTPStatusError) as ei:
+            resp.raise_for_status()
+        return ei.value
+
+    def test_status_error_str_is_multiline(self):
+        # Premise: httpx appends a "For more information check: ..." line.
+        assert "\n" in str(self._status_error(403))
+
+    def test_http_status_error_single_line_with_status_and_url(self):
+        out = http_safe.describe_exc(self._status_error(403))
+        assert "\n" not in out
+        assert "403" in out and "https://api.example.org/v1/x" in out
+
+    def test_http_status_error_without_request_does_not_raise(self):
+        class Resp:
+            status_code = 500
+        exc = httpx.HTTPStatusError("500", request=None, response=Resp())
+        out = http_safe.describe_exc(exc)
+        assert "500" in out and "\n" not in out
+
+    def test_other_exception_collapses_whitespace(self):
+        out = http_safe.describe_exc(ConnectionError("boom\n  second\tline"))
+        assert out == "ConnectionError: boom second line"
+
+    def test_empty_message_still_names_type(self):
+        assert http_safe.describe_exc(TimeoutError()) == "TimeoutError"

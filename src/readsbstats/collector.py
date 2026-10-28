@@ -78,6 +78,9 @@ logging.basicConfig(
     datefmt="%Y-%m-%dT%H:%M:%S",
     stream=sys.stdout,
 )
+# httpx logs every request at INFO — half of the journal; keep warnings only.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 log = logging.getLogger("collector")
 
 # ---------------------------------------------------------------------------

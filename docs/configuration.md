@@ -250,9 +250,17 @@ Off by default. These variables live in `/etc/readsbstats/mcp.env` (template: `s
 | `RSBS_MCP_CONCURRENCY` | `2` | Concurrent API calls across all clients (min `1`). |
 | `RSBS_MCP_WATCHLIST_MAX` | `100` | Watchlist size cap for additions made through MCP (min `1`). |
 
+### Deploy script (`update.sh`)
+
+Read from `/etc/readsbstats/readsbstats.env` by `scripts/update.sh` only, not by the services, so not counted above.
+
+| Variable | Default | Description |
+|---|---|---|
+| `RSBS_KEEP_BACKUPS` | `3` | How many `history.db.backup.YYYYmmdd_HHMMSS` snapshots `update.sh` keeps after taking a new one (integer 1–9999; invalid values warn and fall back to `3`). Only files with that exact timestamp suffix are pruned, newest by name. Each snapshot is a full copy of the database, so lower it on a nearly full data disk. |
+
 ## Logging
 
-Both services log to journald at `INFO` level:
+Both services log to journald at `INFO` level (the `httpx`/`httpcore` request lines only from `WARNING` up, since v2.32.0):
 
 ```bash
 journalctl -u readsbstats-collector -f   # collector: startup, flight events, route/ADSBx enrichers, errors

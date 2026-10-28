@@ -1131,6 +1131,35 @@ class TestFetchRoute:
         with pytest.raises(self.mod._PermanentError):
             self.mod._fetch_route("BADCS")
 
+    def test_http_error_messages_are_single_line(self, monkeypatch):
+        """The wrapped error text reaches log.warning — a newline in it would
+        be split into a second journald entry."""
+        import httpx
+        self._bypass_validate(monkeypatch)
+
+        class FakeResp:
+            def __init__(self, code):
+                self.status_code = code
+                self.content = b""
+            def raise_for_status(self):
+                resp = httpx.Response(self.status_code,
+                                      request=httpx.Request("GET", "https://x.example/c"))
+                resp.raise_for_status()
+
+        class FakeClient:
+            code = 400
+            def __enter__(self): return self
+            def __exit__(self, *a): pass
+            def get(self, url, **kw): return FakeResp(FakeClient.code)
+
+        monkeypatch.setattr(httpx, "Client", lambda **kw: FakeClient())
+        for code, exc_type in ((400, self.mod._PermanentError),
+                               (503, self.mod._TransientError)):
+            FakeClient.code = code
+            with pytest.raises(exc_type) as ei:
+                self.mod._fetch_route("BADCS")
+            assert str(code) in str(ei.value) and "\n" not in str(ei.value)
+
     def test_429_treated_as_transient(self, monkeypatch):
         """429 (rate limited) stays transient — retry later via the in-memory
         cooldown, don't poison the DB cache for a temporary throttle."""

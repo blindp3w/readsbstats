@@ -1,6 +1,7 @@
 """Tests for the VDL2 read-only API + the optional-router gating in web.py."""
 from __future__ import annotations
 
+import re
 import sqlite3
 import threading
 import time
@@ -1313,7 +1314,20 @@ class TestHealth:
         monkeypatch.setattr(_deps, "_db", make_db())
         h = vdl2_api.vdl2_health()
         assert h["enabled"] is True and h["available"] is True
-        assert h["messages"] == 1 and h["newest_ts"] == 123
+        assert h["newest_ts"] == 123
+        # No COUNT(*): a full scan of the large messages table made /api/health
+        # take tens of seconds on a cold disk. Exact totals live in /vdl2/stats.
+        assert "messages" not in h
+        conn.close()
+
+    def test_newest_query_uses_ts_index(self):
+        """The health probe must be an index lookup, never a table scan."""
+        conn = make_vdl2_db()
+        plan = " ".join(
+            r[3] for r in conn.execute(
+                "EXPLAIN QUERY PLAN " + vdl2_api._HEALTH_NEWEST_SQL))
+        assert "idx_vdl2_ts" in plan, plan
+        assert not re.search(r"SCAN vdl2_messages(?! USING)", plan), plan
         conn.close()
 
 

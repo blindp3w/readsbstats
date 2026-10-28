@@ -254,3 +254,99 @@ class TestScriptsWiring:
         assert 'render_units "$DATA_DIR" "$APP_DIR/systemd"' in sh
         assert not re.search(r'^\s*cp "\$APP_DIR/systemd/[^"]*\.(service|timer)"', sh, re.M)
         assert "/mnt/" + "ext" not in sh
+
+
+# ---- keep_backups_value / prune_backups --------------------------------------
+
+def _mk_backups(tmp_path, stamps, db="history.db"):
+    d = tmp_path / "data"
+    d.mkdir(exist_ok=True)
+    for s in stamps:
+        (d / f"{db}.backup.{s}").write_text("x")
+    return d
+
+
+def _left(d, db="history.db"):
+    return sorted(p.name[len(db) + len(".backup."):] for p in d.glob(f"{db}.backup.*"))
+
+
+STAMPS = ["20260101_000001", "20260102_000001", "20260103_000001",
+          "20260104_000001", "20260105_000001"]
+
+
+class TestKeepBackupsValue:
+    def test_default_is_three(self, tmp_path):
+        proc, _, _ = _run(tmp_path, "keep_backups_value", env_text="RSBS_X=1\n")
+        assert proc.stdout == "3\n" and proc.stderr == ""
+
+    @pytest.mark.parametrize("v", ["1", "5", "20"])
+    def test_valid(self, tmp_path, v):
+        proc, _, _ = _run(tmp_path, "keep_backups_value",
+                          env_text=f"RSBS_KEEP_BACKUPS={v}\n")
+        assert proc.stdout == f"{v}\n" and proc.stderr == ""
+
+    @pytest.mark.parametrize("v", ["0", "-1", "abc", "2.5", "03", "99999999999999999999"])
+    def test_invalid_falls_back_with_warning(self, tmp_path, v):
+        proc, _, _ = _run(tmp_path, "keep_backups_value",
+                          env_text=f"RSBS_KEEP_BACKUPS={v}\n")
+        assert proc.returncode == 0
+        assert proc.stdout == "3\n"
+        assert "WARNING" in proc.stderr and "RSBS_KEEP_BACKUPS" in proc.stderr
+
+    def test_empty_value_is_default(self, tmp_path):
+        # `RSBS_KEEP_BACKUPS=` reads the same as unset (env_value prints nothing).
+        proc, _, _ = _run(tmp_path, "keep_backups_value", env_text="RSBS_KEEP_BACKUPS=\n")
+        assert proc.returncode == 0 and proc.stdout == "3\n"
+
+
+class TestPruneBackups:
+    def test_keeps_n_newest_by_timestamp(self, tmp_path):
+        d = _mk_backups(tmp_path, STAMPS)
+        proc, _, _ = _run(tmp_path, f"prune_backups '{d}/history.db' 2")
+        assert proc.returncode == 0, proc.stderr
+        assert _left(d) == STAMPS[-2:]
+
+    def test_order_follows_name_not_mtime(self, tmp_path):
+        d = _mk_backups(tmp_path, STAMPS)
+        # Give the oldest-named backup the newest mtime: it must still go.
+        os.utime(d / f"history.db.backup.{STAMPS[0]}", (4_000_000_000, 4_000_000_000))
+        _run(tmp_path, f"prune_backups '{d}/history.db' 3")
+        assert _left(d) == STAMPS[-3:]
+
+    def test_fewer_than_keep_deletes_nothing(self, tmp_path):
+        d = _mk_backups(tmp_path, STAMPS[:2])
+        proc, _, _ = _run(tmp_path, f"prune_backups '{d}/history.db' 3")
+        assert proc.returncode == 0 and _left(d) == STAMPS[:2]
+
+    def test_no_backups_is_ok(self, tmp_path):
+        d = tmp_path / "data"
+        d.mkdir()
+        proc, _, _ = _run(tmp_path, f"prune_backups '{d}/history.db' 3")
+        assert proc.returncode == 0
+
+    def test_other_files_untouched(self, tmp_path):
+        d = _mk_backups(tmp_path, STAMPS)
+        _mk_backups(tmp_path, STAMPS, db="vdl2.db")
+        for name in ("history.db", "history.db.backup.pre-v6", "history.db.backup.",
+                     "history.db.backup.20260101_000001.bak", "history.db-wal"):
+            (d / name).write_text("keep")
+        proc, _, _ = _run(tmp_path, f"prune_backups '{d}/history.db' 1")
+        assert proc.returncode == 0, proc.stderr
+        assert set(_left(d)) == {STAMPS[-1], "20260101_000001.bak", "pre-v6", ""}
+        assert _left(d, "vdl2.db") == STAMPS
+        for name in ("history.db", "history.db-wal"):
+            assert (d / name).exists()
+
+    @pytest.mark.parametrize("keep", ["0", "-1", "abc", ""])
+    def test_refuses_invalid_keep(self, tmp_path, keep):
+        d = _mk_backups(tmp_path, STAMPS)
+        proc, _, _ = _run(tmp_path, f"prune_backups '{d}/history.db' '{keep}'")
+        assert proc.returncode != 0
+        assert _left(d) == STAMPS
+
+
+def test_update_uses_keep_backups_helpers():
+    text = (ROOT / "scripts" / "update.sh").read_text()
+    assert 'KEEP_BACKUPS="$(keep_backups_value)"' in text
+    assert 'prune_backups "$DB_FILE" "$KEEP_BACKUPS"' in text
+    assert "-printf" not in text

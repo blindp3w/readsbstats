@@ -84,7 +84,7 @@ exposed at `/api/health` → `vdl2.available` (the SPA gates surfaces on it).
 
 | Method | Path | Description |
 |---|---|---|
-| GET | `/api/health` | Liveness probe (DB ping). Includes a `vdl2` block: `{enabled, available, schema_version, fts, messages, newest_ts, newest_age_sec, attach_available}` (available=false / fields omitted when the feature is off or vdl2.db is unreachable). |
+| GET | `/api/health` | Liveness probe (DB ping). Includes a `vdl2` block: `{enabled, available, schema_version, fts, newest_ts, newest_age_sec, attach_available}` (available=false / fields omitted when the feature is off or vdl2.db is unreachable). |
 | GET | `/api/metrics` | Receiver metrics time-series, columnar: `{bucket_seconds, metrics[], data:[[ts…],[metric1…],…]}`. `from`/`to` (Unix epoch; default last 24 h to now; `from > to` → 422). `metrics`: comma-separated `receiver_stats` column names (default `signal,noise`; duplicates are dropped; unknown names, more distinct names than there are columns, or a `metrics` string over 2048 chars → 400). Auto-downsamples by span: raw rows ≤ 24 h, then 300 s buckets ≤ 7 d, 900 s ≤ 30 d, 3600 s ≤ 90 d, 14400 s beyond (`bucket_seconds` = 0 for raw). |
 | GET | `/api/metrics/health` | 9 rule-based and baseline-aware health checks over `receiver_stats`. Cached 60 s. |
 | GET | `/api/settings` | Read-only runtime settings: a curated, flat dict of the tunables the Settings page shows (receiver, collector, database, enrichment, metrics, health, UI incl. `map_history_hours`/`time_format`/`page_size`, Telegram, VDL2) — not every `RSBS_*` variable. Secrets and filesystem paths are masked. A `_metadata` block gives `{env_var, default, customized}` per key. |

@@ -239,12 +239,14 @@ def _fetch_route(callsign: str, client: httpx.Client | None = None) -> dict | No
         code = getattr(exc.response, "status_code", None)
         if code is not None and 400 <= code < 500 and code != 429:
             log.warning("Route fetch permanent HTTP %s for %s", code, callsign)
-            raise _PermanentError(str(exc)) from exc
-        log.debug("Route fetch HTTP error for %s: %s", callsign, exc)
-        raise _TransientError(str(exc)) from exc
+            raise _PermanentError(http_safe.describe_exc(exc)) from exc
+        log.debug("Route fetch HTTP error for %s: %s", callsign,
+                  http_safe.describe_exc(exc))
+        raise _TransientError(http_safe.describe_exc(exc)) from exc
     except Exception as exc:
-        log.debug("Route fetch failed for %s: %s", callsign, exc)
-        raise _TransientError(str(exc)) from exc
+        log.debug("Route fetch failed for %s: %s", callsign,
+                  http_safe.describe_exc(exc))
+        raise _TransientError(http_safe.describe_exc(exc)) from exc
 
 
 # ---------------------------------------------------------------------------
