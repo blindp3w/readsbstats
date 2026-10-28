@@ -90,7 +90,7 @@ ssh pi@your-pi
 sudo bash /tmp/readsbstats/scripts/install.sh
 ```
 
-The installer creates a `readsbstats` system user, sets up `/opt/readsbstats/` with a Python virtualenv, creates the SQLite database, and installs systemd services.
+The installer creates a `readsbstats` system user, sets up `/opt/readsbstats/` with a Python virtualenv, creates the SQLite database in the data directory (`RSBS_DATA_DIR`, default `/var/lib/readsbstats`; see [Operations](docs/operations.md#data-directory)), and installs systemd services.
 
 After installation, set your receiver coordinates in the single settings file, `/etc/readsbstats/readsbstats.env` (read by `readsbstats-collector`, `readsbstats-web` and `notify-telegram@`). The installer creates it from `systemd/readsbstats.env.example` (mode 0600, root:root) with every option commented out:
 
@@ -147,7 +147,7 @@ See [Operations → Deployment security](docs/operations.md#deployment-security)
 
 | Service | CPU quota | Memory limit |
 |---|---|---|
-| collector | 15% | 192 MB |
+| collector | 50% | 1024 MB |
 | web server | 50% | 1024 MB |
 
 Database size (schema v6, traffic-dependent): on a busy receiver, `history.db` plateaus at about 1.8 GB with 180-day position retention (`RSBS_RETENTION_DAYS=180`; recommended) — measured 1.82 GB for 20.5 M position rows and 228 k flights, roughly 89 bytes per position row including indexes. Before the plateau it grows by about 300 MB/month on that receiver; without retention it keeps growing at the same rate.
@@ -216,7 +216,7 @@ readsbstats/
 │   ├── purge_bad_gs.py         # One-shot: null implausible gs values
 │   └── purge_mlat_gs_spikes.py # One-shot: null MLAT gs spikes
 ├── frontend/                   # React 19 + Vite 8 SPA (610 Vitest tests)
-├── tests/                      # pytest (3249 tests) + Playwright UI (84 tests)
+├── tests/                      # pytest (3367 tests) + Playwright UI (84 tests)
 ├── static/airspace/            # Bundled airspace GeoJSON
 ├── systemd/                    # Service + timer unit files
 └── docs/                       # Public documentation
