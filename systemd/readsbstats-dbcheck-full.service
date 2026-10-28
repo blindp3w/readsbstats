@@ -29,8 +29,9 @@ ReadWritePaths=@DATA_DIR@
 # integrity_check is far heavier than quick_check (it cross-checks indexes vs
 # tables) and reads the whole DB off the USB disk. Scaled up alongside the
 # quick-check bump: on a multi-GB DB with a busy collector this can run many
-# minutes, so 600 s could trip under load. 1800 s (monthly, off-peak) is safe.
-TimeoutStartSec=1800
+# minutes. Raised with the weekly check's 600 -> 1800 s (2026-10-28): 3600 s
+# (monthly, off-peak).
+TimeoutStartSec=3600
 
 # Audit-13 A13-046: kernel + namespace hardening.
 ProtectKernelTunables=yes

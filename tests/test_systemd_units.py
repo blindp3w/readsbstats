@@ -212,3 +212,45 @@ def test_no_hardcoded_personal_mount_in_shipped_files():
 def test_env_example_documents_data_dir():
     text = (SYSTEMD / "readsbstats.env.example").read_text()
     assert "# RSBS_DATA_DIR=/var/lib/readsbstats" in text
+
+
+# ---- updater + dbcheck scheduling (2026-10-28 incident) ----------------------
+
+def test_updater_timer_does_not_fire_on_boot():
+    # OnBootSec held the collector down ~3 min after every boot; Persistent=
+    # already catches up a missed Monday run.
+    lines = _lines(SYSTEMD / "readsbstats-updater.timer")
+    assert not any(ln.startswith("OnBootSec=") for ln in lines)
+    assert "Persistent=true" in lines
+
+
+def test_updater_skips_while_collector_is_starting():
+    lines = _lines(SYSTEMD / "readsbstats-updater.service")
+    cond = [ln for ln in lines if ln.startswith("ExecCondition=")]
+    assert len(cond) == 1
+    assert "readsbstats-collector.service" in cond[0] and "activating" in cond[0]
+
+
+def test_updater_not_ordered_after_collector():
+    # After= on the collector would deadlock ExecStopPost's `systemctl start
+    # readsbstats-collector`: systemd orders the updater's stop job before the
+    # collector's start job, and that stop job is waiting on ExecStopPost.
+    for ln in _lines(SYSTEMD / "readsbstats-updater.service"):
+        if ln.startswith(("After=", "Before=")):
+            assert "readsbstats-collector" not in ln, ln
+
+
+def _timeout_start(unit: str) -> int:
+    ln = next(ln for ln in _lines(SYSTEMD / unit) if ln.startswith("TimeoutStartSec="))
+    return int(ln.split("=", 1)[1])
+
+
+def test_dbcheck_timeouts_fit_a_cold_large_db():
+    assert _timeout_start("readsbstats-dbcheck.service") >= 1800
+    assert _timeout_start("readsbstats-dbcheck-full.service") >= 3600
+
+
+def test_updater_restarts_collector_without_blocking():
+    post = [ln for ln in _lines(SYSTEMD / "readsbstats-updater.service")
+            if ln.startswith("ExecStopPost=")]
+    assert post == ["ExecStopPost=+/bin/systemctl --no-block start readsbstats-collector.service"]

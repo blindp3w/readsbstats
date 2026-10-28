@@ -3,8 +3,9 @@ Description=Run readsbstats db_updater weekly
 Requires=readsbstats-updater.service
 
 [Timer]
-# Run 2 minutes after every boot, then every Monday at 03:00 (Persistent catches up a missed run)
-OnBootSec=2min
+# Every Monday at 03:00; Persistent= catches up a missed run after boot. No
+# OnBootSec=: the run stops the collector for ~3 min, and doing that on every
+# boot lost history and kept the boot in `starting` (2026-10-28).
 OnCalendar=Mon *-*-* 03:00:00
 Persistent=true
 
