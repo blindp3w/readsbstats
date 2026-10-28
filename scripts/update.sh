@@ -175,7 +175,7 @@ if [[ -f "$DB_FILE" ]]; then
   if [[ "$CUR_VER" -lt 6 ]]; then
     echo "==> Schema v$CUR_VER < 6 — running offline positions migration (services stopped)"
     systemctl stop readsbstats-collector readsbstats-web 2>/dev/null || true
-    runuser -u "$SERVICE_USER" -- \
+    runuser -u "$SERVICE_USER" -- env RSBS_DATA_DIR="$DATA_DIR" \
       "$APP_DIR/venv/bin/python" "$APP_DIR/scripts/migrate_v6.py" "$DB_FILE"
     if [[ "$MODE" == "db" ]]; then
       # code/full modes restart later; db-only has no later restart for web —
@@ -232,7 +232,8 @@ if [[ "$MODE" == "db" || "$MODE" == "full" ]]; then
   echo "==> Stopping collector for database update"
   systemctl stop readsbstats-collector
   echo "==> Updating aircraft & airline databases"
-  runuser -u "$SERVICE_USER" -- "$APP_DIR/venv/bin/python" -m readsbstats.db_updater
+  # runuser does not read readsbstats.env: hand over the resolved data dir.
+  runuser -u "$SERVICE_USER" -- env RSBS_DATA_DIR="$DATA_DIR" "$APP_DIR/venv/bin/python" -m readsbstats.db_updater
   echo "==> Starting collector"
   systemctl start readsbstats-collector
 fi

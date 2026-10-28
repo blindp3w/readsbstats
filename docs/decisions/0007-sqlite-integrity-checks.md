@@ -96,5 +96,9 @@ during the check, so a stop ended in SIGKILL after 90 s.
   writes nothing and keeps the sentinel, so the next start checks again.
 - The collector runs the check before `init_db()`, so schema migrations never
   write to a database that has not been checked.
+- A passing check no longer deletes the collector's sentinel. `main()` had
+  already re-created it for the new run, so deleting it meant a second crash
+  during that run went undetected. As decided above, only a graceful shutdown
+  removes it.
 - Unit limits are raised: collector `CPUQuota=50%`, `MemoryMax=1G`; VDL2 ingest
   `CPUQuota=50%`, `MemoryMax=768M`.

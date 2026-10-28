@@ -410,6 +410,8 @@ The check runs in a worker thread while systemd waits for the service to start. 
 
 **Stopping during the check.** `systemctl stop` interrupts a running check and returns within seconds. The service exits 0, writes nothing and keeps the sentinel, so the next start runs the check again.
 
+**The web UI waits for the check.** `readsbstats-web` is ordered after the collector, so after an unclean boot `/stats/` and `/api/health` come up only once the collector's check has passed (minutes on a large database on a slow disk). That is deliberate: the UI never reads a database that has not been checked.
+
 **Fail-closed behaviour** is unchanged. If the check finds corruption, or if `quick_check` cannot run at all, the service notifies systemd and exits without writing: the collector sends a Telegram alert and exits with code `2`; VDL2 ingest exits with code `1`, and its unit's `OnFailure=` sends the generic failure alert. The sentinel is left in place, so the check repeats on every restart until an operator intervenes.
 
 **Start limits.** `Restart=on-failure` with `StartLimitBurst=5` / `StartLimitIntervalSec=120` bounds fast failures such as corruption (exit 2): after about 5 restarts systemd parks the unit in `failed` state, which fires `OnFailure=notify-telegram@…`. A slow check does not reach that limit. Before v2.32.0 the start timeout killed a slow check and the unit looped on it indefinitely.

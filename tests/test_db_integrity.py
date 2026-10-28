@@ -52,7 +52,7 @@ def corrupt_db_file(path: str) -> None:
 class TestStartupIntegrityCheck:
     """Use a FakeConn to test the helper's branching logic in isolation."""
 
-    def test_clean_db_removes_sentinel_and_checkpoints(self, tmp_path):
+    def test_clean_db_keeps_sentinel_and_checkpoints(self, tmp_path):
         sentinel = tmp_path / ".dirty"
         sentinel.touch()
         calls = []
@@ -77,7 +77,7 @@ class TestStartupIntegrityCheck:
                 raise AssertionError(f"unexpected SQL: {sql}")
 
         collector._startup_integrity_check(FakeConn(), sentinel)
-        assert not sentinel.exists()
+        assert sentinel.exists()   # removed only by a clean shutdown in main()
         assert any("quick_check" in s for s in calls)
         assert any("wal_checkpoint(TRUNCATE)" in s for s in calls)
 
@@ -139,7 +139,7 @@ class TestStartupIntegrityCheck:
         import logging
         with caplog.at_level(logging.DEBUG):
             collector._startup_integrity_check(FakeConn(), sentinel)
-        assert not sentinel.exists()  # clean → removed even on partial checkpoint
+        assert sentinel.exists()  # clean → kept; only a clean shutdown removes it
         assert any("WAL checkpoint partial" in rec.message for rec in caplog.records)
 
 
@@ -368,7 +368,9 @@ class TestMainStartupCheckFlow:
         ready = self.sd_msgs.index("READY=1")
         extends = [i for i, m in enumerate(self.sd_msgs) if m.startswith("EXTEND_TIMEOUT_USEC=")]
         assert len(extends) >= 2 and all(i < ready for i in extends)
-        assert not self.sentinel.exists()   # clean result → sentinel removed
+        # main() owns the run-in-progress sentinel: a passing check must not
+        # remove it, or a crash during this run would go undetected.
+        assert self.sentinel.exists()
 
 
 # ---------------------------------------------------------------------------

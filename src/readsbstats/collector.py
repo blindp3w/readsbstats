@@ -1403,7 +1403,9 @@ class StartupCheckInterrupted(Exception):
 def _startup_integrity_check(conn: sqlite3.Connection, sentinel: pathlib.Path) -> None:
     """Run quick_check when previous shutdown was unclean.
 
-    On a clean result: checkpoint the WAL and remove the sentinel. On
+    On a clean result: checkpoint the WAL and keep the sentinel (main() created
+    it for this run; only a clean shutdown removes it, so a crash during this
+    run is still detected next time). On
     corruption — or if quick_check itself fails to run — leave the sentinel in
     place and raise StartupIntegrityError so the caller fails closed instead of
     writing to a possibly-corrupt database. If a shutdown signal arrives
@@ -1431,7 +1433,6 @@ def _startup_integrity_check(conn: sqlite3.Connection, sentinel: pathlib.Path) -
         row = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
         if row and row[0] > 0:
             log.debug("WAL checkpoint partial — %d page(s) pending (busy readers)", row[0])
-        sentinel.unlink(missing_ok=True)
         return
     issues = [r[0] for r in rows]
     log.critical(

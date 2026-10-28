@@ -93,7 +93,7 @@ def test_stopping_interrupts_and_returns_none():
         heartbeat_sec=0.05, poll_sec=0.02,
     )
     assert rows is None
-    assert conn.interrupts == 1   # exactly once, even though the loop kept polling
+    assert conn.interrupts >= 1
     assert msgs[-1] == "STATUS="
 
 
@@ -138,3 +138,53 @@ def test_no_heartbeat_after_max_sec(caplog):
     # clock advanced 100 per heartbeat: heartbeats at t=0,100,200 only (< 250).
     assert len(_extends(msgs)) == 3
     assert sum("exceeded" in r.getMessage() for r in caplog.records) == 1
+
+
+class SqliteLikeConn(BlockingConn):
+    """Real sqlite3_interrupt() semantics: a no-op while no statement is
+    running. The statement only starts after a short delay."""
+
+    def interrupt(self):
+        self.interrupts += 1
+        if self.started.is_set():
+            self._interrupted = True
+            self._event.set()
+
+    def execute(self, sql):
+        time.sleep(0.2)   # e.g. still opening / rebuilding the WAL index
+        return super().execute(sql)
+
+
+def test_interrupt_before_statement_starts_is_retried():
+    conn = SqliteLikeConn()
+    calls = {"n": 0}
+
+    def stopping():   # False at entry, True right after the worker starts
+        calls["n"] += 1
+        return calls["n"] > 1
+
+    t0 = time.monotonic()
+    rows = startup_check.run_quick_check(
+        conn, label="test", notify=lambda m: None, stopping=stopping,
+        heartbeat_sec=0.05, poll_sec=0.02,
+    )
+    assert rows is None
+    assert conn.interrupts >= 2           # the first one hit no running statement
+    assert time.monotonic() - t0 < 5
+
+
+def test_stop_requested_before_start_skips_the_check():
+    class NeverRun(BlockingConn):
+        def execute(self, sql):
+            self.ran = True
+            raise AssertionError("check must not start once a stop is requested")
+
+    conn = NeverRun()
+    conn.ran = False
+    msgs = []
+    rows = startup_check.run_quick_check(
+        conn, label="test", notify=msgs.append, stopping=lambda: True,
+    )
+    assert rows is None
+    assert not _extends(msgs)
+    assert conn.ran is False

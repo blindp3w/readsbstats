@@ -35,6 +35,11 @@ def run_quick_check(conn, *, label: str, notify, stopping, heartbeat_sec: float 
     been opened with ``check_same_thread=False``.
     """
     log = logging.getLogger(label)
+    if stopping():
+        # Stop requested before the check began (e.g. while connect() was
+        # rebuilding the WAL index): don't start a check we'd have to abort.
+        log.warning("%s: shutdown requested before quick_check started; skipping", label)
+        return None
     result: dict = {}
 
     def _worker() -> None:
@@ -61,9 +66,13 @@ def run_quick_check(conn, *, label: str, notify, stopping, heartbeat_sec: float 
             warned = True
             log.warning("%s: quick_check exceeded %d s; no longer extending the start "
                         "timeout (systemd may kill the unit)", label, int(max_sec))
-        if not interrupted and stopping():
-            interrupted = True
-            log.warning("%s: shutdown requested during quick_check; interrupting", label)
+        if stopping():
+            # Repeat on every pass: sqlite3_interrupt() is a no-op while no
+            # statement is running, so one call can land before the worker's
+            # PRAGMA starts and be lost.
+            if not interrupted:
+                interrupted = True
+                log.warning("%s: shutdown requested during quick_check; interrupting", label)
             try:
                 conn.interrupt()
             except Exception:

@@ -69,3 +69,32 @@ def test_install_sh_installs_mcp_unit_without_enabling():
     assert 'render_units "$DATA_DIR" "$APP_DIR/systemd"' in sh
     assert "readsbstats-mcp" in sh  # opt-in comment block stays
     assert not re.search(r"^[^#\n]*enable[^#\n]*readsbstats-mcp", sh, re.M)
+
+
+def _runuser_commands(text: str) -> list[str]:
+    """Each `runuser ...` command with its `\\` continuation lines joined."""
+    cmds, cur = [], None
+    for line in text.splitlines():
+        s = line.strip()
+        if cur is None and s.startswith("runuser "):
+            cur = s
+        elif cur is not None:
+            cur += " " + s
+        else:
+            continue
+        if not cur.endswith("\\"):
+            cmds.append(cur)
+            cur = None
+    return cmds
+
+
+def test_runuser_python_gets_the_data_dir():
+    """runuser does not read readsbstats.env, so a Python command it starts
+    would fall back to the default /var/lib/readsbstats and miss (or worse,
+    create) the database. Every one must be handed the resolved data dir."""
+    install_sh = (Path(__file__).resolve().parents[1] / "scripts" / "install.sh").read_text()
+    for text in (UPDATE_SH, install_sh):
+        cmds = [c for c in _runuser_commands(text) if "venv/bin/python" in c]
+        assert cmds
+        for cmd in cmds:
+            assert 'env RSBS_DATA_DIR="$DATA_DIR"' in cmd, cmd

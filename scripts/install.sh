@@ -150,7 +150,8 @@ fi
 # ---- Initial database download -----------------------------------------------
 echo ""
 echo "Downloading aircraft & airline databases (~30 s)…"
-runuser -u "$SERVICE_USER" -- "$APP_DIR/venv/bin/python" -m readsbstats.db_updater \
+# runuser does not read readsbstats.env: hand over the resolved data dir.
+runuser -u "$SERVICE_USER" -- env RSBS_DATA_DIR="$DATA_DIR" "$APP_DIR/venv/bin/python" -m readsbstats.db_updater \
   && echo "Database downloaded and imported" \
   || echo "WARNING: db_updater failed — run manually: bash scripts/update.sh --db-only"
 
