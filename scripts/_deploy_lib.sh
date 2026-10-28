@@ -74,9 +74,12 @@ _persist_data_dir() {
     mkdir -p "$(dirname "$RSBS_ENV_FILE")"
     ( umask 077; : > "$RSBS_ENV_FILE" )
   fi
+  # Keep the block on its own lines even if the file lacks a final newline.
+  # Checked before the append, not inside it (SC2094: same file read+written).
+  local lead=""
+  if [[ -s "$RSBS_ENV_FILE" && -n "$(tail -c1 "$RSBS_ENV_FILE")" ]]; then lead=$'\n'; fi
   {
-    # Keep the block on its own lines even if the file lacks a final newline.
-    if [[ -s "$RSBS_ENV_FILE" && -n "$(tail -c1 "$RSBS_ENV_FILE")" ]]; then echo; fi
+    printf '%s' "$lead"
     echo "# Added by update.sh (v2.32.0): data directory migrated from the installed units."
     echo "RSBS_DATA_DIR=$dir"
   } >> "$RSBS_ENV_FILE"
