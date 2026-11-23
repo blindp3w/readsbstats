@@ -98,7 +98,7 @@ function chunkFor(id: string): string | undefined {
 const _CHUNK_BUDGETS_GZ_KB: Record<string, number> = {
   maps: 340,
   charts: 230,
-  'vdl2-decoder': 45,  // ~39 KB gz (decoder + pako); ceiling ~15% above current
+  'vdl2-decoder': 60,  // ~51.5 KB gz (acars-decoder 1.9.7 + pako); ceiling ~15% above current
 };
 
 function bundleBudget(): Plugin {
