@@ -19,6 +19,10 @@ export function Vdl2StatsCard({ enabled = true }: { enabled?: boolean }) {
     staleTime: 120_000,
   });
 
+  // Disabled (TanStack v5: a disabled query has isLoading=false and no data):
+  // render nothing rather than '—' KPIs and "No data yet".
+  if (!enabled) return null;
+
   // Don't render '—' KPIs indistinguishably on a failed/loading query (audit 2026-06-15).
   // Guard on `data == null` (like Vdl2ReceptionCard) so a transient refetch error
   // keeps showing cached stats instead of flipping to the alert.
@@ -68,10 +72,10 @@ export function Vdl2StatsCard({ enabled = true }: { enabled?: boolean }) {
           <CardContent>
             {data && data.top_labels.length > 0 ? (
               <ul className="space-y-1 text-sm">
-                {data.top_labels.map((l) => (
-                  <li key={l.label} className="flex items-center justify-between gap-2">
+                {data.top_labels.map((l, i) => (
+                  <li key={`${l.label ?? 'none'}-${i}`} className="flex items-center justify-between gap-2">
                     <span className="min-w-0 truncate">
-                      <span className="font-mono">{l.label}</span>
+                      <span className="font-mono">{l.label ?? '—'}</span>
                       {labelName(l.label) && (
                         <span className="text-[var(--color-text-dim)]">
                           {' '}
@@ -97,10 +101,10 @@ export function Vdl2StatsCard({ enabled = true }: { enabled?: boolean }) {
           <CardContent>
             {data && data.top_airlines.length > 0 ? (
               <ul className="space-y-1 text-sm">
-                {data.top_airlines.map((a) => (
-                  <li key={a.code} className="flex items-center justify-between gap-2">
+                {data.top_airlines.map((a, i) => (
+                  <li key={`${a.code ?? 'none'}-${i}`} className="flex items-center justify-between gap-2">
                     <span>
-                      <span className="font-mono">{a.code}</span>
+                      <span className="font-mono">{a.code ?? '—'}</span>
                       {a.name ? ` · ${a.name}` : ''}
                     </span>
                     <span className="tabnum text-[var(--color-text-dim)]">

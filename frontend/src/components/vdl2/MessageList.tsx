@@ -112,7 +112,7 @@ export function MessageList({
               key={m.id}
               ref={rowVirt.measureElement}
               data-index={vrow.index}
-              className="absolute left-0 top-0 w-full border-b border-[var(--color-border-default)] py-2"
+              className="absolute left-0 top-0 w-full min-w-0 overflow-hidden border-b border-[var(--color-border-default)] py-2"
               style={{ transform: `translateY(${vrow.start}px)` }}
               data-testid="vdl2-message-row"
             >
@@ -123,6 +123,7 @@ export function MessageList({
                     <button
                       type="button"
                       className="font-mono text-[var(--color-accent)] hover:underline"
+                      aria-label={`Filter by hex ${m.icao_hex}`}
                       onClick={() => onHexClick(m.icao_hex!)}
                       data-testid="vdl2-row-hex"
                     >
@@ -138,6 +139,7 @@ export function MessageList({
                     <button
                       type="button"
                       className="font-mono hover:underline"
+                      aria-label={`Filter by registration ${m.registration}`}
                       onClick={() => onRegClick(m.registration!)}
                     >
                       {m.registration}
@@ -154,6 +156,8 @@ export function MessageList({
                     data-testid="vdl2-row-partial"
                   >
                     partial
+                    {/* title doesn't work on touch: keep a screen-reader text equivalent */}
+                    <span className="sr-only"> (intermediate block of a multi-block message)</span>
                   </Badge>
                 )}
                 {kind && (
@@ -175,11 +179,11 @@ export function MessageList({
                 )}
               </div>
               {decoded && decoded.items.length > 0 && (
-                <div className="mt-1 flex flex-wrap gap-1.5" data-testid="vdl2-decoded">
+                <div className="mt-1 flex min-w-0 flex-wrap gap-1.5" data-testid="vdl2-decoded">
                   {decoded.items.map((it, i) => (
                     <span
                       key={i}
-                      className="rounded border border-[var(--color-border-default)] px-1.5 py-0.5 text-[11px]"
+                      className="min-w-0 max-w-full whitespace-pre-wrap break-all rounded border border-[var(--color-border-default)] px-1.5 py-0.5 text-[11px]"
                     >
                       <span className="text-[var(--color-text-dim)]">{it.label}</span>{' '}
                       <span className="text-[var(--color-text)]">{it.value}</span>

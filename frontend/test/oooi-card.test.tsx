@@ -64,8 +64,8 @@ describe('OooiCard', () => {
     });
     wrap();
     await waitFor(() => screen.getByTestId('flight-oooi-card'));
-    expect(screen.getByText('00:30')).toBeTruthy(); // t_out formatted
-    expect(screen.getByText('02:18')).toBeTruthy(); // t_in formatted
+    expect(screen.getByText('00:30 UTC')).toBeTruthy(); // t_out formatted
+    expect(screen.getByText('02:18 UTC')).toBeTruthy(); // t_in formatted
     expect(screen.getAllByTestId('oooi-route-match').length).toBe(2);
   });
 

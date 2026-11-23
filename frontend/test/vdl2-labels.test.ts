@@ -53,4 +53,17 @@ describe('labelName', () => {
     // Label 49 is airline-defined (NOT ARINC-standard) — the name must say so.
     expect(VDL2_LABEL_NAMES['49']).toMatch(/airline/i);
   });
+
+  it('names B6 as ADS-C, not generic ATS datalink', () => {
+    expect(labelName('B6')).toMatch(/ADS-C/);
+  });
+
+  it('gives human names to the previously bare labels', () => {
+    for (const c of ['21', '24', '40', '44', '4A', '4N', '4T', '58', '8E', '1M', 'SQ', ':;']) {
+      expect(labelName(c), c).not.toBeNull();
+    }
+    expect(labelName('SQ')).toMatch(/squitter|ground station/i);
+    expect(labelName(':;')).toMatch(/frequency|autotune/i);
+    expect(labelName('21')).toMatch(/position/i);
+  });
 });

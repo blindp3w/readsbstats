@@ -130,7 +130,7 @@ const decode26: Decoder = (text) => {
   const items: Item[] = [
     { label: 'Flight', value: m[3] },
     { label: 'Route', value: `${m[2]} → ${m[6]}` },
-    { label: 'ETA', value: `${m[5].slice(0, 2)}:${m[5].slice(2)}` },
+    { label: 'ETA', value: `${m[5].slice(0, 2)}:${m[5].slice(2)} UTC` },
   ];
   if (m[7]) items.push({ label: 'Runway', value: m[7] });
   return ok('ETA report', items);

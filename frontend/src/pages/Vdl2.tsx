@@ -32,6 +32,10 @@ export default function Vdl2Page() {
   });
   const enabled = settingsQ.data?.vdl2_enabled === true;
   const { available, isLoading: healthLoading, isError: healthError } = useVdl2Health();
+  // Only hit /api/vdl2/* once the DB is known to be reachable: while health is
+  // loading (or says unavailable / failed) `available` is false, so the feed and
+  // stats don't poll endpoints that would just error every 15 s.
+  const active = enabled && available;
 
   // Filters live in the URL so the view is shareable + back-button friendly.
   const [q, setQ] = useSearchParam('q', '');
@@ -66,7 +70,7 @@ export default function Vdl2Page() {
 
   const feed = useInfiniteQuery({
     queryKey: ['vdl2-messages', { q, label, reg: debouncedReg, hex, showFragments }],
-    enabled,
+    enabled: active,
     initialPageParam: undefined as number | undefined,
     queryFn: ({ pageParam }) => {
       const p = new URLSearchParams({ limit: String(PAGE) });
@@ -89,7 +93,7 @@ export default function Vdl2Page() {
     // Own key: the Stats-page card caches the FULL payload under ['vdl2-stats'].
     queryKey: ['vdl2-stats-summary'],
     queryFn: () => apiJson<Vdl2StatsSummary>('vdl2/stats?summary=true'),
-    enabled,
+    enabled: active,
     refetchInterval: 15_000,
     staleTime: 5_000,
   });
@@ -140,7 +144,7 @@ export default function Vdl2Page() {
   }
 
   const messages = feed.data?.pages.flatMap((p) => p.messages) ?? [];
-  const hasActiveFilter = Boolean(q || label || reg || hex);
+  const hasActiveFilter = Boolean(q || label || reg || hex || showFragments);
 
   function clearFilters() {
     // One atomic update — React Router v7 drops all but the last of N

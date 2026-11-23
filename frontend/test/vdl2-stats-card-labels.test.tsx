@@ -80,3 +80,46 @@ describe('Vdl2StatsCard top-label names', () => {
     await waitFor(() => screen.getByTestId('vdl2-stats-loading'));
   });
 });
+
+describe('Vdl2StatsCard null codes and disabled state (batch 3 F5)', () => {
+  it('renders placeholders and no duplicate-key warnings for null label/airline codes', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    globalThis.fetch = vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          ...FIXTURE,
+          top_labels: [
+            { label: null, messages: 9, aircraft: 2 },
+            { label: null, messages: 4, aircraft: 1 },
+          ],
+          top_airlines: [
+            { code: null, messages: 8, name: null },
+            { code: null, messages: 3, name: null },
+          ],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    ) as unknown as typeof fetch;
+    renderCard();
+    await waitFor(() => screen.getByTestId('vdl2-top-labels'));
+    await waitFor(() =>
+      expect(screen.getByTestId('vdl2-top-labels').textContent).toContain('9'),
+    );
+    expect(screen.getByTestId('vdl2-top-labels').textContent).toContain('—');
+    expect(screen.getByTestId('vdl2-top-airlines').textContent).toContain('—');
+    expect(
+      err.mock.calls.some((c) => String(c[0]).includes('same key') || String(c[0]).includes('unique "key"')),
+    ).toBe(false);
+    err.mockRestore();
+  });
+
+  it('renders nothing when disabled', () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    const { container } = render(
+      <QueryClientProvider client={qc}>
+        <Vdl2StatsCard enabled={false} />
+      </QueryClientProvider>,
+    );
+    expect(container).toBeEmptyDOMElement();
+  });
+});

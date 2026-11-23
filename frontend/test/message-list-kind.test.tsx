@@ -58,7 +58,7 @@ describe('MessageList partial badge', () => {
   it('flags an intermediate block of a multi-block message', () => {
     renderList({ id: 5, ts: 1_749_000_000, label: 'H1', body: 'abc', more: 1 } as Vdl2Message);
     const b = screen.getByTestId('vdl2-row-partial');
-    expect(b.textContent).toBe('partial');
+    expect(b.textContent).toMatch(/^partial/); // visible word + sr-only explanation
     expect(b.getAttribute('title')).toBe('Intermediate block of a multi-block message');
   });
 

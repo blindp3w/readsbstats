@@ -52,3 +52,44 @@ describe('MessageList label tooltips', () => {
     expect(badge.getAttribute('tabindex')).toBeNull();
   });
 });
+
+describe('MessageList a11y and wrapping (batch 3)', () => {
+  it('hex and registration filter buttons have accessible names', () => {
+    render(
+      <TooltipProvider delayDuration={0}>
+        <MessageList
+          messages={[msg({ id: 1, icao_hex: 'abc123', registration: 'SP-LYF' })]}
+          onHexClick={() => {}}
+          onRegClick={() => {}}
+        />
+      </TooltipProvider>,
+    );
+    expect(screen.getByRole('button', { name: /filter by hex abc123/i })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /filter by registration SP-LYF/i })).toBeTruthy();
+  });
+
+  it('the partial badge has a text equivalent that works without hover', () => {
+    renderList([msg({ id: 1, more: 1 })]);
+    const badge = screen.getByTestId('vdl2-row-partial');
+    expect(badge.textContent).toMatch(/partial/);
+    expect(badge.textContent).toMatch(/intermediate block/i);
+  });
+
+  it('long single-token decoded values wrap instead of widening the row', () => {
+    const long = 'X'.repeat(200);
+    render(
+      <TooltipProvider delayDuration={0}>
+        <MessageList
+          messages={[msg({ id: 1, body: long })]}
+          decode={() => ({ description: 'D', items: [{ label: 'Body', value: long }] })}
+        />
+      </TooltipProvider>,
+    );
+    const chip = screen.getByTestId('vdl2-decoded').firstElementChild as HTMLElement;
+    expect(chip.className).toMatch(/break-all/);
+    expect(chip.className).toMatch(/min-w-0/);
+    expect(chip.className).toMatch(/whitespace-pre-wrap/);
+    expect(screen.getByTestId('vdl2-decoded').className).toMatch(/min-w-0/);
+    expect(screen.getByTestId('vdl2-message-row').className).toMatch(/min-w-0/);
+  });
+});

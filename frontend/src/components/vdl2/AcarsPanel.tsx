@@ -32,10 +32,12 @@ export function AcarsPanel({ icao, firstSeen, lastSeen, context = 'flight' }: Pr
 
   // limit=100; hasMore (next_before_id non-null) means more exist beyond page 1.
   const countLabel = isLoading ? '…' : `${messages.length}${hasMore ? '+' : ''}`;
+  // On error the count is unknown (not 0), so it is omitted entirely.
+  const title = isError ? 'ACARS' : `ACARS (${countLabel})`;
   return (
     <Card data-testid={`${context}-acars-card`}>
       <CardHeader>
-        <CardTitle>ACARS ({countLabel})</CardTitle>
+        <CardTitle>{title}</CardTitle>
       </CardHeader>
       <CardContent>
         {isError && <Alert variant="error">Failed to load ACARS: {errMsg(error)}</Alert>}

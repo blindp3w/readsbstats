@@ -28,8 +28,8 @@ interface Props {
 
 function fmtHHMM(t: string | null): string | null {
   if (!t) return null;
-  // Raw OOOI times are HHMM ("0030"); render "00:30" when it looks like one.
-  return /^\d{4}$/.test(t) ? `${t.slice(0, 2)}:${t.slice(2)}` : t;
+  // Raw OOOI times are HHMM UTC ("0030"); render "00:30 UTC" when it looks like one.
+  return /^\d{4}$/.test(t) ? `${t.slice(0, 2)}:${t.slice(2)} UTC` : t;
 }
 
 function TimeRow({ label, value }: { label: string; value: string | null }) {
