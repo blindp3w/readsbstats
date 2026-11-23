@@ -7,6 +7,7 @@ import {
   AttributionControl,
   NavigationControl,
   type MapRef,
+  type MapLayerMouseEvent,
   type MarkerEvent,
 } from 'react-map-gl/maplibre';
 import type { HeatmapLayerSpecification } from 'maplibre-gl';
@@ -15,6 +16,8 @@ import '@/lib/maplibreWorker';
 import { useBasemapStyle } from '@/hooks/useBasemapStyle';
 import { aircraftIconSvg, getIconType } from '@/lib/aircraftIcon';
 import { dedupeFreshestByIcao } from '@/lib/mapData';
+import { Vdl2PointPopup } from '@/components/map/Vdl2PointPopup';
+import type { Vdl2Position } from '@/lib/types';
 
 // Live aircraft layer for /v2/map. Receives the latest snapshot from the
 // parent; renders aircraft as HTML <Marker>s with inline SVG, plus
@@ -71,16 +74,8 @@ interface Props {
   // reports (lat/lon already in [lat, lon] order from the API). `acarsActive`
   // is the set of icao_hex that transmitted ACARS recently — live aircraft in
   // the set get a 'talking now' ring. Both undefined ⇒ nothing renders.
-  vdl2Positions?: {
-    lat: number;
-    lon: number;
-    icao_hex: string | null;
-    ts: number | null;
-    label: string | null;
-    // true = precise (~0.001°) ACARS body / ADS-C position fix (many sources: labels
-    // 16/17/38/2F/14/B0/…, #M1BPOS, ADS-C B6, 59,G); false = coarse (~0.1°) XID fix.
-    precise?: boolean | null;
-  }[];
+  // Clicking a dot opens a popup (source, label, time, alt/wind/track/gs when present).
+  vdl2Positions?: Vdl2Position[];
   acarsActive?: Set<string>;
 }
 
@@ -116,6 +111,10 @@ const RECEIVER_COLOR = '#5b9af9';
 const TRAIL_COLOR = '#5b9af9';
 const COVERAGE_COLOR = '#a855f7';
 const VDL2_COLOR = '#f59e0b'; // amber — distinct from receiver blue / coverage purple
+// Click target for the VDL2 dots: the visible dots are 3-4 px, far too small for a
+// finger, so a transparent larger circle on the same source is what's hit-tested.
+const VDL2_HIT_LAYER = 'vdl2-positions-hit';
+const VDL2_INTERACTIVE_LAYERS = [VDL2_HIT_LAYER];
 
 export default function LiveMap({
   aircraft,
@@ -200,19 +199,34 @@ export default function LiveMap({
   // ─── VDL2 position overlay ─────────────────────────────────────────────
   // Structured ACARS positions from /api/vdl2/positions ([lat, lon]); swap to
   // GeoJSON [lng, lat] once at the boundary. Sparse on an H1-dominated feed.
+  // `idx` indexes into `vdl2Points` so a clicked feature resolves to the full record
+  // (alt/wind/… need not be flattened into GeoJSON properties).
+  const vdl2Points = useMemo<Vdl2Position[]>(
+    () => (vdl2Positions ?? []).filter((p) => p.lat != null && p.lon != null),
+    [vdl2Positions],
+  );
   const vdl2PositionsGeoJSON = useMemo<GeoJSON.FeatureCollection | null>(() => {
-    if (!vdl2Positions || vdl2Positions.length === 0) return null;
+    if (vdl2Points.length === 0) return null;
     return {
       type: 'FeatureCollection',
-      features: vdl2Positions
-        .filter((p) => p.lat != null && p.lon != null)
-        .map((p) => ({
-          type: 'Feature',
-          properties: { icao_hex: p.icao_hex, label: p.label, precise: !!p.precise },
-          geometry: { type: 'Point', coordinates: [p.lon, p.lat] },
-        })),
+      features: vdl2Points.map((p, idx) => ({
+        type: 'Feature',
+        properties: { idx, icao_hex: p.icao_hex, label: p.label, precise: !!p.precise },
+        geometry: { type: 'Point', coordinates: [p.lon, p.lat] },
+      })),
     };
-  }, [vdl2Positions]);
+  }, [vdl2Points]);
+
+  // Popup for the clicked VDL2 dot. Independent of aircraft selection: dots are hit-tested
+  // through the map's own click (interactiveLayerIds), aircraft through their DOM <Marker>
+  // (which stops propagation), so neither click can trigger the other. Only shown while
+  // the overlay is rendered.
+  const [vdl2Popup, setVdl2Popup] = useState<Vdl2Position | null>(null);
+  const [mapCursor, setMapCursor] = useState('');
+  const handleMapClick = (e: MapLayerMouseEvent) => {
+    const idx = e.features?.[0]?.properties?.idx;
+    setVdl2Popup(typeof idx === 'number' ? (vdl2Points[idx] ?? null) : null);
+  };
 
   // ─── "Transmitting ACARS now" highlight ────────────────────────────────
   // A ring under each live aircraft whose icao_hex transmitted ACARS recently.
@@ -302,6 +316,11 @@ export default function LiveMap({
       onLoad={() => setMapReady(true)}
       style={{ width: '100%', height: '100%' }}
       attributionControl={false}
+      interactiveLayerIds={vdl2PositionsGeoJSON ? VDL2_INTERACTIVE_LAYERS : undefined}
+      onClick={handleMapClick}
+      onMouseEnter={() => setMapCursor('pointer')}
+      onMouseLeave={() => setMapCursor('')}
+      cursor={mapCursor}
     >
       <AttributionControl compact position="bottom-left" />
       <NavigationControl position="bottom-right" showCompass={false} />
@@ -348,7 +367,15 @@ export default function LiveMap({
               'circle-stroke-opacity': ['case', ['get', 'precise'], 1, 0.7],
             }}
           />
+          <Layer
+            id={VDL2_HIT_LAYER}
+            type="circle"
+            paint={{ 'circle-radius': 10, 'circle-color': VDL2_COLOR, 'circle-opacity': 0 }}
+          />
         </Source>
+      )}
+      {vdl2PositionsGeoJSON && vdl2Popup && (
+        <Vdl2PointPopup point={vdl2Popup} onClose={() => setVdl2Popup(null)} />
       )}
 
       {/* "Transmitting ACARS now" ring under matching live aircraft. */}

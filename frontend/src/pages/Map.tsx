@@ -18,6 +18,7 @@ import { FlagBadge, SourceBadge } from '@/components/FlagBadge';
 import { useFormat } from '@/hooks/useFormat';
 import { cn } from '@/lib/cn';
 import { MapCommandBar } from '@/components/map/MapCommandBar';
+import { Vdl2MapLegend } from '@/components/map/Vdl2MapLegend';
 import { useMapSettings } from '@/hooks/useMapSettings';
 import { useMapPlaybackState } from '@/hooks/useMapPlaybackState';
 import { useMapDataQueries, type Aircraft } from '@/hooks/useMapDataQueries';
@@ -125,6 +126,9 @@ export default function MapPage() {
           <Alert variant="warn">VDL2 overlay unavailable — couldn’t load ACARS positions.</Alert>
         </div>
       )}
+
+      {/* Legend for the ACARS overlay (precise vs coarse + window) — only while it is on. */}
+      {showVdl2 && vdl2Available && <Vdl2MapLegend />}
 
       {/* Bottom command bar */}
       <MapCommandBar

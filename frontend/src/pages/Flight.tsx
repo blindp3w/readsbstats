@@ -17,6 +17,8 @@ import { buildFlightProfileOption, type ProfileRow } from './flightCharts';
 import { IsolationPills } from '@/components/charts/IsolationPills';
 import { AcarsPanel } from '@/components/vdl2/AcarsPanel';
 import { OooiCard } from '@/components/vdl2/OooiCard';
+import { WindsAloftCard } from '@/components/flight/WindsAloftCard';
+import { useVdl2FlightPositions } from '@/hooks/useVdl2Enabled';
 import { FlightHeader } from '@/components/flight/FlightHeader';
 import { PositionTable } from '@/components/flight/PositionTable';
 import type { FlightDetail, OtherFlight, PhotoResp, Position } from '@/components/flight/types';
@@ -77,6 +79,14 @@ export default function FlightPage() {
     staleTime: 600_000,
   });
 
+  // ACARS-derived position fixes (opt-in): route-map overlay + winds-aloft table. The hook
+  // makes no request unless VDL2 is enabled AND available, nor before the detail has loaded.
+  const acarsFixes = useVdl2FlightPositions(
+    detailQ.data?.flight.icao_hex ?? '',
+    detailQ.data?.flight.first_seen ?? 0,
+    detailQ.data?.flight.last_seen ?? 0,
+  ).fixes;
+
   if (!Number.isFinite(flightId)) {
     return (
       <div className="mx-auto max-w-3xl p-6">
@@ -122,6 +132,7 @@ export default function FlightPage() {
                     positions={mapPositionsQ.data?.positions ?? []}
                     receiverLat={detailQ.data.receiver_lat}
                     receiverLon={detailQ.data.receiver_lon}
+                    acarsFixes={acarsFixes.length > 0 ? acarsFixes : undefined}
                   />
                 </Suspense>
               </div>
@@ -147,6 +158,7 @@ export default function FlightPage() {
               />
             </CardContent>
           </Card>
+          <WindsAloftCard fixes={acarsFixes} />
           <OooiCard
             icao={detailQ.data.flight.icao_hex}
             firstSeen={detailQ.data.flight.first_seen}

@@ -154,7 +154,28 @@ export interface Vdl2Position {
   // precise = parsed from an ACARS body position report (labels 16/17/38/2F/14/B0/10/13/18/27/33/12/43/41/2P,
   // `#M1BPOS`, LOT `59,G`) or an ADS-C basic report (B6); false = coarse (~0.1°) VDL2 XID link-frame fix.
   precise?: boolean | null;
+  // Where the fix came from. Absent on payloads from an older backend.
+  source?: Vdl2PositionSource | null;
+  // Optional extras — present only on sources that report them (the API omits unset fields).
+  alt?: number | null; // ft
+  temp_c?: number | null;
+  wind_dir?: number | null; // degrees
+  wind_kt?: number | null;
+  // ADS-C points only: true track (deg), ground speed (kt), vertical speed (ft/min).
+  track?: number | null;
+  gs?: number | null;
+  vs?: number | null;
 }
+
+export type Vdl2PositionSource =
+  | 'label'
+  | 'm1bpos'
+  | '59g'
+  | 'adsc'
+  | 'xid'
+  | 'h1-abs'
+  | 'h1-cf'
+  | 'h1-pos';
 
 export interface Vdl2PositionsResponse {
   points: Vdl2Position[];
