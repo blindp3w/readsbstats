@@ -351,6 +351,16 @@ class Vdl2TopAirline(ApiModel):
     name: Optional[str] = None
 
 
+class Vdl2GroundStation(ApiModel):
+    """One ground station/channel heard in the last 24 h (dumpvdl2 downlinks only).
+    `snr_db` = mean (sig_level - noise_level) over rows that have both, else null."""
+    toaddr: Optional[str] = None
+    freq: Optional[float] = None
+    frames: int = 0
+    aircraft: int = 0
+    snr_db: Optional[float] = None
+
+
 class Vdl2StatsResponse(ApiModel):
     total: int = 0
     last_hour: int = 0
@@ -358,6 +368,8 @@ class Vdl2StatsResponse(ApiModel):
     top_labels: list[Vdl2TopLabel] = Field(default_factory=list)
     top_airlines: list[Vdl2TopAirline] = Field(default_factory=list)
     hourly: list[int] = Field(default_factory=list)
+    # Top 30 ground stations by frames over the last 24 h; full payload only.
+    ground_stations: list[Vdl2GroundStation] = Field(default_factory=list)
     # % of flights in the last 24h whose airframe also transmitted ACARS in the
     # flight window. Null when the cross-DB ATTACH is unavailable (don't fail the
     # card) — computed on the core history.db connection, not the vdl2.db one.
@@ -456,7 +468,9 @@ class Vdl2OooiRoute(ApiModel):
     """Reported route for the flight window. `source`, in precedence order:
     "cm" = the aircraft's own ATN Context-Management logon (FMS flight id + dep +
     dest); "label26" = an Air France label-26 report; "label20" = a KLM label-20
-    `RST` report; "label49" = an airline-defined label-49 movement report."""
+    `RST` report; "label49" = an airline-defined label-49 movement report; then, below
+    all of those: "r64" = H1/T8 `R64` report; "abs" = H1/DF ABS/EB0/SB0 header;
+    "b44" = H1/DF `B44` report; "fst01" = label-15 `FST01` report."""
     dep_icao: Optional[str] = None
     dest_icao: Optional[str] = None
     flight: Optional[str] = None

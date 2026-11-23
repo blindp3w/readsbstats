@@ -20,7 +20,7 @@ from fastapi import APIRouter, HTTPException, Query
 from .. import cache, config, schemas
 from ..vdl2 import adsc
 from ..vdl2 import db as vdl2_db
-from ..vdl2 import h1rep
+from ..vdl2 import h1rep, h1route
 from ..vdl2 import m1bpos
 from ..vdl2 import normalize
 from ..vdl2 import oooi
@@ -371,6 +371,33 @@ _TOP_AIRLINES_SQL = (
 )
 
 
+# Ground stations heard in the last 24 h, from DOWNLINK frames only: dumpvdl2's
+# `avlc.src.type` is 'Aircraft' for those, so `toaddr` is the ground station. vdlm2dec rows
+# have no avlc in `raw` and are excluded by design; `json_valid` guards the few rows
+# truncated at the raw cap. SNR matches /api/vdl2/signal (avg of sig_level - noise_level;
+# AVG skips rows where either is NULL). Pinned to idx_vdl2_ts (range on ts, created
+# by every migrate()): with sqlite_stat1 present the planner otherwise picks a skip-scan of
+# idx_vdl2_icao because of COUNT(DISTINCT icao_hex). Module constant so the tests can EXPLAIN it.
+_GROUND_STATIONS_LIMIT = 30
+_GROUND_STATIONS_SQL = (
+    "SELECT toaddr, ROUND(freq, 3) AS freq, COUNT(*) AS frames, "
+    "COUNT(DISTINCT icao_hex) AS aircraft, AVG(sig_level - noise_level) AS snr "
+    "FROM vdl2_messages INDEXED BY idx_vdl2_ts WHERE ts >= ? AND json_valid(raw) "
+    "AND json_extract(raw, '$.vdl2.avlc.src.type') = 'Aircraft' "
+    "GROUP BY toaddr, ROUND(freq, 3) "
+    f"ORDER BY frames DESC, toaddr, freq LIMIT {_GROUND_STATIONS_LIMIT}"
+)
+
+
+def _ground_stations(conn, now: int) -> list[dict]:
+    return [
+        {"toaddr": r["toaddr"], "freq": r["freq"], "frames": r["frames"],
+         "aircraft": r["aircraft"],
+         "snr_db": round(r["snr"], 1) if r["snr"] is not None else None}
+        for r in conn.execute(_GROUND_STATIONS_SQL, (now - 86400,)).fetchall()
+    ]
+
+
 def _stats_headline(conn, now: int) -> dict:
     """Single table pass for the three headline counts (stats counts received
     frames, incl. partial blocks and superseded fragments, by design — they
@@ -417,6 +444,7 @@ def _compute_stats() -> dict:
         "top_labels": top_labels,
         "top_airlines": top_airlines,
         "hourly": hourly,
+        "ground_stations": _ground_stations(conn, now),
         "flights_overlap_pct": _flights_overlap_pct(),
     }
 
@@ -507,6 +535,19 @@ def api_vdl2_oooi(
 _OOOI_SCAN_LIMIT = 1000
 
 
+# icao-scoped (idx_vdl2_icao / idx_vdl2_icao_id), window-bounded and LIMITed; `sublabel` feeds
+# the H1 route parsers (h1route). Module constant so the tests can EXPLAIN it.
+_OOOI_SQL = (
+    "SELECT body, dsta, ts, label, registration, flight, sublabel "
+    "FROM vdl2_messages WHERE {where} AND superseded IS NOT 1 "
+    "ORDER BY id DESC LIMIT ?"
+)
+
+# Route-source precedence, first hit wins. The first four are the original sources; the
+# last four (h1route.py, ADR-0019) rank below them: r64 > abs > b44 > fst01.
+_ROUTE_ORDER = ("cm", "label26", "label20", "label49", "r64", "abs", "b44", "fst01")
+
+
 def _compute_oooi(icao_hex: str, since: int | None, until: int | None) -> dict:
     conn = vdl2_db.web_conn()
     where = ["icao_hex = ?"]
@@ -518,12 +559,7 @@ def _compute_oooi(icao_hex: str, since: int | None, until: int | None) -> dict:
         where.append("ts < ?")
         params.append(until)
     params.append(_OOOI_SCAN_LIMIT)
-    rows = conn.execute(
-        f"SELECT body, dsta, ts, label, registration, flight "
-        f"FROM vdl2_messages WHERE {' AND '.join(where)} AND superseded IS NOT 1 "
-        "ORDER BY id DESC LIMIT ?",
-        params,
-    ).fetchall()
+    rows = conn.execute(_OOOI_SQL.format(where=" AND ".join(where)), params).fetchall()
 
     dep = arr = None
     dsta = None
@@ -532,6 +568,7 @@ def _compute_oooi(icao_hex: str, since: int | None, until: int | None) -> dict:
     route_cm: dict | None = None
     route26: dict | None = None
     route20: dict | None = None
+    h1routes: dict[str, dict] = {}   # newest per h1route source
     # Rows are newest-first, so the first DEP/ARR we parse is the most recent.
     for r in rows:
         if dsta is None and r["dsta"]:
@@ -551,6 +588,10 @@ def _compute_oooi(icao_hex: str, since: int | None, until: int | None) -> dict:
             route26 = oooi.parse_label26(r["body"])
         elif lab == "20" and route20 is None:
             route20 = oooi.parse_label20_rst(r["body"])
+        elif lab in ("H1", "15"):
+            hr = h1route.parse_route(lab, r["sublabel"], r["body"])
+            if hr is not None and hr["source"] not in h1routes:
+                h1routes[hr["source"]] = hr
         parsed = oooi.parse_oooi(r["body"])
         if parsed is not None:
             if parsed["type"] == "DEP" and dep is None:
@@ -573,15 +614,17 @@ def _compute_oooi(icao_hex: str, since: int | None, until: int | None) -> dict:
             arr = _synth_q_event("ARR", phases.get("on"), phases.get("in"))
 
     # Precedence: the aircraft's own CM logon > Air France label 26 > KLM label-20
-    # RST > airline-defined label 49. Each carries a dep+arr pair: fill route gaps
+    # RST > airline-defined label 49 > H1/15 reports r64 > abs > b44 > fst01. Each carries a dep+arr pair: fill route gaps
     # on events, and serve as the `dsta` fallback when nothing else parsed. Only
     # the four contract keys are copied (no eta/runway — ApiModel is extra="allow").
     route: dict | None = None
-    for src, rec in (("cm", route_cm), ("label26", route26),
-                     ("label20", route20), ("label49", route49)):
+    found = {"cm": route_cm, "label26": route26, "label20": route20,
+             "label49": route49, **h1routes}
+    for src in _ROUTE_ORDER:
+        rec = found.get(src)
         if rec is not None:
             route = {"dep_icao": rec["dep_icao"], "dest_icao": rec["dest_icao"],
-                     "flight": rec["flight"], "source": src}
+                     "flight": rec.get("flight"), "source": src}
             break
     if route is not None:
         for ev in (dep, arr):

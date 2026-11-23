@@ -2423,3 +2423,189 @@ class TestFlightPositions:
         for sql in vdl2_api._SQL_MAP.values():
             assert "icao_hex = ?" not in sql
         assert vdl2_api._H1_POSITIONS_SQL == vdl2_api._SQL_MAP["h1"]
+
+
+class TestOooiH1Routes:
+    """Batch 7: abs / b44 / r64 / fst01 route sources, below every existing source."""
+    ABS = "ABS026BA_S      ,B7378MAX ,261123,LO4TP ,EPWA,LROP,0318,BCG27-S200-0011\r\nN5210.5,E02055.2,231035,01973,-02.8,286,026,IC,00000,0,\r\n"
+    B44 = "B44C\r\nSP-LVH  4824HT EPWALPPTTO140926122650\r\n 995398160B70260B711"
+    R64 = ("R641V0106,180302,, F-HPND,5318410-07,736661,736834,06164,EPWA,LFPG,17:43:03,"
+           "2026:10:11,AF1047  ,000004,200186,ITT_#10100")
+    FST = "FST01EGLLEPWAN52232E0207997 36  33  51     35262      188  10531050"
+    HEX = "48e95f"
+
+    def _route(self, monkeypatch, rows):
+        now = int(time.time())
+        recs = [{"ts": now - 600 + i * 10, "icao_hex": self.HEX, **row} for i, row in enumerate(rows)]
+        helper = TestOooi()
+        vconn, app = helper._make(monkeypatch, recs)
+        with TestClient(app) as c:
+            data = c.get(f"/api/vdl2/oooi/{self.HEX}").json()
+        vconn.close()
+        return data
+
+    def _rows(self, which):
+        table = {
+            "abs": {"label": "H1", "sublabel": "DF", "body": self.ABS},
+            "b44": {"label": "H1", "sublabel": "DF", "body": self.B44},
+            "r64": {"label": "H1", "sublabel": "T8", "body": self.R64},
+            "fst01": {"label": "15", "body": self.FST},
+        }
+        return [table[w] for w in which]
+
+    @pytest.mark.parametrize("src,dep,dest", [
+        ("abs", "EPWA", "LROP"), ("b44", "EPWA", "LPPT"),
+        ("r64", "EPWA", "LFPG"), ("fst01", "EGLL", "EPWA"),
+    ])
+    def test_each_source_parsed(self, monkeypatch, src, dep, dest):
+        data = self._route(monkeypatch, self._rows([src]))
+        assert data["route"] == {"dep_icao": dep, "dest_icao": dest, "flight": None, "source": src}
+        assert data["dsta"] == dest
+        assert data["has_oooi"] is False
+
+    def test_order_among_new_sources(self, monkeypatch):
+        order = ["r64", "abs", "b44", "fst01"]
+        for i, winner in enumerate(order):
+            data = self._route(monkeypatch, self._rows(list(reversed(order[i:]))))
+            assert data["route"]["source"] == winner
+
+    def test_existing_sources_win(self, monkeypatch):
+        existing = {"label": "49", "body": "01DCAP    ETD159/090545OMAAEPWA"}
+        data = self._route(monkeypatch,
+                           self._rows(["r64", "abs", "b44", "fst01"]) + [existing])
+        assert data["route"]["source"] == "label49"
+        assert data["route"]["dest_icao"] == "EPWA"
+        # existing one is OLDER than the new rows: still wins
+        data = self._route(monkeypatch, [existing] + self._rows(["r64", "abs"]))
+        assert data["route"]["source"] == "label49"
+
+    def test_route_fills_event_gap(self, monkeypatch):
+        rows = [{"label": "H1", "body": "DEP / OT 0030"}] + self._rows(["r64"])
+        data = self._route(monkeypatch, rows)
+        assert data["dep"]["dep_icao"] == "EPWA" and data["dep"]["dest_icao"] == "LFPG"
+
+    def test_wrong_sublabel_ignored(self, monkeypatch):
+        rows = [{"label": "H1", "sublabel": "T8", "body": self.ABS},
+                {"label": "H1", "sublabel": "DF", "body": self.R64},
+                {"label": "H1", "body": self.B44},
+                {"label": "16", "body": self.FST}]
+        data = self._route(monkeypatch, rows)
+        assert "route" not in data
+
+    def test_superseded_ignored(self, monkeypatch):
+        rows = self._rows(["r64"])
+        rows[0]["superseded"] = 1
+        rows += self._rows(["fst01"])
+        data = self._route(monkeypatch, rows)
+        assert data["route"]["source"] == "fst01"
+
+    def test_newest_row_per_source_wins(self, monkeypatch):
+        old = {"label": "H1", "sublabel": "T8", "body": self.R64.replace("LFPG", "LFPO")}
+        data = self._route(monkeypatch, [old] + self._rows(["r64"]))
+        assert data["route"]["dest_icao"] == "LFPG"
+
+    def test_oooi_query_is_icao_indexed_and_bounded(self):
+        plan = " ".join(str(tuple(r)) for r in make_vdl2_db().execute(
+            "EXPLAIN QUERY PLAN " + vdl2_api._OOOI_SQL.format(where="icao_hex = ? AND ts >= ?"),
+            ["48e95f", 0, 1000]).fetchall())
+        assert "idx_vdl2_icao" in plan
+        assert "LIMIT" in vdl2_api._OOOI_SQL.upper()
+
+
+class TestStatsGroundStations:
+    """Batch 7: per-ground-station downlink stats, full stats payload only (last 24 h)."""
+
+    @staticmethod
+    def _row(ts, hexv, toaddr, freq, sig=-45.0, noise=-52.0, src="Aircraft", raw=None):
+        import json
+        if raw is None:
+            raw = json.dumps({"vdl2": {"avlc": {"src": {"addr": hexv.upper(), "type": src},
+                                                "dst": {"addr": toaddr, "type": "Ground station"}}}})
+        return {"ts": ts, "icao_hex": hexv, "toaddr": toaddr, "freq": freq,
+                "sig_level": sig, "noise_level": noise, "raw": raw}
+
+    def _stats(self, monkeypatch, rows, path="/api/vdl2/stats"):
+        monkeypatch.setattr(config, "VDL2_ENABLED", True)
+        vconn = make_vdl2_db()
+        vdl2_db.insert_messages(vconn, rows)
+        vconn.commit()
+        monkeypatch.setattr(vdl2_db, "_conn", vconn)
+        monkeypatch.setattr(_deps, "_db", make_db())
+        app = FastAPI()
+        web._include_optional_routers(app)
+        with TestClient(app) as c:
+            data = c.get(path).json()
+        vconn.close()
+        return data
+
+    def test_aggregation(self, monkeypatch):
+        now = int(time.time())
+        rows = [
+            self._row(now - 100, "aaaaaa", "2B86E1", 136.875, sig=-40, noise=-50),   # snr 10
+            self._row(now - 90, "aaaaaa", "2B86E1", 136.875, sig=-40, noise=-48),    # snr 8
+            self._row(now - 80, "bbbbbb", "2B86E1", 136.875, sig=-44, noise=-50),    # snr 6
+            self._row(now - 70, "bbbbbb", "2B86E1", 136.875, sig=None, noise=None),  # no snr
+            self._row(now - 60, "aaaaaa", "11920A", 136.725),                        # snr 7
+            self._row(now - 50, "aaaaaa", "2B86E1", 136.7750001),                    # other freq
+        ]
+        data = self._stats(monkeypatch, rows)
+        gs = data["ground_stations"]
+        assert gs[0] == {"toaddr": "2B86E1", "freq": 136.875, "frames": 4, "aircraft": 2,
+                         "snr_db": 8.0}
+        assert {(g["toaddr"], g["freq"]): g["frames"] for g in gs} == {
+            ("2B86E1", 136.875): 4, ("11920A", 136.725): 1, ("2B86E1", 136.775): 1}
+        assert [g["frames"] for g in gs] == sorted((g["frames"] for g in gs), reverse=True)
+
+    def test_snr_null_when_no_signal_data(self, monkeypatch):
+        now = int(time.time())
+        data = self._stats(monkeypatch, [self._row(now - 10, "aaaaaa", "2B86E1", 136.875,
+                                                   sig=None, noise=None)])
+        assert data["ground_stations"][0]["snr_db"] is None
+        assert data["ground_stations"][0]["frames"] == 1
+
+    def test_ground_sourced_and_non_dumpvdl2_rows_excluded(self, monkeypatch):
+        now = int(time.time())
+        rows = [
+            self._row(now - 10, "aaaaaa", "2B86E1", 136.875),
+            self._row(now - 10, "aaaaaa", "2B86E1", 136.875, src="Ground station"),
+            {"ts": now - 10, "icao_hex": "cccccc", "toaddr": "2B86E1", "freq": 136.875,
+             "raw": None},                                         # vdlm2dec-style: no avlc
+            {"ts": now - 10, "icao_hex": "cccccc", "toaddr": "2B86E1", "freq": 136.875,
+             "raw": '{"vdl2": {}}'},
+        ]
+        gs = self._stats(monkeypatch, rows)["ground_stations"]
+        assert len(gs) == 1 and gs[0]["frames"] == 1 and gs[0]["aircraft"] == 1
+
+    def test_invalid_json_row_tolerated(self, monkeypatch):
+        now = int(time.time())
+        rows = [self._row(now - 10, "aaaaaa", "2B86E1", 136.875),
+                self._row(now - 10, "bbbbbb", "2B86E1", 136.875, raw='{"vdl2":{"avlc":{"src":{"typ')]
+        data = self._stats(monkeypatch, rows)
+        assert data["ground_stations"][0]["frames"] == 1
+
+    def test_only_last_24h(self, monkeypatch):
+        now = int(time.time())
+        rows = [self._row(now - 86400 - 60, "aaaaaa", "OLD001", 136.875),
+                self._row(now - 3600, "aaaaaa", "NEW001", 136.875)]
+        gs = self._stats(monkeypatch, rows)["ground_stations"]
+        assert [g["toaddr"] for g in gs] == ["NEW001"]
+
+    def test_limit_30(self, monkeypatch):
+        now = int(time.time())
+        rows = [self._row(now - 10, "aaaaaa", f"GS{i:04d}", 136.875) for i in range(35)]
+        assert len(self._stats(monkeypatch, rows)["ground_stations"]) == 30
+
+    def test_empty_default(self, monkeypatch):
+        assert self._stats(monkeypatch, [])["ground_stations"] == []
+
+    def test_summary_excludes_it(self, monkeypatch):
+        now = int(time.time())
+        data = self._stats(monkeypatch, [self._row(now - 10, "aaaaaa", "2B86E1", 136.875)],
+                           "/api/vdl2/stats?summary=true")
+        assert set(data) == {"total", "last_hour", "aircraft"}
+
+    def test_query_uses_ts_index(self):
+        plan = " ".join(str(tuple(r)) for r in make_vdl2_db().execute(
+            "EXPLAIN QUERY PLAN " + vdl2_api._GROUND_STATIONS_SQL, (0,)).fetchall())
+        assert "idx_vdl2_ts" in plan
+        assert "SCAN vdl2_messages" not in plan.replace("USING INDEX", "")
