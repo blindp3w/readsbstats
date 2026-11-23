@@ -195,3 +195,35 @@ prune_backups() {
   done
   return 0
 }
+
+# ensure_nginx_group SERVICE_USER — let nginx read the o= app tree.
+# nginx-readsbstats.conf serves /stats/assets/ and /stats/favicon.svg via
+# `alias` instead of proxying to FastAPI (one fewer hop per request). nginx
+# runs as www-data on Debian/Ubuntu packages or as `nginx` on upstream
+# / RHEL-style packages — some systems even have both users present, so
+# loop over both candidates and add whichever exist. Without group
+# membership, nginx hits 403 on the chmod -R u=rwX,g=rX,o= tree.
+# Idempotent — usermod -aG is a no-op if the user is already a member.
+# Group membership applies at process start, so nginx is restarted (not
+# reloaded) the FIRST time membership changes; later runs skip silently.
+# Called by both install.sh (a fresh install used to 403 until the first
+# update.sh) and update.sh.
+ensure_nginx_group() {
+    local service_user="$1" nginx_user changed=0
+    getent group "$service_user" >/dev/null 2>&1 || return 0
+    for nginx_user in www-data nginx; do
+        if id -u "$nginx_user" >/dev/null 2>&1; then
+            if ! id -nG "$nginx_user" | tr ' ' '\n' | grep -qx "$service_user"; then
+                echo "==> Adding $nginx_user to $service_user group (one-time, for nginx-direct static)"
+                usermod -aG "$service_user" "$nginx_user"
+                changed=1
+            fi
+        fi
+    done
+    if [[ $changed -eq 1 ]]; then
+        echo "==> Restarting nginx so the new group membership takes effect"
+        systemctl restart nginx \
+            || echo "WARNING: nginx restart failed; run 'systemctl restart nginx' manually" >&2
+    fi
+    return 0
+}
