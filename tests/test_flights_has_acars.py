@@ -222,3 +222,94 @@ def test_vdl2_attached_false_on_closed_conn(tmp_path):
     core = _core_db(str(tmp_path / "history.db"))
     core.close()
     assert _deps.vdl2_attached(core) is False
+
+
+# ---------------------------------------------------------------------------
+# CSV export honours has_acars like /api/flights (History page forwards it).
+# ---------------------------------------------------------------------------
+
+def _export_icaos(client, qs=""):
+    import csv as _csv
+    import io as _io
+    r = client.get("/api/flights/export.csv" + qs)
+    assert r.status_code == 200
+    rows = list(_csv.DictReader(_io.StringIO(r.text)))
+    return sorted(row["icao_hex"] for row in rows)
+
+
+def test_export_has_acars_matches_flights_total(attached):
+    with TestClient(web.app) as c:
+        total = c.get("/api/flights?has_acars=true").json()["total"]
+        icaos = _export_icaos(c, "?has_acars=true")
+    assert total == 1
+    assert len(icaos) == total
+    assert icaos == ["48e95d"]
+
+
+def test_export_without_has_acars_is_unfiltered(attached):
+    with TestClient(web.app) as c:
+        assert _export_icaos(c) == ["48e95d", "aabbcc"]
+
+
+def test_export_has_acars_false_mirrors_flights_ignored(attached):
+    # /api/flights treats has_acars=false as "no filter"; export mirrors that.
+    with TestClient(web.app) as c:
+        total = c.get("/api/flights?has_acars=false").json()["total"]
+        icaos = _export_icaos(c, "?has_acars=false")
+    assert total == 2
+    assert icaos == ["48e95d", "aabbcc"]
+
+
+def test_export_has_acars_ignored_when_not_attachable(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "VDL2_ENABLED", True)
+    monkeypatch.setattr(config, "VDL2_DB_PATH", str(tmp_path / "vdl2.db"))
+    monkeypatch.setattr(_deps, "_maybe_attach_vdl2", lambda conn: None)
+    core = _core_db(str(tmp_path / "history.db"))
+    _flight(core, "48e95d", 1000, 2000)
+    _flight(core, "aabbcc", 1000, 2000)
+    assert _deps.vdl2_attached(core) is False
+    monkeypatch.setattr(_deps, "_db", core)
+    with TestClient(web.app, raise_server_exceptions=True) as c:
+        total = c.get("/api/flights?has_acars=true").json()["total"]
+        icaos = _export_icaos(c, "?has_acars=true")
+    assert total == 2
+    assert icaos == ["48e95d", "aabbcc"]
+    core.close()
+
+
+def test_export_has_acars_ignored_when_disabled(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "VDL2_ENABLED", False)
+    core = _core_db(str(tmp_path / "history.db"))
+    _flight(core, "48e95d", 1000, 2000)
+    monkeypatch.setattr(_deps, "_db", core)
+    with TestClient(web.app, raise_server_exceptions=True) as c:
+        assert _export_icaos(c, "?has_acars=true") == ["48e95d"]
+    core.close()
+
+
+def test_export_attaches_on_its_own_connection(tmp_path, monkeypatch):
+    # Production path: `_deps._db is None`, the stream opens its own connection
+    # via database.connect(uri=True) which has never ATTACHed vdl2.db — the
+    # export must attach there before applying the filter.
+    vdl2_path = str(tmp_path / "vdl2.db")
+    hist = str(tmp_path / "history.db")
+    monkeypatch.setattr(config, "VDL2_ENABLED", True)
+    monkeypatch.setattr(config, "VDL2_DB_PATH", vdl2_path)
+    real_connect = database.connect
+    monkeypatch.setattr(
+        database, "connect",
+        lambda *a, uri=False, **k: real_connect(hist, uri=uri),
+    )
+    vconn = vdl2_db.connect(vdl2_path)
+    vdl2_db.ensure_schema(vconn)
+    vdl2_db.insert_messages(vconn, [{"ts": 1500, "icao_hex": "48e95d", "body": "hi"}])
+    vconn.commit()
+    vconn.close()
+    core = _core_db(hist)
+    _flight(core, "48e95d", 1000, 2000)
+    _flight(core, "aabbcc", 1000, 2000)
+    core.close()
+    monkeypatch.setattr(_deps, "_db", None)
+    with TestClient(web.app, raise_server_exceptions=True) as c:
+        icaos = _export_icaos(c, "?has_acars=true")
+    assert icaos == ["48e95d"]
