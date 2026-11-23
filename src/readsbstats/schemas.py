@@ -379,10 +379,20 @@ class Vdl2Position(ApiModel):
     ts: Optional[int] = None
     label: Optional[str] = None
     # True = precise (~0.001°) position parsed from an ACARS body by label (16 AUTPOS and the
-    # label-16-style group, 17, 38, 2F, 14, B0 AFN logon), a #M1BPOS body (vdlm2dec prefix kept
-    # in body, or dumpvdl2 via sublabel M1), LOT 59,G, or a decoded ADS-C (label B6) basic_report;
+    # label-16-style group, 17, 38, 2F, 14, B0 AFN logon, 83, 15, 80), an H1 position report
+    # (ABS/EB0/SB0, CF FDE/MM, `(POS-`), a #M1BPOS body (vdlm2dec prefix kept in body, or
+    # dumpvdl2 via sublabel M1), LOT 59,G, or a decoded ADS-C (label B6) basic_report;
     # False = coarse (~0.1°) VDL2 XID link-frame fix from the lat/lon column (both decoders).
     precise: Optional[bool] = None
+    # Where the fix came from: label | m1bpos | 59g | adsc | xid | h1-abs | h1-cf | h1-pos.
+    # `ts` is the fix's own time for sources that embed one (h1-*, label 83 PR), else receive time.
+    source: Optional[str] = None
+    # Only on sources that report them (alt: h1-abs, h1-pos, label 83 ET, label 80; the rest
+    # h1-abs CSV only). Absent when unset (response_model_exclude_unset).
+    alt: Optional[int] = None          # ft
+    temp_c: Optional[float] = None
+    wind_dir: Optional[int] = None     # degrees
+    wind_kt: Optional[int] = None
 
 
 class Vdl2PositionsResponse(ApiModel):

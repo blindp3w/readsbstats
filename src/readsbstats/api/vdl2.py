@@ -20,6 +20,7 @@ from fastapi import APIRouter, HTTPException, Query
 from .. import cache, config, schemas
 from ..vdl2 import adsc
 from ..vdl2 import db as vdl2_db
+from ..vdl2 import h1rep
 from ..vdl2 import m1bpos
 from ..vdl2 import normalize
 from ..vdl2 import oooi
@@ -910,6 +911,20 @@ _POSITIONS_M1BPOS_SCAN_CAP = 8000
 # LOT `59,G` ground-telemetry positions (label 36); same over-fetch+parse+discard
 # rationale (the label-37 status sub-form shares the prefix and is parsed out).
 _POSITIONS_59G_SCAN_CAP = 8000
+# H1 position reports (ABS/EB0/SB0 multi-fix, CF FDE/MM, `(POS-`; h1rep.py). A message can
+# yield several fixes, so the final merge cap (_POSITIONS_CAP) is applied to points, not rows.
+_POSITIONS_H1_SCAN_CAP = 8000
+# Index-served by idx_vdl2_label_ts_id (label = 'H1' + ts range); the sublabel/prefix
+# filters run on the already-bounded rows.
+_H1_POSITIONS_SQL = (
+    "SELECT id, icao_hex, ts, label, sublabel, body FROM vdl2_messages "
+    "WHERE label = 'H1' AND ts >= ? AND superseded IS NOT 1 AND sublabel IN ('DF','CF') "
+    "AND (body LIKE 'ABS%' OR body LIKE 'EB0%' OR body LIKE 'SB0%' OR body LIKE 'FDE%' "
+    "OR body LIKE 'MM%' OR body LIKE '(POS-%') "
+    "ORDER BY ts DESC, id DESC LIMIT ?"
+)
+# A fix may be this far past `now` (receiver/aircraft clock skew) before it is dropped.
+_POSITIONS_FUTURE_SLACK = 600
 
 
 @router.get("/api/vdl2/active", response_model=schemas.Vdl2ActiveResponse,
@@ -941,12 +956,14 @@ def api_vdl2_positions(minutes: int = Query(60, ge=1, le=1440)) -> dict:
     """VDL2-derived positions from the last `minutes` minutes, for the optional
     map overlay. Precise sources preferred (each validated against ADS-B tracks of the
     same airframe): ACARS bodies by label (16 AUTPOS and the label-16-style group, 17,
-    38, 2F, 14, B0 AFN logon — see `positions.PRECISE_LABEL_PARSERS`), `#M1BPOS`
+    38, 2F, 14, B0 AFN logon, 83, 15, 80 — see `positions.PRECISE_LABEL_PARSERS`),
+    H1 position reports (`h1rep`: ABS/EB0/SB0 multi-fix, CF FDE/MM, `(POS-`), `#M1BPOS`
     (Honeywell FMS; dumpvdl2 rows matched via `sublabel`), LOT `59,G`, and ADS-C
     (label B6, decoded `basic_report` in `raw`). The lat/lon columns hold only
     **coarse** (~0.1°) VDL2 XID link-frame fixes used as a fallback (vdlm2dec and
-    dumpvdl2 alike). Each point carries `precise`. Sparse on an H1-dominated feed.
-    Capped + cached ~30 s."""
+    dumpvdl2 alike). Each point carries `precise` and `source`; the newer sources may add
+    `alt`/`temp_c`/`wind_dir`/`wind_kt`. One ABS message can yield several points (each with
+    its own fix time). Sparse on an H1-dominated feed. Capped + cached ~30 s."""
     cached = cache._get_cache(f"vdl2-positions-{minutes}")
     if cached is not None:
         return cached
@@ -957,22 +974,27 @@ def api_vdl2_positions(minutes: int = Query(60, ge=1, le=1440)) -> dict:
 
 
 def _compute_positions(minutes: int) -> dict:
-    """Five candidate queries merged in Python (a single OR query full-scans). The
-    label (`label IN (…)` over `positions.PRECISE_LABEL_PARSERS`), ADS-C (`label = 'B6'`)
-    and coarse queries are index-served (idx_vdl2_label_ts_id / idx_vdl2_pos_ts_id) — the
-    multi-value `IN` probes each label then sorts the merged rows in a temp B-tree before
-    the LIMIT, cheap at the observed volume (~40 rows/day across these labels); the
-    `#M1BPOS` and `59,G` queries are time-window-bounded row scans (idx_vdl2_ts bounds `ts >=`, then a `body LIKE` filter), capped so they still
-    terminate. The `#M1BPOS` query also matches dumpvdl2 rows (`sublabel = 'M1'`, body
-    `POS…` — libacars stripped the prefix), re-prefixed via `normalize.acars_text`
-    before parsing. Precise fixes are parsed from the per-label bodies, `#M1BPOS`, LOT `59,G`
-    bodies and ADS-C `raw` JSON (so a coordinate-looking body on any other row can't
-    masquerade as precise);
-    coarse XID column fixes are the fallback. Independent caps + over-fetched scans + a
-    final merge/cap so a burst of no-fix rows can't starve valid coarse OR older precise
-    points."""
+    """Six candidate queries merged in Python (a single OR query full-scans). The
+    label (`label IN (…)` over `positions.PRECISE_LABEL_PARSERS`), H1 (`label = 'H1'`,
+    `_H1_POSITIONS_SQL`), ADS-C (`label = 'B6'`) and coarse queries are index-served
+    (idx_vdl2_label_ts_id / idx_vdl2_pos_ts_id) — the multi-value `IN` probes each label then
+    sorts the merged rows in a temp B-tree before the LIMIT, cheap at the observed volume
+    (~40 rows/day across these labels); the `#M1BPOS` and `59,G` queries are
+    time-window-bounded row scans (idx_vdl2_ts bounds `ts >=`, then a `body LIKE` filter),
+    capped so they still terminate. The `#M1BPOS` query also matches dumpvdl2 rows
+    (`sublabel = 'M1'`, body `POS…` — libacars stripped the prefix), re-prefixed via
+    `normalize.acars_text` before parsing. Precise fixes are parsed from the per-label bodies,
+    H1 position reports, `#M1BPOS`, LOT `59,G` bodies and ADS-C `raw` JSON (so a
+    coordinate-looking body on any other row can't masquerade as precise); coarse XID column
+    fixes are the fallback. Every point carries `source` (`label`, `m1bpos`, `59g`, `adsc`,
+    `xid`, `h1-abs`, `h1-cf`, `h1-pos`). A label parser may supply the fix's own `ts`/`alt`;
+    an H1 message can yield several points (`_id` shared), whose own `ts` must lie inside the
+    window (`>= cutoff`, `<= now + 600 s`). Independent caps + over-fetched scans + a final
+    merge/cap so a burst of no-fix rows can't starve valid coarse OR older precise points."""
     conn = vdl2_db.web_conn()
-    cutoff = int(time.time()) - minutes * 60
+    now = int(time.time())
+    cutoff = now - minutes * 60
+    latest = now + _POSITIONS_FUTURE_SLACK
 
     labels = list(vdl2_positions.PRECISE_LABEL_PARSERS)
     label_rows = conn.execute(
@@ -1006,21 +1028,30 @@ def _compute_positions(minutes: int) -> dict:
         (cutoff, _POSITIONS_ADSC_SCAN_CAP),
     ).fetchall()
 
-    def _point(r, lat, lon, precise) -> dict:
-        # `_id` is an internal merge/sort key, stripped before the response.
-        return {
+    h1_rows = conn.execute(_H1_POSITIONS_SQL, (cutoff, _POSITIONS_H1_SCAN_CAP)).fetchall()
+
+    def _point(r, lat, lon, precise, source, extra=None) -> dict:
+        # `_id` is an internal merge/sort key, stripped before the response. `extra` may
+        # override `ts` (a fix's own time) and add alt/temp_c/wind_dir/wind_kt.
+        p = {
             "_id": r["id"], "lat": lat, "lon": lon, "icao_hex": r["icao_hex"],
-            "ts": r["ts"], "label": r["label"], "precise": precise,
+            "ts": r["ts"], "label": r["label"], "precise": precise, "source": source,
         }
+        if extra:
+            p.update(extra)
+        return p
 
     points: list[dict] = []
     seen: set[int] = set()
     for r in label_rows:
-        parsed = vdl2_positions.parse_by_label(r["label"], r["body"])
+        parsed = vdl2_positions.parse_by_label(r["label"], r["body"], r["ts"])
         if parsed is None:
             continue   # no-fix body (e.g. AUTPOS blank marker, label-17 `------`) — discarded, no cap consumed
+        extra = {k: parsed[k] for k in ("ts", "alt") if k in parsed}
+        if not cutoff <= extra.get("ts", r["ts"]) <= latest:
+            continue   # embedded fix time outside the window (own ts, not the receive time)
         seen.add(r["id"])
-        points.append(_point(r, parsed["lat"], parsed["lon"], True))
+        points.append(_point(r, parsed["lat"], parsed["lon"], True, "label", extra))
     for r in m1bpos_rows:
         parsed = m1bpos.parse_position(
             normalize.acars_text(r["body"], r["sublabel"], r["mfi"]))
@@ -1029,7 +1060,7 @@ def _compute_positions(minutes: int) -> dict:
         if r["id"] in seen:
             continue
         seen.add(r["id"])
-        points.append(_point(r, parsed["lat"], parsed["lon"], True))
+        points.append(_point(r, parsed["lat"], parsed["lon"], True, "m1bpos"))
     for r in g59_rows:
         parsed = vdl2_positions.parse_59g(r["body"])
         if parsed is None:
@@ -1037,7 +1068,7 @@ def _compute_positions(minutes: int) -> dict:
         if r["id"] in seen:
             continue
         seen.add(r["id"])
-        points.append(_point(r, parsed["lat"], parsed["lon"], True))
+        points.append(_point(r, parsed["lat"], parsed["lon"], True, "59g"))
     for r in adsc_rows:
         parsed = adsc.parse_basic_report(r["raw"])
         if parsed is None:
@@ -1045,11 +1076,22 @@ def _compute_positions(minutes: int) -> dict:
         if r["id"] in seen:
             continue
         seen.add(r["id"])
-        points.append(_point(r, parsed["lat"], parsed["lon"], True))
+        points.append(_point(r, parsed["lat"], parsed["lon"], True, "adsc"))
+    for r in h1_rows:
+        if r["id"] in seen:
+            continue
+        fixes = [f for f in h1rep.parse_positions(r["sublabel"], r["body"], r["ts"])
+                 if cutoff <= f["ts"] <= latest]
+        if not fixes:
+            continue   # no fix (or all outside the window) — discarded, no cap consumed
+        seen.add(r["id"])   # only after ALL of the message's fixes are emitted
+        for f in fixes:
+            extra = {k: v for k, v in f.items() if k not in ("lat", "lon", "source")}
+            points.append(_point(r, f["lat"], f["lon"], True, f["source"], extra))
     for r in coarse_rows:
         if r["id"] in seen:
             continue   # same row already emitted as a precise fix
-        points.append(_point(r, r["lat"], r["lon"], False))
+        points.append(_point(r, r["lat"], r["lon"], False, "xid"))
 
     points.sort(key=lambda p: (p["ts"] or 0, p["_id"]), reverse=True)
     points = points[:_POSITIONS_CAP]

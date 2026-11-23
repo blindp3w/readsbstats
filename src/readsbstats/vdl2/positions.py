@@ -40,6 +40,23 @@ parsers below), all query-time / read-only (same pattern as m1bpos.py / oooi.py)
      ddmmm like m1bpos (minutes×10).
    - labels 10,13,18,27,33,12,43,41,2P carry the label-16 style fix (~0.7 nm).
 
+4. **Batch 5 labels** (ADS-B validated, snapshot 2026-11-23; median / p90 nm):
+
+   - label 83 ``001PR21152746N5207.4E02041.4430426`` — :func:`parse_label83` PR form: ``PR``,
+     ``DDHHMMSS``, ``ddmm.m`` N/S, ``dddmm.m`` E/W (**0.12 / 0.24 nm**, embedded time used as
+     the point time). The trailing digits' unit is unclear, so no altitude. The ET form
+     ``HAAB,ESSA,210319, 52.41,  20.34,39002,263,…`` is decimal lat/lon + altitude ft at the
+     RECEIVE time (**0.20 / 0.42 nm**; its embedded time was worse). Other label-83 bodies
+     (``4DH3 ETAT2 …``) yield ``None``.
+   - label 15 ``FST01EGLLEPWAN52232E0207997 …`` — :func:`parse_label15`: dep, arr, N/S lat x1000
+     (5 digits), E/W lon x10000 (7 digits) (**1.23 / 2.39 nm**, receive time).
+     ``FST01EPWAEGLL 00 …`` has no position.
+   - label 80 ``…/POS N52141E020397/ALT +05475/…`` — :func:`parse_label80`: ddmmm (minutes x10)
+     like m1bpos, ``/ALT`` ft (**0.09 / 0.16 nm**, receive time).
+
+   A parser may return the optional extra keys ``ts`` (the fix's own time, when it is a
+   better time base than the receive time) and ``alt`` (ft).
+
    :data:`PRECISE_LABEL_PARSERS` maps each label to its parser and :func:`parse_by_label`
    dispatches, so a coordinate-looking body under any other label is never trusted.
    (ADS-C label B6 lives in ``raw`` JSON, not the body — see ``adsc.py``.)
@@ -50,6 +67,7 @@ import re
 from typing import Callable
 
 from ..cleaners import valid_lat, valid_lon
+from .h1rep import fix_epoch
 
 # N/S then decimal degrees, a comma or space separator, then E/W then decimal
 # degrees. Decimal fraction required on both to avoid matching bare integers.
@@ -184,6 +202,80 @@ def parse_afn_fpo(body: object) -> dict | None:
     return _fix(ns, int(dd) + (int(lat_min) / 10) / 60, ew, int(ddd) + (int(lon_min) / 10) / 60)
 
 
+_L83_PR = re.compile(
+    r"\d{3}PR(\d{2})(\d{2})(\d{2})(\d{2})([NS])(\d{2})(\d{2}\.\d)([EW])(\d{3})(\d{2}\.\d)")
+_L83_ET = re.compile(
+    r"[A-Z]{4},[A-Z]{4},\d{6},\s*(-?\d{1,2}\.\d{2}),\s*(-?\d{1,3}\.\d{2}),\s*(\d{3,5}),")
+
+
+def parse_label83(body: object, recv_ts: float | None = None) -> dict | None:
+    """Label 83 -> ``{"lat","lon", "ts"?, "alt"?}``. Two forms (see module docstring): the PR
+    form (``001PR21152746N5207.4E02041.4430426``) carries ``DDHHMMSS`` and a ddmm.m fix; its
+    ``ts`` is the embedded time resolved against ``recv_ts`` (omitted when ``recv_ts`` is
+    ``None``). The ET form (``HAAB,ESSA,210319, 52.41,  20.34,39002,…``) is decimal lat/lon +
+    altitude ft with no ``ts`` (receive time). Any other label-83 body -> ``None``."""
+    if not isinstance(body, str) or not body:
+        return None
+    m = _L83_PR.match(body)
+    if m is not None:
+        day, hh, mi, ss, ns, lat_d, lat_m, ew, lon_d, lon_m = m.groups()
+        if float(lat_m) >= 60 or float(lon_m) >= 60:
+            return None
+        out = _fix(ns, int(lat_d) + float(lat_m) / 60, ew, int(lon_d) + float(lon_m) / 60)
+        if out is None:
+            return None
+        if recv_ts is not None:
+            ts = fix_epoch(recv_ts, int(hh), int(mi), int(ss), day=int(day))
+            if ts is None:
+                return None
+            out["ts"] = ts
+        return out
+    m = _L83_ET.match(body)
+    if m is None:
+        return None
+    lat, lon = valid_lat(float(m[1])), valid_lon(float(m[2]))
+    if lat is None or lon is None:
+        return None
+    return {"lat": lat, "lon": lon, "alt": int(m[3])}
+
+
+_L15 = re.compile(r"FST01[A-Z]{4}[A-Z]{4}([NS])(\d{5})([EW])(\d{7})")
+
+
+def parse_label15(body: object) -> dict | None:
+    """Label 15 ``FST01EGLLEPWAN52232E0207997 …`` -> ``{"lat","lon"}``: lat x1000 (5 digits), lon
+    x10000 (7 digits). ``FST01EPWAEGLL 00 …`` (no position) -> ``None``."""
+    if not isinstance(body, str) or not body:
+        return None
+    m = _L15.match(body)
+    if m is None:
+        return None
+    ns, lat_s, ew, lon_s = m.groups()
+    return _fix(ns, int(lat_s) / 1000, ew, int(lon_s) / 10000)
+
+
+_L80 = re.compile(r"/POS ([NS])(\d{2})(\d{3})([EW])(\d{3})(\d{3})/ALT ([+-]?)(\d{3,5})\b")
+
+
+def parse_label80(body: object) -> dict | None:
+    """Label 80 ``…/POS N52141E020397/ALT +05475/MCH 284/…`` -> ``{"lat","lon","alt"?}``: ddmmm
+    with the minute field = minutes x10 (< 600). ``alt`` (ft) is emitted only for the signed
+    5-digit form (``+05475``); the bare 3-digit form (``400``) has an unclear unit. A body
+    without a ``/POS`` + ``/ALT`` pair (``/POS -----/…``, other label-80 text) -> ``None``."""
+    if not isinstance(body, str) or not body:
+        return None
+    m = _L80.search(body)
+    if m is None:
+        return None
+    ns, dd, lat_min, ew, ddd, lon_min, sign, alt_s = m.groups()
+    if int(lat_min) >= 600 or int(lon_min) >= 600:
+        return None
+    out = _fix(ns, int(dd) + (int(lat_min) / 10) / 60, ew, int(ddd) + (int(lon_min) / 10) / 60)
+    if out is not None and sign and len(alt_s) == 5:
+        out["alt"] = int(alt_s) * (-1 if sign == "-" else 1)
+    return out
+
+
 # ACARS label -> body parser for every label with a validated precise body fix. The
 # label-16-style generic group (10,13,18,27,33,12,43,41,2P) shares parse_position.
 PRECISE_LABEL_PARSERS: dict[str, Callable[[object], dict | None]] = {
@@ -194,10 +286,19 @@ PRECISE_LABEL_PARSERS: dict[str, Callable[[object], dict | None]] = {
     "2F": parse_label2f,
     "14": parse_label14,
     "B0": parse_afn_fpo,
+    "83": parse_label83,
+    "15": parse_label15,
+    "80": parse_label80,
 }
+# Parsers whose result depends on the row's receive time (embedded time -> ``ts``).
+_TIME_AWARE = frozenset({parse_label83})
 
 
-def parse_by_label(label: object, body: object) -> dict | None:
-    """Parse ``body`` with the parser registered for ``label``; ``None`` for any other label."""
+def parse_by_label(label: object, body: object, recv_ts: float | None = None) -> dict | None:
+    """Parse ``body`` with the parser registered for ``label``; ``None`` for any other label.
+    ``recv_ts`` (the row's receive time) lets time-embedding formats (label 83 PR) return a
+    ``ts`` for the fix."""
     parser = PRECISE_LABEL_PARSERS.get(label) if isinstance(label, str) else None
-    return parser(body) if parser is not None else None
+    if parser is None:
+        return None
+    return parser(body, recv_ts) if parser in _TIME_AWARE else parser(body)

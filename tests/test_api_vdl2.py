@@ -2013,3 +2013,237 @@ class TestSupersededFragments:
 
     def test_stats_still_count_every_frame(self, frag_client):
         assert frag_client.get("/api/vdl2/stats").json()["total"] == 3
+
+
+class TestBatch5Positions:
+    """ADS-B-validated sources (ADR-0019): H1 ABS/EB0 multi-fix, CF FDE/MM, ``(POS-``,
+    labels 83 / 15 / 80. Parsed at query time; every point carries ``source``."""
+
+    CSV = ("ABS023BA_S      ,B7378MAX ,261123,LO513 ,EPWA,LUKK,0293,BCG27-S200-0011\r\n"
+           "N5211.0,E02052.4,{d}{h:02d}{m0:02d},02421,-03.5,301,029,CL,00000,0,\r\n"
+           "N5210.9,E02051.9,{d}{h:02d}{m1:02d},02563,-03.5,305,031,CL,00000,0,\r\n"
+           "N5210.8,E02051.3,{d}{h:02d}{m2:02d},02698,-04.0,307,031,CL,00000,0,\r\n:")
+
+    @staticmethod
+    def _client(monkeypatch, rows):
+        monkeypatch.setattr(config, "VDL2_ENABLED", True)
+        conn = make_vdl2_db()
+        vdl2_db.insert_messages(conn, rows)
+        conn.commit()
+        monkeypatch.setattr(vdl2_db, "_conn", conn)
+        app = FastAPI()
+        web._include_optional_routers(app)
+        return conn, TestClient(app)
+
+    @staticmethod
+    def _pts(c, minutes=60):
+        r = c.get(f"/api/vdl2/positions?minutes={minutes}")
+        assert r.status_code == 200
+        return r.json()["points"]
+
+    @staticmethod
+    def _csv_body(recv, back=(3, 2, 1)):
+        """CSV ABS body whose fixes are `back` minutes before `recv` (UTC DDHHMM)."""
+        import datetime as dt
+        times = [dt.datetime.fromtimestamp(recv - 60 * b, dt.timezone.utc) for b in back]
+        body = ("ABS023BA_S      ,B7378MAX ,261123,LO513 ,EPWA,LUKK,0293,BCG27-S200-0011")
+        for t in times:
+            body += (f"\r\nN5211.0,E02052.4,{t:%d%H%M},02421,-03.5,301,029,CL,00000,0,")
+        return body + "\r\n:", [int(t.replace(second=0).timestamp()) for t in times]
+
+    def test_multi_fix_abs_yields_points_with_per_fix_ts(self, monkeypatch):
+        recv = int(time.time()) - 30
+        body, fix_ts = self._csv_body(recv)
+        conn, client = self._client(monkeypatch, [
+            {"ts": recv, "icao_hex": "489001", "label": "H1", "sublabel": "DF", "body": body}])
+        with client as c:
+            pts = [p for p in self._pts(c) if p["icao_hex"] == "489001"]
+        conn.close()
+        assert len(pts) == 3
+        assert sorted(p["ts"] for p in pts) == sorted(fix_ts)
+        assert len({p["ts"] for p in pts}) == 3          # one message id, distinct ts
+        p = next(p for p in pts if p["ts"] == fix_ts[0])
+        assert p["source"] == "h1-abs" and p["precise"] is True and p["label"] == "H1"
+        assert p["alt"] == 2421 and p["temp_c"] == -3.5
+        assert p["wind_dir"] == 301 and p["wind_kt"] == 29
+        assert abs(p["lat"] - (52 + 11.0 / 60)) < 1e-4
+
+    def test_fixed_width_has_alt_but_no_wind(self, monkeypatch):
+        import datetime as dt
+        recv = int(time.time()) - 30
+        t = dt.datetime.fromtimestamp(recv - 120, dt.timezone.utc)
+        body = ("ABS011DA_S       EPWALEMD4\r\n"
+                f" 52188  20784{t:%H%M}004137-06-270019X1XIH-0801090000--")
+        conn, client = self._client(monkeypatch, [
+            {"ts": recv, "icao_hex": "489002", "label": "H1", "sublabel": "DF", "body": body}])
+        with client as c:
+            (p,) = [p for p in self._pts(c) if p["icao_hex"] == "489002"]
+        conn.close()
+        assert p["source"] == "h1-abs" and p["alt"] == 4137 and p["lat"] == 52.188
+        assert p["ts"] == int(t.replace(second=0).timestamp())
+        assert "temp_c" not in p and "wind_dir" not in p and "wind_kt" not in p
+
+    def test_old_embedded_fix_outside_window_is_dropped(self, monkeypatch):
+        # message received now, but two fixes are older than the 10-minute window
+        recv = int(time.time()) - 30
+        body, fix_ts = self._csv_body(recv, back=(30, 20, 1))
+        conn, client = self._client(monkeypatch, [
+            {"ts": recv, "icao_hex": "489003", "label": "H1", "sublabel": "DF", "body": body}])
+        with client as c:
+            pts = [p for p in self._pts(c, minutes=10) if p["icao_hex"] == "489003"]
+            allpts = [p for p in self._pts(c, minutes=60) if p["icao_hex"] == "489003"]
+        conn.close()
+        assert [p["ts"] for p in pts] == [fix_ts[2]]
+        assert len(allpts) == 3
+
+    def test_future_fix_beyond_slack_dropped(self, monkeypatch):
+        recv = int(time.time()) - 30
+        body, _ = self._csv_body(recv, back=(-20, -15, 1))   # 20/15 min in the future
+        conn, client = self._client(monkeypatch, [
+            {"ts": recv, "icao_hex": "489004", "label": "H1", "sublabel": "DF", "body": body}])
+        with client as c:
+            pts = [p for p in self._pts(c) if p["icao_hex"] == "489004"]
+        conn.close()
+        # fix_epoch rolls a "future" HHMM back a day only for HHMM-only formats; DDHHMM stays
+        # in the future and must be filtered out by the handler.
+        assert len(pts) == 1
+
+    def test_superseded_h1_row_ignored(self, monkeypatch):
+        recv = int(time.time()) - 30
+        body, _ = self._csv_body(recv)
+        conn, client = self._client(monkeypatch, [
+            {"ts": recv, "icao_hex": "489005", "label": "H1", "sublabel": "DF", "body": body,
+             "superseded": 1}])
+        with client as c:
+            assert [p for p in self._pts(c) if p["icao_hex"] == "489005"] == []
+        conn.close()
+
+    def test_wrong_sublabel_h1_body_never_yields_points(self, monkeypatch):
+        recv = int(time.time()) - 30
+        body, _ = self._csv_body(recv)
+        conn, client = self._client(monkeypatch, [
+            {"ts": recv, "icao_hex": "489006", "label": "H1", "sublabel": "M1", "body": body},
+            {"ts": recv - 1, "icao_hex": "489007", "label": "H1", "sublabel": None, "body": body},
+            {"ts": recv - 2, "icao_hex": "489008", "label": "H1", "sublabel": "CF", "body": body},
+            {"ts": recv - 3, "icao_hex": "489009", "label": "Q0", "sublabel": "DF", "body": body},
+        ])
+        with client as c:
+            pts = self._pts(c)
+        conn.close()
+        assert not [p for p in pts if p["icao_hex"] in {"489006", "489007", "489008", "489009"}]
+
+    def test_cf_fde_and_pos_sources(self, monkeypatch):
+        import datetime as dt
+        recv = int(time.time()) - 30
+        t = dt.datetime.fromtimestamp(recv - 20, dt.timezone.utc)
+        fde = f"FDE{t:%H%M%S}1123117" + "52.17762/20.84221\r\n06460114706    0   0"
+        pos = f"(POS-KLM75C  -5222N02005E/{t:%H%M%S} F180\r\nRMK/FUEL   5.4 M0.59)"
+        conn, client = self._client(monkeypatch, [
+            {"ts": recv, "icao_hex": "489010", "label": "H1", "sublabel": "CF", "body": fde},
+            {"ts": recv, "icao_hex": "489011", "label": "H1", "sublabel": "DF", "body": pos},
+            {"ts": recv, "icao_hex": "489012", "label": "H1", "sublabel": "CF",
+             "body": "FDE1227481123ACA\n12254714301   0   0"},
+        ])
+        with client as c:
+            by = {p["icao_hex"]: p for p in self._pts(c)}
+        conn.close()
+        assert by["489010"]["source"] == "h1-cf" and by["489010"]["lat"] == 52.17762
+        assert by["489010"]["ts"] == int(t.timestamp())
+        assert by["489011"]["source"] == "h1-pos" and by["489011"]["alt"] == 18000
+        assert "489012" not in by
+
+    def test_labels_83_15_80(self, monkeypatch):
+        import datetime as dt
+        recv = int(time.time()) - 30
+        t = dt.datetime.fromtimestamp(recv - 7, dt.timezone.utc)
+        pr = f"001PR{t:%d%H%M%S}N5207.4E02041.4430426"
+        conn, client = self._client(monkeypatch, [
+            {"ts": recv, "icao_hex": "48a083", "label": "83", "body": pr},
+            {"ts": recv - 1, "icao_hex": "48a084", "label": "83",
+             "body": "HAAB,ESSA,210319, 52.41,  20.34,39002,263,- 23.3, 13300"},
+            {"ts": recv - 2, "icao_hex": "48a085", "label": "83",
+             "body": "4DH3 ETAT2  0751/21 EKCH/EPWA .OY-KBO\r\n/ETA 0848"},
+            {"ts": recv - 3, "icao_hex": "48a015", "label": "15",
+             "body": "FST01EGLLEPWAN52232E0207997 36  33  51     35262      188  10531050"},
+            {"ts": recv - 4, "icao_hex": "48a016", "label": "15",
+             "body": "FST01EPWAEGLL 00            26  79         21              09100658"},
+            {"ts": recv - 5, "icao_hex": "48a080", "label": "80",
+             "body": "3N01 POSRPT 0872/19 LGAV/EPWA .SX-DVX\r\n/POS N52141E020397/ALT +05475/MCH 284/FOB 0032/ETA 1702"},
+            {"ts": recv - 6, "icao_hex": "48a081", "label": "80", "body": "MOCC: HI NO DATA RECEIVED FOR"},
+        ])
+        with client as c:
+            by = {p["icao_hex"]: p for p in self._pts(c)}
+        conn.close()
+        assert set(by) == {"48a083", "48a084", "48a015", "48a080"}
+        assert all(p["source"] == "label" and p["precise"] is True for p in by.values())
+        assert by["48a083"]["ts"] == int(t.timestamp()) and "alt" not in by["48a083"]
+        assert by["48a084"]["ts"] == recv - 1 and by["48a084"]["alt"] == 39002
+        assert by["48a015"]["ts"] == recv - 3 and by["48a015"]["lat"] == 52.232
+        assert by["48a080"]["alt"] == 5475
+
+    def test_existing_sources_tagged(self, monkeypatch):
+        recv = int(time.time()) - 30
+        conn, client = self._client(monkeypatch, [
+            {"ts": recv, "icao_hex": "48c016", "label": "16",
+             "body": "WA921  ,N 52.166,E 020.772,4406, 251,2054, 72\\TS154458,050626"},
+            {"ts": recv - 1, "icao_hex": "48c0a1", "label": "H1", "sublabel": "M1",
+             "body": "POSN52256E019186"},
+            {"ts": recv - 2, "icao_hex": "48c059", "label": "36",
+             "body": "59,G,1101,1,1,SP-LVS,52.15,20.59,52.15,20.61,0"},
+            {"ts": recv - 3, "icao_hex": "48c0c0", "label": "H1", "lat": 52.3, "lon": 20.5,
+             "body": "x"},
+        ])
+        with client as c:
+            by = {p["icao_hex"]: p for p in self._pts(c)}
+        conn.close()
+        assert by["48c016"]["source"] == "label"
+        assert by["48c0a1"]["source"] == "m1bpos"
+        assert by["48c059"]["source"] == "59g"
+        assert by["48c0c0"]["source"] == "xid" and by["48c0c0"]["precise"] is False
+        assert "alt" not in by["48c016"]
+
+    def test_final_cap_respected_with_multi_fix(self, monkeypatch):
+        monkeypatch.setattr(vdl2_api, "_POSITIONS_CAP", 4)
+        recv = int(time.time()) - 30
+        rows = []
+        for i in range(3):
+            body, _ = self._csv_body(recv - i * 5)
+            rows.append({"ts": recv - i * 5, "icao_hex": f"4891{i:02x}", "label": "H1",
+                         "sublabel": "DF", "body": body})
+        conn, client = self._client(monkeypatch, rows)
+        with client as c:
+            r = c.get("/api/vdl2/positions?minutes=60").json()
+        conn.close()
+        assert r["count"] == len(r["points"]) == 4
+        ts = [p["ts"] for p in r["points"]]
+        assert ts == sorted(ts, reverse=True)
+
+    def test_h1_scan_cap_constant_and_window_bound(self, monkeypatch):
+        assert vdl2_api._POSITIONS_H1_SCAN_CAP == 8000
+        monkeypatch.setattr(vdl2_api, "_POSITIONS_H1_SCAN_CAP", 2)
+        recv = int(time.time()) - 30
+        body, _ = self._csv_body(recv)
+        rows = [{"ts": recv - i, "icao_hex": f"4892{i:02x}", "label": "H1", "sublabel": "DF",
+                 "body": body} for i in range(5)]
+        conn, client = self._client(monkeypatch, rows)
+        with client as c:
+            pts = self._pts(c)
+        conn.close()
+        assert len({p["icao_hex"] for p in pts}) == 2    # only the 2 newest candidates scanned
+
+    def test_h1_candidate_query_uses_label_index(self, monkeypatch):
+        conn = make_vdl2_db()
+        plan = " ".join(r[3] for r in conn.execute(
+            "EXPLAIN QUERY PLAN " + vdl2_api._H1_POSITIONS_SQL, (0, 10)))
+        conn.close()
+        assert "idx_vdl2_label_ts_id" in plan
+
+    def test_schema_optional_fields_absent_when_unset(self, monkeypatch):
+        recv = int(time.time()) - 30
+        conn, client = self._client(monkeypatch, [
+            {"ts": recv, "icao_hex": "48c016", "label": "16",
+             "body": "WA921  ,N 52.166,E 020.772,4406, 251,2054, 72\\TS154458,050626"}])
+        with client as c:
+            (p,) = self._pts(c)
+        conn.close()
+        assert set(p) == {"lat", "lon", "icao_hex", "ts", "label", "precise", "source"}

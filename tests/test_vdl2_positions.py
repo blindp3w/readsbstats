@@ -246,4 +246,110 @@ class TestParseByLabel:
     def test_map_keys(self):
         assert set(positions.PRECISE_LABEL_PARSERS) == {
             "16", "10", "13", "18", "27", "33", "12", "43", "41", "2P",
-            "17", "38", "2F", "14", "B0"}
+            "17", "38", "2F", "14", "B0", "83", "15", "80"}
+
+
+# --- Batch 5: labels 83 / 15 / 80 (ADR-0019 validated against ADS-B) --------------------
+import calendar  # noqa: E402
+
+L83_PR = "001PR21152746N5207.4E02041.4430426"                    # real, recv 2026-11-21 15:27:53
+L83_PR2 = "001PR20101233N5210.5E02055.90241680172"
+L83_ET = "HAAB,ESSA,210319, 52.41,  20.34,39002,263,- 23.3, 13300"
+L83_ET2 = "KLAX,EPWA,191725, 52.23,  20.73, 2999,197, 112.2,  9100"
+L83_OTHER = "4DH3 ETAT2  0751/21 EKCH/EPWA .OY-KBO\r\n/ETA 0848"
+L15 = "FST01EGLLEPWAN52232E0207997 36  33  51     35262      188  10531050"
+L15_NOPOS = "FST01EPWAEGLL 00            26  79         21              09100658"
+L80 = "3N01 POSRPT 0872/19 LGAV/EPWA .SX-DVX\r\n/POS N52141E020397/ALT +05475/MCH 284/FOB 0032/ETA 1702"
+L80_ALT3 = ("3N01 POSRPT 0063/16 RCTP/LOWW B-18907\r\n/POS N52109E020331/ALT 400/MCH 855/FOB  30.1"
+            "\r\n/TME 0421/WND -69 44/OAT -51/TAS 496/ETA 0513")
+L80_NOPOS = "3N01 POSRPT/48AA/ORGDATE1601/18 ESSA/LTFJ .TC-CPD\r\n/POS -----/N51570/-/ETA1800/FOB 19920"
+L80_OTHER = "MOCC: HI NO DATA RECEIVED FOR\r\nFL360\r\nRGDS"
+
+
+def _utc(y, mo, d, h=0, mi=0, s=0):
+    return calendar.timegm((y, mo, d, h, mi, s))
+
+
+class TestLabel83:
+    def test_pr_form_uses_embedded_time(self):
+        rec = positions.parse_label83(L83_PR, _utc(2026, 11, 21, 15, 27, 53))
+        assert abs(rec["lat"] - (52 + 7.4 / 60)) < 1e-4
+        assert abs(rec["lon"] - (20 + 41.4 / 60)) < 1e-4
+        assert rec["ts"] == _utc(2026, 11, 21, 15, 27, 46)
+        assert "alt" not in rec          # altitude digits unit unclear -> omitted
+
+    def test_pr_form_without_recv_ts_has_no_ts(self):
+        rec = positions.parse_label83(L83_PR2)
+        assert rec is not None and "ts" not in rec
+
+    def test_pr_south_west(self):
+        rec = positions.parse_label83("001PR21152746S3345.0W07012.6430426", _utc(2026, 11, 21, 16))
+        assert abs(rec["lat"] + (33 + 45 / 60)) < 1e-4
+        assert abs(rec["lon"] + (70 + 12.6 / 60)) < 1e-4
+
+    def test_pr_bad_time_none(self):
+        assert positions.parse_label83("001PR21252746N5207.4E02041.4430426", _utc(2026, 11, 21, 16)) is None
+
+    def test_pr_bad_minutes_none(self):
+        assert positions.parse_label83("001PR21152746N5267.4E02041.4430426", _utc(2026, 11, 21, 16)) is None
+
+    def test_et_form_decimal_with_alt_and_receive_time(self):
+        rec = positions.parse_label83(L83_ET, _utc(2026, 11, 21, 3, 19, 7))
+        assert rec["lat"] == 52.41 and rec["lon"] == 20.34
+        assert rec["alt"] == 39002
+        assert "ts" not in rec            # ET: receive time (embedded time was worse)
+        assert positions.parse_label83(L83_ET2)["alt"] == 2999
+
+    def test_other_label83_bodies_none(self):
+        assert positions.parse_label83(L83_OTHER, 1795250323) is None
+        assert positions.parse_label83("", 1) is None
+        assert positions.parse_label83(None, 1) is None
+
+    def test_et_out_of_range(self):
+        assert positions.parse_label83("HAAB,ESSA,210319, 92.41,  20.34,39002,263,- 23.3, 13300") is None
+
+    def test_dispatch_passes_recv_ts(self):
+        rec = positions.parse_by_label("83", L83_PR, _utc(2026, 11, 21, 15, 27, 53))
+        assert rec["ts"] == _utc(2026, 11, 21, 15, 27, 46)
+        assert positions.parse_by_label("83", L83_PR) is not None   # recv_ts optional
+
+
+class TestLabel15:
+    def test_fst01(self):
+        rec = positions.parse_label15(L15)
+        assert rec == {"lat": 52.232, "lon": 20.7997}
+
+    def test_no_position(self):
+        assert positions.parse_label15(L15_NOPOS) is None
+
+    def test_south_west(self):
+        rec = positions.parse_label15("FST01EGLLEPWAS33450W0701260 36")
+        assert rec == {"lat": -33.45, "lon": -70.126}
+
+    def test_out_of_range(self):
+        assert positions.parse_label15("FST01EGLLEPWAN95000E0207997 36") is None
+
+    def test_other_prefix_none(self):
+        assert positions.parse_label15("FST02EGLLEPWAN52232E0207997") is None
+        assert positions.parse_label15(None) is None
+
+
+class TestLabel80:
+    def test_posrpt(self):
+        rec = positions.parse_label80(L80)
+        assert abs(rec["lat"] - (52 + 14.1 / 60)) < 1e-4
+        assert abs(rec["lon"] - (20 + 39.7 / 60)) < 1e-4
+        assert rec["alt"] == 5475
+
+    def test_ambiguous_alt_omitted(self):
+        rec = positions.parse_label80(L80_ALT3)
+        assert rec is not None and "alt" not in rec
+        assert abs(rec["lat"] - (52 + 10.9 / 60)) < 1e-4
+
+    def test_no_position_and_other(self):
+        assert positions.parse_label80(L80_NOPOS) is None
+        assert positions.parse_label80(L80_OTHER) is None
+        assert positions.parse_label80(None) is None
+
+    def test_minutes_over_599_rejected(self):
+        assert positions.parse_label80(L80.replace("N52141", "N52601")) is None
