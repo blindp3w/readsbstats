@@ -9,11 +9,11 @@ The React SPA produces hashed asset bundles under `frontend/dist/assets/` (e.g.,
 
 ## Decision
 
-nginx serves `frontend/dist/assets/` and `frontend/dist/favicon.svg` directly via `alias` directives with `expires 1y; Cache-Control: public, immutable` — bypassing FastAPI entirely for static assets. This requires nginx's runtime user (`www-data` / `nginx`) to be in the `readsbstats` group.
+nginx serves `frontend/dist/assets/` and `frontend/dist/favicon.svg` directly via `alias` directives — bypassing FastAPI entirely for static assets. The hashed `assets/` get `expires 1y; Cache-Control: public, immutable`; `favicon.svg` has a stable name, so it gets `expires 7d; Cache-Control: public`. This requires nginx's runtime user (`www-data` / `nginx`) to be in the `readsbstats` group.
 
 FastAPI keeps `/assets` mount and `/favicon.svg` route as **fallbacks** for direct `:8080` access (dev mode, tests) — they are not load-bearing in production.
 
-`scripts/update.sh` loops over both `www-data` and `nginx` user candidates and adds whichever exist to the `readsbstats` group, then restarts nginx on first add (group membership only applies at process start, not reload).
+`scripts/install.sh` and `scripts/update.sh` (shared helper `ensure_nginx_group` in `scripts/_deploy_lib.sh`) loop over both `www-data` and `nginx` user candidates and add whichever exist to the `readsbstats` group, then restart nginx on first add (group membership only applies at process start, not reload).
 
 ## Consequences
 

@@ -82,6 +82,9 @@ chown -R root:"$SERVICE_USER" "$APP_DIR"
 chmod -R u=rwX,g=rX,o= "$APP_DIR"
 echo "Application files copied"
 
+# nginx serves frontend/dist/ directly and needs group read on the o= tree.
+ensure_nginx_group "$SERVICE_USER"
+
 # ---- Python virtualenv -------------------------------------------------------
 if [[ ! -f "$APP_DIR/venv/bin/activate" ]]; then
   echo "Creating Python virtualenv…"

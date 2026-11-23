@@ -363,6 +363,30 @@ class TestConfigValidation:
         assert readsbstats.config.ROUTE_RATE_LIMIT_SEC == 2.5
 
 
+class TestTelegramBoolVars:
+    """RSBS_TELEGRAM_PHOTOS / RSBS_TELEGRAM_ANONYMOUS_ALERT are booleans:
+    "false"/"off" must disable them (they were parsed as int, so a word value
+    failed to parse and fell back to the default 1 = on)."""
+
+    @pytest.mark.parametrize("var,attr", [
+        ("RSBS_TELEGRAM_PHOTOS", "TELEGRAM_PHOTOS"),
+        ("RSBS_TELEGRAM_ANONYMOUS_ALERT", "TELEGRAM_ANONYMOUS_ALERT"),
+    ])
+    @pytest.mark.parametrize("val", ["0", "false", "off", "no"])
+    def test_falsy_disables(self, monkeypatch, var, attr, val):
+        monkeypatch.setenv(var, val)
+        import readsbstats.config
+        importlib.reload(readsbstats.config)
+        assert not getattr(readsbstats.config, attr)
+
+    @pytest.mark.parametrize("attr", ["TELEGRAM_PHOTOS", "TELEGRAM_ANONYMOUS_ALERT"])
+    def test_default_on(self, monkeypatch, attr):
+        monkeypatch.delenv("RSBS_" + attr, raising=False)
+        import readsbstats.config
+        importlib.reload(readsbstats.config)
+        assert getattr(readsbstats.config, attr)
+
+
 class TestReceiverLocationValidation:
     """BUG-6: RECEIVER_LAT/RECEIVER_LON range-checked via cleaners.valid_lat/
     valid_lon. Out-of-range values fall back to the documented Warsaw defaults

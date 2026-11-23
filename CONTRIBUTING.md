@@ -38,7 +38,7 @@ delete the copied `-shm`, then run `integrity_check`.
 ### Frontend
 
 ```bash
-cd frontend && npm install
+cd frontend && npm ci
 npm run dev   # HMR dev server at :5173, proxies /api → :8080
 npm test      # Vitest unit tests
 ```
@@ -57,7 +57,7 @@ For coverage:
 .venv/bin/pytest --cov=readsbstats --cov-report=term-missing
 ```
 
-Target: keep the current ~98% statement coverage; CI fails below 93%. New features and bug fixes should include tests.
+Target: keep the current ~99% statement coverage; CI fails below 93%. New features and bug fixes should include tests.
 
 UI tests (Playwright, WebKit + Chromium device matrix) live in `tests/ui/` and are
 excluded from the default run — see [docs/development.md](docs/development.md) for

@@ -374,8 +374,8 @@ TELEGRAM_TOKEN        = os.getenv(*_register("telegram_token",        "RSBS_TELE
 TELEGRAM_CHAT_ID      = os.getenv(*_register("telegram_chat_id",      "RSBS_TELEGRAM_CHAT_ID",  "",        "TELEGRAM_CHAT_ID", secret=True))
 TELEGRAM_SUMMARY_TIME = os.getenv(*_register("telegram_summary_time", "RSBS_SUMMARY_TIME",      "21:00",   "TELEGRAM_SUMMARY_TIME"))  # local HH:MM; "" or "off" to disable
 TELEGRAM_UNITS        = os.getenv(*_register("telegram_units",        "RSBS_TELEGRAM_UNITS",    "metric",  "TELEGRAM_UNITS")) # metric|imperial|aeronautical
-TELEGRAM_PHOTOS       = _int("RSBS_TELEGRAM_PHOTOS",         "1")     # 0 to disable photo enrichment
-TELEGRAM_ANONYMOUS_ALERT = _int("RSBS_TELEGRAM_ANONYMOUS_ALERT", "1")  # 0 to mute first-sighting alerts for non-ICAO hex addresses
+TELEGRAM_PHOTOS       = _bool("RSBS_TELEGRAM_PHOTOS", default=True)          # 0/false to disable photo enrichment
+TELEGRAM_ANONYMOUS_ALERT = _bool("RSBS_TELEGRAM_ANONYMOUS_ALERT", default=True)  # 0/false to mute first-sighting alerts for non-ICAO hex addresses
 TELEGRAM_BASE_URL     = os.getenv(*_register("base_url",              "RSBS_TELEGRAM_BASE_URL", "http://homepi.local/stats", "TELEGRAM_BASE_URL"))
 
 # ---------------------------------------------------------------------------

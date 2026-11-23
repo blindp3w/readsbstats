@@ -23,7 +23,7 @@ what you're trying to do.
 
 ## Explanation — understand the why
 
-- [Architecture Decision Records](decisions/README.md) — the rationale behind key technical choices (22 ADRs).
+- [Architecture Decision Records](decisions/README.md) — the rationale behind key technical choices (23 ADRs).
 
 ## See also
 

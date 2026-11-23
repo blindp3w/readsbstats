@@ -18,8 +18,8 @@ bash /opt/readsbstats/scripts/update.sh --full
 All three modes sync code first. Only `--db-only` and `--full` trigger a database download (~30 seconds, ~10 MB). The collector is stopped automatically during the download to avoid SQLite write conflicts.
 
 Every run first snapshots `history.db` with `VACUUM INTO` to
-`history.db.backup.<YYYYMMDD_HHMMSS>` next to the database and keeps the 3 most
-recent. On a large database this is the slowest step (~10 minutes for 1.6 GB on
+`history.db.backup.<YYYYMMDD_HHMMSS>` next to the database and keeps the newest
+`RSBS_KEEP_BACKUPS` (default 3; see [Configuration](configuration.md#deploy-script-updatesh)). On a large database this is the slowest step (~10 minutes for 1.6 GB on
 a Pi 4 with a USB disk) and needs free space roughly equal to the DB size.
 
 After a restart the web server's cache prewarmer rebuilds the map caches, so the
@@ -58,12 +58,14 @@ sudo bash /opt/readsbstats/scripts/update.sh
 
 `update.sh` re-renders the units for the new path and restarts the services. The MCP unit gets `InaccessiblePaths=-` on the same directory, so it cannot read the data either way.
 
-**One-shot scripts** run by hand do not get the units' environment. Pass the setting on the command line, or give an explicit `--db`:
+**One-shot scripts** run by hand do not get the units' environment. Pass the setting on the command line, or give an explicit `--db` (`scripts/migrate_v6.py` takes the database path as a positional argument instead):
 
 ```bash
 sudo -u readsbstats env RSBS_DATA_DIR=/srv/readsbstats \
     /opt/readsbstats/venv/bin/python /opt/readsbstats/scripts/check_db.py
 ```
+
+The `readsbstats-dbcheck`, `readsbstats-dbcheck-full` and `readsbstats-updater` units set `RSBS_DATA_DIR` but do not load `readsbstats.env`, so an explicit `RSBS_DB_PATH` set there is not seen by them.
 
 ## Aircraft & airline database
 

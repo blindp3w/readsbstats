@@ -59,7 +59,7 @@ RSBS_AIRCRAFT_JSON=/tmp/rsbs_sim.json RSBS_DB_PATH=./db/history.db \
 ## Running tests
 
 ```bash
-.venv/bin/pytest                                              # 3580 Python tests
+.venv/bin/pytest                                              # 3593 Python tests
 ( cd frontend && npm test )                                   # 757 Vitest tests
 
 # Coverage (CI gates the backend at 93%; frontend report is informational)
@@ -72,7 +72,7 @@ RSBS_RECORD_GOLDEN=1 .venv/bin/pytest tests/test_stats_compute_identity.py
 ```
 
 > **Run the linter before pushing.** CI runs `eslint . --max-warnings 0` as a
-> separate job and fails on any warning — `npm test` only runs Vitest and will
+> step of the main `test` job (Python 3.12 leg) and fails on any warning — `npm test` only runs Vitest and will
 > **not** catch lint errors (e.g. `react-hooks/set-state-in-effect`). Run it
 > locally so strict-lint failures don't surface only in CI:
 >
@@ -82,8 +82,9 @@ RSBS_RECORD_GOLDEN=1 .venv/bin/pytest tests/test_stats_compute_identity.py
 
 ### Playwright mobile UI tests
 
-The full suite runs in CI (Python 3.12 job) on every PR; run it locally before
-pushing UI changes.
+The full suite runs in CI on every PR as a separate `ui` job, inside the
+`mcr.microsoft.com/playwright/python` container image (WebKit + Chromium
+preinstalled); run it locally before pushing UI changes.
 
 ```bash
 # One-time setup
@@ -109,6 +110,11 @@ Screenshots saved to `tests/ui/screenshots/` (gitignored).
 | `tests/test_map.py` | `/map` routes and snapshot API |
 | `tests/test_vdl2_*.py`, `tests/test_api_vdl2.py` | VDL2/ACARS: normalizer, parsers, ingest, `vdl2.db`, `/api/vdl2/*` |
 | `tests/test_backfill_vdl2.py` | `scripts/backfill_vdl2_dumpvdl2.py` |
+| `tests/test_mcp_*.py` | MCP server: auth, client allowlist, limits, output shaping, time parsing, tools, HTTP transport |
+| `tests/test_mcp_token_cli.py` | `scripts/mcp_token.py` (add, new, list, revoke) |
+| `tests/test_rollups.py`, `tests/test_posenc.py`, `tests/test_migrate_v6.py` | Daily rollups, scaled-integer position codecs, schema v5 → v6 migration |
+| `tests/test_startup_check.py` | Interruptible startup `quick_check` |
+| `tests/test_deploy_lib.py`, `tests/test_update_script.py` | Deploy helper functions and `scripts/update.sh` |
 | `tests/test_systemd_units.py` | settings env file wiring in the systemd units and `install.sh` |
 | `tests/ui/test_mobile_smoke.py` | Playwright: 84 tests across all pages and viewports |
 

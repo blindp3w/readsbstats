@@ -256,6 +256,39 @@ class TestScriptsWiring:
         assert "/mnt/" + "ext" not in sh
 
 
+    @pytest.mark.parametrize("script", ["install.sh", "update.sh"])
+    def test_scripts_grant_nginx_group(self, script):
+        # A fresh install chmods /opt/readsbstats to o= — without the nginx
+        # group step nginx 403s on frontend/dist until the first update.sh.
+        sh = (ROOT / "scripts" / script).read_text()
+        assert re.search(r'^\s*ensure_nginx_group "\$SERVICE_USER"', sh, re.M)
+        assert "NGINX_USER" not in sh  # the loop lives in the lib only
+
+
+class TestEnsureNginxGroup:
+    def test_adds_missing_users_and_restarts_once(self, tmp_path):
+        bindir = tmp_path / "bin"
+        bindir.mkdir()
+        log = tmp_path / "calls.log"
+        stubs = {
+            "getent": "exit 0",
+            "id": 'case "$1" in -u) [[ "$2" == www-data ]];; -nG) echo "$2";; esac',
+            "usermod": f'echo "usermod $*" >> "{log}"',
+            "systemctl": f'echo "systemctl $*" >> "{log}"',
+        }
+        for name, body in stubs.items():
+            f = bindir / name
+            f.write_text(f"#!/bin/bash\n{body}\n")
+            f.chmod(0o755)
+        proc, _, _ = _run(tmp_path, "ensure_nginx_group readsbstats",
+                          extra_env={"PATH": f"{bindir}:{os.environ['PATH']}"})
+        assert proc.returncode == 0, proc.stderr
+        assert log.read_text().splitlines() == [
+            "usermod -aG readsbstats www-data",
+            "systemctl restart nginx",
+        ]
+
+
 # ---- keep_backups_value / prune_backups --------------------------------------
 
 def _mk_backups(tmp_path, stamps, db="history.db"):

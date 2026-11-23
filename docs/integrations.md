@@ -52,7 +52,7 @@ The bot only responds to the configured `RSBS_TELEGRAM_CHAT_ID`.
 
 ### Service failure alert
 
-`notify-telegram@.service` fires automatically via systemd `OnFailure=` when `readsbstats-collector` or `readsbstats-vdl2` permanently fails (after exhausting its restart budget), or when a `readsbstats-dbcheck` / `readsbstats-dbcheck-full` integrity check fails. The alert includes the last 30 lines of `systemctl status`. Reads `RSBS_TELEGRAM_TOKEN` / `RSBS_TELEGRAM_CHAT_ID` from `/etc/readsbstats/readsbstats.env`; without them the alert is not sent.
+`notify-telegram@.service` fires automatically via systemd `OnFailure=` when `readsbstats-collector`, `readsbstats-vdl2` or `readsbstats-mcp` permanently fails (after exhausting its restart budget), or when a `readsbstats-dbcheck` / `readsbstats-dbcheck-full` integrity check fails. The alert includes the last 30 lines of `systemctl status`. Reads `RSBS_TELEGRAM_TOKEN` / `RSBS_TELEGRAM_CHAT_ID` from `/etc/readsbstats/readsbstats.env`; without them the alert is not sent.
 
 ### Photo delivery
 
@@ -83,7 +83,7 @@ ADS-B receivers occasionally decode "ghost" positions — phantom ICAO address c
 /opt/readsbstats/venv/bin/python /opt/readsbstats/scripts/purge_ghosts.py --apply
 ```
 
-Options: `--db PATH`, `--max-speed N`.
+Options: `--db PATH`, `--max-speed N`. `--apply` writes the changes (after an automatic `VACUUM INTO` snapshot; `--i-have-a-backup` skips it).
 
 ---
 
@@ -110,5 +110,7 @@ The position itself is always retained — only the `gs` field is set to NULL.
 /opt/readsbstats/venv/bin/python /opt/readsbstats/scripts/purge_mlat_gs_spikes.py          # dry-run
 /opt/readsbstats/venv/bin/python /opt/readsbstats/scripts/purge_mlat_gs_spikes.py --apply
 ```
+
+Options for `purge_bad_gs.py`: `--db PATH`, `--civil-limit` (default `RSBS_MAX_GS_CIVIL`), `--military-limit` (default `RSBS_MAX_GS_MILITARY`), `--deviation` (default `RSBS_MAX_GS_DEVIATION`), `--apply`, `--i-have-a-backup`.
 
 Options for `purge_mlat_gs_spikes.py`: `--db PATH`, `--accel-limit` (default `RSBS_MAX_GS_ACCEL`), `--outlier-factor` (default `RSBS_MLAT_OUTLIER_FACTOR`), `--min-gs-count` (default `RSBS_MLAT_OUTLIER_MIN`, floor 2). `--apply` writes the changes (after an automatic `VACUUM INTO` snapshot; `--i-have-a-backup` skips it).

@@ -5,6 +5,43 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 2.34.0 — 2026-11-23
+
+A documentation refresh against the current code, plus two small fixes the
+review turned up.
+
+### Fixed
+
+- `RSBS_TELEGRAM_PHOTOS` and `RSBS_TELEGRAM_ANONYMOUS_ALERT` are now parsed as
+  booleans like the other switches. They were integers, so `false` / `off`
+  failed to parse, fell back to the default `1` and left photos or
+  first-sighting alerts for non-ICAO addresses switched on. `0` / `1` still work.
+- A fresh `install.sh` now adds nginx's user (`www-data` / `nginx`) to the
+  `readsbstats` group. Only `update.sh` did this before, so nginx returned 403
+  on the static assets until the first update. Both scripts now share
+  `ensure_nginx_group` in `scripts/_deploy_lib.sh`.
+
+### Docs
+
+- README: env var count (93), resource limits for `readsbstats-vdl2` and
+  `readsbstats-mcp`, project tree (`startup_check.py`, `vdl2/h1rep.py`,
+  `vdl2/h1route.py`, `scripts/dev.sh`), and the plain-http loopback exception
+  in `http_safe` used by the MCP server.
+- Configuration: `update.sh` reads `RSBS_DATA_DIR` / `RSBS_KEEP_BACKUPS` from
+  the env file, which ships with the common options only.
+- Development: ESLint and Playwright CI wording, test table rows for MCP,
+  rollups/posenc/migrate_v6, startup check and deploy scripts.
+- Operations: `RSBS_KEEP_BACKUPS`, `migrate_v6.py` takes a positional path, and
+  the dbcheck/updater timer units do not see an `RSBS_DB_PATH` set in the env file.
+- Integrations: `readsbstats-mcp` failure alerts, options of the purge scripts.
+- SECURITY: MCP server scope (bind host, tokens/scopes, `location` scope,
+  route allowlist) and `mcp` in the runtime dependency set.
+- CONTRIBUTING: `npm ci`, ~99% coverage.
+- ADRs: [0006](docs/decisions/0006-nginx-direct-static-serving.md) favicon
+  caching, [0015](docs/decisions/0015-scaled-integer-positions-storage.md)
+  SQL-side scaling wording, [0021](docs/decisions/0021-vdl2-frozen.md) marked
+  amended by [0023](docs/decisions/0023-vdl2-final-round.md); index count 23.
+
 ## 2.33.0 — 2026-11-23
 
 A final VDL2/ACARS round: bug fixes, six new position sources and four route
