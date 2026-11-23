@@ -641,3 +641,43 @@ class TestNonFiniteNumbers:
             assert rec is not None
             for k in ("freq", "lat", "lon", "alt", "sig_level", "noise_level"):
                 assert rec[k] is None, (k, bad)
+
+
+class TestInt64Overflow:
+    """A finite float such as 1e300 passes coerce_metric_scalar, but int() of it
+    is un-bindable in SQLite (OverflowError) and used to drop a whole batch."""
+
+    INT64_MAX = 2 ** 63 - 1
+
+    def test_int_or_none_out_of_range_is_none(self):
+        for bad in (1e300, -1e300, 1e19, 2.0 ** 63, "1e300"):
+            assert normalize._int_or_none(bad) is None, bad
+
+    def test_int_or_none_in_range_kept(self):
+        assert normalize._int_or_none(35000.7) == 35000
+        assert normalize._int_or_none(-1200) == -1200
+        assert normalize._int_or_none(self.INT64_MAX) == self.INT64_MAX
+
+    def test_vdlm2dec_alt_overflow_is_null(self):
+        rec = normalize.normalize({**SAMPLE_VDLM2DEC, "alt": 1e300}, decoder="vdlm2dec")
+        assert rec is not None and rec["alt"] is None
+
+    def test_dumpvdl2_xid_alt_overflow_is_null(self):
+        rec = normalize.normalize(
+            _xid([{"name": "ac_location",
+                   "value": {"loc": {"lat": 52.3, "lon": 20.5}, "alt": 1e300}}]),
+            decoder="dumpvdl2")
+        assert rec is not None and rec["alt"] is None and rec["lat"] == 52.3
+
+    def test_ts_huge_negative_falls_back_to_now(self):
+        now = int(time.time())
+        for bad in (-1e300, -5, -1, "-1e300", -(10 ** 400)):
+            assert abs(normalize._ts(bad) - now) <= 1, bad
+
+    def test_ts_zero_still_accepted(self):
+        assert normalize._ts(0) == 0
+
+    def test_record_with_negative_ts_is_bindable(self):
+        now = int(time.time())
+        rec = normalize.normalize({**SAMPLE_VDLM2DEC, "timestamp": -1e300}, decoder="vdlm2dec")
+        assert abs(rec["ts"] - now) <= 1

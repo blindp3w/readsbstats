@@ -240,13 +240,13 @@ def _query_messages(
             response_model_exclude_unset=True)
 def api_vdl2_messages(
     limit: int = Query(100, ge=1, le=100),
-    before_id: int | None = Query(None, ge=1),
+    before_id: int | None = Query(None, ge=1, le=2**62),
     label: str | None = Query(None, max_length=64),
     hex: str | None = Query(None, max_length=64),
     reg: str | None = Query(None, max_length=64),
     q: str | None = Query(None, max_length=200),
-    since: int | None = Query(None, ge=0),
-    until: int | None = Query(None, ge=0),
+    since: int | None = Query(None, ge=0, le=10_000_000_000),
+    until: int | None = Query(None, ge=0, le=10_000_000_000),
     fragments: bool = Query(False),
 ) -> dict:
     """Newest-first message feed (by ingest id) with optional filters + full-text
@@ -267,10 +267,10 @@ def api_vdl2_messages(
 def api_vdl2_aircraft(
     icao_hex: str,
     limit: int = Query(100, ge=1, le=100),
-    before_id: int | None = Query(None, ge=1),
+    before_id: int | None = Query(None, ge=1, le=2**62),
     q: str | None = Query(None, max_length=200),
-    since: int | None = Query(None, ge=0),
-    until: int | None = Query(None, ge=0),
+    since: int | None = Query(None, ge=0, le=10_000_000_000),
+    until: int | None = Query(None, ge=0, le=10_000_000_000),
     fragments: bool = Query(False),
 ) -> dict:
     """All messages from one airframe (by ICAO hex), newest-first. ``since``/
@@ -484,8 +484,8 @@ def _flights_overlap_pct() -> float | None:
             response_model_exclude_unset=True)
 def api_vdl2_oooi(
     icao_hex: str,
-    since: int | None = Query(None, ge=0),
-    until: int | None = Query(None, ge=0),
+    since: int | None = Query(None, ge=0, le=10_000_000_000),
+    until: int | None = Query(None, ge=0, le=10_000_000_000),
 ) -> dict:
     """OOOI block-time summary for one airframe over a flight window. The latest
     slash-TEI DEP/ARR bodies win; where those are absent (the norm on air-side

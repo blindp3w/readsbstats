@@ -54,7 +54,7 @@ def _ts(value: object) -> int:
             parsed = int(f) if math.isfinite(f) else None
     except (ValueError, OverflowError):
         parsed = None
-    if parsed is None:
+    if parsed is None or parsed < 0:    # negative = nonsense (and -1e300 can't bind)
         return now
     if parsed > now + 86400:        # > 1 day in the future → clock/decoder glitch
         return now
@@ -95,9 +95,21 @@ def _num(value: object) -> int | float | None:
     return coerce_metric_scalar(value)
 
 
+_INT64_MIN, _INT64_MAX = -(2 ** 63), 2 ** 63 - 1
+
+
 def _int_or_none(value: object) -> int | None:
+    """``int(_num(value))``, or None when it is outside SQLite's signed 64-bit
+    range: ``_num`` accepts any finite float (``1e300``), and an int that large
+    raises OverflowError at bind, which used to drop the whole ingest batch."""
     n = _num(value)
-    return int(n) if n is not None else None
+    if n is None:
+        return None
+    try:
+        i = int(n)
+    except (OverflowError, ValueError):
+        return None
+    return i if _INT64_MIN <= i <= _INT64_MAX else None
 
 
 def _float_or_none(value: object) -> float | None:

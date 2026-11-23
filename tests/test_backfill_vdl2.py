@@ -85,6 +85,25 @@ def test_invalid_raw_counted_not_fatal(db_path):
     assert _rows(db_path)["000bad"]["sublabel"] is None
 
 
+def test_overflowing_raw_field_does_not_abort_backfill(db_path):
+    # An older ingest stored raw verbatim; a 1e300 ac_location alt used to make
+    # normalize() return an un-bindable int, so every re-run crashed on UPDATE.
+    bad = _prefix_row("xid_ho")
+    bad["icao_hex"] = "000bad"
+    obj = json.loads(bad["raw"])
+    for p in obj["vdl2"]["avlc"]["xid"]["vdl_params"]:
+        if p["name"] == "ac_location":
+            p["value"]["alt"] = 1e300
+    bad["raw"] = json.dumps(obj, separators=(",", ":"))
+    _seed(db_path, [bad, _prefix_row("m1_pos")])
+    res = backfill(db_path)
+    assert res["scanned"] == 2 and res["bad_json"] == 0
+    rows = _rows(db_path)
+    assert rows["000bad"]["alt"] is None and rows["000bad"]["dsta"] == "LATI"
+    assert rows["4787a0"]["sublabel"] == "M1"
+    assert backfill(db_path)["updated"] == 0
+
+
 def test_never_overwrites_existing_values(db_path):
     rec = _prefix_row("xid_ho")
     rec["dsta"] = "EPWA"        # already set (e.g. by a vdlm2dec-style writer)

@@ -65,7 +65,7 @@ robustness and performance bugs found before the freeze.
 - Nothing runs `VACUUM` on `vdl2.db`; retention frees pages but the file does not shrink.
 - The web process still runs the idempotent schema `migrate()` on `vdl2.db` at startup
   and per thread (cheap indexes only) while the flag is on.
-- With the flag on and `vdl2.db` deleted, the web server recreates an empty database.
+- With the flag on and `vdl2.db` deleted, the web server does not recreate it (only the ingest service does); VDL2 surfaces report unavailable (`/api/vdl2/*` 503) until it exists again.
 
 ## Resuming
 

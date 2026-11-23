@@ -147,6 +147,24 @@ def test_flush_writes_to_db():
     assert conn.execute("SELECT COUNT(*) FROM vdl2_messages").fetchone()[0] == 1
 
 
+def test_flush_commits_good_records_around_overflowing_field():
+    # alt 1e300 used to survive normalize as a huge int; binding it raised
+    # OverflowError and _flush dropped the whole pending batch. The bad field must
+    # now normalize to NULL and every record in the batch must commit.
+    conn = make_vdl2_db()
+    pending: list[dict] = []
+    for i, extra in enumerate(({}, {"alt": 1e300}, {}, {"timestamp": -1e300})):
+        vdl2_collector._handle_datagram(
+            json.dumps({"timestamp": 1_700_000_000 + i, "hex": f"48e95{i}",
+                        "text": f"msg{i}", **extra}).encode(), pending)
+    assert len(pending) == 4
+    n = vdl2_collector._flush(conn, pending)
+    assert n == 4 and pending == []
+    rows = {r["icao_hex"]: r for r in conn.execute("SELECT * FROM vdl2_messages")}
+    assert len(rows) == 4
+    assert rows["48e951"]["alt"] is None and rows["48e951"]["body"] == "msg1"
+
+
 def test_shutdown_drain_counts_toward_run_total(monkeypatch, tmp_path, caplog):
     """BUG-12: the final ``finally`` drain of a sub-BATCH pending buffer must be
     added to the run total. One datagram (< _BATCH) stays buffered until the

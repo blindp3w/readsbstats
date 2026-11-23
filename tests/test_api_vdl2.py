@@ -1285,6 +1285,99 @@ class TestFailureModes:
         conn.close()
 
 
+class TestQueryParamBounds:
+    """An int >= 2**63 raises OverflowError at SQLite bind (not a sqlite3.Error, so
+    _vdl2_guard would not map it): it must be rejected as 422 by the Query bounds."""
+
+    HUGE = "99999999999999999999"
+
+    @pytest.mark.parametrize("path", [
+        "/api/vdl2/messages?before_id={h}",
+        "/api/vdl2/messages?since={h}",
+        "/api/vdl2/messages?until={h}",
+        "/api/vdl2/messages/48e95d?before_id={h}",
+        "/api/vdl2/messages/48e95d?since={h}",
+        "/api/vdl2/messages/48e95d?until={h}",
+        "/api/vdl2/oooi/48e95d?since={h}",
+        "/api/vdl2/oooi/48e95d?until={h}",
+    ])
+    def test_huge_value_is_422(self, client, path):
+        assert client.get(path.format(h=self.HUGE)).status_code == 422
+
+    def test_just_over_the_cap_is_422_and_cap_is_accepted(self, client):
+        assert client.get("/api/vdl2/messages?since=10000000001").status_code == 422
+        assert client.get("/api/vdl2/messages?before_id=%d" % (2 ** 62 + 1)).status_code == 422
+        assert client.get("/api/vdl2/messages?since=0&until=10000000000").status_code == 200
+        assert client.get("/api/vdl2/messages?before_id=%d" % 2 ** 62).status_code == 200
+
+
+class TestWebNeverCreatesDb:
+    """The web process only reads vdl2.db: a deleted file must not be recreated
+    as an empty DB (ADR-0021); VDL2 surfaces report unavailable instead."""
+
+    @pytest.fixture()
+    def missing(self, tmp_path, monkeypatch):
+        path = tmp_path / "vdl2.db"
+        monkeypatch.setattr(config, "VDL2_ENABLED", True)
+        monkeypatch.setattr(config, "VDL2_DB_PATH", str(path))
+        monkeypatch.setattr(vdl2_db, "_conn", None)
+        monkeypatch.setattr(vdl2_db, "_thread_local", threading.local())
+        with vdl2_db._web_conns_lock:
+            vdl2_db._web_conns.clear()
+        return path
+
+    def test_connect_create_false_missing_raises_and_creates_nothing(self, tmp_path):
+        path = tmp_path / "nope.db"
+        with pytest.raises(sqlite3.OperationalError):
+            vdl2_db.connect(str(path), create=False)
+        assert not list(tmp_path.iterdir())
+
+    def test_connect_create_false_opens_existing_read_write(self, tmp_path):
+        path = str(tmp_path / "v.db")
+        c = vdl2_db.connect(path)
+        vdl2_db.ensure_schema(c, build_fts=False)
+        c.close()
+        c = vdl2_db.connect(path, create=False)
+        assert c.execute("SELECT COUNT(*) FROM vdl2_messages").fetchone()[0] == 0
+        c.execute("PRAGMA user_version")   # still a usable rw connection
+        c.close()
+
+    def test_connect_create_false_handles_special_chars_in_path(self, tmp_path):
+        d = tmp_path / "a b#c?d"
+        d.mkdir()
+        path = str(d / "vdl2.db")
+        c = vdl2_db.connect(path)
+        c.close()
+        vdl2_db.connect(path, create=False).close()
+
+    def test_web_conn_missing_file_not_created(self, missing, tmp_path):
+        with pytest.raises(sqlite3.OperationalError):
+            vdl2_db.web_conn()
+        assert not missing.exists()
+        assert not list(tmp_path.glob("vdl2.db*"))
+
+    def test_api_503_and_health_unavailable_when_file_missing(self, missing, tmp_path):
+        app = FastAPI()
+        web._include_optional_routers(app)
+        with TestClient(app) as c:
+            assert c.get("/api/vdl2/messages").status_code == 503
+            assert c.get("/api/vdl2/stats").status_code == 503
+        assert vdl2_api.vdl2_health()["available"] is False
+        assert not list(tmp_path.glob("vdl2.db*"))
+
+    def test_startup_with_missing_file_does_not_crash_or_create(self, missing, tmp_path):
+        web._ensure_vdl2_schema()      # must not raise
+        assert not list(tmp_path.glob("vdl2.db*"))
+
+    def test_startup_migrates_existing_file(self, missing):
+        c = vdl2_db.connect(str(missing))     # collector-style creation
+        c.close()
+        web._ensure_vdl2_schema()
+        c = vdl2_db.connect(str(missing), create=False)
+        assert c.execute("SELECT COUNT(*) FROM vdl2_messages").fetchone()[0] == 0
+        c.close()
+
+
 class TestConnRegistry:
     def test_close_all_web_conns(self, tmp_path, monkeypatch):
         monkeypatch.setattr(config, "VDL2_ENABLED", True)
@@ -1293,6 +1386,8 @@ class TestConnRegistry:
         monkeypatch.setattr(vdl2_db, "_thread_local", threading.local())
         with vdl2_db._web_conns_lock:
             vdl2_db._web_conns.clear()
+        # web_conn() never creates the file: the collector side does.
+        vdl2_db.connect(str(tmp_path / "vdl2.db")).close()
         c = vdl2_db.web_conn()
         c.execute("SELECT 1")  # usable
         vdl2_db.close_all_web_conns()
