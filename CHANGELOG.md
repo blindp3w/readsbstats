@@ -18,7 +18,7 @@ changes.
 - **More VDL2 positions on the map**, each checked against ADS-B tracks of the
   same airframe (median / p90 error):
   - H1 ACMS `ABS`/`EB0`/`SB0` reports, one point per fix with altitude,
-    temperature and wind: 1.26 / 3.61 nm and 2.14 / 4.47 nm (two dialects);
+    temperature and wind: 1.26 / 3.61 nm and 2.14 / 4.46 nm (two dialects);
   - E-Jet `FDE`/`MM` maintenance messages: 0.20 / 0.40 nm;
   - KLM `(POS-` reports: 0.95 / 2.00 nm;
   - labels 83, 15 (`FST01`) and 80 (`POSRPT`): 0.09–1.23 nm.
