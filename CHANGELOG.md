@@ -5,6 +5,24 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 2.32.1 — 2026-11-23
+
+Dependency updates only. No schema or behaviour changes.
+
+### Changed
+
+- **Backend:** FastAPI 0.161.1 → 0.162.5; httpx2 2.13.1 → 2.14.0;
+  Playwright (UI tests) 1.64.1 → 1.65.1, with the CI image moved to
+  `mcr.microsoft.com/playwright/python:v1.65.1-noble`; pytest 9.1.1 → 9.2.0.
+- **Frontend:** 21 updates, among them maplibre-gl 6.15.0 → 6.19.0,
+  @airframes/acars-decoder 1.9.3 → 1.9.7, @tanstack/react-query 5.104.5 →
+  5.108.1, zustand 5.0.16 → 5.1.0, vite 8.3.5 → 8.3.8, vitest 5.0.5 → 5.1.1,
+  jsdom 30.1.3 → 31.0.1 and @testing-library/jest-dom 7.0.1 → 8.0.0.
+- **Bundle budget:** the lazy `vdl2-decoder` chunk ceiling is now 60 KB gz
+  (was 45). acars-decoder 1.9.7 grew the chunk from about 39 to 51.5 KB gz;
+  it loads only on VDL2 pages.
+- **CI:** github/codeql-action 4.39.1 → 4.39.3.
+
 ## 2.32.0 — 2026-10-28
 
 Recovery after an unclean shutdown on a large database, a configurable data
