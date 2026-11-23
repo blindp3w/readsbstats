@@ -117,31 +117,25 @@ def api_flights_export(
     origin: str | None = Query(None, description="departure airport, 4-char ICAO code"),
     dest: str | None = Query(None, description="destination airport, 4-char ICAO code"),
     airport: str | None = Query(None, description="airport at either end, 4-char ICAO code"),
+    has_acars: bool | None = Query(None, description="only flights with VDL2/ACARS (opt-in)"),
     sort_by: str | None = Query(None),
     sort_dir: str | None = Query(None, description="asc | desc"),
 ) -> Response:
     # Audit 2026-05-26: accept the same epoch from/to params the History
     # page sends to /api/flights. Without these the export ignored the
     # visible date range and produced an unfiltered CSV.
-    where, params = _deps._build_flight_filter(
-        date, icao, callsign, registration, aircraft_type, source, flags, squawk,
+    filter_args = (date, icao, callsign, registration, aircraft_type, source, flags, squawk)
+    filter_kw = dict(
         date_from=date_from, date_to=date_to, from_ts=from_ts, to_ts=to_ts,
         origin=origin, dest=dest, airport=airport,
     )
+    # Validate eagerly (400 before the stream starts). The has_acars clause
+    # references the `vdl2db` schema, which only exists on a connection that
+    # successfully ATTACHed it — and the stream runs on its own connection — so
+    # the final WHERE is built inside the generator, after the attach check.
+    _deps._build_flight_filter(*filter_args, **filter_kw)
     sort_col = _deps._SORT_COLS.get(sort_by or "", "f.first_seen")
     sort_order = "ASC" if sort_dir == "asc" else "DESC"
-
-    # Audit-13 A13-055: stream rows instead of materialising the entire
-    # CSV in memory. On a Pi 4 a 50k-row export previously buffered a
-    # multi-MB StringIO before the first byte hit the wire.
-    sql = f"""
-        SELECT {_deps._FLIGHT_COLS}
-        FROM flights f {_deps._FLIGHT_JOIN}
-        {where}
-        ORDER BY {sort_col} {sort_order}
-        LIMIT ?
-        """
-    bind = params + [config.MAX_EXPORT_ROWS]
 
     def _iter_csv():
         # Audit 17: a streamed CSV download can be slow or abandoned. Iterating
@@ -157,6 +151,28 @@ def api_flights_export(
             own_conn = database.connect(uri=True)
             export_conn = own_conn
         try:
+            # Same semantics as api_flights: the filter applies only when
+            # vdl2.db is attached on the connection that runs the query,
+            # otherwise it is ignored (never "no such table" mid-stream).
+            use_acars = False
+            if has_acars:
+                _deps._maybe_attach_vdl2(export_conn)
+                use_acars = _deps.vdl2_attached(export_conn)
+            where, params = _deps._build_flight_filter(
+                *filter_args, **filter_kw, has_acars=(True if use_acars else None),
+            )
+            # Audit-13 A13-055: stream rows instead of materialising the entire
+            # CSV in memory. On a Pi 4 a 50k-row export previously buffered a
+            # multi-MB StringIO before the first byte hit the wire.
+            sql = f"""
+                SELECT {_deps._FLIGHT_COLS}
+                FROM flights f {_deps._FLIGHT_JOIN}
+                {where}
+                ORDER BY {sort_col} {sort_order}
+                LIMIT ?
+                """
+            bind = params + [config.MAX_EXPORT_ROWS]
+
             buf = io.StringIO()
             writer = csv.writer(buf)
             writer.writerow(_deps._CSV_COLS)

@@ -5,6 +5,7 @@ import { type MapWindow } from '@/components/map/MapCommandBar';
 import { type Mode } from '@/components/map/MapModeControl';
 import { useVdl2Available } from '@/hooks/useVdl2Enabled';
 import type { Vdl2ActiveResponse, Vdl2PositionsResponse } from '@/lib/types';
+import { VDL2_MAP_WINDOW_MIN } from '@/lib/vdl2Points';
 
 export interface Aircraft {
   flight_id: number;
@@ -156,8 +157,9 @@ export function useMapDataQueries(playback: MapDataPlayback): MapDataQueries {
   });
 
   const vdl2PositionsQ = useQuery<Vdl2PositionsResponse>({
-    queryKey: ['map-vdl2-positions'],
-    queryFn: () => apiJson<Vdl2PositionsResponse>('vdl2/positions'),
+    queryKey: ['map-vdl2-positions', VDL2_MAP_WINDOW_MIN],
+    queryFn: () =>
+      apiJson<Vdl2PositionsResponse>(`vdl2/positions?minutes=${VDL2_MAP_WINDOW_MIN}`),
     enabled: showVdl2 && vdl2Available,
     refetchInterval: 30_000,
     staleTime: 30_000,

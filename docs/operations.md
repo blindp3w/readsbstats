@@ -248,9 +248,17 @@ disk. Results are cached, and concurrent requests share one computation. The
 build runs once and is a no-op afterwards.
 
 **Malformed input.** The ingest drops (and counts as malformed) any datagram line
-whose JSON has `NaN`/`Infinity`/out-of-range numbers or extreme nesting, instead
-of crashing. A failed database open in the prune thread is logged and retried on
+that is not parseable JSON or is nested extremely deeply, instead of crashing.
+Non-finite or out-of-range numeric fields (`NaN`/`Infinity`, an integer beyond
+64 bits, `alt: 1e300`) do not drop the line: the field is stored as `NULL`, and an
+unusable `timestamp` (non-finite, negative, or more than a day ahead) becomes the
+receive time. A failed database open in the prune thread is logged and retried on
 the next tick.
+
+**The web server never creates `vdl2.db`.** Only the ingest service (and offline
+scripts) create it. If the file is missing (not yet created, or deleted), the web
+server starts normally, `/api/health` reports `vdl2.available: false` and
+`/api/vdl2/*` return 503 until the ingest service creates it.
 
 ```bash
 # VDL2 ingest log / status
@@ -260,7 +268,8 @@ systemctl is-active readsbstats-vdl2
 
 ### Turning VDL2 off
 
-VDL2 is frozen as of 2.29.0 ([ADR-0021](decisions/0021-vdl2-frozen.md)): the code
+VDL2 is frozen as of 2.33.0 ([ADR-0021](decisions/0021-vdl2-frozen.md), final round in
+[ADR-0023](decisions/0023-vdl2-final-round.md)): the code
 stays, opt-in and supported as-is, and turning it off is safe. With
 `RSBS_VDL2_ENABLED=false` the web server never opens or ATTACHes `vdl2.db`, the
 `/api/vdl2/*` router is not registered (unknown `/api` paths return a JSON `404`),
@@ -283,7 +292,8 @@ layer). `history.db` is never touched by VDL2, and no alert depends on it.
    offline while the services are stopped.
 
 To turn it back on, set the flag to `true`, restart `readsbstats-web`, run
-`systemctl enable --now readsbstats-vdl2` and start the decoder. On its first start
+`systemctl enable --now readsbstats-vdl2` and start the decoder (if you deleted
+`vdl2.db*`, the ingest service creates a fresh one; VDL2 shows as unavailable until then). On its first start
 the ingest service builds the two extra indexes in the background (see above).
 
 ## Polar range plot tuning

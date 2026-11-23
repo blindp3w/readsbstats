@@ -20,6 +20,7 @@ from fastapi import APIRouter, HTTPException, Query
 from .. import cache, config, schemas
 from ..vdl2 import adsc
 from ..vdl2 import db as vdl2_db
+from ..vdl2 import h1rep, h1route
 from ..vdl2 import m1bpos
 from ..vdl2 import normalize
 from ..vdl2 import oooi
@@ -240,13 +241,13 @@ def _query_messages(
             response_model_exclude_unset=True)
 def api_vdl2_messages(
     limit: int = Query(100, ge=1, le=100),
-    before_id: int | None = Query(None, ge=1),
+    before_id: int | None = Query(None, ge=1, le=2**62),
     label: str | None = Query(None, max_length=64),
     hex: str | None = Query(None, max_length=64),
     reg: str | None = Query(None, max_length=64),
     q: str | None = Query(None, max_length=200),
-    since: int | None = Query(None, ge=0),
-    until: int | None = Query(None, ge=0),
+    since: int | None = Query(None, ge=0, le=10_000_000_000),
+    until: int | None = Query(None, ge=0, le=10_000_000_000),
     fragments: bool = Query(False),
 ) -> dict:
     """Newest-first message feed (by ingest id) with optional filters + full-text
@@ -267,10 +268,10 @@ def api_vdl2_messages(
 def api_vdl2_aircraft(
     icao_hex: str,
     limit: int = Query(100, ge=1, le=100),
-    before_id: int | None = Query(None, ge=1),
+    before_id: int | None = Query(None, ge=1, le=2**62),
     q: str | None = Query(None, max_length=200),
-    since: int | None = Query(None, ge=0),
-    until: int | None = Query(None, ge=0),
+    since: int | None = Query(None, ge=0, le=10_000_000_000),
+    until: int | None = Query(None, ge=0, le=10_000_000_000),
     fragments: bool = Query(False),
 ) -> dict:
     """All messages from one airframe (by ICAO hex), newest-first. ``since``/
@@ -370,6 +371,33 @@ _TOP_AIRLINES_SQL = (
 )
 
 
+# Ground stations heard in the last 24 h, from DOWNLINK frames only: dumpvdl2's
+# `avlc.src.type` is 'Aircraft' for those, so `toaddr` is the ground station. vdlm2dec rows
+# have no avlc in `raw` and are excluded by design; `json_valid` guards the few rows
+# truncated at the raw cap. SNR matches /api/vdl2/signal (avg of sig_level - noise_level;
+# AVG skips rows where either is NULL). Pinned to idx_vdl2_ts (range on ts, created
+# by every migrate()): with sqlite_stat1 present the planner otherwise picks a skip-scan of
+# idx_vdl2_icao because of COUNT(DISTINCT icao_hex). Module constant so the tests can EXPLAIN it.
+_GROUND_STATIONS_LIMIT = 30
+_GROUND_STATIONS_SQL = (
+    "SELECT toaddr, ROUND(freq, 3) AS freq, COUNT(*) AS frames, "
+    "COUNT(DISTINCT icao_hex) AS aircraft, AVG(sig_level - noise_level) AS snr "
+    "FROM vdl2_messages INDEXED BY idx_vdl2_ts WHERE ts >= ? AND json_valid(raw) "
+    "AND json_extract(raw, '$.vdl2.avlc.src.type') = 'Aircraft' "
+    "GROUP BY toaddr, ROUND(freq, 3) "
+    f"ORDER BY frames DESC, toaddr, freq LIMIT {_GROUND_STATIONS_LIMIT}"
+)
+
+
+def _ground_stations(conn, now: int) -> list[dict]:
+    return [
+        {"toaddr": r["toaddr"], "freq": r["freq"], "frames": r["frames"],
+         "aircraft": r["aircraft"],
+         "snr_db": round(r["snr"], 1) if r["snr"] is not None else None}
+        for r in conn.execute(_GROUND_STATIONS_SQL, (now - 86400,)).fetchall()
+    ]
+
+
 def _stats_headline(conn, now: int) -> dict:
     """Single table pass for the three headline counts (stats counts received
     frames, incl. partial blocks and superseded fragments, by design — they
@@ -416,6 +444,7 @@ def _compute_stats() -> dict:
         "top_labels": top_labels,
         "top_airlines": top_airlines,
         "hourly": hourly,
+        "ground_stations": _ground_stations(conn, now),
         "flights_overlap_pct": _flights_overlap_pct(),
     }
 
@@ -484,8 +513,8 @@ def _flights_overlap_pct() -> float | None:
             response_model_exclude_unset=True)
 def api_vdl2_oooi(
     icao_hex: str,
-    since: int | None = Query(None, ge=0),
-    until: int | None = Query(None, ge=0),
+    since: int | None = Query(None, ge=0, le=10_000_000_000),
+    until: int | None = Query(None, ge=0, le=10_000_000_000),
 ) -> dict:
     """OOOI block-time summary for one airframe over a flight window. The latest
     slash-TEI DEP/ARR bodies win; where those are absent (the norm on air-side
@@ -506,6 +535,19 @@ def api_vdl2_oooi(
 _OOOI_SCAN_LIMIT = 1000
 
 
+# icao-scoped (idx_vdl2_icao / idx_vdl2_icao_id), window-bounded and LIMITed; `sublabel` feeds
+# the H1 route parsers (h1route). Module constant so the tests can EXPLAIN it.
+_OOOI_SQL = (
+    "SELECT body, dsta, ts, label, registration, flight, sublabel "
+    "FROM vdl2_messages WHERE {where} AND superseded IS NOT 1 "
+    "ORDER BY id DESC LIMIT ?"
+)
+
+# Route-source precedence, first hit wins. The first four are the original sources; the
+# last four (h1route.py, ADR-0019) rank below them: r64 > abs > b44 > fst01.
+_ROUTE_ORDER = ("cm", "label26", "label20", "label49", "r64", "abs", "b44", "fst01")
+
+
 def _compute_oooi(icao_hex: str, since: int | None, until: int | None) -> dict:
     conn = vdl2_db.web_conn()
     where = ["icao_hex = ?"]
@@ -517,12 +559,7 @@ def _compute_oooi(icao_hex: str, since: int | None, until: int | None) -> dict:
         where.append("ts < ?")
         params.append(until)
     params.append(_OOOI_SCAN_LIMIT)
-    rows = conn.execute(
-        f"SELECT body, dsta, ts, label, registration, flight "
-        f"FROM vdl2_messages WHERE {' AND '.join(where)} AND superseded IS NOT 1 "
-        "ORDER BY id DESC LIMIT ?",
-        params,
-    ).fetchall()
+    rows = conn.execute(_OOOI_SQL.format(where=" AND ".join(where)), params).fetchall()
 
     dep = arr = None
     dsta = None
@@ -531,6 +568,7 @@ def _compute_oooi(icao_hex: str, since: int | None, until: int | None) -> dict:
     route_cm: dict | None = None
     route26: dict | None = None
     route20: dict | None = None
+    h1routes: dict[str, dict] = {}   # newest per h1route source
     # Rows are newest-first, so the first DEP/ARR we parse is the most recent.
     for r in rows:
         if dsta is None and r["dsta"]:
@@ -550,6 +588,10 @@ def _compute_oooi(icao_hex: str, since: int | None, until: int | None) -> dict:
             route26 = oooi.parse_label26(r["body"])
         elif lab == "20" and route20 is None:
             route20 = oooi.parse_label20_rst(r["body"])
+        elif lab in ("H1", "15"):
+            hr = h1route.parse_route(lab, r["sublabel"], r["body"])
+            if hr is not None and hr["source"] not in h1routes:
+                h1routes[hr["source"]] = hr
         parsed = oooi.parse_oooi(r["body"])
         if parsed is not None:
             if parsed["type"] == "DEP" and dep is None:
@@ -572,15 +614,17 @@ def _compute_oooi(icao_hex: str, since: int | None, until: int | None) -> dict:
             arr = _synth_q_event("ARR", phases.get("on"), phases.get("in"))
 
     # Precedence: the aircraft's own CM logon > Air France label 26 > KLM label-20
-    # RST > airline-defined label 49. Each carries a dep+arr pair: fill route gaps
+    # RST > airline-defined label 49 > H1/15 reports r64 > abs > b44 > fst01. Each carries a dep+arr pair: fill route gaps
     # on events, and serve as the `dsta` fallback when nothing else parsed. Only
     # the four contract keys are copied (no eta/runway — ApiModel is extra="allow").
     route: dict | None = None
-    for src, rec in (("cm", route_cm), ("label26", route26),
-                     ("label20", route20), ("label49", route49)):
+    found = {"cm": route_cm, "label26": route26, "label20": route20,
+             "label49": route49, **h1routes}
+    for src in _ROUTE_ORDER:
+        rec = found.get(src)
         if rec is not None:
             route = {"dep_icao": rec["dep_icao"], "dest_icao": rec["dest_icao"],
-                     "flight": rec["flight"], "source": src}
+                     "flight": rec.get("flight"), "source": src}
             break
     if route is not None:
         for ev in (dep, arr):
@@ -910,6 +954,70 @@ _POSITIONS_M1BPOS_SCAN_CAP = 8000
 # LOT `59,G` ground-telemetry positions (label 36); same over-fetch+parse+discard
 # rationale (the label-37 status sub-form shares the prefix and is parsed out).
 _POSITIONS_59G_SCAN_CAP = 8000
+# H1 position reports (ABS/EB0/SB0 multi-fix, CF FDE/MM, `(POS-`; h1rep.py). A message can
+# yield several fixes, so the final merge cap (_POSITIONS_CAP) is applied to points, not rows.
+_POSITIONS_H1_SCAN_CAP = 8000
+# Candidate SQL for /api/vdl2/positions (map: `_SQL_MAP`) and /api/vdl2/positions/{icao}
+# (per flight: `_SQL_FLIGHT`). Built from constants only — the user-supplied hex and window
+# are always bound parameters. The scoped variant adds `icao_hex = ?` plus an upper `ts`
+# bound so every candidate scan is served by idx_vdl2_icao (icao_hex, ts DESC) and never
+# walks 90 days of bodies. Parameter order: [labels...], scope params, cap.
+_MAP_SCOPE = "ts >= ?"
+_FLIGHT_SCOPE = "icao_hex = ? AND ts >= ? AND ts <= ?"
+_ORDER = "ORDER BY ts DESC, id DESC LIMIT ?"
+# The planner prefers idx_vdl2_label_ts_id (label=... AND ts range) over idx_vdl2_icao for
+# the scoped label/B6/H1 queries, so the scoped variants pin the icao index.
+_ICAO_INDEX = "INDEXED BY idx_vdl2_icao"
+
+
+def _build_position_sql(scoped: bool) -> dict[str, str]:
+    scope = _FLIGHT_SCOPE if scoped else _MAP_SCOPE
+    src = f"vdl2_messages {_ICAO_INDEX}" if scoped else "vdl2_messages"
+    n_labels = len(vdl2_positions.PRECISE_LABEL_PARSERS)   # module constant, never user input
+    return {
+        "label": (f"SELECT id, icao_hex, ts, label, body FROM {src} "
+                  f"WHERE label IN ({','.join('?' * n_labels)}) AND {scope} AND superseded IS NOT 1 {_ORDER}"),
+        "coarse": (f"SELECT id, lat, lon, icao_hex, ts, label FROM {src} "
+                   f"WHERE lat IS NOT NULL AND lon IS NOT NULL AND {scope} "
+                   f"AND superseded IS NOT 1 {_ORDER}"),
+        "m1bpos": (f"SELECT id, icao_hex, ts, label, body, sublabel, mfi FROM {src} "
+                   f"WHERE {scope} AND superseded IS NOT 1 "
+                   f"AND (body LIKE '#M1BPOS%' OR (sublabel = 'M1' AND body LIKE 'POS%')) {_ORDER}"),
+        "59g": (f"SELECT id, icao_hex, ts, label, body FROM {src} "
+                f"WHERE {scope} AND superseded IS NOT 1 AND body LIKE '59,G,%' {_ORDER}"),
+        "adsc": (f"SELECT id, icao_hex, ts, label, raw FROM {src} "
+                 f"WHERE label = 'B6' AND {scope} AND superseded IS NOT 1 {_ORDER}"),
+        "h1": (f"SELECT id, icao_hex, ts, label, sublabel, body FROM {src} "
+               f"WHERE label = 'H1' AND {scope} AND superseded IS NOT 1 AND sublabel IN ('DF','CF') "
+               "AND (body LIKE 'ABS%' OR body LIKE 'EB0%' OR body LIKE 'SB0%' OR body LIKE 'FDE%' "
+               f"OR body LIKE 'MM%' OR body LIKE '(POS-%') {_ORDER}"),
+    }
+
+
+_SQL_MAP = _build_position_sql(False)
+_SQL_FLIGHT = _build_position_sql(True)
+# Kept as a name: the map's H1 candidate query (served by idx_vdl2_label_ts_id).
+_H1_POSITIONS_SQL = _SQL_MAP["h1"]
+# Per-flight endpoint (/api/vdl2/positions/{icao_hex}): final cap, max window, and how far
+# outside [since, until] the RECEIVE time of a candidate message may lie (fixes embedded in a
+# message are minutes older than it; an embedded fix is at most ~10 min ahead of receive time).
+_FLIGHT_POSITIONS_CAP = 2000
+_FLIGHT_MAX_WINDOW_SEC = 48 * 3600
+_FLIGHT_SCAN_PAD_BEFORE = 600
+_FLIGHT_SCAN_PAD_AFTER = 1800
+# A fix may be this far past `now` (receiver/aircraft clock skew) before it is dropped.
+_POSITIONS_FUTURE_SLACK = 600
+
+
+def _safe_parse(fn, *args):
+    """Run one query-time parser on one row. Radio bodies are untrusted: a parser bug
+    on a single malformed body must drop that row, never 500 the whole positions
+    response (review 2026-11-23). Logged at debug, like other bad-input paths."""
+    try:
+        return fn(*args)
+    except (ValueError, TypeError, OverflowError, IndexError, KeyError, AttributeError) as exc:
+        log.debug("vdl2 positions: %s skipped a row: %r", getattr(fn, "__name__", fn), exc)
+        return None
 
 
 @router.get("/api/vdl2/active", response_model=schemas.Vdl2ActiveResponse,
@@ -941,12 +1049,14 @@ def api_vdl2_positions(minutes: int = Query(60, ge=1, le=1440)) -> dict:
     """VDL2-derived positions from the last `minutes` minutes, for the optional
     map overlay. Precise sources preferred (each validated against ADS-B tracks of the
     same airframe): ACARS bodies by label (16 AUTPOS and the label-16-style group, 17,
-    38, 2F, 14, B0 AFN logon — see `positions.PRECISE_LABEL_PARSERS`), `#M1BPOS`
+    38, 2F, 14, B0 AFN logon, 83, 15, 80 — see `positions.PRECISE_LABEL_PARSERS`),
+    H1 position reports (`h1rep`: ABS/EB0/SB0 multi-fix, CF FDE/MM, `(POS-`), `#M1BPOS`
     (Honeywell FMS; dumpvdl2 rows matched via `sublabel`), LOT `59,G`, and ADS-C
     (label B6, decoded `basic_report` in `raw`). The lat/lon columns hold only
     **coarse** (~0.1°) VDL2 XID link-frame fixes used as a fallback (vdlm2dec and
-    dumpvdl2 alike). Each point carries `precise`. Sparse on an H1-dominated feed.
-    Capped + cached ~30 s."""
+    dumpvdl2 alike). Each point carries `precise` and `source`; the newer sources may add
+    `alt`/`temp_c`/`wind_dir`/`wind_kt`. One ABS message can yield several points (each with
+    its own fix time). Sparse on an H1-dominated feed. Capped + cached ~30 s."""
     cached = cache._get_cache(f"vdl2-positions-{minutes}")
     if cached is not None:
         return cached
@@ -956,103 +1066,159 @@ def api_vdl2_positions(minutes: int = Query(60, ge=1, le=1440)) -> dict:
         return out
 
 
+@router.get("/api/vdl2/positions/{icao_hex}", response_model=schemas.Vdl2PositionsResponse,
+            response_model_exclude_unset=True)
+def api_vdl2_flight_positions(
+    icao_hex: str,
+    since: int = Query(..., ge=0, le=10_000_000_000),
+    until: int = Query(..., ge=0, le=10_000_000_000),
+) -> dict:
+    """VDL2-derived positions of ONE airframe over a flight window (`since` < `until`, at most
+    48 h), oldest first, for the per-flight route overlay. Same sources, merge rules and point
+    shape as `/api/vdl2/positions`; each point's own `ts` (the embedded fix time where the format
+    has one) lies in `[since, until]`. Every candidate query is scoped by `icao_hex` + the time
+    window (idx_vdl2_icao). Not cached. Capped at 2000 points (the newest are kept)."""
+    hexv = _deps._parse_icao_path(icao_hex)
+    if until <= since:
+        raise HTTPException(422, "until must be greater than since")
+    if until - since > _FLIGHT_MAX_WINDOW_SEC:
+        raise HTTPException(422, "window must not exceed 48 hours")
+    with _vdl2_guard():
+        return _compute_flight_positions(hexv, since, until)
+
+
 def _compute_positions(minutes: int) -> dict:
-    """Five candidate queries merged in Python (a single OR query full-scans). The
-    label (`label IN (…)` over `positions.PRECISE_LABEL_PARSERS`), ADS-C (`label = 'B6'`)
-    and coarse queries are index-served (idx_vdl2_label_ts_id / idx_vdl2_pos_ts_id) — the
-    multi-value `IN` probes each label then sorts the merged rows in a temp B-tree before
-    the LIMIT, cheap at the observed volume (~40 rows/day across these labels); the
-    `#M1BPOS` and `59,G` queries are time-window-bounded row scans (idx_vdl2_ts bounds `ts >=`, then a `body LIKE` filter), capped so they still
-    terminate. The `#M1BPOS` query also matches dumpvdl2 rows (`sublabel = 'M1'`, body
-    `POS…` — libacars stripped the prefix), re-prefixed via `normalize.acars_text`
-    before parsing. Precise fixes are parsed from the per-label bodies, `#M1BPOS`, LOT `59,G`
-    bodies and ADS-C `raw` JSON (so a coordinate-looking body on any other row can't
-    masquerade as precise);
-    coarse XID column fixes are the fallback. Independent caps + over-fetched scans + a
-    final merge/cap so a burst of no-fix rows can't starve valid coarse OR older precise
-    points."""
-    conn = vdl2_db.web_conn()
-    cutoff = int(time.time()) - minutes * 60
-
-    labels = list(vdl2_positions.PRECISE_LABEL_PARSERS)
-    label_rows = conn.execute(
-        # placeholder count comes from the module constant, never user input
-        "SELECT id, icao_hex, ts, label, body FROM vdl2_messages "
-        f"WHERE label IN ({','.join('?' * len(labels))}) AND ts >= ? AND superseded IS NOT 1 "
-        "ORDER BY ts DESC, id DESC LIMIT ?",
-        (*labels, cutoff, _POSITIONS_LABEL_SCAN_CAP),
-    ).fetchall()
-    coarse_rows = conn.execute(
-        "SELECT id, lat, lon, icao_hex, ts, label FROM vdl2_messages "
-        "WHERE lat IS NOT NULL AND lon IS NOT NULL AND ts >= ? AND superseded IS NOT 1 "
-        "ORDER BY ts DESC, id DESC LIMIT ?",
-        (cutoff, _POSITIONS_CAP),
-    ).fetchall()
-    m1bpos_rows = conn.execute(
-        "SELECT id, icao_hex, ts, label, body, sublabel, mfi FROM vdl2_messages "
-        "WHERE ts >= ? AND superseded IS NOT 1 "
-        "AND (body LIKE '#M1BPOS%' OR (sublabel = 'M1' AND body LIKE 'POS%')) "
-        "ORDER BY ts DESC, id DESC LIMIT ?",
-        (cutoff, _POSITIONS_M1BPOS_SCAN_CAP),
-    ).fetchall()
-    g59_rows = conn.execute(
-        "SELECT id, icao_hex, ts, label, body FROM vdl2_messages "
-        "WHERE ts >= ? AND superseded IS NOT 1 AND body LIKE '59,G,%' ORDER BY ts DESC, id DESC LIMIT ?",
-        (cutoff, _POSITIONS_59G_SCAN_CAP),
-    ).fetchall()
-    adsc_rows = conn.execute(
-        "SELECT id, icao_hex, ts, label, raw FROM vdl2_messages "
-        "WHERE label = 'B6' AND ts >= ? AND superseded IS NOT 1 ORDER BY ts DESC, id DESC LIMIT ?",
-        (cutoff, _POSITIONS_ADSC_SCAN_CAP),
-    ).fetchall()
-
-    def _point(r, lat, lon, precise) -> dict:
-        # `_id` is an internal merge/sort key, stripped before the response.
-        return {
-            "_id": r["id"], "lat": lat, "lon": lon, "icao_hex": r["icao_hex"],
-            "ts": r["ts"], "label": r["label"], "precise": precise,
-        }
-
-    points: list[dict] = []
-    seen: set[int] = set()
-    for r in label_rows:
-        parsed = vdl2_positions.parse_by_label(r["label"], r["body"])
-        if parsed is None:
-            continue   # no-fix body (e.g. AUTPOS blank marker, label-17 `------`) — discarded, no cap consumed
-        seen.add(r["id"])
-        points.append(_point(r, parsed["lat"], parsed["lon"], True))
-    for r in m1bpos_rows:
-        parsed = m1bpos.parse_position(
-            normalize.acars_text(r["body"], r["sublabel"], r["mfi"]))
-        if parsed is None:
-            continue   # non-position #M1BPOS body — discarded (does not consume the final cap)
-        if r["id"] in seen:
-            continue
-        seen.add(r["id"])
-        points.append(_point(r, parsed["lat"], parsed["lon"], True))
-    for r in g59_rows:
-        parsed = vdl2_positions.parse_59g(r["body"])
-        if parsed is None:
-            continue   # non-position 59,G (label-37 status) — discarded, no cap consumed
-        if r["id"] in seen:
-            continue
-        seen.add(r["id"])
-        points.append(_point(r, parsed["lat"], parsed["lon"], True))
-    for r in adsc_rows:
-        parsed = adsc.parse_basic_report(r["raw"])
-        if parsed is None:
-            continue   # no basic_report tag / truncated raw — discarded, no cap consumed
-        if r["id"] in seen:
-            continue
-        seen.add(r["id"])
-        points.append(_point(r, parsed["lat"], parsed["lon"], True))
-    for r in coarse_rows:
-        if r["id"] in seen:
-            continue   # same row already emitted as a precise fix
-        points.append(_point(r, r["lat"], r["lon"], False))
-
+    """Map overlay payload: the last `minutes` minutes, all airframes, newest first, capped at
+    `_POSITIONS_CAP` (see :func:`_gather_positions` for the sources and merge rules)."""
+    now = int(time.time())
+    points = _gather_positions(now - minutes * 60, now + _POSITIONS_FUTURE_SLACK, None)
     points.sort(key=lambda p: (p["ts"] or 0, p["_id"]), reverse=True)
     points = points[:_POSITIONS_CAP]
     for p in points:
         del p["_id"]   # internal merge key — not part of the public Vdl2Position contract
     return {"points": points, "count": len(points)}
+
+
+def _compute_flight_positions(icao_hex: str, since: int, until: int) -> dict:
+    """Per-flight payload: one airframe, fixes whose own ts lies in [since, until], oldest first
+    (route order), at most `_FLIGHT_POSITIONS_CAP` (the newest ones when more exist)."""
+    points = _gather_positions(since, until, icao_hex)
+    points.sort(key=lambda p: (p["ts"] or 0, p["_id"]), reverse=True)
+    points = points[:_FLIGHT_POSITIONS_CAP]
+    points.reverse()
+    for p in points:
+        del p["_id"]
+    return {"points": points, "count": len(points)}
+
+
+def _gather_positions(lo: int, hi: int, icao: str | None) -> list[dict]:
+    """Six candidate queries merged in Python (a single OR query full-scans). The
+    label (`label IN (…)` over `positions.PRECISE_LABEL_PARSERS`), H1 (`label = 'H1'`),
+    ADS-C (`label = 'B6'`) and coarse queries are index-served (idx_vdl2_label_ts_id /
+    idx_vdl2_pos_ts_id) — the multi-value `IN` probes each label then sorts the merged rows
+    in a temp B-tree before the LIMIT, cheap at the observed volume (~40 rows/day across these
+    labels); the `#M1BPOS` and `59,G` queries are time-window-bounded row scans (idx_vdl2_ts
+    bounds `ts >=`, then a `body LIKE` filter), capped so they still terminate. The `#M1BPOS`
+    query also matches dumpvdl2 rows (`sublabel = 'M1'`, body `POS…` — libacars stripped the
+    prefix), re-prefixed via `normalize.acars_text` before parsing. Precise fixes are parsed from
+    the per-label bodies, H1 position reports, `#M1BPOS`, LOT `59,G` bodies and ADS-C `raw` JSON
+    (so a coordinate-looking body on any other row can't masquerade as precise); coarse XID
+    column fixes are the fallback. Every point carries `source` (`label`, `m1bpos`, `59g`,
+    `adsc`, `xid`, `h1-abs`, `h1-cf`, `h1-pos`). A label parser may supply the fix's own
+    `ts`/`alt`; an H1 message can yield several points (`_id` shared). Embedded-time fixes must
+    lie in the window `lo <= ts <= hi`. Independent caps + over-fetched scans + the callers'
+    final merge/cap so a burst of no-fix rows can't starve valid coarse OR older precise points.
+
+    `icao=None` is the map scan (`ts >= lo`, `lo`/`hi` = window start / now + slack). With an
+    `icao` every query is scoped to that airframe and to receive times in
+    `[lo - _FLIGHT_SCAN_PAD_BEFORE, hi + _FLIGHT_SCAN_PAD_AFTER]` (a message can carry fixes
+    from minutes before its receive time and a fix is at most ~10 min ahead of it), served by
+    idx_vdl2_icao; every resulting point's own `ts` is then filtered into `[lo, hi]`.
+    Returns unsorted points carrying the internal `_id` merge key."""
+    conn = vdl2_db.web_conn()
+    if icao is None:
+        sql, scope = _SQL_MAP, (lo,)
+    else:
+        sql = _SQL_FLIGHT
+        scope = (icao, lo - _FLIGHT_SCAN_PAD_BEFORE, hi + _FLIGHT_SCAN_PAD_AFTER)
+
+    labels = list(vdl2_positions.PRECISE_LABEL_PARSERS)
+    label_rows = conn.execute(sql["label"], (*labels, *scope, _POSITIONS_LABEL_SCAN_CAP)).fetchall()
+    coarse_rows = conn.execute(sql["coarse"], (*scope, _POSITIONS_CAP)).fetchall()
+    m1bpos_rows = conn.execute(sql["m1bpos"], (*scope, _POSITIONS_M1BPOS_SCAN_CAP)).fetchall()
+    g59_rows = conn.execute(sql["59g"], (*scope, _POSITIONS_59G_SCAN_CAP)).fetchall()
+    adsc_rows = conn.execute(sql["adsc"], (*scope, _POSITIONS_ADSC_SCAN_CAP)).fetchall()
+    h1_rows = conn.execute(sql["h1"], (*scope, _POSITIONS_H1_SCAN_CAP)).fetchall()
+    scoped = icao is not None
+
+    def _point(r, lat, lon, precise, source, extra=None) -> dict:
+        # `_id` is an internal merge/sort key, stripped before the response. `extra` may
+        # override `ts` (a fix's own time) and add alt/temp_c/wind_dir/wind_kt/track/gs/vs.
+        p = {
+            "_id": r["id"], "lat": lat, "lon": lon, "icao_hex": r["icao_hex"],
+            "ts": r["ts"], "label": r["label"], "precise": precise, "source": source,
+        }
+        if extra:
+            p.update(extra)
+        return p
+
+    def _outside(ts) -> bool:
+        # Per-flight points must lie in [since, until] whatever their source; the map keeps its
+        # historical behaviour (only embedded fix times are range-checked).
+        return not lo <= ts <= hi
+
+    points: list[dict] = []
+    seen: set[int] = set()
+    for r in label_rows:
+        parsed = _safe_parse(vdl2_positions.parse_by_label, r["label"], r["body"], r["ts"])
+        if parsed is None:
+            continue   # no-fix body (e.g. AUTPOS blank marker, label-17 `------`) — discarded, no cap consumed
+        extra = {k: parsed[k] for k in ("ts", "alt") if k in parsed}
+        if _outside(extra.get("ts", r["ts"])) and ("ts" in extra or scoped):
+            continue   # fix time outside the window (own ts, not the receive time)
+        seen.add(r["id"])
+        points.append(_point(r, parsed["lat"], parsed["lon"], True, "label", extra))
+    for r in m1bpos_rows:
+        parsed = _safe_parse(
+            m1bpos.parse_position, normalize.acars_text(r["body"], r["sublabel"], r["mfi"]))
+        if parsed is None:
+            continue   # non-position #M1BPOS body — discarded (does not consume the final cap)
+        if r["id"] in seen or (scoped and _outside(r["ts"])):
+            continue
+        seen.add(r["id"])
+        points.append(_point(r, parsed["lat"], parsed["lon"], True, "m1bpos"))
+    for r in g59_rows:
+        parsed = _safe_parse(vdl2_positions.parse_59g, r["body"])
+        if parsed is None:
+            continue   # non-position 59,G (label-37 status) — discarded, no cap consumed
+        if r["id"] in seen or (scoped and _outside(r["ts"])):
+            continue
+        seen.add(r["id"])
+        points.append(_point(r, parsed["lat"], parsed["lon"], True, "59g"))
+    for r in adsc_rows:
+        parsed = _safe_parse(adsc.parse_basic_report, r["raw"])
+        if parsed is None:
+            continue   # no basic_report tag / truncated raw — discarded, no cap consumed
+        if r["id"] in seen or (scoped and _outside(r["ts"])):
+            continue
+        seen.add(r["id"])
+        # earth_ref_data (same report): attach only the valid fields
+        motion = _safe_parse(adsc.parse_earth_ref, r["raw"]) or {}
+        extra = {k: v for k, v in motion.items() if v is not None}
+        points.append(_point(r, parsed["lat"], parsed["lon"], True, "adsc", extra))
+    for r in h1_rows:
+        if r["id"] in seen:
+            continue
+        fixes = [f for f in (_safe_parse(h1rep.parse_positions, r["sublabel"], r["body"], r["ts"]) or [])
+                 if lo <= f["ts"] <= hi]
+        if not fixes:
+            continue   # no fix (or all outside the window) — discarded, no cap consumed
+        seen.add(r["id"])   # only after ALL of the message's fixes are emitted
+        for f in fixes:
+            extra = {k: v for k, v in f.items() if k not in ("lat", "lon", "source")}
+            points.append(_point(r, f["lat"], f["lon"], True, f["source"], extra))
+    for r in coarse_rows:
+        if r["id"] in seen or (scoped and _outside(r["ts"])):
+            continue   # same row already emitted as a precise fix
+        points.append(_point(r, r["lat"], r["lon"], False, "xid"))
+    return points

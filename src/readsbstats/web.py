@@ -80,9 +80,10 @@ def _startup_migrate() -> None:
 
 
 def _ensure_vdl2_schema() -> None:
-    """Create the SEPARATE vdl2.db schema when the feature is enabled, so the
-    read-only API works even before/without the ingest service running.
-    Writes only to vdl2.db — never touches history.db. No-op when disabled.
+    """Migrate the SEPARATE vdl2.db schema when the feature is enabled (idempotent,
+    cheap indexes only). Writes only to vdl2.db — never touches history.db — and
+    never creates it: the ingest service owns the file, so a missing vdl2.db just
+    leaves VDL2 surfaces unavailable until ingest creates it. No-op when disabled.
 
     FAIL-OPEN: a feature-local DB problem (corrupt file, missing parent dir,
     permission/mount failure) must NOT take down the core web app. On error we
@@ -96,7 +97,7 @@ def _ensure_vdl2_schema() -> None:
         if vdl2_db._conn is not None:        # respect a test-injected connection
             vdl2_db.ensure_schema(vdl2_db._conn, build_fts=False)
             return
-        conn = vdl2_db.connect()
+        conn = vdl2_db.connect(create=False)   # ingest owns creation (ADR-0021)
         try:
             vdl2_db.ensure_schema(conn, build_fts=False)  # collector owns the FTS rebuild
         finally:

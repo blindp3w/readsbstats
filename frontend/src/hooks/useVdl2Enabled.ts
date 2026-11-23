@@ -1,6 +1,14 @@
 import { useQuery } from '@tanstack/react-query';
 import { apiJson } from '@/lib/api';
-import type { HealthResponse, Settings, Vdl2Message, Vdl2MessagesResponse } from '@/lib/types';
+import { filterFixesToFlight, vdl2FlightPositionWindow } from '@/lib/vdl2Points';
+import type {
+  HealthResponse,
+  Settings,
+  Vdl2Message,
+  Vdl2MessagesResponse,
+  Vdl2Position,
+  Vdl2PositionsResponse,
+} from '@/lib/types';
 
 // Reads the VDL2 capability flag from /api/settings. Shares the ['settings']
 // query key with App.tsx (seeded on boot) so this adds no extra request, and
@@ -126,5 +134,36 @@ export function useVdl2FlightMessages(
     error: q.error,
     messages: q.data?.messages ?? [],
     hasMore: q.data?.next_before_id != null,
+  };
+}
+
+// ACARS-derived position fixes of one flight, for the route-map overlay and the
+// winds-aloft table. Gated like every VDL2 surface — and additionally on the config
+// flag — so a disabled/unavailable feature makes NO request. Asks for the flight
+// ±10 min (clamped to the server's 48 h cap, see vdl2FlightPositionWindow), then
+// keeps only fixes inside [firstSeen, lastSeen] so the airframe's previous/next leg
+// doesn't leak onto this flight's map.
+export function useVdl2FlightPositions(
+  icao: string,
+  firstSeen: number,
+  lastSeen: number,
+): { available: boolean; isLoading: boolean; isError: boolean; fixes: Vdl2Position[] } {
+  const enabled = useVdl2Enabled();
+  const available = useVdl2Available() && enabled;
+  const { since, until } = vdl2FlightPositionWindow(firstSeen, lastSeen);
+  const q = useQuery({
+    queryKey: ['vdl2-flight-positions', icao, since, until],
+    enabled: available && !!icao,
+    queryFn: () => {
+      const p = new URLSearchParams({ since: String(since), until: String(until) });
+      return apiJson<Vdl2PositionsResponse>(`vdl2/positions/${icao}?${p.toString()}`);
+    },
+    staleTime: 60_000,
+  });
+  return {
+    available,
+    isLoading: q.isLoading,
+    isError: q.isError,
+    fixes: filterFixesToFlight(q.data?.points ?? [], firstSeen, lastSeen),
   };
 }

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import { apiJson } from '@/lib/api';
 import { errMsg } from '@/lib/errMsg';
@@ -13,6 +13,7 @@ import { Alert } from '@/components/ui/Alert';
 import { PageSkeleton } from '@/components/PageSkeleton';
 import { MessageList } from '@/components/vdl2/MessageList';
 import { useVdl2Health } from '@/hooks/useVdl2Enabled';
+import { useAcarsDecoder, useAcarsDecoderStatus } from '@/hooks/useAcarsDecoder';
 import { useDebouncedValue } from '@/hooks/useDebouncedValue';
 import { labelName } from '@/lib/vdl2Labels';
 import type { Settings, Vdl2MessagesResponse, Vdl2StatsSummary } from '@/lib/types';
@@ -32,6 +33,10 @@ export default function Vdl2Page() {
   });
   const enabled = settingsQ.data?.vdl2_enabled === true;
   const { available, isLoading: healthLoading, isError: healthError } = useVdl2Health();
+  // Only hit /api/vdl2/* once the DB is known to be reachable: while health is
+  // loading (or says unavailable / failed) `available` is false, so the feed and
+  // stats don't poll endpoints that would just error every 15 s.
+  const active = enabled && available;
 
   // Filters live in the URL so the view is shareable + back-button friendly.
   const [q, setQ] = useSearchParam('q', '');
@@ -41,6 +46,9 @@ export default function Vdl2Page() {
   // Show intermediate blocks of reassembled multi-block messages (hidden by default).
   const [frag, setFrag] = useSearchParam('frag', '');
   const showFragments = frag === '1';
+  // Client-side only: hide rows the decoder can't decode (no API param).
+  const [decodedParam, setDecodedParam] = useSearchParam('dec', '');
+  const decodedOnly = decodedParam === '1';
   // The registration box writes the URL on every keystroke (responsive input),
   // but the backend scans per request — so the feed query follows a debounced copy.
   const debouncedReg = useDebouncedValue(reg, 300);
@@ -64,9 +72,19 @@ export default function Vdl2Page() {
     setQInput(q);
   }
 
+  // True while the feed viewport is scrolled away from the top. Live polling
+  // pauses then: a refetch prepends new rows and would make the content jump
+  // under a reading user. MessageList reports 0 again on unmount.
+  const [scrolled, setScrolled] = useState(false);
+  const feedViewport = useRef<HTMLDivElement>(null);
+  const decoderStatus = useAcarsDecoderStatus();
+  // Shared, stable decode fn (per-message-id cache) — also handed to MessageList so
+  // the filter and the rendering agree and nothing is decoded twice.
+  const decode = useAcarsDecoder();
+
   const feed = useInfiniteQuery({
     queryKey: ['vdl2-messages', { q, label, reg: debouncedReg, hex, showFragments }],
-    enabled,
+    enabled: active,
     initialPageParam: undefined as number | undefined,
     queryFn: ({ pageParam }) => {
       const p = new URLSearchParams({ limit: String(PAGE) });
@@ -80,8 +98,10 @@ export default function Vdl2Page() {
     },
     getNextPageParam: (last) => last.next_before_id ?? undefined,
     // Live-refresh only the initial page; once the user pages into history
-    // (more than one page loaded) stop polling so we don't refetch everything.
-    refetchInterval: (query) => ((query.state.data?.pages.length ?? 0) > 1 ? false : 15_000),
+    // (more than one page loaded) or scrolls down, stop polling so we don't
+    // refetch everything / shift the rows under the reader.
+    refetchInterval: (query) =>
+      scrolled || (query.state.data?.pages.length ?? 0) > 1 ? false : 15_000,
     staleTime: 5_000,
   });
 
@@ -89,7 +109,7 @@ export default function Vdl2Page() {
     // Own key: the Stats-page card caches the FULL payload under ['vdl2-stats'].
     queryKey: ['vdl2-stats-summary'],
     queryFn: () => apiJson<Vdl2StatsSummary>('vdl2/stats?summary=true'),
-    enabled,
+    enabled: active,
     refetchInterval: 15_000,
     staleTime: 5_000,
   });
@@ -140,14 +160,22 @@ export default function Vdl2Page() {
   }
 
   const messages = feed.data?.pages.flatMap((p) => p.messages) ?? [];
-  const hasActiveFilter = Boolean(q || label || reg || hex);
+  const hasActiveFilter = Boolean(q || label || reg || hex || showFragments || decodedOnly);
+  const decodedCount = messages.reduce((n, m) => (m.body && decode(m) ? n + 1 : n), 0);
+  const visibleMessages = decodedOnly ? messages.filter((m) => m.body && decode(m)) : messages;
+
+  function resumeLive() {
+    if (feedViewport.current) feedViewport.current.scrollTop = 0;
+    setScrolled(false);
+    void feed.refetch();
+  }
 
   function clearFilters() {
     // One atomic update — React Router v7 drops all but the last of N
     // back-to-back setSearchParams calls in a single handler (see
     // useSearchParam.ts). The qInput box re-syncs via the effect on `q`.
     setQInput('');
-    updateFilters({ q: null, label: null, reg: null, hex: null, frag: null });
+    updateFilters({ q: null, label: null, reg: null, hex: null, frag: null, dec: null });
   }
 
   return (
@@ -242,6 +270,19 @@ export default function Vdl2Page() {
               />
               Show partial blocks
             </label>
+            <label
+              htmlFor="vdl2-decoded-only"
+              className="flex shrink-0 cursor-pointer items-center gap-1.5 self-end pb-2 text-sm"
+            >
+              <input
+                id="vdl2-decoded-only"
+                type="checkbox"
+                checked={decodedOnly}
+                onChange={(e) => setDecodedParam(e.target.checked ? '1' : '')}
+                data-testid="vdl2-decoded-only"
+              />
+              Decoded only
+            </label>
             {hex && (
               <Badge variant="default" data-testid="vdl2-hex-chip">
                 hex: {hex}
@@ -278,8 +319,53 @@ export default function Vdl2Page() {
               No messages{hasActiveFilter ? ' match the current filters' : ' received yet'}.
             </p>
           )}
-          {messages.length > 0 && (
-            <MessageList messages={messages} onHexClick={setHex} onRegClick={setReg} />
+          {feed.isSuccess && messages.length > 0 && (
+            <p className="mb-2 text-xs text-[var(--color-text-dim)]" data-testid="vdl2-decode-rate">
+              Decoded {decodedCount.toLocaleString()} of {messages.length.toLocaleString()} loaded (
+              {Math.round((decodedCount / messages.length) * 100)}%)
+              {decodedOnly && ' — showing decoded only'}
+            </p>
+          )}
+          {feed.isSuccess && messages.length > 0 && visibleMessages.length === 0 && (
+            <p
+              className="py-6 text-center text-sm text-[var(--color-text-dim)]"
+              data-testid="vdl2-none-decoded"
+            >
+              None of the {messages.length.toLocaleString()} loaded messages could be decoded.
+              {feed.hasNextPage && ' Load older messages or turn off "Decoded only".'}
+            </p>
+          )}
+          {decoderStatus === 'unavailable' && (
+            <p
+              className="mb-2 text-xs text-[var(--color-text-dim)]"
+              role="status"
+              data-testid="vdl2-decoder-unavailable"
+            >
+              Decoder failed to load — reload the page to decode messages.
+            </p>
+          )}
+          {visibleMessages.length > 0 && (
+            <div className="relative">
+              {scrolled && (
+                <button
+                  type="button"
+                  className="absolute left-1/2 top-2 z-10 -translate-x-1/2 rounded-full border border-[var(--color-border-default)] bg-[var(--color-surface-2)] px-3 py-1 text-xs text-[var(--color-accent)] shadow-md hover:underline"
+                  onClick={resumeLive}
+                  data-testid="vdl2-resume-live"
+                >
+                  Live updates paused — scroll to top / click to resume
+                </button>
+              )}
+              <MessageList
+                messages={visibleMessages}
+                decode={decode}
+                onHexClick={setHex}
+                onRegClick={setReg}
+                onScrollTopChange={(top) => setScrolled(top > 0)}
+                viewportRef={feedViewport}
+                scrollTestId="vdl2-feed-scroll"
+              />
+            </div>
           )}
           {feed.hasNextPage && (
             <div className="mt-3 text-center">

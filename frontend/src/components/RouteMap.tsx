@@ -12,6 +12,9 @@ import 'maplibre-gl/dist/maplibre-gl.css';
 import '@/lib/maplibreWorker';
 import { useBasemapStyle } from '@/hooks/useBasemapStyle';
 import { routeFitKey } from '@/lib/routeFitKey';
+import { Vdl2PointPopup } from '@/components/map/Vdl2PointPopup';
+import { vdl2SourceLabel } from '@/lib/vdl2Points';
+import type { Vdl2Position } from '@/lib/types';
 import {
   buildRouteSegments,
   routeBounds,
@@ -39,6 +42,10 @@ interface Props {
   positions: Position[];
   receiverLat: number | null;
   receiverLon: number | null;
+  // Optional ACARS-derived fixes for this flight (VDL2 opt-in). Drawn as diamond markers
+  // distinct from the ADS-B track, with a click popup and a legend entry. Absent/empty ⇒
+  // the map renders exactly as before.
+  acarsFixes?: Vdl2Position[];
 }
 
 const RECEIVER_COLOR = '#5b9af9';
@@ -47,8 +54,11 @@ const RECEIVER_COLOR = '#5b9af9';
 // literal) so a future ADS-B colour tweak propagates here automatically.
 const START_COLOR = ROUTE_ADSB_COLOR;
 const END_COLOR = '#ef4444'; // danger red — "terminate"
+// ACARS fixes: orange diamonds (theme token) — shape + hue differ from the round
+// green/yellow/blue ADS-B track and start/end dots.
+const ACARS_FIX_COLOR = 'var(--color-orange)';
 
-export default function RouteMap({ positions, receiverLat, receiverLon }: Props) {
+export default function RouteMap({ positions, receiverLat, receiverLon, acarsFixes }: Props) {
   const mapRef = useRef<MapRef | null>(null);
   const basemapStyle = useBasemapStyle();
 
@@ -58,6 +68,8 @@ export default function RouteMap({ positions, receiverLat, receiverLon }: Props)
   // the fitBounds effect and the <Source> data prop.
   const segmentsGeoJSON = useMemo(() => buildRouteSegments(positions), [positions]);
   const allPoints = useMemo(() => routePoints(positions), [positions]);
+  const fixes = (acarsFixes ?? []).filter((f) => f.lat != null && f.lon != null);
+  const [selectedFix, setSelectedFix] = useState<Vdl2Position | null>(null);
 
   // fitBounds replaces today's react-leaflet `FitBounds` useEffect. Runs
   // whenever the track changes shape; a key derived from length + endpoints
@@ -108,6 +120,19 @@ export default function RouteMap({ positions, receiverLat, receiverLon }: Props)
       style={{ width: '100%', height: '100%', borderRadius: '0.25rem' }}
     >
       <AttributionControl compact position="bottom-right" />
+      {fixes.length > 0 && (
+        <div
+          data-testid="route-acars-legend"
+          className="pointer-events-none absolute bottom-2 left-2 z-[2] inline-flex items-center gap-1.5 rounded border border-[var(--color-border-default)] bg-[var(--color-surface)]/90 px-2 py-1 text-[11px] text-[var(--color-text-dim)] backdrop-blur"
+        >
+          <span
+            aria-hidden="true"
+            className="inline-block h-2 w-2 rotate-45 border border-white"
+            style={{ backgroundColor: ACARS_FIX_COLOR }}
+          />
+          ACARS position
+        </div>
+      )}
       {/* Zoom + / − in top-right. Compass hidden — bearing rotation
           isn't relevant for a 2D flight route. */}
       <NavigationControl position="top-right" showCompass={false} />
@@ -162,6 +187,37 @@ export default function RouteMap({ positions, receiverLat, receiverLon }: Props)
             }}
           />
         </Marker>
+      )}
+
+      {/* ACARS fixes — orange diamonds; click for source / time / altitude. A coarse
+          (XID link) fix is hollow, mirroring the live-map overlay. */}
+      {fixes.map((f, i) => (
+        <Marker
+          key={`${f.ts}-${f.lat}-${f.lon}-${i}`}
+          longitude={f.lon}
+          latitude={f.lat}
+          anchor="center"
+          onClick={(e) => {
+            e.originalEvent.stopPropagation();
+            setSelectedFix(f);
+          }}
+          style={{ cursor: 'pointer' }}
+        >
+          <button
+            type="button"
+            data-testid="route-acars-fix"
+            aria-label={`ACARS position: ${vdl2SourceLabel(f)}`}
+            className="block h-3 w-3 rotate-45 border-2 border-white p-0"
+            style={{
+              backgroundColor: f.precise === false ? 'transparent' : ACARS_FIX_COLOR,
+              borderColor: f.precise === false ? ACARS_FIX_COLOR : '#fff',
+              boxSizing: 'border-box',
+            }}
+          />
+        </Marker>
+      ))}
+      {selectedFix && fixes.includes(selectedFix) && (
+        <Vdl2PointPopup point={selectedFix} onClose={() => setSelectedFix(null)} offset={12} />
       )}
 
       {/* End marker — red circle at the LAST plotted position. */}

@@ -118,24 +118,24 @@ describe('Vdl2 page partial-blocks toggle', () => {
       .map((c) => String(c[0]))
       .filter((u) => u.includes('/api/vdl2/messages'));
 
-  it('does not request fragments by default and does not count as an active filter', async () => {
+  it('does not request fragments by default and shows no Clear', async () => {
     stubFetch({ vdl2_enabled: true, messages: [] });
     const { findByTestId, queryByTestId, getByTestId } = renderPage();
     await findByTestId('vdl2-empty');
     expect((getByTestId('vdl2-frag') as HTMLInputElement).checked).toBe(false);
     expect(messageUrls().every((u) => !u.includes('fragments'))).toBe(true);
-    expect(queryByTestId('vdl2-clear')).toBeNull();
+    expect(queryByTestId('vdl2-clear')).toBeNull(); // default state: nothing to clear
   });
 
   it('sends fragments=true when toggled on and Clear turns it off', async () => {
     stubFetch({ vdl2_enabled: true, messages: [] });
-    const { findByTestId, getByTestId, queryByTestId } = renderPage();
+    const { findByTestId, getByTestId } = renderPage();
     await findByTestId('vdl2-empty');
     fireEvent.click(getByTestId('vdl2-frag'));
     await waitFor(() => expect(messageUrls().some((u) => u.includes('fragments=true'))).toBe(true));
     expect((getByTestId('vdl2-frag') as HTMLInputElement).checked).toBe(true);
-    // Not an "active filter": no Clear button from the toggle alone.
-    expect(queryByTestId('vdl2-clear')).toBeNull();
+    // Toggled on is an active filter: Clear appears.
+    expect(await findByTestId('vdl2-clear')).toBeTruthy();
     fireEvent.click(getByTestId('vdl2-frag'));
     await waitFor(() => expect((getByTestId('vdl2-frag') as HTMLInputElement).checked).toBe(false));
   });
@@ -296,5 +296,53 @@ describe('Vdl2 page pre-freeze fixes', () => {
       const regUrls = messageUrls().filter((u) => u.includes('reg='));
       expect(regUrls.every((u) => u.includes('reg=SP-'))).toBe(true);
     });
+  });
+});
+
+describe('Vdl2 page availability gating (batch 3 F1)', () => {
+  const vdl2Calls = () =>
+    (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls
+      .map((c) => String(c[0]))
+      .filter((u) => u.includes('/api/vdl2/'));
+
+  it('makes no /api/vdl2/* request when enabled but the DB is unavailable', async () => {
+    stubFetch({ vdl2_enabled: true, available: false });
+    const { findByTestId } = renderPage();
+    await findByTestId('vdl2-unavailable');
+    expect(vdl2Calls()).toEqual([]);
+  });
+
+  it('makes no /api/vdl2/* request while the health check is still loading', async () => {
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : (input as Request).url ?? String(input);
+      if (url.includes('/api/health')) return new Promise<Response>(() => {});
+      return new Response(JSON.stringify({ vdl2_enabled: true }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }) as unknown as typeof fetch;
+    renderPage();
+    const urls = () =>
+      (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls.map((c) => String(c[0]));
+    // Settings resolved (enabled) and health requested but never answers.
+    await waitFor(() => {
+      expect(urls().some((u) => u.includes('/api/settings'))).toBe(true);
+      expect(urls().some((u) => u.includes('/api/health'))).toBe(true);
+    });
+    await new Promise((r) => setTimeout(r, 100));
+    expect(vdl2Calls()).toEqual([]);
+  });
+});
+
+describe('Vdl2 page Clear button with frag filter (batch 3 F5)', () => {
+  it('shows Clear when only the partial-blocks toggle is on', async () => {
+    stubFetch({ vdl2_enabled: true, messages: [] });
+    const { findByTestId, getByTestId, queryByTestId } = renderPage();
+    await findByTestId('vdl2-empty');
+    expect(queryByTestId('vdl2-clear')).toBeNull();
+    fireEvent.click(getByTestId('vdl2-frag'));
+    fireEvent.click(await findByTestId('vdl2-clear'));
+    await waitFor(() => expect((getByTestId('vdl2-frag') as HTMLInputElement).checked).toBe(false));
+    expect(queryByTestId('vdl2-clear')).toBeNull();
   });
 });

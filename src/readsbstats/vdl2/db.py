@@ -12,6 +12,8 @@ probes at schema-build time and the schema/API degrade to ``LIKE`` if absent.
 """
 from __future__ import annotations
 
+import os
+import pathlib
 import sqlite3
 import threading
 import time
@@ -122,10 +124,20 @@ END;
 """ + _DDL_FTS_UPDATE_TRIGGER
 
 
-def connect(path: str | None = None) -> sqlite3.Connection:
+def connect(path: str | None = None, *, create: bool = True) -> sqlite3.Connection:
     """Open a WAL connection to the VDL2 DB. Mirrors the core pragma set
-    (database.connect) minus foreign_keys (this schema has none)."""
-    conn = sqlite3.connect(path or config.VDL2_DB_PATH, check_same_thread=False)
+    (database.connect) minus foreign_keys (this schema has none).
+
+    ``create=False`` (the web process) opens the existing file read-write via a
+    ``mode=rw`` URI and raises ``sqlite3.OperationalError`` if it is missing, so a
+    deleted ``vdl2.db`` is never silently recreated empty by a reader. The ingest
+    service and offline scripts keep the default and own file creation."""
+    target = path or config.VDL2_DB_PATH
+    if create:
+        conn = sqlite3.connect(target, check_same_thread=False)
+    else:
+        uri = pathlib.Path(os.path.abspath(target)).as_uri() + "?mode=rw"
+        conn = sqlite3.connect(uri, check_same_thread=False, uri=True)
     conn.row_factory = sqlite3.Row
     conn.executescript(
         "PRAGMA journal_mode = WAL;"
@@ -352,7 +364,7 @@ def web_conn() -> sqlite3.Connection:
         return _conn
     c = getattr(_thread_local, "conn", None)
     if c is None:
-        c = connect()
+        c = connect(create=False)           # the web process never creates vdl2.db
         ensure_schema(c, build_fts=False)   # never run a slow FTS rebuild on a web thread
         _thread_local.conn = c
         with _web_conns_lock:

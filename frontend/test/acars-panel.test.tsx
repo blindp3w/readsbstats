@@ -24,6 +24,18 @@ describe('AcarsPanel', () => {
       .toHaveTextContent('Failed to load ACARS: boom');
   });
 
+  it('does not show a misleading "(0)" count on error', () => {
+    mockHook.mockReturnValue({
+      available: true, isLoading: false, isSuccess: false, isError: true,
+      error: new Error('boom'), messages: [], hasMore: false,
+    } as never);
+    render(<AcarsPanel icao="48e95d" firstSeen={1000} lastSeen={2000} />);
+    const card = screen.getByTestId('flight-acars-card');
+    expect(card).toHaveTextContent('ACARS');
+    expect(card).not.toHaveTextContent('ACARS (0)');
+    expect(card).not.toHaveTextContent('(0)');
+  });
+
   it('renders nothing when VDL2 is unavailable', () => {
     mockHook.mockReturnValue({
       available: false, isLoading: false, isSuccess: false, isError: false,

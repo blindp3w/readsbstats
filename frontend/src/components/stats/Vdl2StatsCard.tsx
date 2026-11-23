@@ -19,6 +19,10 @@ export function Vdl2StatsCard({ enabled = true }: { enabled?: boolean }) {
     staleTime: 120_000,
   });
 
+  // Disabled (TanStack v5: a disabled query has isLoading=false and no data):
+  // render nothing rather than '—' KPIs and "No data yet".
+  if (!enabled) return null;
+
   // Don't render '—' KPIs indistinguishably on a failed/loading query (audit 2026-06-15).
   // Guard on `data == null` (like Vdl2ReceptionCard) so a transient refetch error
   // keeps showing cached stats instead of flipping to the alert.
@@ -40,6 +44,7 @@ export function Vdl2StatsCard({ enabled = true }: { enabled?: boolean }) {
   // With the optional overlap tile there are 4 KPIs (balance 2×2 / 1×4);
   // without it, 3 (1×3). Avoids a lone 4th tile wrapping under a 3-col grid.
   const hasOverlap = data?.flights_overlap_pct != null;
+  const groundStations = Array.isArray(data?.ground_stations) ? data.ground_stations : [];
 
   return (
     <div className="space-y-4" data-testid="stats-vdl2">
@@ -68,10 +73,10 @@ export function Vdl2StatsCard({ enabled = true }: { enabled?: boolean }) {
           <CardContent>
             {data && data.top_labels.length > 0 ? (
               <ul className="space-y-1 text-sm">
-                {data.top_labels.map((l) => (
-                  <li key={l.label} className="flex items-center justify-between gap-2">
+                {data.top_labels.map((l, i) => (
+                  <li key={`${l.label ?? 'none'}-${i}`} className="flex items-center justify-between gap-2">
                     <span className="min-w-0 truncate">
-                      <span className="font-mono">{l.label}</span>
+                      <span className="font-mono">{l.label ?? '—'}</span>
                       {labelName(l.label) && (
                         <span className="text-[var(--color-text-dim)]">
                           {' '}
@@ -97,10 +102,10 @@ export function Vdl2StatsCard({ enabled = true }: { enabled?: boolean }) {
           <CardContent>
             {data && data.top_airlines.length > 0 ? (
               <ul className="space-y-1 text-sm">
-                {data.top_airlines.map((a) => (
-                  <li key={a.code} className="flex items-center justify-between gap-2">
+                {data.top_airlines.map((a, i) => (
+                  <li key={`${a.code ?? 'none'}-${i}`} className="flex items-center justify-between gap-2">
                     <span>
-                      <span className="font-mono">{a.code}</span>
+                      <span className="font-mono">{a.code ?? '—'}</span>
                       {a.name ? ` · ${a.name}` : ''}
                     </span>
                     <span className="tabnum text-[var(--color-text-dim)]">
@@ -115,6 +120,57 @@ export function Vdl2StatsCard({ enabled = true }: { enabled?: boolean }) {
           </CardContent>
         </Card>
       </div>
+      {groundStations.length > 0 && (
+        <Card data-testid="vdl2-ground-stations">
+          <CardHeader>
+            <CardTitle>Ground stations (24 h)</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[320px] text-sm">
+                <thead>
+                  <tr className="text-left text-xs text-[var(--color-text-dim)]">
+                    <th scope="col" className="py-1 pr-3 font-normal">
+                      Station
+                    </th>
+                    <th scope="col" className="py-1 pr-3 text-right font-normal">
+                      MHz
+                    </th>
+                    <th scope="col" className="py-1 pr-3 text-right font-normal">
+                      Frames
+                    </th>
+                    <th scope="col" className="py-1 pr-3 text-right font-normal">
+                      Aircraft
+                    </th>
+                    <th scope="col" className="py-1 text-right font-normal">
+                      SNR dB
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {groundStations.map((g, i) => (
+                    <tr
+                      key={`${g.toaddr ?? 'none'}-${g.freq ?? 'none'}-${i}`}
+                      className="border-t border-[var(--color-border-default)]"
+                      data-testid="vdl2-gs-row"
+                    >
+                      <td className="py-1 pr-3 font-mono">{g.toaddr ?? '—'}</td>
+                      <td className="tabnum py-1 pr-3 text-right">
+                        {g.freq != null ? g.freq.toFixed(3) : '—'}
+                      </td>
+                      <td className="tabnum py-1 pr-3 text-right">{g.frames.toLocaleString()}</td>
+                      <td className="tabnum py-1 pr-3 text-right">{g.aircraft.toLocaleString()}</td>
+                      <td className="tabnum py-1 text-right">
+                        {g.snr_db != null ? g.snr_db.toFixed(1) : '—'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </CardContent>
+        </Card>
+      )}
     </div>
   );
 }

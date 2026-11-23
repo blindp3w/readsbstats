@@ -1285,6 +1285,99 @@ class TestFailureModes:
         conn.close()
 
 
+class TestQueryParamBounds:
+    """An int >= 2**63 raises OverflowError at SQLite bind (not a sqlite3.Error, so
+    _vdl2_guard would not map it): it must be rejected as 422 by the Query bounds."""
+
+    HUGE = "99999999999999999999"
+
+    @pytest.mark.parametrize("path", [
+        "/api/vdl2/messages?before_id={h}",
+        "/api/vdl2/messages?since={h}",
+        "/api/vdl2/messages?until={h}",
+        "/api/vdl2/messages/48e95d?before_id={h}",
+        "/api/vdl2/messages/48e95d?since={h}",
+        "/api/vdl2/messages/48e95d?until={h}",
+        "/api/vdl2/oooi/48e95d?since={h}",
+        "/api/vdl2/oooi/48e95d?until={h}",
+    ])
+    def test_huge_value_is_422(self, client, path):
+        assert client.get(path.format(h=self.HUGE)).status_code == 422
+
+    def test_just_over_the_cap_is_422_and_cap_is_accepted(self, client):
+        assert client.get("/api/vdl2/messages?since=10000000001").status_code == 422
+        assert client.get("/api/vdl2/messages?before_id=%d" % (2 ** 62 + 1)).status_code == 422
+        assert client.get("/api/vdl2/messages?since=0&until=10000000000").status_code == 200
+        assert client.get("/api/vdl2/messages?before_id=%d" % 2 ** 62).status_code == 200
+
+
+class TestWebNeverCreatesDb:
+    """The web process only reads vdl2.db: a deleted file must not be recreated
+    as an empty DB (ADR-0021); VDL2 surfaces report unavailable instead."""
+
+    @pytest.fixture()
+    def missing(self, tmp_path, monkeypatch):
+        path = tmp_path / "vdl2.db"
+        monkeypatch.setattr(config, "VDL2_ENABLED", True)
+        monkeypatch.setattr(config, "VDL2_DB_PATH", str(path))
+        monkeypatch.setattr(vdl2_db, "_conn", None)
+        monkeypatch.setattr(vdl2_db, "_thread_local", threading.local())
+        with vdl2_db._web_conns_lock:
+            vdl2_db._web_conns.clear()
+        return path
+
+    def test_connect_create_false_missing_raises_and_creates_nothing(self, tmp_path):
+        path = tmp_path / "nope.db"
+        with pytest.raises(sqlite3.OperationalError):
+            vdl2_db.connect(str(path), create=False)
+        assert not list(tmp_path.iterdir())
+
+    def test_connect_create_false_opens_existing_read_write(self, tmp_path):
+        path = str(tmp_path / "v.db")
+        c = vdl2_db.connect(path)
+        vdl2_db.ensure_schema(c, build_fts=False)
+        c.close()
+        c = vdl2_db.connect(path, create=False)
+        assert c.execute("SELECT COUNT(*) FROM vdl2_messages").fetchone()[0] == 0
+        c.execute("PRAGMA user_version")   # still a usable rw connection
+        c.close()
+
+    def test_connect_create_false_handles_special_chars_in_path(self, tmp_path):
+        d = tmp_path / "a b#c?d"
+        d.mkdir()
+        path = str(d / "vdl2.db")
+        c = vdl2_db.connect(path)
+        c.close()
+        vdl2_db.connect(path, create=False).close()
+
+    def test_web_conn_missing_file_not_created(self, missing, tmp_path):
+        with pytest.raises(sqlite3.OperationalError):
+            vdl2_db.web_conn()
+        assert not missing.exists()
+        assert not list(tmp_path.glob("vdl2.db*"))
+
+    def test_api_503_and_health_unavailable_when_file_missing(self, missing, tmp_path):
+        app = FastAPI()
+        web._include_optional_routers(app)
+        with TestClient(app) as c:
+            assert c.get("/api/vdl2/messages").status_code == 503
+            assert c.get("/api/vdl2/stats").status_code == 503
+        assert vdl2_api.vdl2_health()["available"] is False
+        assert not list(tmp_path.glob("vdl2.db*"))
+
+    def test_startup_with_missing_file_does_not_crash_or_create(self, missing, tmp_path):
+        web._ensure_vdl2_schema()      # must not raise
+        assert not list(tmp_path.glob("vdl2.db*"))
+
+    def test_startup_migrates_existing_file(self, missing):
+        c = vdl2_db.connect(str(missing))     # collector-style creation
+        c.close()
+        web._ensure_vdl2_schema()
+        c = vdl2_db.connect(str(missing), create=False)
+        assert c.execute("SELECT COUNT(*) FROM vdl2_messages").fetchone()[0] == 0
+        c.close()
+
+
 class TestConnRegistry:
     def test_close_all_web_conns(self, tmp_path, monkeypatch):
         monkeypatch.setattr(config, "VDL2_ENABLED", True)
@@ -1293,6 +1386,8 @@ class TestConnRegistry:
         monkeypatch.setattr(vdl2_db, "_thread_local", threading.local())
         with vdl2_db._web_conns_lock:
             vdl2_db._web_conns.clear()
+        # web_conn() never creates the file: the collector side does.
+        vdl2_db.connect(str(tmp_path / "vdl2.db")).close()
         c = vdl2_db.web_conn()
         c.execute("SELECT 1")  # usable
         vdl2_db.close_all_web_conns()
@@ -1918,3 +2013,628 @@ class TestSupersededFragments:
 
     def test_stats_still_count_every_frame(self, frag_client):
         assert frag_client.get("/api/vdl2/stats").json()["total"] == 3
+
+
+class TestBatch5Positions:
+    """ADS-B-validated sources (ADR-0019): H1 ABS/EB0 multi-fix, CF FDE/MM, ``(POS-``,
+    labels 83 / 15 / 80. Parsed at query time; every point carries ``source``."""
+
+    CSV = ("ABS023BA_S      ,B7378MAX ,261123,LO513 ,EPWA,LUKK,0293,BCG27-S200-0011\r\n"
+           "N5211.0,E02052.4,{d}{h:02d}{m0:02d},02421,-03.5,301,029,CL,00000,0,\r\n"
+           "N5210.9,E02051.9,{d}{h:02d}{m1:02d},02563,-03.5,305,031,CL,00000,0,\r\n"
+           "N5210.8,E02051.3,{d}{h:02d}{m2:02d},02698,-04.0,307,031,CL,00000,0,\r\n:")
+
+    @staticmethod
+    def _client(monkeypatch, rows):
+        monkeypatch.setattr(config, "VDL2_ENABLED", True)
+        conn = make_vdl2_db()
+        vdl2_db.insert_messages(conn, rows)
+        conn.commit()
+        monkeypatch.setattr(vdl2_db, "_conn", conn)
+        app = FastAPI()
+        web._include_optional_routers(app)
+        return conn, TestClient(app)
+
+    @staticmethod
+    def _pts(c, minutes=60):
+        r = c.get(f"/api/vdl2/positions?minutes={minutes}")
+        assert r.status_code == 200
+        return r.json()["points"]
+
+    @staticmethod
+    def _csv_body(recv, back=(3, 2, 1)):
+        """CSV ABS body whose fixes are `back` minutes before `recv` (UTC DDHHMM)."""
+        import datetime as dt
+        times = [dt.datetime.fromtimestamp(recv - 60 * b, dt.timezone.utc) for b in back]
+        body = ("ABS023BA_S      ,B7378MAX ,261123,LO513 ,EPWA,LUKK,0293,BCG27-S200-0011")
+        for t in times:
+            body += (f"\r\nN5211.0,E02052.4,{t:%d%H%M},02421,-03.5,301,029,CL,00000,0,")
+        return body + "\r\n:", [int(t.replace(second=0).timestamp()) for t in times]
+
+    def test_multi_fix_abs_yields_points_with_per_fix_ts(self, monkeypatch):
+        recv = int(time.time()) - 30
+        body, fix_ts = self._csv_body(recv)
+        conn, client = self._client(monkeypatch, [
+            {"ts": recv, "icao_hex": "489001", "label": "H1", "sublabel": "DF", "body": body}])
+        with client as c:
+            pts = [p for p in self._pts(c) if p["icao_hex"] == "489001"]
+        conn.close()
+        assert len(pts) == 3
+        assert sorted(p["ts"] for p in pts) == sorted(fix_ts)
+        assert len({p["ts"] for p in pts}) == 3          # one message id, distinct ts
+        p = next(p for p in pts if p["ts"] == fix_ts[0])
+        assert p["source"] == "h1-abs" and p["precise"] is True and p["label"] == "H1"
+        assert p["alt"] == 2421 and p["temp_c"] == -3.5
+        assert p["wind_dir"] == 301 and p["wind_kt"] == 29
+        assert abs(p["lat"] - (52 + 11.0 / 60)) < 1e-4
+
+    def test_fixed_width_has_alt_but_no_wind(self, monkeypatch):
+        import datetime as dt
+        recv = int(time.time()) - 30
+        t = dt.datetime.fromtimestamp(recv - 120, dt.timezone.utc)
+        body = ("ABS011DA_S       EPWALEMD4\r\n"
+                f" 52188  20784{t:%H%M}004137-06-270019X1XIH-0801090000--")
+        conn, client = self._client(monkeypatch, [
+            {"ts": recv, "icao_hex": "489002", "label": "H1", "sublabel": "DF", "body": body}])
+        with client as c:
+            (p,) = [p for p in self._pts(c) if p["icao_hex"] == "489002"]
+        conn.close()
+        assert p["source"] == "h1-abs" and p["alt"] == 4137 and p["lat"] == 52.188
+        assert p["ts"] == int(t.replace(second=0).timestamp())
+        assert "temp_c" not in p and "wind_dir" not in p and "wind_kt" not in p
+
+    def test_old_embedded_fix_outside_window_is_dropped(self, monkeypatch):
+        # message received now, but two fixes are older than the 10-minute window
+        recv = int(time.time()) - 30
+        body, fix_ts = self._csv_body(recv, back=(30, 20, 1))
+        conn, client = self._client(monkeypatch, [
+            {"ts": recv, "icao_hex": "489003", "label": "H1", "sublabel": "DF", "body": body}])
+        with client as c:
+            pts = [p for p in self._pts(c, minutes=10) if p["icao_hex"] == "489003"]
+            allpts = [p for p in self._pts(c, minutes=60) if p["icao_hex"] == "489003"]
+        conn.close()
+        assert [p["ts"] for p in pts] == [fix_ts[2]]
+        assert len(allpts) == 3
+
+    def test_future_fix_beyond_slack_dropped(self, monkeypatch):
+        recv = int(time.time()) - 30
+        body, _ = self._csv_body(recv, back=(-20, -15, 1))   # 20/15 min in the future
+        conn, client = self._client(monkeypatch, [
+            {"ts": recv, "icao_hex": "489004", "label": "H1", "sublabel": "DF", "body": body}])
+        with client as c:
+            pts = [p for p in self._pts(c) if p["icao_hex"] == "489004"]
+        conn.close()
+        # fix_epoch rolls a "future" HHMM back a day only for HHMM-only formats; DDHHMM stays
+        # in the future and must be filtered out by the handler.
+        assert len(pts) == 1
+
+    def test_superseded_h1_row_ignored(self, monkeypatch):
+        recv = int(time.time()) - 30
+        body, _ = self._csv_body(recv)
+        conn, client = self._client(monkeypatch, [
+            {"ts": recv, "icao_hex": "489005", "label": "H1", "sublabel": "DF", "body": body,
+             "superseded": 1}])
+        with client as c:
+            assert [p for p in self._pts(c) if p["icao_hex"] == "489005"] == []
+        conn.close()
+
+    def test_wrong_sublabel_h1_body_never_yields_points(self, monkeypatch):
+        recv = int(time.time()) - 30
+        body, _ = self._csv_body(recv)
+        conn, client = self._client(monkeypatch, [
+            {"ts": recv, "icao_hex": "489006", "label": "H1", "sublabel": "M1", "body": body},
+            {"ts": recv - 1, "icao_hex": "489007", "label": "H1", "sublabel": None, "body": body},
+            {"ts": recv - 2, "icao_hex": "489008", "label": "H1", "sublabel": "CF", "body": body},
+            {"ts": recv - 3, "icao_hex": "489009", "label": "Q0", "sublabel": "DF", "body": body},
+        ])
+        with client as c:
+            pts = self._pts(c)
+        conn.close()
+        assert not [p for p in pts if p["icao_hex"] in {"489006", "489007", "489008", "489009"}]
+
+    def test_cf_fde_and_pos_sources(self, monkeypatch):
+        import datetime as dt
+        recv = int(time.time()) - 30
+        t = dt.datetime.fromtimestamp(recv - 20, dt.timezone.utc)
+        fde = f"FDE{t:%H%M%S}1123117" + "52.17762/20.84221\r\n06460114706    0   0"
+        pos = f"(POS-KLM75C  -5222N02005E/{t:%H%M%S} F180\r\nRMK/FUEL   5.4 M0.59)"
+        conn, client = self._client(monkeypatch, [
+            {"ts": recv, "icao_hex": "489010", "label": "H1", "sublabel": "CF", "body": fde},
+            {"ts": recv, "icao_hex": "489011", "label": "H1", "sublabel": "DF", "body": pos},
+            {"ts": recv, "icao_hex": "489012", "label": "H1", "sublabel": "CF",
+             "body": "FDE1227481123ACA\n12254714301   0   0"},
+        ])
+        with client as c:
+            by = {p["icao_hex"]: p for p in self._pts(c)}
+        conn.close()
+        assert by["489010"]["source"] == "h1-cf" and by["489010"]["lat"] == 52.17762
+        assert by["489010"]["ts"] == int(t.timestamp())
+        assert by["489011"]["source"] == "h1-pos" and by["489011"]["alt"] == 18000
+        assert "489012" not in by
+
+    def test_labels_83_15_80(self, monkeypatch):
+        import datetime as dt
+        recv = int(time.time()) - 30
+        t = dt.datetime.fromtimestamp(recv - 7, dt.timezone.utc)
+        pr = f"001PR{t:%d%H%M%S}N5207.4E02041.4430426"
+        conn, client = self._client(monkeypatch, [
+            {"ts": recv, "icao_hex": "48a083", "label": "83", "body": pr},
+            {"ts": recv - 1, "icao_hex": "48a084", "label": "83",
+             "body": "HAAB,ESSA,210319, 52.41,  20.34,39002,263,- 23.3, 13300"},
+            {"ts": recv - 2, "icao_hex": "48a085", "label": "83",
+             "body": "4DH3 ETAT2  0751/21 EKCH/EPWA .OY-KBO\r\n/ETA 0848"},
+            {"ts": recv - 3, "icao_hex": "48a015", "label": "15",
+             "body": "FST01EGLLEPWAN52232E0207997 36  33  51     35262      188  10531050"},
+            {"ts": recv - 4, "icao_hex": "48a016", "label": "15",
+             "body": "FST01EPWAEGLL 00            26  79         21              09100658"},
+            {"ts": recv - 5, "icao_hex": "48a080", "label": "80",
+             "body": "3N01 POSRPT 0872/19 LGAV/EPWA .SX-DVX\r\n/POS N52141E020397/ALT +05475/MCH 284/FOB 0032/ETA 1702"},
+            {"ts": recv - 6, "icao_hex": "48a081", "label": "80", "body": "MOCC: HI NO DATA RECEIVED FOR"},
+        ])
+        with client as c:
+            by = {p["icao_hex"]: p for p in self._pts(c)}
+        conn.close()
+        assert set(by) == {"48a083", "48a084", "48a015", "48a080"}
+        assert all(p["source"] == "label" and p["precise"] is True for p in by.values())
+        assert by["48a083"]["ts"] == int(t.timestamp()) and "alt" not in by["48a083"]
+        assert by["48a084"]["ts"] == recv - 1 and by["48a084"]["alt"] == 39002
+        assert by["48a015"]["ts"] == recv - 3 and by["48a015"]["lat"] == 52.232
+        assert by["48a080"]["alt"] == 5475
+
+    def test_existing_sources_tagged(self, monkeypatch):
+        recv = int(time.time()) - 30
+        conn, client = self._client(monkeypatch, [
+            {"ts": recv, "icao_hex": "48c016", "label": "16",
+             "body": "WA921  ,N 52.166,E 020.772,4406, 251,2054, 72\\TS154458,050626"},
+            {"ts": recv - 1, "icao_hex": "48c0a1", "label": "H1", "sublabel": "M1",
+             "body": "POSN52256E019186"},
+            {"ts": recv - 2, "icao_hex": "48c059", "label": "36",
+             "body": "59,G,1101,1,1,SP-LVS,52.15,20.59,52.15,20.61,0"},
+            {"ts": recv - 3, "icao_hex": "48c0c0", "label": "H1", "lat": 52.3, "lon": 20.5,
+             "body": "x"},
+        ])
+        with client as c:
+            by = {p["icao_hex"]: p for p in self._pts(c)}
+        conn.close()
+        assert by["48c016"]["source"] == "label"
+        assert by["48c0a1"]["source"] == "m1bpos"
+        assert by["48c059"]["source"] == "59g"
+        assert by["48c0c0"]["source"] == "xid" and by["48c0c0"]["precise"] is False
+        assert "alt" not in by["48c016"]
+
+    def test_final_cap_respected_with_multi_fix(self, monkeypatch):
+        monkeypatch.setattr(vdl2_api, "_POSITIONS_CAP", 4)
+        recv = int(time.time()) - 30
+        rows = []
+        for i in range(3):
+            body, _ = self._csv_body(recv - i * 5)
+            rows.append({"ts": recv - i * 5, "icao_hex": f"4891{i:02x}", "label": "H1",
+                         "sublabel": "DF", "body": body})
+        conn, client = self._client(monkeypatch, rows)
+        with client as c:
+            r = c.get("/api/vdl2/positions?minutes=60").json()
+        conn.close()
+        assert r["count"] == len(r["points"]) == 4
+        ts = [p["ts"] for p in r["points"]]
+        assert ts == sorted(ts, reverse=True)
+
+    def test_h1_scan_cap_constant_and_window_bound(self, monkeypatch):
+        assert vdl2_api._POSITIONS_H1_SCAN_CAP == 8000
+        monkeypatch.setattr(vdl2_api, "_POSITIONS_H1_SCAN_CAP", 2)
+        recv = int(time.time()) - 30
+        body, _ = self._csv_body(recv)
+        rows = [{"ts": recv - i, "icao_hex": f"4892{i:02x}", "label": "H1", "sublabel": "DF",
+                 "body": body} for i in range(5)]
+        conn, client = self._client(monkeypatch, rows)
+        with client as c:
+            pts = self._pts(c)
+        conn.close()
+        assert len({p["icao_hex"] for p in pts}) == 2    # only the 2 newest candidates scanned
+
+    def test_h1_candidate_query_uses_label_index(self, monkeypatch):
+        conn = make_vdl2_db()
+        plan = " ".join(r[3] for r in conn.execute(
+            "EXPLAIN QUERY PLAN " + vdl2_api._H1_POSITIONS_SQL, (0, 10)))
+        conn.close()
+        assert "idx_vdl2_label_ts_id" in plan
+
+    def test_schema_optional_fields_absent_when_unset(self, monkeypatch):
+        recv = int(time.time()) - 30
+        conn, client = self._client(monkeypatch, [
+            {"ts": recv, "icao_hex": "48c016", "label": "16",
+             "body": "WA921  ,N 52.166,E 020.772,4406, 251,2054, 72\\TS154458,050626"}])
+        with client as c:
+            (p,) = self._pts(c)
+        conn.close()
+        assert set(p) == {"lat", "lon", "icao_hex", "ts", "label", "precise", "source"}
+
+
+class TestAdscMotionFields:
+    @staticmethod
+    def _raw(tags) -> str:
+        import json
+        return json.dumps({"vdl2": {"avlc": {"acars": {"arinc622": {"adsc": {"tags": tags}}}}}})
+
+    def test_earth_ref_attached_to_adsc_point(self, monkeypatch):
+        raw = self._raw([{"basic_report": {"lat": 52.202053, "lon": 20.719013, "alt": 2852}},
+                         {"earth_ref_data": {"true_trk_deg": 3.691406, "true_trk_valid": True,
+                                             "gnd_spd_kts": 195.5, "vspd_ftmin": -272}}])
+        raw2 = self._raw([{"basic_report": {"lat": 52.1, "lon": 20.7, "alt": 100}}])
+        raw3 = self._raw([{"basic_report": {"lat": 52.2, "lon": 20.6, "alt": 100}},
+                          {"earth_ref_data": {"true_trk_deg": "x", "gnd_spd_kts": 150.0,
+                                              "vspd_ftmin": "y"}}])
+        now = int(time.time())
+        conn, client = TestBatch5Positions._client(monkeypatch, [
+            {"ts": now - 5, "icao_hex": "48b0b6", "label": "B6", "body": "x", "raw": raw},
+            {"ts": now - 6, "icao_hex": "48b0b7", "label": "B6", "body": "x", "raw": raw2},
+            {"ts": now - 7, "icao_hex": "48b0b8", "label": "B6", "body": "x", "raw": raw3},
+        ])
+        with client as c:
+            by = {p["icao_hex"]: p for p in c.get("/api/vdl2/positions?minutes=60").json()["points"]}
+        conn.close()
+        assert by["48b0b6"]["source"] == "adsc"
+        assert by["48b0b6"]["track"] == 3.6914 and by["48b0b6"]["gs"] == 195.5
+        assert by["48b0b6"]["vs"] == -272
+        assert not {"track", "gs", "vs"} & set(by["48b0b7"])        # tag absent -> fields absent
+        assert by["48b0b8"]["gs"] == 150.0                          # point kept, bad fields absent
+        assert "track" not in by["48b0b8"] and "vs" not in by["48b0b8"]
+
+
+class TestFlightPositions:
+    """GET /api/vdl2/positions/{icao_hex}?since=&until= — per-flight route overlay."""
+
+    HEX = "489100"
+
+    @staticmethod
+    def _pts(c, hexv="489100", since=None, until=None, expect=200):
+        url = f"/api/vdl2/positions/{hexv}"
+        q = []
+        if since is not None:
+            q.append(f"since={since}")
+        if until is not None:
+            q.append(f"until={until}")
+        r = c.get(url + ("?" + "&".join(q) if q else ""))
+        assert r.status_code == expect, r.text
+        return r.json()["points"] if expect == 200 else r
+
+    @pytest.fixture()
+    def fp(self, monkeypatch):
+        now = int(time.time())
+        recv = now - 600
+        body, fix_ts = TestBatch5Positions._csv_body(recv, back=(3, 2, 1))
+        far_body, far_ts = TestBatch5Positions._csv_body(recv - 7200, back=(3, 2, 1))
+        rows = [
+            # multi-fix ABS for the airframe
+            {"ts": recv, "icao_hex": self.HEX, "label": "H1", "sublabel": "DF", "body": body},
+            # label-15 + label-80 (receive time) for the airframe, earlier and later
+            {"ts": recv - 900, "icao_hex": self.HEX, "label": "15",
+             "body": "FST01EGLLEPWAN52232E0207997 36  33  51     35262      188  10531050"},
+            {"ts": recv + 300, "icao_hex": self.HEX, "label": "80",
+             "body": "3N01 POSRPT 0872/19 LGAV/EPWA .SX-DVX\r\n/POS N52141E020397/ALT +05475/MCH 284/FOB 0032/ETA 1702"},
+            # coarse XID fix
+            {"ts": recv - 300, "icao_hex": self.HEX, "label": "H1", "lat": 52.3, "lon": 20.5, "body": "x"},
+            # another airframe, same window
+            {"ts": recv, "icao_hex": "489200", "label": "H1", "sublabel": "DF", "body": body},
+            {"ts": recv - 1, "icao_hex": "489200", "label": "15",
+             "body": "FST01EGLLEPWAN52232E0207997 36  33  51     35262      188  10531050"},
+            # same airframe, ABS received 2 h earlier: embedded fixes far outside the window
+            {"ts": recv - 7200, "icao_hex": self.HEX, "label": "H1", "sublabel": "DF", "body": far_body},
+            # superseded copy for the airframe
+            {"ts": recv + 10, "icao_hex": self.HEX, "label": "H1", "sublabel": "DF", "body": body,
+             "superseded": 1},
+            # wrong-sublabel H1 body for the airframe
+            {"ts": recv + 20, "icao_hex": self.HEX, "label": "H1", "sublabel": "M1", "body": body},
+        ]
+        conn, client = TestBatch5Positions._client(monkeypatch, rows)
+        with client as c:
+            c.recv, c.fix_ts, c.far_ts, c.now, c.conn = recv, fix_ts, far_ts, now, conn
+            yield c
+        conn.close()
+
+    def test_happy_path_sorted_ascending_all_sources(self, fp):
+        pts = self._pts(fp, since=fp.recv - 3600, until=fp.recv + 3600)
+        assert [p["source"] for p in pts].count("h1-abs") == 3
+        assert {p["source"] for p in pts} == {"h1-abs", "label", "xid"}
+        assert len(pts) == 3 + 1 + 1 + 1       # 3 ABS fixes + label 15 + label 80 + xid
+        ts = [p["ts"] for p in pts]
+        assert ts == sorted(ts)
+        assert all(p["icao_hex"] == self.HEX for p in pts)
+        abs_pts = [p for p in pts if p["source"] == "h1-abs"]
+        assert sorted(p["ts"] for p in abs_pts) == sorted(fp.fix_ts)
+        assert abs_pts[0]["alt"] == 2421 and abs_pts[0]["wind_dir"] == 301
+        l80 = next(p for p in pts if p["label"] == "80")
+        assert l80["alt"] == 5475 and l80["precise"] is True
+
+    def test_other_icao_excluded(self, fp):
+        pts = self._pts(fp, since=fp.recv - 3600, until=fp.recv + 3600)
+        assert not [p for p in pts if p["icao_hex"] != self.HEX]
+        other = self._pts(fp, hexv="489200", since=fp.recv - 3600, until=fp.recv + 3600)
+        assert {p["icao_hex"] for p in other} == {"489200"} and len(other) == 4
+
+    def test_uppercase_and_tilde_hex_accepted(self, fp):
+        assert len(self._pts(fp, hexv="489100".upper(), since=fp.recv - 3600, until=fp.recv + 3600)) == 6
+
+    def test_fix_outside_window_excluded_by_embedded_ts(self, fp):
+        # window around the far ABS message: only its 2nd and 3rd embedded fixes fall inside
+        far = sorted(fp.far_ts)
+        pts = self._pts(fp, since=far[1], until=far[2])
+        assert sorted(p["ts"] for p in pts) == far[1:]
+        # an ABS message received inside the window whose fixes fall before it
+        pts = self._pts(fp, since=fp.fix_ts[1], until=fp.recv + 3600)
+        abs_ts = sorted(p["ts"] for p in pts if p["source"] == "h1-abs")
+        assert abs_ts == sorted(fp.fix_ts)[1:]
+
+    def test_until_bound_excludes_later_points(self, fp):
+        pts = self._pts(fp, since=fp.recv - 3600, until=fp.recv - 100)
+        assert all(p["ts"] <= fp.recv - 100 for p in pts)
+        assert not [p for p in pts if p["label"] == "80"]
+
+    def test_superseded_and_wrong_sublabel_ignored(self, fp):
+        pts = self._pts(fp, since=fp.recv - 3600, until=fp.recv + 3600)
+        assert len([p for p in pts if p["source"] == "h1-abs"]) == 3
+
+    def test_bad_icao_404(self, fp):
+        r = self._pts(fp, hexv="zzz", since=1, until=100, expect=404)
+        assert r.status_code == 404
+
+    def test_422_cases(self, fp):
+        self._pts(fp, since=100, until=100, expect=422)
+        self._pts(fp, since=200, until=100, expect=422)
+        self._pts(fp, since=0, until=48 * 3600 + 1, expect=422)
+        self._pts(fp, since=1000, until=1000 + 48 * 3600, expect=200)      # exactly 48 h ok
+        self._pts(fp, expect=422)
+        self._pts(fp, since=100, expect=422)
+        self._pts(fp, until=100, expect=422)
+        self._pts(fp, since=-1, until=100, expect=422)
+        self._pts(fp, since=1, until=10_000_000_001, expect=422)
+        self._pts(fp, since="abc", until=100, expect=422)
+
+    def test_not_cached_and_map_cache_untouched(self, fp):
+        from readsbstats import cache
+        self._pts(fp, since=fp.recv - 3600, until=fp.recv + 3600)
+        assert not [k for k in cache._cache if "positions" in str(k)]
+        # a new row is visible on the next call (no cache)
+        vdl2_db.insert_messages(fp.conn, [
+            {"ts": fp.recv + 400, "icao_hex": self.HEX, "label": "H1", "lat": 52.4, "lon": 20.4, "body": "y"}])
+        fp.conn.commit()
+        assert len(self._pts(fp, since=fp.recv - 3600, until=fp.recv + 3600)) == 7
+
+    def test_cap_and_ascending_order(self, fp, monkeypatch):
+        monkeypatch.setattr(vdl2_api, "_FLIGHT_POSITIONS_CAP", 3)
+        pts = self._pts(fp, since=fp.recv - 3600, until=fp.recv + 3600)
+        assert len(pts) == 3
+        ts = [p["ts"] for p in pts]
+        assert ts == sorted(ts)
+        assert ts[-1] == fp.recv + 300           # the newest are kept
+
+    def test_empty_window(self, fp):
+        assert self._pts(fp, since=1000, until=2000) == []
+
+    def test_every_candidate_query_uses_icao_index(self, monkeypatch):
+        conn = make_vdl2_db()
+        assert set(vdl2_api._SQL_FLIGHT) == set(vdl2_api._SQL_MAP)
+        for name, sql in vdl2_api._SQL_FLIGHT.items():
+            plan = " ".join(r[3] for r in conn.execute(
+                "EXPLAIN QUERY PLAN " + sql, [0] * sql.count("?")))
+            assert "idx_vdl2_icao" in plan, (name, plan)
+        conn.close()
+
+    def test_map_sql_has_no_icao_clause(self):
+        for sql in vdl2_api._SQL_MAP.values():
+            assert "icao_hex = ?" not in sql
+        assert vdl2_api._H1_POSITIONS_SQL == vdl2_api._SQL_MAP["h1"]
+
+
+class TestOooiH1Routes:
+    """Batch 7: abs / b44 / r64 / fst01 route sources, below every existing source."""
+    ABS = "ABS026BA_S      ,B7378MAX ,261123,LO4TP ,EPWA,LROP,0318,BCG27-S200-0011\r\nN5210.5,E02055.2,231035,01973,-02.8,286,026,IC,00000,0,\r\n"
+    B44 = "B44C\r\nSP-LVH  4824HT EPWALPPTTO140926122650\r\n 995398160B70260B711"
+    R64 = ("R641V0106,180302,, F-HPND,5318410-07,736661,736834,06164,EPWA,LFPG,17:43:03,"
+           "2026:10:11,AF1047  ,000004,200186,ITT_#10100")
+    FST = "FST01EGLLEPWAN52232E0207997 36  33  51     35262      188  10531050"
+    HEX = "48e95f"
+
+    def _route(self, monkeypatch, rows):
+        now = int(time.time())
+        recs = [{"ts": now - 600 + i * 10, "icao_hex": self.HEX, **row} for i, row in enumerate(rows)]
+        helper = TestOooi()
+        vconn, app = helper._make(monkeypatch, recs)
+        with TestClient(app) as c:
+            data = c.get(f"/api/vdl2/oooi/{self.HEX}").json()
+        vconn.close()
+        return data
+
+    def _rows(self, which):
+        table = {
+            "abs": {"label": "H1", "sublabel": "DF", "body": self.ABS},
+            "b44": {"label": "H1", "sublabel": "DF", "body": self.B44},
+            "r64": {"label": "H1", "sublabel": "T8", "body": self.R64},
+            "fst01": {"label": "15", "body": self.FST},
+        }
+        return [table[w] for w in which]
+
+    @pytest.mark.parametrize("src,dep,dest", [
+        ("abs", "EPWA", "LROP"), ("b44", "EPWA", "LPPT"),
+        ("r64", "EPWA", "LFPG"), ("fst01", "EGLL", "EPWA"),
+    ])
+    def test_each_source_parsed(self, monkeypatch, src, dep, dest):
+        data = self._route(monkeypatch, self._rows([src]))
+        assert data["route"] == {"dep_icao": dep, "dest_icao": dest, "flight": None, "source": src}
+        assert data["dsta"] == dest
+        assert data["has_oooi"] is False
+
+    def test_order_among_new_sources(self, monkeypatch):
+        order = ["r64", "abs", "b44", "fst01"]
+        for i, winner in enumerate(order):
+            data = self._route(monkeypatch, self._rows(list(reversed(order[i:]))))
+            assert data["route"]["source"] == winner
+
+    def test_existing_sources_win(self, monkeypatch):
+        existing = {"label": "49", "body": "01DCAP    ETD159/090545OMAAEPWA"}
+        data = self._route(monkeypatch,
+                           self._rows(["r64", "abs", "b44", "fst01"]) + [existing])
+        assert data["route"]["source"] == "label49"
+        assert data["route"]["dest_icao"] == "EPWA"
+        # existing one is OLDER than the new rows: still wins
+        data = self._route(monkeypatch, [existing] + self._rows(["r64", "abs"]))
+        assert data["route"]["source"] == "label49"
+
+    def test_route_fills_event_gap(self, monkeypatch):
+        rows = [{"label": "H1", "body": "DEP / OT 0030"}] + self._rows(["r64"])
+        data = self._route(monkeypatch, rows)
+        assert data["dep"]["dep_icao"] == "EPWA" and data["dep"]["dest_icao"] == "LFPG"
+
+    def test_wrong_sublabel_ignored(self, monkeypatch):
+        rows = [{"label": "H1", "sublabel": "T8", "body": self.ABS},
+                {"label": "H1", "sublabel": "DF", "body": self.R64},
+                {"label": "H1", "body": self.B44},
+                {"label": "16", "body": self.FST}]
+        data = self._route(monkeypatch, rows)
+        assert "route" not in data
+
+    def test_superseded_ignored(self, monkeypatch):
+        rows = self._rows(["r64"])
+        rows[0]["superseded"] = 1
+        rows += self._rows(["fst01"])
+        data = self._route(monkeypatch, rows)
+        assert data["route"]["source"] == "fst01"
+
+    def test_newest_row_per_source_wins(self, monkeypatch):
+        old = {"label": "H1", "sublabel": "T8", "body": self.R64.replace("LFPG", "LFPO")}
+        data = self._route(monkeypatch, [old] + self._rows(["r64"]))
+        assert data["route"]["dest_icao"] == "LFPG"
+
+    def test_oooi_query_is_icao_indexed_and_bounded(self):
+        plan = " ".join(str(tuple(r)) for r in make_vdl2_db().execute(
+            "EXPLAIN QUERY PLAN " + vdl2_api._OOOI_SQL.format(where="icao_hex = ? AND ts >= ?"),
+            ["48e95f", 0, 1000]).fetchall())
+        assert "idx_vdl2_icao" in plan
+        assert "LIMIT" in vdl2_api._OOOI_SQL.upper()
+
+
+class TestStatsGroundStations:
+    """Batch 7: per-ground-station downlink stats, full stats payload only (last 24 h)."""
+
+    @staticmethod
+    def _row(ts, hexv, toaddr, freq, sig=-45.0, noise=-52.0, src="Aircraft", raw=None):
+        import json
+        if raw is None:
+            raw = json.dumps({"vdl2": {"avlc": {"src": {"addr": hexv.upper(), "type": src},
+                                                "dst": {"addr": toaddr, "type": "Ground station"}}}})
+        return {"ts": ts, "icao_hex": hexv, "toaddr": toaddr, "freq": freq,
+                "sig_level": sig, "noise_level": noise, "raw": raw}
+
+    def _stats(self, monkeypatch, rows, path="/api/vdl2/stats"):
+        monkeypatch.setattr(config, "VDL2_ENABLED", True)
+        vconn = make_vdl2_db()
+        vdl2_db.insert_messages(vconn, rows)
+        vconn.commit()
+        monkeypatch.setattr(vdl2_db, "_conn", vconn)
+        monkeypatch.setattr(_deps, "_db", make_db())
+        app = FastAPI()
+        web._include_optional_routers(app)
+        with TestClient(app) as c:
+            data = c.get(path).json()
+        vconn.close()
+        return data
+
+    def test_aggregation(self, monkeypatch):
+        now = int(time.time())
+        rows = [
+            self._row(now - 100, "aaaaaa", "2B86E1", 136.875, sig=-40, noise=-50),   # snr 10
+            self._row(now - 90, "aaaaaa", "2B86E1", 136.875, sig=-40, noise=-48),    # snr 8
+            self._row(now - 80, "bbbbbb", "2B86E1", 136.875, sig=-44, noise=-50),    # snr 6
+            self._row(now - 70, "bbbbbb", "2B86E1", 136.875, sig=None, noise=None),  # no snr
+            self._row(now - 60, "aaaaaa", "11920A", 136.725),                        # snr 7
+            self._row(now - 50, "aaaaaa", "2B86E1", 136.7750001),                    # other freq
+        ]
+        data = self._stats(monkeypatch, rows)
+        gs = data["ground_stations"]
+        assert gs[0] == {"toaddr": "2B86E1", "freq": 136.875, "frames": 4, "aircraft": 2,
+                         "snr_db": 8.0}
+        assert {(g["toaddr"], g["freq"]): g["frames"] for g in gs} == {
+            ("2B86E1", 136.875): 4, ("11920A", 136.725): 1, ("2B86E1", 136.775): 1}
+        assert [g["frames"] for g in gs] == sorted((g["frames"] for g in gs), reverse=True)
+
+    def test_snr_null_when_no_signal_data(self, monkeypatch):
+        now = int(time.time())
+        data = self._stats(monkeypatch, [self._row(now - 10, "aaaaaa", "2B86E1", 136.875,
+                                                   sig=None, noise=None)])
+        assert data["ground_stations"][0]["snr_db"] is None
+        assert data["ground_stations"][0]["frames"] == 1
+
+    def test_ground_sourced_and_non_dumpvdl2_rows_excluded(self, monkeypatch):
+        now = int(time.time())
+        rows = [
+            self._row(now - 10, "aaaaaa", "2B86E1", 136.875),
+            self._row(now - 10, "aaaaaa", "2B86E1", 136.875, src="Ground station"),
+            {"ts": now - 10, "icao_hex": "cccccc", "toaddr": "2B86E1", "freq": 136.875,
+             "raw": None},                                         # vdlm2dec-style: no avlc
+            {"ts": now - 10, "icao_hex": "cccccc", "toaddr": "2B86E1", "freq": 136.875,
+             "raw": '{"vdl2": {}}'},
+        ]
+        gs = self._stats(monkeypatch, rows)["ground_stations"]
+        assert len(gs) == 1 and gs[0]["frames"] == 1 and gs[0]["aircraft"] == 1
+
+    def test_invalid_json_row_tolerated(self, monkeypatch):
+        now = int(time.time())
+        rows = [self._row(now - 10, "aaaaaa", "2B86E1", 136.875),
+                self._row(now - 10, "bbbbbb", "2B86E1", 136.875, raw='{"vdl2":{"avlc":{"src":{"typ')]
+        data = self._stats(monkeypatch, rows)
+        assert data["ground_stations"][0]["frames"] == 1
+
+    def test_only_last_24h(self, monkeypatch):
+        now = int(time.time())
+        rows = [self._row(now - 86400 - 60, "aaaaaa", "OLD001", 136.875),
+                self._row(now - 3600, "aaaaaa", "NEW001", 136.875)]
+        gs = self._stats(monkeypatch, rows)["ground_stations"]
+        assert [g["toaddr"] for g in gs] == ["NEW001"]
+
+    def test_limit_30(self, monkeypatch):
+        now = int(time.time())
+        rows = [self._row(now - 10, "aaaaaa", f"GS{i:04d}", 136.875) for i in range(35)]
+        assert len(self._stats(monkeypatch, rows)["ground_stations"]) == 30
+
+    def test_empty_default(self, monkeypatch):
+        assert self._stats(monkeypatch, [])["ground_stations"] == []
+
+    def test_summary_excludes_it(self, monkeypatch):
+        now = int(time.time())
+        data = self._stats(monkeypatch, [self._row(now - 10, "aaaaaa", "2B86E1", 136.875)],
+                           "/api/vdl2/stats?summary=true")
+        assert set(data) == {"total", "last_hour", "aircraft"}
+
+    def test_query_uses_ts_index(self):
+        plan = " ".join(str(tuple(r)) for r in make_vdl2_db().execute(
+            "EXPLAIN QUERY PLAN " + vdl2_api._GROUND_STATIONS_SQL, (0,)).fetchall())
+        assert "idx_vdl2_ts" in plan
+        assert "SCAN vdl2_messages" not in plan.replace("USING INDEX", "")
+
+
+class TestPositionsParserFailureIsolated:
+    """A parser raising on one malformed radio body must not 500 the whole response
+    (review finding 2026-11-23: an ABS line with '--' raised ValueError)."""
+
+    def test_one_raising_row_keeps_other_points(self, monkeypatch):
+        from readsbstats.vdl2 import h1rep as _h1rep
+        recv = int(time.time()) - 30
+        good, _ = TestBatch5Positions._csv_body(recv)
+        conn, client = TestBatch5Positions._client(monkeypatch, [
+            {"ts": recv, "icao_hex": "489001", "label": "H1", "sublabel": "DF", "body": good},
+            {"ts": recv, "icao_hex": "489002", "label": "H1", "sublabel": "DF", "body": "ABS boom"},
+        ])
+        real = _h1rep.parse_positions
+
+        def flaky(sub, body, ts):
+            if body == "ABS boom":
+                raise ValueError("malformed")
+            return real(sub, body, ts)
+
+        monkeypatch.setattr(_h1rep, "parse_positions", flaky)
+        with client as c:
+            r = c.get("/api/vdl2/positions?minutes=60")
+            r2 = c.get(f"/api/vdl2/positions/489002?since={recv - 600}&until={recv + 600}")
+        conn.close()
+        assert r.status_code == 200
+        assert {p["icao_hex"] for p in r.json()["points"]} == {"489001"}
+        assert r2.status_code == 200 and r2.json()["points"] == []

@@ -5,6 +5,69 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 2.33.0 — 2026-11-23
+
+A final VDL2/ACARS round: bug fixes, six new position sources and four route
+sources validated against ADS-B on a 90-day snapshot, and richer VDL2 views.
+VDL2 is frozen again from this release
+([ADR-0023](docs/decisions/0023-vdl2-final-round.md)). No `history.db` schema
+changes.
+
+### Added
+
+- **More VDL2 positions on the map**, each checked against ADS-B tracks of the
+  same airframe (median / p90 error):
+  - H1 ACMS `ABS`/`EB0`/`SB0` reports, one point per fix with altitude,
+    temperature and wind: 1.26 / 3.61 nm and 2.14 / 4.46 nm (two dialects);
+  - E-Jet `FDE`/`MM` maintenance messages: 0.20 / 0.40 nm;
+  - KLM `(POS-` reports: 0.95 / 2.00 nm;
+  - labels 83, 15 (`FST01`) and 80 (`POSRPT`): 0.09–1.23 nm.
+
+  Points now carry `source`, and where reported `alt`, `temp_c`, `wind_dir`,
+  `wind_kt`; ADS-C points add `track`, `gs`, `vs`.
+- **`GET /api/vdl2/positions/{icao_hex}?since&until`** (window ≤ 48 h): the
+  ACARS fixes of one aircraft. The Flight page draws them on the route map and
+  shows a winds/temperatures-aloft table.
+- **Route sources** for the Flight page, below the existing ones: Air France
+  `R64` engine reports, ACMS `ABS` headers, `B44` take-off reports and label-15
+  `FST01`.
+- **Map:** click a VDL2 dot for its source, time, altitude and wind; a legend
+  separates precise from coarse fixes and shows the 60-minute window.
+- **OOOI timeline** (OUT → OFF → ON → IN with taxi and airborne durations).
+- **Structured decoded fields:** positions, waypoint lists, landing-runway
+  data and fuel/weight figures instead of one long chip.
+- **Messages tab:** "Decoded only" filter (`dec=1`) and a decode-rate line;
+  live polling pauses while you are scrolled down, with a resume button.
+- **Stats:** ground stations seen in the last 24 h (frames, aircraft, mean SNR
+  per station and frequency; dumpvdl2 only).
+
+### Fixed
+
+- One out-of-range number in a VDL2 datagram (for example `alt: 1e300`) no
+  longer drops the whole ingest batch, and the dumpvdl2 backfill no longer
+  aborts on it. Out-of-range integers are stored as NULL; negative timestamps
+  fall back to the receive time.
+- `/api/vdl2/*` returns 422 instead of 500 for `before_id`, `since` or
+  `until` values of 2^63 and above.
+- The web server no longer recreates an empty `vdl2.db` after it was deleted;
+  VDL2 reports unavailable until the ingest service creates it.
+- The History CSV export now honours the "Has ACARS" filter.
+- The Messages tab no longer polls `/api/vdl2/*` while VDL2 is unavailable.
+- Long decoded values no longer widen message rows; null label/airline codes
+  in the Stats card no longer produce duplicate React keys; OOOI and ETA times
+  are labelled UTC; label B6 is named ADS-C.
+- Decodes that only repeat the message body (label B6 shown as
+  "CPDLC Message") count as undecoded.
+
+### Changed
+
+- **Decoder performance:** one shared ACARS decoder per page (was one per
+  mounted component), results cached per message; a failed decoder chunk
+  load is retried once, then a hint replaces the silent failure.
+- Dependabot ignores minor and major `@airframes/acars-decoder` updates:
+  1.10 exceeds the 60 KB gz chunk budget (~68 KB) and overlaps the server's
+  OOOI parsing.
+
 ## 2.32.1 — 2026-11-23
 
 Dependency updates only. No schema or behaviour changes.

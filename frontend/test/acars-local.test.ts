@@ -160,7 +160,7 @@ describe('decodeLocal — 26 Air France ETA report', () => {
     expect(items('26', body)).toEqual({
       Flight: 'AF1147',
       Route: 'EPWA → LFPG',
-      ETA: '12:41',
+      ETA: '12:41 UTC',
       Runway: '27R',
     });
   });
@@ -168,7 +168,7 @@ describe('decodeLocal — 26 Air France ETA report', () => {
     expect(items('26', '1049EPWAAF1147/18\n1241LFPG')).toEqual({
       Flight: 'AF1147',
       Route: 'EPWA → LFPG',
-      ETA: '12:41',
+      ETA: '12:41 UTC',
     });
   });
   it('rejects junk', () => {

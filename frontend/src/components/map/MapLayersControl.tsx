@@ -1,6 +1,7 @@
 import { LayersIcon } from '@radix-ui/react-icons';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/Popover';
 import { cn } from '@/lib/cn';
+import { VDL2_MAP_WINDOW_MIN } from '@/lib/vdl2Points';
 
 interface Props {
   // Layer states + setters.
@@ -61,6 +62,7 @@ export function MapLayersControl({
         <LayerToggle
           testid="map-toggle-vdl2"
           label="ACARS"
+          title={`ACARS positions, last ${VDL2_MAP_WINDOW_MIN} min`}
           active={!!showVdl2}
           loading={vdl2Loading}
           onClick={onToggleVdl2}
@@ -137,7 +139,9 @@ function LayerToggle({
   loading,
   onClick,
   testid,
+  title,
 }: {
+  title?: string;
   label: string;
   active: boolean;
   loading?: boolean;
@@ -149,6 +153,7 @@ function LayerToggle({
       type="button"
       onClick={onClick}
       aria-pressed={active}
+      title={title}
       data-testid={testid}
       className={cn(
         'inline-flex items-center gap-1.5 rounded px-2.5 py-1 text-xs font-medium transition-colors min-h-[28px]',

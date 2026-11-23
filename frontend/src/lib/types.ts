@@ -106,6 +106,17 @@ export interface Vdl2StatsResponse {
   // % of last-24h flights also seen on VDL2. Null when the cross-DB join is
   // unavailable — the tile is hidden in that case.
   flights_overlap_pct?: number | null;
+  // Last-24h dumpvdl2 downlinks per ground station, frames desc, <=30 rows.
+  // Absent on an older backend.
+  ground_stations?: Vdl2GroundStation[];
+}
+
+export interface Vdl2GroundStation {
+  toaddr: string | null;
+  freq: number | null; // MHz
+  frames: number;
+  aircraft: number;
+  snr_db: number | null;
 }
 
 // `GET /api/vdl2/stats?summary=true` — only the three headline counters.
@@ -154,7 +165,28 @@ export interface Vdl2Position {
   // precise = parsed from an ACARS body position report (labels 16/17/38/2F/14/B0/10/13/18/27/33/12/43/41/2P,
   // `#M1BPOS`, LOT `59,G`) or an ADS-C basic report (B6); false = coarse (~0.1°) VDL2 XID link-frame fix.
   precise?: boolean | null;
+  // Where the fix came from. Absent on payloads from an older backend.
+  source?: Vdl2PositionSource | null;
+  // Optional extras — present only on sources that report them (the API omits unset fields).
+  alt?: number | null; // ft
+  temp_c?: number | null;
+  wind_dir?: number | null; // degrees
+  wind_kt?: number | null;
+  // ADS-C points only: true track (deg), ground speed (kt), vertical speed (ft/min).
+  track?: number | null;
+  gs?: number | null;
+  vs?: number | null;
 }
+
+export type Vdl2PositionSource =
+  | 'label'
+  | 'm1bpos'
+  | '59g'
+  | 'adsc'
+  | 'xid'
+  | 'h1-abs'
+  | 'h1-cf'
+  | 'h1-pos';
 
 export interface Vdl2PositionsResponse {
   points: Vdl2Position[];
@@ -181,7 +213,7 @@ export interface Vdl2OooiRoute {
   dep_icao: string | null;
   dest_icao: string | null;
   flight: string | null;
-  source: 'cm' | 'label49' | 'label26' | 'label20';
+  source: 'cm' | 'label49' | 'label26' | 'label20' | 'r64' | 'abs' | 'b44' | 'fst01';
 }
 
 export interface Vdl2OooiSummary {

@@ -70,7 +70,7 @@ const _MANUAL_CHUNK_GROUPS: Record<string, readonly string[]> = {
     '@radix-ui/react-dropdown-menu',
     '@radix-ui/react-tooltip',
   ],
-  // ACARS message decoder — ~39 KB gz chunk (decoder 35.5 KB + pako). Lazy-loaded
+  // ACARS message decoder — ~53 KB gz chunk (acars-decoder 1.9.7 + pako), 60 KB budget. Lazy-loaded
   // only on VDL2 surfaces (feed page + flight ACARS panel) via hooks/useAcarsDecoder
   // — keep it out of the shell. Budget in _CHUNK_BUDGETS_GZ_KB.
   'vdl2-decoder': ['@airframes/acars-decoder', 'pako'],
@@ -98,7 +98,7 @@ function chunkFor(id: string): string | undefined {
 const _CHUNK_BUDGETS_GZ_KB: Record<string, number> = {
   maps: 340,
   charts: 230,
-  'vdl2-decoder': 60,  // ~51.5 KB gz (acars-decoder 1.9.7 + pako); ceiling ~15% above current
+  'vdl2-decoder': 60,  // ~53 KB gz (acars-decoder 1.9.7 + pako); ceiling ~15% above current. 1.10 would be ~68 KB: see dependabot ignore
 };
 
 function bundleBudget(): Plugin {
