@@ -13,7 +13,7 @@ import { Alert } from '@/components/ui/Alert';
 import { PageSkeleton } from '@/components/PageSkeleton';
 import { MessageList } from '@/components/vdl2/MessageList';
 import { useVdl2Health } from '@/hooks/useVdl2Enabled';
-import { useAcarsDecoderStatus } from '@/hooks/useAcarsDecoder';
+import { useAcarsDecoder, useAcarsDecoderStatus } from '@/hooks/useAcarsDecoder';
 import { useDebouncedValue } from '@/hooks/useDebouncedValue';
 import { labelName } from '@/lib/vdl2Labels';
 import type { Settings, Vdl2MessagesResponse, Vdl2StatsSummary } from '@/lib/types';
@@ -46,6 +46,9 @@ export default function Vdl2Page() {
   // Show intermediate blocks of reassembled multi-block messages (hidden by default).
   const [frag, setFrag] = useSearchParam('frag', '');
   const showFragments = frag === '1';
+  // Client-side only: hide rows the decoder can't decode (no API param).
+  const [decodedParam, setDecodedParam] = useSearchParam('dec', '');
+  const decodedOnly = decodedParam === '1';
   // The registration box writes the URL on every keystroke (responsive input),
   // but the backend scans per request — so the feed query follows a debounced copy.
   const debouncedReg = useDebouncedValue(reg, 300);
@@ -75,6 +78,9 @@ export default function Vdl2Page() {
   const [scrolled, setScrolled] = useState(false);
   const feedViewport = useRef<HTMLDivElement>(null);
   const decoderStatus = useAcarsDecoderStatus();
+  // Shared, stable decode fn (per-message-id cache) — also handed to MessageList so
+  // the filter and the rendering agree and nothing is decoded twice.
+  const decode = useAcarsDecoder();
 
   const feed = useInfiniteQuery({
     queryKey: ['vdl2-messages', { q, label, reg: debouncedReg, hex, showFragments }],
@@ -154,7 +160,9 @@ export default function Vdl2Page() {
   }
 
   const messages = feed.data?.pages.flatMap((p) => p.messages) ?? [];
-  const hasActiveFilter = Boolean(q || label || reg || hex || showFragments);
+  const hasActiveFilter = Boolean(q || label || reg || hex || showFragments || decodedOnly);
+  const decodedCount = messages.reduce((n, m) => (m.body && decode(m) ? n + 1 : n), 0);
+  const visibleMessages = decodedOnly ? messages.filter((m) => m.body && decode(m)) : messages;
 
   function resumeLive() {
     if (feedViewport.current) feedViewport.current.scrollTop = 0;
@@ -167,7 +175,7 @@ export default function Vdl2Page() {
     // back-to-back setSearchParams calls in a single handler (see
     // useSearchParam.ts). The qInput box re-syncs via the effect on `q`.
     setQInput('');
-    updateFilters({ q: null, label: null, reg: null, hex: null, frag: null });
+    updateFilters({ q: null, label: null, reg: null, hex: null, frag: null, dec: null });
   }
 
   return (
@@ -262,6 +270,19 @@ export default function Vdl2Page() {
               />
               Show partial blocks
             </label>
+            <label
+              htmlFor="vdl2-decoded-only"
+              className="flex shrink-0 cursor-pointer items-center gap-1.5 self-end pb-2 text-sm"
+            >
+              <input
+                id="vdl2-decoded-only"
+                type="checkbox"
+                checked={decodedOnly}
+                onChange={(e) => setDecodedParam(e.target.checked ? '1' : '')}
+                data-testid="vdl2-decoded-only"
+              />
+              Decoded only
+            </label>
             {hex && (
               <Badge variant="default" data-testid="vdl2-hex-chip">
                 hex: {hex}
@@ -298,6 +319,22 @@ export default function Vdl2Page() {
               No messages{hasActiveFilter ? ' match the current filters' : ' received yet'}.
             </p>
           )}
+          {feed.isSuccess && messages.length > 0 && (
+            <p className="mb-2 text-xs text-[var(--color-text-dim)]" data-testid="vdl2-decode-rate">
+              Decoded {decodedCount.toLocaleString()} of {messages.length.toLocaleString()} loaded (
+              {Math.round((decodedCount / messages.length) * 100)}%)
+              {decodedOnly && ' — showing decoded only'}
+            </p>
+          )}
+          {feed.isSuccess && messages.length > 0 && visibleMessages.length === 0 && (
+            <p
+              className="py-6 text-center text-sm text-[var(--color-text-dim)]"
+              data-testid="vdl2-none-decoded"
+            >
+              None of the {messages.length.toLocaleString()} loaded messages could be decoded.
+              {feed.hasNextPage && ' Load older messages or turn off "Decoded only".'}
+            </p>
+          )}
           {decoderStatus === 'unavailable' && (
             <p
               className="mb-2 text-xs text-[var(--color-text-dim)]"
@@ -307,7 +344,7 @@ export default function Vdl2Page() {
               Decoder failed to load — reload the page to decode messages.
             </p>
           )}
-          {messages.length > 0 && (
+          {visibleMessages.length > 0 && (
             <div className="relative">
               {scrolled && (
                 <button
@@ -320,7 +357,8 @@ export default function Vdl2Page() {
                 </button>
               )}
               <MessageList
-                messages={messages}
+                messages={visibleMessages}
+                decode={decode}
                 onHexClick={setHex}
                 onRegClick={setReg}
                 onScrollTopChange={(top) => setScrolled(top > 0)}

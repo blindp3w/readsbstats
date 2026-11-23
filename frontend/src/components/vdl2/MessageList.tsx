@@ -7,6 +7,7 @@ import { labelName } from '@/lib/vdl2Labels';
 import { bodyKind } from '@/lib/vdl2Kinds';
 import { useAcarsDecoder } from '@/hooks/useAcarsDecoder';
 import type { DecodedAcars } from '@/lib/acarsDecode';
+import { structureItems, type Segment } from '@/lib/acarsStructured';
 import type { Vdl2Message } from '@/lib/types';
 
 // Shared VDL2 message log rendering, used by the Vdl2 page (filterable feed) and
@@ -58,6 +59,94 @@ function LabelBadge({ code }: { code: string }) {
       </Badge>
     </SimpleTooltip>
   );
+}
+
+const CHIP_BOX =
+  'min-w-0 max-w-full rounded border border-[var(--color-border-default)] px-1.5 py-0.5 text-[11px]';
+
+// One decoded-items segment (see lib/acarsStructured). Unknown/unparseable items
+// arrive as `chip` and render exactly as before. All text is escaped React children.
+function SegmentView({ seg }: { seg: Segment }) {
+  switch (seg.kind) {
+    case 'position':
+      return (
+        <span className={CHIP_BOX} data-testid="vdl2-pos-chip" title={seg.label}>
+          <span aria-hidden="true">📍 </span>
+          <span className="sr-only">{seg.label} </span>
+          <span className="tabnum font-mono text-[var(--color-text)]">{seg.text}</span>
+        </span>
+      );
+    case 'figure':
+      return (
+        <span className={CHIP_BOX} data-testid="vdl2-figure">
+          <span className="text-[var(--color-text-dim)]">{seg.label}</span>{' '}
+          <span className="tabnum font-semibold text-[var(--color-text)]">{seg.value}</span>
+        </span>
+      );
+    case 'route':
+      return (
+        <div className={`${CHIP_BOX} basis-full`} data-testid="vdl2-route">
+          <span className="text-[var(--color-text-dim)]">{seg.label}</span>
+          {seg.name && <span className="font-mono text-[var(--color-text)]"> {seg.name}</span>}
+          <ol className="mt-0.5 flex flex-wrap items-baseline gap-x-1 gap-y-0.5">
+            {seg.waypoints.map((w, i) => (
+              <li key={i} className="flex items-baseline gap-1 break-all">
+                {i > 0 && (
+                  <span className="text-[var(--color-text-dim)]" aria-hidden="true">
+                    ›
+                  </span>
+                )}
+                <span className="font-mono text-[var(--color-text)]">{w.name}</span>
+                {w.detail && <span className="text-[10px] text-[var(--color-text-dim)]">{w.detail}</span>}
+              </li>
+            ))}
+            {seg.more > 0 && <li className="text-[var(--color-text-dim)]">+{seg.more} more</li>}
+          </ol>
+        </div>
+      );
+    case 'landing':
+      return (
+        <div className="min-w-0 max-w-full basis-full overflow-x-auto" data-testid="vdl2-landing">
+          <table className="w-full border-collapse text-[11px]">
+            <caption className="sr-only">Landing runway data</caption>
+            <thead>
+              <tr className="text-left text-[var(--color-text-dim)]">
+                <th scope="col" className="pr-3 font-normal">
+                  Runway
+                </th>
+                <th scope="col" className="font-normal">
+                  Data
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {seg.rows.map((r, i) => (
+                <tr key={i} className="border-t border-[var(--color-border-default)] align-top">
+                  <th scope="row" className="whitespace-nowrap pr-3 text-left font-mono font-normal">
+                    {r.runway}
+                  </th>
+                  <td className="break-words">
+                    {r.parts.map((p, j) => (
+                      <span key={j} className="mr-2 inline-block">
+                        <span className="text-[var(--color-text-dim)]">{p.label}</span>{' '}
+                        <span className="tabnum text-[var(--color-text)]">{p.value}</span>
+                      </span>
+                    ))}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      );
+    default:
+      return (
+        <span className={`${CHIP_BOX} whitespace-pre-wrap break-all`}>
+          <span className="text-[var(--color-text-dim)]">{seg.item.label}</span>{' '}
+          <span className="text-[var(--color-text)]">{seg.item.value}</span>
+        </span>
+      );
+  }
 }
 
 function FiledRoute({ route }: { route: NonNullable<Vdl2Message['filed_route']> }) {
@@ -206,14 +295,8 @@ export function MessageList({
               </div>
               {decoded && decoded.items.length > 0 && (
                 <div className="mt-1 flex min-w-0 flex-wrap gap-1.5" data-testid="vdl2-decoded">
-                  {decoded.items.map((it, i) => (
-                    <span
-                      key={i}
-                      className="min-w-0 max-w-full whitespace-pre-wrap break-all rounded border border-[var(--color-border-default)] px-1.5 py-0.5 text-[11px]"
-                    >
-                      <span className="text-[var(--color-text-dim)]">{it.label}</span>{' '}
-                      <span className="text-[var(--color-text)]">{it.value}</span>
-                    </span>
+                  {structureItems(decoded).map((seg, i) => (
+                    <SegmentView key={i} seg={seg} />
                   ))}
                 </div>
               )}

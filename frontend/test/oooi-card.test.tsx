@@ -230,3 +230,91 @@ describe('OooiCard', () => {
     expect(container.querySelector('[data-testid="flight-oooi-error"]')).toBeNull();
   });
 });
+
+describe('OooiCard block-time timeline', () => {
+  const oooi = (dep: object | null, arr: object | null) => ({
+    has_oooi: true,
+    dsta: null,
+    dep: dep && { type: 'DEP', dep_icao: 'EPWA', dest_icao: 'EGLL', ...dep },
+    arr: arr && { type: 'ARR', dep_icao: 'EPWA', dest_icao: 'EGLL', ...arr },
+  });
+
+  it('shows four points with taxi/airborne durations and a text alternative', async () => {
+    stubFetch({
+      vdl2_enabled: true,
+      oooi: oooi({ t_out: '0030', t_off: '0042' }, { t_on: '0210', t_in: '0218' }),
+    });
+    wrap();
+    await waitFor(() => screen.getByTestId('oooi-timeline'));
+    for (const k of ['out', 'off', 'on', 'in']) expect(screen.getByTestId(`oooi-point-${k}`)).toBeTruthy();
+    const legs = screen.getAllByTestId('oooi-leg').map((l) => l.textContent);
+    expect(legs).toEqual(['Taxi out12 min', 'Airborne1 h 28 min', 'Taxi in8 min']);
+    expect(screen.getByTestId('oooi-timeline-summary').textContent).toBe(
+      'OUT 00:30 UTC, Taxi out 12 min, OFF 00:42 UTC, Airborne 1 h 28 min, ON 02:10 UTC, Taxi in 8 min, IN 02:18 UTC',
+    );
+  });
+
+  it('renders only known points; a leg across a gap has no duration', async () => {
+    stubFetch({
+      vdl2_enabled: true,
+      oooi: oooi({ t_out: '0030' }, { t_on: '0210', t_in: '0218' }),
+    });
+    wrap();
+    await waitFor(() => screen.getByTestId('oooi-timeline'));
+    expect(screen.queryByTestId('oooi-point-off')).toBeNull();
+    const legs = screen.getAllByTestId('oooi-leg').map((l) => l.textContent);
+    expect(legs).toEqual(['', 'Taxi in8 min']); // OUT->ON is not a named leg
+  });
+
+  it('skips durations when times are out of order', async () => {
+    stubFetch({
+      vdl2_enabled: true,
+      oooi: oooi({ t_out: '0100', t_off: '0050' }, { t_on: '0210', t_in: '0200' }),
+    });
+    wrap();
+    await waitFor(() => screen.getByTestId('oooi-timeline'));
+    const summary = screen.getByTestId('oooi-timeline-summary').textContent!;
+    expect(summary).not.toMatch(/Taxi out|Taxi in/);
+    expect(summary).not.toMatch(/-\d/);
+    expect(summary).toContain('Airborne 1 h 20 min');
+  });
+
+  it('lets only the airborne leg cross midnight UTC', async () => {
+    stubFetch({
+      vdl2_enabled: true,
+      oooi: oooi({ t_out: '2340', t_off: '2350' }, { t_on: '0130', t_in: '0140' }),
+    });
+    wrap();
+    await waitFor(() => screen.getByTestId('oooi-timeline'));
+    expect(screen.getByTestId('oooi-timeline-summary').textContent).toContain('Airborne 1 h 40 min');
+  });
+
+  it('falls back to plain rows with a single known time', async () => {
+    stubFetch({ vdl2_enabled: true, oooi: oooi({ t_out: '0030' }, null) });
+    wrap();
+    await waitFor(() => screen.getByTestId('flight-oooi-card'));
+    expect(screen.queryByTestId('oooi-timeline')).toBeNull();
+    expect(screen.getByText('00:30 UTC')).toBeTruthy();
+  });
+
+  it.each([
+    ['r64', 'Air France engine report'],
+    ['abs', 'ACMS position report'],
+    ['b44', 'take-off report'],
+    ['fst01', 'label 15 flight status'],
+  ])('notes the %s route source', async (source, text) => {
+    stubFetch({
+      vdl2_enabled: true,
+      oooi: {
+        has_oooi: false,
+        dsta: null,
+        dep: null,
+        arr: null,
+        route: { dep_icao: 'EPWA', dest_icao: 'EGLL', flight: null, source },
+      },
+    });
+    wrap();
+    await waitFor(() => screen.getByTestId('flight-oooi-route-only'));
+    expect(screen.getByTestId('flight-oooi-route-only').textContent).toContain(text);
+  });
+});

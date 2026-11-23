@@ -106,6 +106,17 @@ export interface Vdl2StatsResponse {
   // % of last-24h flights also seen on VDL2. Null when the cross-DB join is
   // unavailable — the tile is hidden in that case.
   flights_overlap_pct?: number | null;
+  // Last-24h dumpvdl2 downlinks per ground station, frames desc, <=30 rows.
+  // Absent on an older backend.
+  ground_stations?: Vdl2GroundStation[];
+}
+
+export interface Vdl2GroundStation {
+  toaddr: string | null;
+  freq: number | null; // MHz
+  frames: number;
+  aircraft: number;
+  snr_db: number | null;
 }
 
 // `GET /api/vdl2/stats?summary=true` — only the three headline counters.
@@ -202,7 +213,7 @@ export interface Vdl2OooiRoute {
   dep_icao: string | null;
   dest_icao: string | null;
   flight: string | null;
-  source: 'cm' | 'label49' | 'label26' | 'label20';
+  source: 'cm' | 'label49' | 'label26' | 'label20' | 'r64' | 'abs' | 'b44' | 'fst01';
 }
 
 export interface Vdl2OooiSummary {

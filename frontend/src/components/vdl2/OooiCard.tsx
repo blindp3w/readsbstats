@@ -5,6 +5,7 @@ import { errMsg } from '@/lib/errMsg';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Badge } from '@/components/ui/Badge';
 import { useVdl2FlightWindow } from '@/hooks/useVdl2Enabled';
+import { buildTimeline, formatDuration, timelineSummary, type TimelineItem } from '@/lib/oooiTimeline';
 import type { Vdl2OooiRoute, Vdl2OooiSummary } from '@/lib/types';
 
 // Route confirmation + (when available) OOOI block times for this flight.
@@ -30,6 +31,62 @@ function fmtHHMM(t: string | null): string | null {
   if (!t) return null;
   // Raw OOOI times are HHMM UTC ("0030"); render "00:30 UTC" when it looks like one.
   return /^\d{4}$/.test(t) ? `${t.slice(0, 2)}:${t.slice(2)} UTC` : t;
+}
+
+// Horizontal OUT -> OFF -> ON -> IN block-time bar. Points are always labelled in
+// text (never colour-only); the visual is aria-hidden and a sr-only sentence
+// carries the same information.
+function Timeline({ items }: { items: TimelineItem[] }) {
+  return (
+    <div data-testid="oooi-timeline" role="group" aria-label="Block time timeline">
+      <p className="sr-only" data-testid="oooi-timeline-summary">
+        {timelineSummary(items, (t) => fmtHHMM(t) ?? t)}
+      </p>
+      <div className="flex items-start" aria-hidden="true">
+        {items.map((it, i) =>
+          it.type === 'point' ? (
+            <div
+              key={i}
+              className="flex min-w-0 shrink-0 flex-col items-center text-center"
+              data-testid={`oooi-point-${it.key}`}
+            >
+              <span className="text-[10px] font-semibold uppercase tracking-wide text-[var(--color-text-dim)]">
+                {it.label}
+              </span>
+              <span className="mt-0.5 h-2.5 w-2.5 rounded-full border-2 border-[var(--color-accent)] bg-[var(--color-surface-2)]" />
+              <span className="tabnum mt-0.5 max-w-[4.5rem] font-mono text-[11px] leading-tight">
+                {fmtHHMM(it.time)}
+              </span>
+            </div>
+          ) : (
+            <div
+              key={i}
+              className="flex min-w-[1.5rem] flex-1 flex-col items-center px-0.5"
+              data-testid="oooi-leg"
+            >
+              <span className="block h-4" />
+              <span
+                className={`mt-[5px] block w-full ${
+                  it.airborne
+                    ? 'h-1 rounded bg-[var(--color-accent)]'
+                    : it.name
+                      ? 'h-1 rounded bg-[var(--color-border-default)]'
+                      : 'mt-[7px] h-0 border-t border-dashed border-[var(--color-border-default)]'
+                }`}
+              />
+              {it.name && it.duration !== null && (
+                <span className="mt-0.5 text-center text-[10px] leading-tight text-[var(--color-text-dim)]">
+                  {it.name}
+                  <br />
+                  <span className="tabnum text-[var(--color-text)]">{formatDuration(it.duration)}</span>
+                </span>
+              )}
+            </div>
+          ),
+        )}
+      </div>
+    </div>
+  );
 }
 
 function TimeRow({ label, value }: { label: string; value: string | null }) {
@@ -77,6 +134,14 @@ export function OooiCard({ icao, firstSeen, lastSeen, scheduledOrigin, scheduled
   const depVerdict = routeVerdict(scheduledOrigin, reportedDep);
   const destVerdict = routeVerdict(scheduledDest, reportedDest);
 
+  // >= 2 known points (3 items incl. the connector) -> timeline; else plain rows.
+  const timeline = buildTimeline({
+    out: data.dep?.t_out,
+    off: data.dep?.t_off,
+    on: data.arr?.t_on,
+    in: data.arr?.t_in,
+  });
+
   return (
     <Card data-testid="flight-oooi-card">
       <CardHeader>
@@ -87,7 +152,8 @@ export function OooiCard({ icao, firstSeen, lastSeen, scheduledOrigin, scheduled
           <RoutePoint label="Departure" icaoCode={reportedDep} verdict={depVerdict} />
           <RoutePoint label="Destination" icaoCode={reportedDest} verdict={destVerdict} />
         </div>
-        {data.has_oooi && (
+        {data.has_oooi && timeline.length >= 3 && <Timeline items={timeline} />}
+        {data.has_oooi && timeline.length < 3 && (
           <div className="space-y-1">
             <TimeRow label="Out (off gate)" value={fmtHHMM(data.dep?.t_out ?? null)} />
             <TimeRow label="Off (wheels up)" value={fmtHHMM(data.dep?.t_off ?? null)} />
@@ -115,6 +181,10 @@ const ROUTE_SOURCE_NOTE: Record<Vdl2OooiRoute['source'], string> = {
   label49: 'an airline movement report.',
   label26: 'an Air France ETA report.',
   label20: 'a KLM route report.',
+  r64: 'an Air France engine report (ACARS).',
+  abs: 'an ACMS position report header.',
+  b44: 'a take-off report.',
+  fst01: 'a label 15 flight status report.',
 };
 
 type Verdict = 'match' | 'mismatch' | null;

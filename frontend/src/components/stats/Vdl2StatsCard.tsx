@@ -44,6 +44,7 @@ export function Vdl2StatsCard({ enabled = true }: { enabled?: boolean }) {
   // With the optional overlap tile there are 4 KPIs (balance 2×2 / 1×4);
   // without it, 3 (1×3). Avoids a lone 4th tile wrapping under a 3-col grid.
   const hasOverlap = data?.flights_overlap_pct != null;
+  const groundStations = Array.isArray(data?.ground_stations) ? data.ground_stations : [];
 
   return (
     <div className="space-y-4" data-testid="stats-vdl2">
@@ -119,6 +120,57 @@ export function Vdl2StatsCard({ enabled = true }: { enabled?: boolean }) {
           </CardContent>
         </Card>
       </div>
+      {groundStations.length > 0 && (
+        <Card data-testid="vdl2-ground-stations">
+          <CardHeader>
+            <CardTitle>Ground stations (24 h)</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[320px] text-sm">
+                <thead>
+                  <tr className="text-left text-xs text-[var(--color-text-dim)]">
+                    <th scope="col" className="py-1 pr-3 font-normal">
+                      Station
+                    </th>
+                    <th scope="col" className="py-1 pr-3 text-right font-normal">
+                      MHz
+                    </th>
+                    <th scope="col" className="py-1 pr-3 text-right font-normal">
+                      Frames
+                    </th>
+                    <th scope="col" className="py-1 pr-3 text-right font-normal">
+                      Aircraft
+                    </th>
+                    <th scope="col" className="py-1 text-right font-normal">
+                      SNR dB
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {groundStations.map((g, i) => (
+                    <tr
+                      key={`${g.toaddr ?? 'none'}-${g.freq ?? 'none'}-${i}`}
+                      className="border-t border-[var(--color-border-default)]"
+                      data-testid="vdl2-gs-row"
+                    >
+                      <td className="py-1 pr-3 font-mono">{g.toaddr ?? '—'}</td>
+                      <td className="tabnum py-1 pr-3 text-right">
+                        {g.freq != null ? g.freq.toFixed(3) : '—'}
+                      </td>
+                      <td className="tabnum py-1 pr-3 text-right">{g.frames.toLocaleString()}</td>
+                      <td className="tabnum py-1 pr-3 text-right">{g.aircraft.toLocaleString()}</td>
+                      <td className="tabnum py-1 text-right">
+                        {g.snr_db != null ? g.snr_db.toFixed(1) : '—'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </CardContent>
+        </Card>
+      )}
     </div>
   );
 }
