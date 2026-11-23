@@ -1009,6 +1009,17 @@ _FLIGHT_SCAN_PAD_AFTER = 1800
 _POSITIONS_FUTURE_SLACK = 600
 
 
+def _safe_parse(fn, *args):
+    """Run one query-time parser on one row. Radio bodies are untrusted: a parser bug
+    on a single malformed body must drop that row, never 500 the whole positions
+    response (review 2026-11-23). Logged at debug, like other bad-input paths."""
+    try:
+        return fn(*args)
+    except (ValueError, TypeError, OverflowError, IndexError, KeyError, AttributeError) as exc:
+        log.debug("vdl2 positions: %s skipped a row: %r", getattr(fn, "__name__", fn), exc)
+        return None
+
+
 @router.get("/api/vdl2/active", response_model=schemas.Vdl2ActiveResponse,
             response_model_exclude_unset=True)
 def api_vdl2_active(minutes: int = Query(10, ge=1, le=120)) -> dict:
@@ -1159,7 +1170,7 @@ def _gather_positions(lo: int, hi: int, icao: str | None) -> list[dict]:
     points: list[dict] = []
     seen: set[int] = set()
     for r in label_rows:
-        parsed = vdl2_positions.parse_by_label(r["label"], r["body"], r["ts"])
+        parsed = _safe_parse(vdl2_positions.parse_by_label, r["label"], r["body"], r["ts"])
         if parsed is None:
             continue   # no-fix body (e.g. AUTPOS blank marker, label-17 `------`) — discarded, no cap consumed
         extra = {k: parsed[k] for k in ("ts", "alt") if k in parsed}
@@ -1168,8 +1179,8 @@ def _gather_positions(lo: int, hi: int, icao: str | None) -> list[dict]:
         seen.add(r["id"])
         points.append(_point(r, parsed["lat"], parsed["lon"], True, "label", extra))
     for r in m1bpos_rows:
-        parsed = m1bpos.parse_position(
-            normalize.acars_text(r["body"], r["sublabel"], r["mfi"]))
+        parsed = _safe_parse(
+            m1bpos.parse_position, normalize.acars_text(r["body"], r["sublabel"], r["mfi"]))
         if parsed is None:
             continue   # non-position #M1BPOS body — discarded (does not consume the final cap)
         if r["id"] in seen or (scoped and _outside(r["ts"])):
@@ -1177,7 +1188,7 @@ def _gather_positions(lo: int, hi: int, icao: str | None) -> list[dict]:
         seen.add(r["id"])
         points.append(_point(r, parsed["lat"], parsed["lon"], True, "m1bpos"))
     for r in g59_rows:
-        parsed = vdl2_positions.parse_59g(r["body"])
+        parsed = _safe_parse(vdl2_positions.parse_59g, r["body"])
         if parsed is None:
             continue   # non-position 59,G (label-37 status) — discarded, no cap consumed
         if r["id"] in seen or (scoped and _outside(r["ts"])):
@@ -1185,20 +1196,20 @@ def _gather_positions(lo: int, hi: int, icao: str | None) -> list[dict]:
         seen.add(r["id"])
         points.append(_point(r, parsed["lat"], parsed["lon"], True, "59g"))
     for r in adsc_rows:
-        parsed = adsc.parse_basic_report(r["raw"])
+        parsed = _safe_parse(adsc.parse_basic_report, r["raw"])
         if parsed is None:
             continue   # no basic_report tag / truncated raw — discarded, no cap consumed
         if r["id"] in seen or (scoped and _outside(r["ts"])):
             continue
         seen.add(r["id"])
         # earth_ref_data (same report): attach only the valid fields
-        motion = adsc.parse_earth_ref(r["raw"]) or {}
+        motion = _safe_parse(adsc.parse_earth_ref, r["raw"]) or {}
         extra = {k: v for k, v in motion.items() if v is not None}
         points.append(_point(r, parsed["lat"], parsed["lon"], True, "adsc", extra))
     for r in h1_rows:
         if r["id"] in seen:
             continue
-        fixes = [f for f in h1rep.parse_positions(r["sublabel"], r["body"], r["ts"])
+        fixes = [f for f in (_safe_parse(h1rep.parse_positions, r["sublabel"], r["body"], r["ts"]) or [])
                  if lo <= f["ts"] <= hi]
         if not fixes:
             continue   # no fix (or all outside the window) — discarded, no cap consumed

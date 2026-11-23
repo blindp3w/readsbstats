@@ -104,7 +104,7 @@ _ABS_CSV = re.compile(
 # lat x1000 (6 cols), lon x1000 (7 cols), HHMM, altitude ft (6 cols). Strict column
 # patterns: other EB0 layouts (``SP-LRH...``, `` 999 999``, ``161126062124...``) don't match.
 _ABS_FIXED = re.compile(
-    r"([ -]\d{5})([ -]\d{6}|[ -]{2}\d{5})(\d{2})(\d{2})([ +-]\d{5}|\d{6})")
+    r"([ -]\d{5})([ -]\d{6}|(?: -|  )\d{5})(\d{2})(\d{2})([ +-]\d{5}|\d{6})")
 _ABS_PREFIXES = ("ABS", "EB0", "SB0")
 _ALT_MIN, _ALT_MAX = -2000, 60000
 
@@ -114,32 +114,38 @@ def _parse_abs(body: str, recv_ts: float) -> list[dict]:
     for line in re.split(r"\r?\n", body)[1:]:
         if len(out) >= MAX_FIXES:
             break
-        m = _ABS_CSV.match(line)
-        if m:
-            lat = int(m[2]) + float(m[3]) / 60
-            lon = int(m[5]) + float(m[6]) / 60
-            if float(m[3]) >= 60 or float(m[6]) >= 60:
-                continue
-            ts = fix_epoch(recv_ts, int(m[8]), int(m[9]), day=int(m[7]))
-            alt = int(m[10])
-            if not _ALT_MIN <= alt <= _ALT_MAX:
-                continue
-            f = _fix(-lat if m[1] == "S" else lat, -lon if m[4] == "W" else lon, ts, "h1-abs",
-                     alt=alt, temp_c=float(m[11]), wind_dir=int(m[12]), wind_kt=int(m[13]))
-            if f is not None:
-                out.append(f)
-            continue
-        m = _ABS_FIXED.match(line)
-        if m:
-            alt = int(m[5])
-            if not _ALT_MIN <= alt <= _ALT_MAX:
-                continue
-            lat = int(m[1]) / 1000
-            lon = int(m[2].replace(" ", "")) / 1000
-            f = _fix(lat, lon, fix_epoch(recv_ts, int(m[3]), int(m[4])), "h1-abs", alt=alt)
-            if f is not None:
-                out.append(f)
+        try:
+            f = _abs_line(line, recv_ts)
+        except (ValueError, OverflowError):
+            continue   # malformed radio line: skip it, never fail the message
+        if f is not None:
+            out.append(f)
     return out
+
+
+def _abs_line(line: str, recv_ts: float) -> dict | None:
+    """One ABS fix line (CSV or fixed-width dialect) → fix dict, or None."""
+    m = _ABS_CSV.match(line)
+    if m:
+        if float(m[3]) >= 60 or float(m[6]) >= 60:
+            return None
+        lat = int(m[2]) + float(m[3]) / 60
+        lon = int(m[5]) + float(m[6]) / 60
+        alt = int(m[10])
+        if not _ALT_MIN <= alt <= _ALT_MAX:
+            return None
+        ts = fix_epoch(recv_ts, int(m[8]), int(m[9]), day=int(m[7]))
+        return _fix(-lat if m[1] == "S" else lat, -lon if m[4] == "W" else lon, ts, "h1-abs",
+                    alt=alt, temp_c=float(m[11]), wind_dir=int(m[12]), wind_kt=int(m[13]))
+    m = _ABS_FIXED.match(line)
+    if m:
+        alt = int(m[5])
+        if not _ALT_MIN <= alt <= _ALT_MAX:
+            return None
+        lat = int(m[1]) / 1000
+        lon = int(m[2].replace(" ", "")) / 1000
+        return _fix(lat, lon, fix_epoch(recv_ts, int(m[3]), int(m[4])), "h1-abs", alt=alt)
+    return None
 
 
 # --- CF FDE / MM ------------------------------------------------------------------------

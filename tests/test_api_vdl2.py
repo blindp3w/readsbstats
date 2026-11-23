@@ -2609,3 +2609,32 @@ class TestStatsGroundStations:
             "EXPLAIN QUERY PLAN " + vdl2_api._GROUND_STATIONS_SQL, (0,)).fetchall())
         assert "idx_vdl2_ts" in plan
         assert "SCAN vdl2_messages" not in plan.replace("USING INDEX", "")
+
+
+class TestPositionsParserFailureIsolated:
+    """A parser raising on one malformed radio body must not 500 the whole response
+    (review finding 2026-11-23: an ABS line with '--' raised ValueError)."""
+
+    def test_one_raising_row_keeps_other_points(self, monkeypatch):
+        from readsbstats.vdl2 import h1rep as _h1rep
+        recv = int(time.time()) - 30
+        good, _ = TestBatch5Positions._csv_body(recv)
+        conn, client = TestBatch5Positions._client(monkeypatch, [
+            {"ts": recv, "icao_hex": "489001", "label": "H1", "sublabel": "DF", "body": good},
+            {"ts": recv, "icao_hex": "489002", "label": "H1", "sublabel": "DF", "body": "ABS boom"},
+        ])
+        real = _h1rep.parse_positions
+
+        def flaky(sub, body, ts):
+            if body == "ABS boom":
+                raise ValueError("malformed")
+            return real(sub, body, ts)
+
+        monkeypatch.setattr(_h1rep, "parse_positions", flaky)
+        with client as c:
+            r = c.get("/api/vdl2/positions?minutes=60")
+            r2 = c.get(f"/api/vdl2/positions/489002?since={recv - 600}&until={recv + 600}")
+        conn.close()
+        assert r.status_code == 200
+        assert {p["icao_hex"] for p in r.json()["points"]} == {"489001"}
+        assert r2.status_code == 200 and r2.json()["points"] == []

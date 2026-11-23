@@ -288,3 +288,62 @@ class TestPos:
     def test_wrong_sublabel(self):
         assert h1rep.parse_positions("CF", POS_BODY, POS_RECV) == []
         assert h1rep.parse_positions(None, POS_BODY, POS_RECV) == []
+
+
+# --- malformed radio input must never raise (review finding 2026-11-23) -------------
+import pytest as _pytest
+
+from readsbstats.vdl2 import h1route as _h1route
+from readsbstats.vdl2 import positions as _positions
+
+_EDGE_LINES = [
+    " 52183--208871359002189",      # '--' in the longitude column used to raise ValueError
+    " 52183- -20887135900218",
+    "-52183  208871359+-02189",
+    "      " * 4,
+    " 52183  208876059002189",      # minute 60
+    " 52183  208872459002189",      # hour 24
+    "N5210.5,E02055.2,001035,01973,-02.8,286,026,IC,",   # day 00
+    "N5210.5,E02055.2,321035,01973,-02.8,286,026,IC,",   # day 32
+    "N5260.5,E02055.2,231035,01973,-02.8,286,026,IC,",   # minutes >= 60
+    "--,--,--,--,--,--",
+]
+
+
+@_pytest.mark.parametrize("line", _EDGE_LINES)
+@_pytest.mark.parametrize("prefix", ["ABS011DA_S       EPWALIRF4", "EB0031AA_ SP-LRG EPWAKMIA1"])
+def test_abs_edge_lines_never_raise(prefix, line):
+    out = h1rep.parse_positions("DF", f"{prefix}\r\n{line}", 1795430000)
+    assert isinstance(out, list)
+
+
+@_pytest.mark.parametrize("body", [
+    "FDE--3409090111752.17933/20.83380", "MM2460000929117-.-/-.-", "(POS-KLM75C  -52--N020--E/1045-- F1-0",
+    "(POS-X -9999N99999E/999999 F999", "",
+])
+@_pytest.mark.parametrize("sub", ["DF", "CF"])
+def test_h1_edge_bodies_never_raise(sub, body):
+    assert isinstance(h1rep.parse_positions(sub, body, 1795430000), list)
+
+
+def test_dashed_longitude_line_is_skipped_not_fatal():
+    body = ("ABS011DA_S       EPWALIRF4\r\n 52183--208871359002189\r\n"
+            " 52183  208871359002189+08-241014XI8GMY0360570000--")
+    fixes = h1rep.parse_positions("DF", body, 1795430000)
+    assert len(fixes) == 1 and abs(fixes[0]["lon"] - 20.887) < 1e-9
+
+
+@_pytest.mark.parametrize("label,body", [
+    ("83", "001PR2--52746N52--.4E020--.4430426"), ("83", "HAAB,ESSA,2--319, -.--,  --.--,3900-,263,"),
+    ("15", "FST01EGLLEPWAN5--32E02-7997"), ("80", "/POS N52--1E020-97/ALT +-5475"),
+])
+def test_label_edge_bodies_never_raise(label, body):
+    _positions.parse_by_label(label, body, 1795430000)
+
+
+@_pytest.mark.parametrize("label,sub,body", [
+    ("H1", "T8", "R64,,,,,,,,--,--"), ("H1", "DF", "B44C\r\n--  --TO--"), ("H1", "DF", "ABS,,,,--,--"),
+    ("15", None, "FST01----"),
+])
+def test_route_edge_bodies_never_raise(label, sub, body):
+    _h1route.parse_route(label, sub, body)
