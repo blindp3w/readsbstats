@@ -393,6 +393,11 @@ class Vdl2Position(ApiModel):
     temp_c: Optional[float] = None
     wind_dir: Optional[int] = None     # degrees
     wind_kt: Optional[int] = None
+    # ADS-C points only (earth_ref_data tag of the same report): true track deg, ground speed kt,
+    # vertical speed ft/min. Absent when the tag is missing or the field invalid.
+    track: Optional[float] = None
+    gs: Optional[float] = None
+    vs: Optional[int] = None
 
 
 class Vdl2PositionsResponse(ApiModel):

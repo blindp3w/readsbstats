@@ -2247,3 +2247,179 @@ class TestBatch5Positions:
             (p,) = self._pts(c)
         conn.close()
         assert set(p) == {"lat", "lon", "icao_hex", "ts", "label", "precise", "source"}
+
+
+class TestAdscMotionFields:
+    @staticmethod
+    def _raw(tags) -> str:
+        import json
+        return json.dumps({"vdl2": {"avlc": {"acars": {"arinc622": {"adsc": {"tags": tags}}}}}})
+
+    def test_earth_ref_attached_to_adsc_point(self, monkeypatch):
+        raw = self._raw([{"basic_report": {"lat": 52.202053, "lon": 20.719013, "alt": 2852}},
+                         {"earth_ref_data": {"true_trk_deg": 3.691406, "true_trk_valid": True,
+                                             "gnd_spd_kts": 195.5, "vspd_ftmin": -272}}])
+        raw2 = self._raw([{"basic_report": {"lat": 52.1, "lon": 20.7, "alt": 100}}])
+        raw3 = self._raw([{"basic_report": {"lat": 52.2, "lon": 20.6, "alt": 100}},
+                          {"earth_ref_data": {"true_trk_deg": "x", "gnd_spd_kts": 150.0,
+                                              "vspd_ftmin": "y"}}])
+        now = int(time.time())
+        conn, client = TestBatch5Positions._client(monkeypatch, [
+            {"ts": now - 5, "icao_hex": "48b0b6", "label": "B6", "body": "x", "raw": raw},
+            {"ts": now - 6, "icao_hex": "48b0b7", "label": "B6", "body": "x", "raw": raw2},
+            {"ts": now - 7, "icao_hex": "48b0b8", "label": "B6", "body": "x", "raw": raw3},
+        ])
+        with client as c:
+            by = {p["icao_hex"]: p for p in c.get("/api/vdl2/positions?minutes=60").json()["points"]}
+        conn.close()
+        assert by["48b0b6"]["source"] == "adsc"
+        assert by["48b0b6"]["track"] == 3.6914 and by["48b0b6"]["gs"] == 195.5
+        assert by["48b0b6"]["vs"] == -272
+        assert not {"track", "gs", "vs"} & set(by["48b0b7"])        # tag absent -> fields absent
+        assert by["48b0b8"]["gs"] == 150.0                          # point kept, bad fields absent
+        assert "track" not in by["48b0b8"] and "vs" not in by["48b0b8"]
+
+
+class TestFlightPositions:
+    """GET /api/vdl2/positions/{icao_hex}?since=&until= — per-flight route overlay."""
+
+    HEX = "489100"
+
+    @staticmethod
+    def _pts(c, hexv="489100", since=None, until=None, expect=200):
+        url = f"/api/vdl2/positions/{hexv}"
+        q = []
+        if since is not None:
+            q.append(f"since={since}")
+        if until is not None:
+            q.append(f"until={until}")
+        r = c.get(url + ("?" + "&".join(q) if q else ""))
+        assert r.status_code == expect, r.text
+        return r.json()["points"] if expect == 200 else r
+
+    @pytest.fixture()
+    def fp(self, monkeypatch):
+        now = int(time.time())
+        recv = now - 600
+        body, fix_ts = TestBatch5Positions._csv_body(recv, back=(3, 2, 1))
+        far_body, far_ts = TestBatch5Positions._csv_body(recv - 7200, back=(3, 2, 1))
+        rows = [
+            # multi-fix ABS for the airframe
+            {"ts": recv, "icao_hex": self.HEX, "label": "H1", "sublabel": "DF", "body": body},
+            # label-15 + label-80 (receive time) for the airframe, earlier and later
+            {"ts": recv - 900, "icao_hex": self.HEX, "label": "15",
+             "body": "FST01EGLLEPWAN52232E0207997 36  33  51     35262      188  10531050"},
+            {"ts": recv + 300, "icao_hex": self.HEX, "label": "80",
+             "body": "3N01 POSRPT 0872/19 LGAV/EPWA .SX-DVX\r\n/POS N52141E020397/ALT +05475/MCH 284/FOB 0032/ETA 1702"},
+            # coarse XID fix
+            {"ts": recv - 300, "icao_hex": self.HEX, "label": "H1", "lat": 52.3, "lon": 20.5, "body": "x"},
+            # another airframe, same window
+            {"ts": recv, "icao_hex": "489200", "label": "H1", "sublabel": "DF", "body": body},
+            {"ts": recv - 1, "icao_hex": "489200", "label": "15",
+             "body": "FST01EGLLEPWAN52232E0207997 36  33  51     35262      188  10531050"},
+            # same airframe, ABS received 2 h earlier: embedded fixes far outside the window
+            {"ts": recv - 7200, "icao_hex": self.HEX, "label": "H1", "sublabel": "DF", "body": far_body},
+            # superseded copy for the airframe
+            {"ts": recv + 10, "icao_hex": self.HEX, "label": "H1", "sublabel": "DF", "body": body,
+             "superseded": 1},
+            # wrong-sublabel H1 body for the airframe
+            {"ts": recv + 20, "icao_hex": self.HEX, "label": "H1", "sublabel": "M1", "body": body},
+        ]
+        conn, client = TestBatch5Positions._client(monkeypatch, rows)
+        with client as c:
+            c.recv, c.fix_ts, c.far_ts, c.now, c.conn = recv, fix_ts, far_ts, now, conn
+            yield c
+        conn.close()
+
+    def test_happy_path_sorted_ascending_all_sources(self, fp):
+        pts = self._pts(fp, since=fp.recv - 3600, until=fp.recv + 3600)
+        assert [p["source"] for p in pts].count("h1-abs") == 3
+        assert {p["source"] for p in pts} == {"h1-abs", "label", "xid"}
+        assert len(pts) == 3 + 1 + 1 + 1       # 3 ABS fixes + label 15 + label 80 + xid
+        ts = [p["ts"] for p in pts]
+        assert ts == sorted(ts)
+        assert all(p["icao_hex"] == self.HEX for p in pts)
+        abs_pts = [p for p in pts if p["source"] == "h1-abs"]
+        assert sorted(p["ts"] for p in abs_pts) == sorted(fp.fix_ts)
+        assert abs_pts[0]["alt"] == 2421 and abs_pts[0]["wind_dir"] == 301
+        l80 = next(p for p in pts if p["label"] == "80")
+        assert l80["alt"] == 5475 and l80["precise"] is True
+
+    def test_other_icao_excluded(self, fp):
+        pts = self._pts(fp, since=fp.recv - 3600, until=fp.recv + 3600)
+        assert not [p for p in pts if p["icao_hex"] != self.HEX]
+        other = self._pts(fp, hexv="489200", since=fp.recv - 3600, until=fp.recv + 3600)
+        assert {p["icao_hex"] for p in other} == {"489200"} and len(other) == 4
+
+    def test_uppercase_and_tilde_hex_accepted(self, fp):
+        assert len(self._pts(fp, hexv="489100".upper(), since=fp.recv - 3600, until=fp.recv + 3600)) == 6
+
+    def test_fix_outside_window_excluded_by_embedded_ts(self, fp):
+        # window around the far ABS message: only its 2nd and 3rd embedded fixes fall inside
+        far = sorted(fp.far_ts)
+        pts = self._pts(fp, since=far[1], until=far[2])
+        assert sorted(p["ts"] for p in pts) == far[1:]
+        # an ABS message received inside the window whose fixes fall before it
+        pts = self._pts(fp, since=fp.fix_ts[1], until=fp.recv + 3600)
+        abs_ts = sorted(p["ts"] for p in pts if p["source"] == "h1-abs")
+        assert abs_ts == sorted(fp.fix_ts)[1:]
+
+    def test_until_bound_excludes_later_points(self, fp):
+        pts = self._pts(fp, since=fp.recv - 3600, until=fp.recv - 100)
+        assert all(p["ts"] <= fp.recv - 100 for p in pts)
+        assert not [p for p in pts if p["label"] == "80"]
+
+    def test_superseded_and_wrong_sublabel_ignored(self, fp):
+        pts = self._pts(fp, since=fp.recv - 3600, until=fp.recv + 3600)
+        assert len([p for p in pts if p["source"] == "h1-abs"]) == 3
+
+    def test_bad_icao_404(self, fp):
+        r = self._pts(fp, hexv="zzz", since=1, until=100, expect=404)
+        assert r.status_code == 404
+
+    def test_422_cases(self, fp):
+        self._pts(fp, since=100, until=100, expect=422)
+        self._pts(fp, since=200, until=100, expect=422)
+        self._pts(fp, since=0, until=48 * 3600 + 1, expect=422)
+        self._pts(fp, since=1000, until=1000 + 48 * 3600, expect=200)      # exactly 48 h ok
+        self._pts(fp, expect=422)
+        self._pts(fp, since=100, expect=422)
+        self._pts(fp, until=100, expect=422)
+        self._pts(fp, since=-1, until=100, expect=422)
+        self._pts(fp, since=1, until=10_000_000_001, expect=422)
+        self._pts(fp, since="abc", until=100, expect=422)
+
+    def test_not_cached_and_map_cache_untouched(self, fp):
+        from readsbstats import cache
+        self._pts(fp, since=fp.recv - 3600, until=fp.recv + 3600)
+        assert not [k for k in cache._cache if "positions" in str(k)]
+        # a new row is visible on the next call (no cache)
+        vdl2_db.insert_messages(fp.conn, [
+            {"ts": fp.recv + 400, "icao_hex": self.HEX, "label": "H1", "lat": 52.4, "lon": 20.4, "body": "y"}])
+        fp.conn.commit()
+        assert len(self._pts(fp, since=fp.recv - 3600, until=fp.recv + 3600)) == 7
+
+    def test_cap_and_ascending_order(self, fp, monkeypatch):
+        monkeypatch.setattr(vdl2_api, "_FLIGHT_POSITIONS_CAP", 3)
+        pts = self._pts(fp, since=fp.recv - 3600, until=fp.recv + 3600)
+        assert len(pts) == 3
+        ts = [p["ts"] for p in pts]
+        assert ts == sorted(ts)
+        assert ts[-1] == fp.recv + 300           # the newest are kept
+
+    def test_empty_window(self, fp):
+        assert self._pts(fp, since=1000, until=2000) == []
+
+    def test_every_candidate_query_uses_icao_index(self, monkeypatch):
+        conn = make_vdl2_db()
+        assert set(vdl2_api._SQL_FLIGHT) == set(vdl2_api._SQL_MAP)
+        for name, sql in vdl2_api._SQL_FLIGHT.items():
+            plan = " ".join(r[3] for r in conn.execute(
+                "EXPLAIN QUERY PLAN " + sql, [0] * sql.count("?")))
+            assert "idx_vdl2_icao" in plan, (name, plan)
+        conn.close()
+
+    def test_map_sql_has_no_icao_clause(self):
+        for sql in vdl2_api._SQL_MAP.values():
+            assert "icao_hex = ?" not in sql
+        assert vdl2_api._H1_POSITIONS_SQL == vdl2_api._SQL_MAP["h1"]

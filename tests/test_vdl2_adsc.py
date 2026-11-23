@@ -54,3 +54,44 @@ class TestParseBasicReport:
     def test_non_str_and_empty(self):
         for bad in (None, 5, b"{}", "", {"vdl2": {}}):
             assert adsc.parse_basic_report(bad) is None
+
+
+class TestParseEarthRef:
+    """``earth_ref_data`` tag: true track deg, ground speed kt, vertical speed ft/min."""
+
+    def test_real_frame(self):
+        assert adsc.parse_earth_ref(REAL_RAW) == {"track": 3.6914, "gs": 195.5, "vs": -272}
+
+    def test_present(self):
+        raw = _raw([{"basic_report": {"lat": 50.0, "lon": 19.0}},
+                    {"earth_ref_data": {"true_trk_deg": 115.136719, "true_trk_valid": True,
+                                        "gnd_spd_kts": 167.5, "vspd_ftmin": -880}}])
+        assert adsc.parse_earth_ref(raw) == {"track": 115.1367, "gs": 167.5, "vs": -880}
+
+    def test_absent(self):
+        assert adsc.parse_earth_ref(_raw([{"basic_report": {"lat": 50.0, "lon": 19.0}}])) is None
+        assert adsc.parse_earth_ref(_raw([])) is None
+        assert adsc.parse_earth_ref(None) is None
+        assert adsc.parse_earth_ref(REAL_RAW[:600]) is None      # truncated JSON
+        assert adsc.parse_earth_ref(_raw([{"earth_ref_data": "x"}])) is None
+
+    def test_invalid_track_flag_nulls_track_only(self):
+        raw = _raw([{"earth_ref_data": {"true_trk_deg": 115.1, "true_trk_valid": False,
+                                        "gnd_spd_kts": 167.5, "vspd_ftmin": -880}}])
+        assert adsc.parse_earth_ref(raw) == {"track": None, "gs": 167.5, "vs": -880}
+
+    def test_malformed_fields_become_none_individually(self):
+        raw = _raw([{"earth_ref_data": {"true_trk_deg": "north", "gnd_spd_kts": 99999,
+                                        "vspd_ftmin": -880}}])
+        assert adsc.parse_earth_ref(raw) == {"track": None, "gs": None, "vs": -880}
+        raw = _raw([{"earth_ref_data": {"true_trk_deg": 400, "gnd_spd_kts": -5,
+                                        "vspd_ftmin": 1e9}}])
+        assert adsc.parse_earth_ref(raw) == {"track": None, "gs": None, "vs": None}
+        raw = _raw([{"earth_ref_data": {"true_trk_deg": True, "gnd_spd_kts": float("nan"),
+                                        "vspd_ftmin": "5"}}])
+        assert adsc.parse_earth_ref(raw) == {"track": None, "gs": None, "vs": None}
+
+    def test_vs_is_int(self):
+        raw = _raw([{"earth_ref_data": {"true_trk_deg": 10, "gnd_spd_kts": 100, "vspd_ftmin": 640.0}}])
+        rec = adsc.parse_earth_ref(raw)
+        assert rec["vs"] == 640 and isinstance(rec["vs"], int)

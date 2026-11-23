@@ -914,15 +914,54 @@ _POSITIONS_59G_SCAN_CAP = 8000
 # H1 position reports (ABS/EB0/SB0 multi-fix, CF FDE/MM, `(POS-`; h1rep.py). A message can
 # yield several fixes, so the final merge cap (_POSITIONS_CAP) is applied to points, not rows.
 _POSITIONS_H1_SCAN_CAP = 8000
-# Index-served by idx_vdl2_label_ts_id (label = 'H1' + ts range); the sublabel/prefix
-# filters run on the already-bounded rows.
-_H1_POSITIONS_SQL = (
-    "SELECT id, icao_hex, ts, label, sublabel, body FROM vdl2_messages "
-    "WHERE label = 'H1' AND ts >= ? AND superseded IS NOT 1 AND sublabel IN ('DF','CF') "
-    "AND (body LIKE 'ABS%' OR body LIKE 'EB0%' OR body LIKE 'SB0%' OR body LIKE 'FDE%' "
-    "OR body LIKE 'MM%' OR body LIKE '(POS-%') "
-    "ORDER BY ts DESC, id DESC LIMIT ?"
-)
+# Candidate SQL for /api/vdl2/positions (map: `_SQL_MAP`) and /api/vdl2/positions/{icao}
+# (per flight: `_SQL_FLIGHT`). Built from constants only — the user-supplied hex and window
+# are always bound parameters. The scoped variant adds `icao_hex = ?` plus an upper `ts`
+# bound so every candidate scan is served by idx_vdl2_icao (icao_hex, ts DESC) and never
+# walks 90 days of bodies. Parameter order: [labels...], scope params, cap.
+_MAP_SCOPE = "ts >= ?"
+_FLIGHT_SCOPE = "icao_hex = ? AND ts >= ? AND ts <= ?"
+_ORDER = "ORDER BY ts DESC, id DESC LIMIT ?"
+# The planner prefers idx_vdl2_label_ts_id (label=... AND ts range) over idx_vdl2_icao for
+# the scoped label/B6/H1 queries, so the scoped variants pin the icao index.
+_ICAO_INDEX = "INDEXED BY idx_vdl2_icao"
+
+
+def _build_position_sql(scoped: bool) -> dict[str, str]:
+    scope = _FLIGHT_SCOPE if scoped else _MAP_SCOPE
+    src = f"vdl2_messages {_ICAO_INDEX}" if scoped else "vdl2_messages"
+    n_labels = len(vdl2_positions.PRECISE_LABEL_PARSERS)   # module constant, never user input
+    return {
+        "label": (f"SELECT id, icao_hex, ts, label, body FROM {src} "
+                  f"WHERE label IN ({','.join('?' * n_labels)}) AND {scope} AND superseded IS NOT 1 {_ORDER}"),
+        "coarse": (f"SELECT id, lat, lon, icao_hex, ts, label FROM {src} "
+                   f"WHERE lat IS NOT NULL AND lon IS NOT NULL AND {scope} "
+                   f"AND superseded IS NOT 1 {_ORDER}"),
+        "m1bpos": (f"SELECT id, icao_hex, ts, label, body, sublabel, mfi FROM {src} "
+                   f"WHERE {scope} AND superseded IS NOT 1 "
+                   f"AND (body LIKE '#M1BPOS%' OR (sublabel = 'M1' AND body LIKE 'POS%')) {_ORDER}"),
+        "59g": (f"SELECT id, icao_hex, ts, label, body FROM {src} "
+                f"WHERE {scope} AND superseded IS NOT 1 AND body LIKE '59,G,%' {_ORDER}"),
+        "adsc": (f"SELECT id, icao_hex, ts, label, raw FROM {src} "
+                 f"WHERE label = 'B6' AND {scope} AND superseded IS NOT 1 {_ORDER}"),
+        "h1": (f"SELECT id, icao_hex, ts, label, sublabel, body FROM {src} "
+               f"WHERE label = 'H1' AND {scope} AND superseded IS NOT 1 AND sublabel IN ('DF','CF') "
+               "AND (body LIKE 'ABS%' OR body LIKE 'EB0%' OR body LIKE 'SB0%' OR body LIKE 'FDE%' "
+               f"OR body LIKE 'MM%' OR body LIKE '(POS-%') {_ORDER}"),
+    }
+
+
+_SQL_MAP = _build_position_sql(False)
+_SQL_FLIGHT = _build_position_sql(True)
+# Kept as a name: the map's H1 candidate query (served by idx_vdl2_label_ts_id).
+_H1_POSITIONS_SQL = _SQL_MAP["h1"]
+# Per-flight endpoint (/api/vdl2/positions/{icao_hex}): final cap, max window, and how far
+# outside [since, until] the RECEIVE time of a candidate message may lie (fixes embedded in a
+# message are minutes older than it; an embedded fix is at most ~10 min ahead of receive time).
+_FLIGHT_POSITIONS_CAP = 2000
+_FLIGHT_MAX_WINDOW_SEC = 48 * 3600
+_FLIGHT_SCAN_PAD_BEFORE = 600
+_FLIGHT_SCAN_PAD_AFTER = 1800
 # A fix may be this far past `now` (receiver/aircraft clock skew) before it is dropped.
 _POSITIONS_FUTURE_SLACK = 600
 
@@ -973,66 +1012,94 @@ def api_vdl2_positions(minutes: int = Query(60, ge=1, le=1440)) -> dict:
         return out
 
 
+@router.get("/api/vdl2/positions/{icao_hex}", response_model=schemas.Vdl2PositionsResponse,
+            response_model_exclude_unset=True)
+def api_vdl2_flight_positions(
+    icao_hex: str,
+    since: int = Query(..., ge=0, le=10_000_000_000),
+    until: int = Query(..., ge=0, le=10_000_000_000),
+) -> dict:
+    """VDL2-derived positions of ONE airframe over a flight window (`since` < `until`, at most
+    48 h), oldest first, for the per-flight route overlay. Same sources, merge rules and point
+    shape as `/api/vdl2/positions`; each point's own `ts` (the embedded fix time where the format
+    has one) lies in `[since, until]`. Every candidate query is scoped by `icao_hex` + the time
+    window (idx_vdl2_icao). Not cached. Capped at 2000 points (the newest are kept)."""
+    hexv = _deps._parse_icao_path(icao_hex)
+    if until <= since:
+        raise HTTPException(422, "until must be greater than since")
+    if until - since > _FLIGHT_MAX_WINDOW_SEC:
+        raise HTTPException(422, "window must not exceed 48 hours")
+    with _vdl2_guard():
+        return _compute_flight_positions(hexv, since, until)
+
+
 def _compute_positions(minutes: int) -> dict:
-    """Six candidate queries merged in Python (a single OR query full-scans). The
-    label (`label IN (…)` over `positions.PRECISE_LABEL_PARSERS`), H1 (`label = 'H1'`,
-    `_H1_POSITIONS_SQL`), ADS-C (`label = 'B6'`) and coarse queries are index-served
-    (idx_vdl2_label_ts_id / idx_vdl2_pos_ts_id) — the multi-value `IN` probes each label then
-    sorts the merged rows in a temp B-tree before the LIMIT, cheap at the observed volume
-    (~40 rows/day across these labels); the `#M1BPOS` and `59,G` queries are
-    time-window-bounded row scans (idx_vdl2_ts bounds `ts >=`, then a `body LIKE` filter),
-    capped so they still terminate. The `#M1BPOS` query also matches dumpvdl2 rows
-    (`sublabel = 'M1'`, body `POS…` — libacars stripped the prefix), re-prefixed via
-    `normalize.acars_text` before parsing. Precise fixes are parsed from the per-label bodies,
-    H1 position reports, `#M1BPOS`, LOT `59,G` bodies and ADS-C `raw` JSON (so a
-    coordinate-looking body on any other row can't masquerade as precise); coarse XID column
-    fixes are the fallback. Every point carries `source` (`label`, `m1bpos`, `59g`, `adsc`,
-    `xid`, `h1-abs`, `h1-cf`, `h1-pos`). A label parser may supply the fix's own `ts`/`alt`;
-    an H1 message can yield several points (`_id` shared), whose own `ts` must lie inside the
-    window (`>= cutoff`, `<= now + 600 s`). Independent caps + over-fetched scans + a final
-    merge/cap so a burst of no-fix rows can't starve valid coarse OR older precise points."""
-    conn = vdl2_db.web_conn()
+    """Map overlay payload: the last `minutes` minutes, all airframes, newest first, capped at
+    `_POSITIONS_CAP` (see :func:`_gather_positions` for the sources and merge rules)."""
     now = int(time.time())
-    cutoff = now - minutes * 60
-    latest = now + _POSITIONS_FUTURE_SLACK
+    points = _gather_positions(now - minutes * 60, now + _POSITIONS_FUTURE_SLACK, None)
+    points.sort(key=lambda p: (p["ts"] or 0, p["_id"]), reverse=True)
+    points = points[:_POSITIONS_CAP]
+    for p in points:
+        del p["_id"]   # internal merge key — not part of the public Vdl2Position contract
+    return {"points": points, "count": len(points)}
+
+
+def _compute_flight_positions(icao_hex: str, since: int, until: int) -> dict:
+    """Per-flight payload: one airframe, fixes whose own ts lies in [since, until], oldest first
+    (route order), at most `_FLIGHT_POSITIONS_CAP` (the newest ones when more exist)."""
+    points = _gather_positions(since, until, icao_hex)
+    points.sort(key=lambda p: (p["ts"] or 0, p["_id"]), reverse=True)
+    points = points[:_FLIGHT_POSITIONS_CAP]
+    points.reverse()
+    for p in points:
+        del p["_id"]
+    return {"points": points, "count": len(points)}
+
+
+def _gather_positions(lo: int, hi: int, icao: str | None) -> list[dict]:
+    """Six candidate queries merged in Python (a single OR query full-scans). The
+    label (`label IN (…)` over `positions.PRECISE_LABEL_PARSERS`), H1 (`label = 'H1'`),
+    ADS-C (`label = 'B6'`) and coarse queries are index-served (idx_vdl2_label_ts_id /
+    idx_vdl2_pos_ts_id) — the multi-value `IN` probes each label then sorts the merged rows
+    in a temp B-tree before the LIMIT, cheap at the observed volume (~40 rows/day across these
+    labels); the `#M1BPOS` and `59,G` queries are time-window-bounded row scans (idx_vdl2_ts
+    bounds `ts >=`, then a `body LIKE` filter), capped so they still terminate. The `#M1BPOS`
+    query also matches dumpvdl2 rows (`sublabel = 'M1'`, body `POS…` — libacars stripped the
+    prefix), re-prefixed via `normalize.acars_text` before parsing. Precise fixes are parsed from
+    the per-label bodies, H1 position reports, `#M1BPOS`, LOT `59,G` bodies and ADS-C `raw` JSON
+    (so a coordinate-looking body on any other row can't masquerade as precise); coarse XID
+    column fixes are the fallback. Every point carries `source` (`label`, `m1bpos`, `59g`,
+    `adsc`, `xid`, `h1-abs`, `h1-cf`, `h1-pos`). A label parser may supply the fix's own
+    `ts`/`alt`; an H1 message can yield several points (`_id` shared). Embedded-time fixes must
+    lie in the window `lo <= ts <= hi`. Independent caps + over-fetched scans + the callers'
+    final merge/cap so a burst of no-fix rows can't starve valid coarse OR older precise points.
+
+    `icao=None` is the map scan (`ts >= lo`, `lo`/`hi` = window start / now + slack). With an
+    `icao` every query is scoped to that airframe and to receive times in
+    `[lo - _FLIGHT_SCAN_PAD_BEFORE, hi + _FLIGHT_SCAN_PAD_AFTER]` (a message can carry fixes
+    from minutes before its receive time and a fix is at most ~10 min ahead of it), served by
+    idx_vdl2_icao; every resulting point's own `ts` is then filtered into `[lo, hi]`.
+    Returns unsorted points carrying the internal `_id` merge key."""
+    conn = vdl2_db.web_conn()
+    if icao is None:
+        sql, scope = _SQL_MAP, (lo,)
+    else:
+        sql = _SQL_FLIGHT
+        scope = (icao, lo - _FLIGHT_SCAN_PAD_BEFORE, hi + _FLIGHT_SCAN_PAD_AFTER)
 
     labels = list(vdl2_positions.PRECISE_LABEL_PARSERS)
-    label_rows = conn.execute(
-        # placeholder count comes from the module constant, never user input
-        "SELECT id, icao_hex, ts, label, body FROM vdl2_messages "
-        f"WHERE label IN ({','.join('?' * len(labels))}) AND ts >= ? AND superseded IS NOT 1 "
-        "ORDER BY ts DESC, id DESC LIMIT ?",
-        (*labels, cutoff, _POSITIONS_LABEL_SCAN_CAP),
-    ).fetchall()
-    coarse_rows = conn.execute(
-        "SELECT id, lat, lon, icao_hex, ts, label FROM vdl2_messages "
-        "WHERE lat IS NOT NULL AND lon IS NOT NULL AND ts >= ? AND superseded IS NOT 1 "
-        "ORDER BY ts DESC, id DESC LIMIT ?",
-        (cutoff, _POSITIONS_CAP),
-    ).fetchall()
-    m1bpos_rows = conn.execute(
-        "SELECT id, icao_hex, ts, label, body, sublabel, mfi FROM vdl2_messages "
-        "WHERE ts >= ? AND superseded IS NOT 1 "
-        "AND (body LIKE '#M1BPOS%' OR (sublabel = 'M1' AND body LIKE 'POS%')) "
-        "ORDER BY ts DESC, id DESC LIMIT ?",
-        (cutoff, _POSITIONS_M1BPOS_SCAN_CAP),
-    ).fetchall()
-    g59_rows = conn.execute(
-        "SELECT id, icao_hex, ts, label, body FROM vdl2_messages "
-        "WHERE ts >= ? AND superseded IS NOT 1 AND body LIKE '59,G,%' ORDER BY ts DESC, id DESC LIMIT ?",
-        (cutoff, _POSITIONS_59G_SCAN_CAP),
-    ).fetchall()
-    adsc_rows = conn.execute(
-        "SELECT id, icao_hex, ts, label, raw FROM vdl2_messages "
-        "WHERE label = 'B6' AND ts >= ? AND superseded IS NOT 1 ORDER BY ts DESC, id DESC LIMIT ?",
-        (cutoff, _POSITIONS_ADSC_SCAN_CAP),
-    ).fetchall()
-
-    h1_rows = conn.execute(_H1_POSITIONS_SQL, (cutoff, _POSITIONS_H1_SCAN_CAP)).fetchall()
+    label_rows = conn.execute(sql["label"], (*labels, *scope, _POSITIONS_LABEL_SCAN_CAP)).fetchall()
+    coarse_rows = conn.execute(sql["coarse"], (*scope, _POSITIONS_CAP)).fetchall()
+    m1bpos_rows = conn.execute(sql["m1bpos"], (*scope, _POSITIONS_M1BPOS_SCAN_CAP)).fetchall()
+    g59_rows = conn.execute(sql["59g"], (*scope, _POSITIONS_59G_SCAN_CAP)).fetchall()
+    adsc_rows = conn.execute(sql["adsc"], (*scope, _POSITIONS_ADSC_SCAN_CAP)).fetchall()
+    h1_rows = conn.execute(sql["h1"], (*scope, _POSITIONS_H1_SCAN_CAP)).fetchall()
+    scoped = icao is not None
 
     def _point(r, lat, lon, precise, source, extra=None) -> dict:
         # `_id` is an internal merge/sort key, stripped before the response. `extra` may
-        # override `ts` (a fix's own time) and add alt/temp_c/wind_dir/wind_kt.
+        # override `ts` (a fix's own time) and add alt/temp_c/wind_dir/wind_kt/track/gs/vs.
         p = {
             "_id": r["id"], "lat": lat, "lon": lon, "icao_hex": r["icao_hex"],
             "ts": r["ts"], "label": r["label"], "precise": precise, "source": source,
@@ -1041,6 +1108,11 @@ def _compute_positions(minutes: int) -> dict:
             p.update(extra)
         return p
 
+    def _outside(ts) -> bool:
+        # Per-flight points must lie in [since, until] whatever their source; the map keeps its
+        # historical behaviour (only embedded fix times are range-checked).
+        return not lo <= ts <= hi
+
     points: list[dict] = []
     seen: set[int] = set()
     for r in label_rows:
@@ -1048,8 +1120,8 @@ def _compute_positions(minutes: int) -> dict:
         if parsed is None:
             continue   # no-fix body (e.g. AUTPOS blank marker, label-17 `------`) — discarded, no cap consumed
         extra = {k: parsed[k] for k in ("ts", "alt") if k in parsed}
-        if not cutoff <= extra.get("ts", r["ts"]) <= latest:
-            continue   # embedded fix time outside the window (own ts, not the receive time)
+        if _outside(extra.get("ts", r["ts"])) and ("ts" in extra or scoped):
+            continue   # fix time outside the window (own ts, not the receive time)
         seen.add(r["id"])
         points.append(_point(r, parsed["lat"], parsed["lon"], True, "label", extra))
     for r in m1bpos_rows:
@@ -1057,7 +1129,7 @@ def _compute_positions(minutes: int) -> dict:
             normalize.acars_text(r["body"], r["sublabel"], r["mfi"]))
         if parsed is None:
             continue   # non-position #M1BPOS body — discarded (does not consume the final cap)
-        if r["id"] in seen:
+        if r["id"] in seen or (scoped and _outside(r["ts"])):
             continue
         seen.add(r["id"])
         points.append(_point(r, parsed["lat"], parsed["lon"], True, "m1bpos"))
@@ -1065,7 +1137,7 @@ def _compute_positions(minutes: int) -> dict:
         parsed = vdl2_positions.parse_59g(r["body"])
         if parsed is None:
             continue   # non-position 59,G (label-37 status) — discarded, no cap consumed
-        if r["id"] in seen:
+        if r["id"] in seen or (scoped and _outside(r["ts"])):
             continue
         seen.add(r["id"])
         points.append(_point(r, parsed["lat"], parsed["lon"], True, "59g"))
@@ -1073,15 +1145,18 @@ def _compute_positions(minutes: int) -> dict:
         parsed = adsc.parse_basic_report(r["raw"])
         if parsed is None:
             continue   # no basic_report tag / truncated raw — discarded, no cap consumed
-        if r["id"] in seen:
+        if r["id"] in seen or (scoped and _outside(r["ts"])):
             continue
         seen.add(r["id"])
-        points.append(_point(r, parsed["lat"], parsed["lon"], True, "adsc"))
+        # earth_ref_data (same report): attach only the valid fields
+        motion = adsc.parse_earth_ref(r["raw"]) or {}
+        extra = {k: v for k, v in motion.items() if v is not None}
+        points.append(_point(r, parsed["lat"], parsed["lon"], True, "adsc", extra))
     for r in h1_rows:
         if r["id"] in seen:
             continue
         fixes = [f for f in h1rep.parse_positions(r["sublabel"], r["body"], r["ts"])
-                 if cutoff <= f["ts"] <= latest]
+                 if lo <= f["ts"] <= hi]
         if not fixes:
             continue   # no fix (or all outside the window) — discarded, no cap consumed
         seen.add(r["id"])   # only after ALL of the message's fixes are emitted
@@ -1089,12 +1164,7 @@ def _compute_positions(minutes: int) -> dict:
             extra = {k: v for k, v in f.items() if k not in ("lat", "lon", "source")}
             points.append(_point(r, f["lat"], f["lon"], True, f["source"], extra))
     for r in coarse_rows:
-        if r["id"] in seen:
+        if r["id"] in seen or (scoped and _outside(r["ts"])):
             continue   # same row already emitted as a precise fix
         points.append(_point(r, r["lat"], r["lon"], False, "xid"))
-
-    points.sort(key=lambda p: (p["ts"] or 0, p["_id"]), reverse=True)
-    points = points[:_POSITIONS_CAP]
-    for p in points:
-        del p["_id"]   # internal merge key — not part of the public Vdl2Position contract
-    return {"points": points, "count": len(points)}
+    return points
