@@ -1,6 +1,6 @@
 # VDL2 frozen at 2.29.0
 
-- Status: ACCEPTED
+- Status: ACCEPTED (amended by ADR-0023)
 - Date: 2026-10-26
 
 > One final round of bug fixes and ADS-B-validated formats ran in 2.33.0, after which

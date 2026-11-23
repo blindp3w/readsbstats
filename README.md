@@ -94,7 +94,7 @@ sudo bash /tmp/readsbstats/scripts/install.sh
 
 The installer creates a `readsbstats` system user, sets up `/opt/readsbstats/` with a Python virtualenv, creates the SQLite database in the data directory (`RSBS_DATA_DIR`, default `/var/lib/readsbstats`; see [Operations](docs/operations.md#data-directory)), and installs systemd services.
 
-After installation, set your receiver coordinates in the single settings file, `/etc/readsbstats/readsbstats.env` (read by `readsbstats-collector`, `readsbstats-web` and `notify-telegram@`). The installer creates it from `systemd/readsbstats.env.example` (mode 0600, root:root) with every option commented out:
+After installation, set your receiver coordinates in the single settings file, `/etc/readsbstats/readsbstats.env` (read by `readsbstats-collector`, `readsbstats-web` and `notify-telegram@`). The installer creates it from `systemd/readsbstats.env.example` (mode 0600, root:root) with the common options commented out (the full list is in [Configuration](docs/configuration.md)):
 
 ```ini
 RSBS_LAT=YOUR_LATITUDE
@@ -151,6 +151,8 @@ See [Operations → Deployment security](docs/operations.md#deployment-security)
 |---|---|---|
 | collector | 50% | 1024 MB |
 | web server | 50% | 1024 MB |
+| VDL2 ingest (`readsbstats-vdl2`, opt-in) | 50% | 768 MB |
+| MCP server (`readsbstats-mcp`, opt-in) | 25% | 256 MB |
 
 Database size (schema v6, traffic-dependent): on a busy receiver, `history.db` plateaus at about 1.8 GB with 180-day position retention (`RSBS_RETENTION_DAYS=180`; recommended) — measured 1.82 GB for 20.5 M position rows and 228 k flights, roughly 89 bytes per position row including indexes. Before the plateau it grows by about 300 MB/month on that receiver; without retention it keeps growing at the same rate.
 
@@ -180,7 +182,7 @@ readsbstats/
 │   ├── config.py               # RSBS_* env vars
 │   ├── schemas.py              # Pydantic response contracts for the hot /api/* endpoints
 │   ├── cleaners.py             # Input normalization + lat/lon/ICAO validators
-│   ├── http_safe.py            # SSRF-safe HTTP helpers (HTTPS-only)
+│   ├── http_safe.py            # SSRF-safe HTTP helpers (HTTPS-only; plain-http loopback for MCP)
 │   ├── photo_sources.py        # Planespotters → airport-data → hexdb → Wikipedia
 │   ├── enrichment.py           # In-process caches for aircraft/airline/override lookups
 │   ├── adsbx_enricher.py       # airplanes.live area-poll enricher
@@ -194,6 +196,7 @@ readsbstats/
 │   ├── downsample.py           # LTTB downsampling for chart endpoints
 │   ├── health.py               # Receiver health checks
 │   ├── geo.py                  # haversine_nm, bearing
+│   ├── startup_check.py        # Interruptible PRAGMA quick_check at service start
 │   ├── sim.py                  # Dev-only aircraft.json simulator
 │   ├── vdl2_collector.py       # Opt-in VDL2/ACARS ingest service (UDP → vdl2.db)
 │   ├── mcp_server/             # Opt-in MCP server for LLM access (ADR-0022)
@@ -205,8 +208,11 @@ readsbstats/
 │       ├── positions.py        # Precise positions via label → parser whitelist
 │       ├── m1bpos.py           # #M1BPOS positions + filed routes
 │       ├── rte.py              # Teledyne RTE filed routes
+│       ├── h1rep.py            # H1 position reports (ABS/EB0/SB0, CF, POS-)
+│       ├── h1route.py          # Dep/dest city pairs from H1 formats (R64/ABS/B44/FST01)
 │       └── adsc.py             # ADS-C positions from dumpvdl2 raw JSON
 ├── scripts/
+│   ├── dev.sh                  # Local dev server against ./db/history.db
 │   ├── install.sh              # First-time installer
 │   ├── update.sh               # Code sync + restart + optional DB update
 │   ├── backfill_vdl2_dumpvdl2.py # One-shot: backfill VDL2 rows after dumpvdl2-related upgrades
@@ -240,7 +246,7 @@ Full guides live in [`docs/`](docs/), grouped by reference / how-to / explanatio
 
 | Guide | Contents |
 |---|---|
-| [Configuration](docs/configuration.md) | All 91 `RSBS_*` env vars, logging, airspace config |
+| [Configuration](docs/configuration.md) | All 93 `RSBS_*` env vars, logging, airspace config |
 | [API Reference](docs/api.md) | All API endpoints, SPA routes, database schema |
 | [Integrations](docs/integrations.md) | Telegram setup, bot commands, ghost/GS filtering |
 | [MCP server](docs/mcp.md) | Optional LLM access: enabling, client tokens, client setup, tool list |

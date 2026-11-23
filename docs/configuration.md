@@ -1,6 +1,6 @@
 # Configuration
 
-All settings live in `src/readsbstats/config.py` and can be overridden via environment variables without editing any code. The canonical place is one settings file, `/etc/readsbstats/readsbstats.env`, read by `readsbstats-collector` and `readsbstats-web` (optional, `EnvironmentFile=-`) and by `notify-telegram@` (which requires it). `scripts/install.sh` creates it from `systemd/readsbstats.env.example` (mode 0600, root:root — it holds the Telegram bot token) with every option commented out. One `NAME=value` per line (no `Environment=` prefix), comments on their own lines:
+All settings live in `src/readsbstats/config.py` and can be overridden via environment variables without editing any code. The canonical place is one settings file, `/etc/readsbstats/readsbstats.env`, read by `readsbstats-collector` and `readsbstats-web` (optional, `EnvironmentFile=-`) and by `notify-telegram@` (which requires it); `scripts/update.sh` also reads `RSBS_DATA_DIR` and `RSBS_KEEP_BACKUPS` from it. `scripts/install.sh` creates it from `systemd/readsbstats.env.example` (mode 0600, root:root — it holds the Telegram bot token) with the common options commented out (this page is the full list). One `NAME=value` per line (no `Environment=` prefix), comments on their own lines:
 
 ```ini
 RSBS_RETENTION_DAYS=180
@@ -222,8 +222,8 @@ Thresholds for the nine receiver-health checks. All effective values are also re
 | `RSBS_TELEGRAM_CHAT_ID` | _(empty)_ | Telegram chat/user ID |
 | `RSBS_SUMMARY_TIME` | `21:00` | Local time (HH:MM) for daily summary; `""` or `"off"` to disable |
 | `RSBS_TELEGRAM_UNITS` | `metric` | Units in notification messages: `metric`, `imperial`, or `aeronautical` |
-| `RSBS_TELEGRAM_PHOTOS` | `1` | Send aircraft photo with alerts (`0` to disable) |
-| `RSBS_TELEGRAM_ANONYMOUS_ALERT` | `1` | Fire alerts for anonymous (non-ICAO hex) aircraft (`0` to mute) |
+| `RSBS_TELEGRAM_PHOTOS` | `1` | Send aircraft photo with alerts (`false`/`0` to disable) |
+| `RSBS_TELEGRAM_ANONYMOUS_ALERT` | `1` | Fire alerts for anonymous (non-ICAO hex) aircraft (`false`/`0` to mute) |
 | `RSBS_TELEGRAM_BASE_URL` | `http://homepi.local/stats` | Base URL for profile links in Telegram messages — **set to your Pi's URL** (trailing slash stripped) |
 
 ### Feeders monitoring

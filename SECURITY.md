@@ -14,7 +14,9 @@ vulnerabilities are intentional consequences of the deployment shape:
   over plain HTTP, has no authentication, and assumes everyone reachable
   on the LAN is trusted.
 - The Python services bind to `127.0.0.1` only; nginx is the public-facing
-  edge.
+  edge. The optional `readsbstats-mcp` server (off by default) also binds
+  `127.0.0.1` by default, but `RSBS_MCP_HOST` can change that; see
+  [docs/mcp.md](docs/mcp.md).
 - There is no multi-tenant model, no account system, and no public
   internet exposure unless you go out of your way to set one up (which
   this project does not document or support).
@@ -33,7 +35,9 @@ Please report:
 - **SQL injection** that bypasses the parameterised-query convention.
 - **Server-side request forgery (SSRF)** that escapes the
   `http_safe.safe_urlopen` / `safe_httpx_get` policy (HTTPS-only,
-  public-IP-only, no-redirect, size cap).
+  public-IP-only, no-redirect, size cap). The one exception is
+  `http_safe.loopback_request`: plain-http, literal loopback hosts only,
+  used by the MCP server to call the local API.
 - **Path traversal** through any env var, query parameter, or
   third-party-sourced data (callsigns, ICAO hex, registrations, type
   descriptions).
@@ -43,8 +47,11 @@ Please report:
 - **Secret leakage**: bot tokens, paths, IPs, or coordinates appearing in
   HTTP responses, logs, or error messages where they shouldn't.
 - **Dependency CVEs** in the production dependency set (FastAPI, uvicorn,
-  httpx) when there is a realistic exploit path
+  httpx, mcp) when there is a realistic exploit path
   reachable from the running services.
+- **MCP server issues** (when `readsbstats-mcp` is enabled): bypassing the
+  bearer tokens or their scopes, leaking coordinates without the `location`
+  scope, or reaching API routes outside the client allowlist.
 - **CSRF or origin-confusion** affecting mutating endpoints (`POST` /
   `DELETE` on `/api/watchlist*`) — the `X-Requested-With` check is the
   only protection and depends on no CORS middleware being added.

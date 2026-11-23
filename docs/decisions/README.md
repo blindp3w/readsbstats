@@ -15,7 +15,7 @@ a date-stamped **Revision** note (see ADR-0010).
 | [0004](0004-http-safe-ssrf-guard.md) | Centralised SSRF guard via http_safe.py | Accepted | 2026-05-11 |
 | [0005](0005-notification-dispatch-queue.md) | Single long-lived Telegram dispatch consumer thread | Accepted | 2026-05-11 |
 | [0006](0006-nginx-direct-static-serving.md) | nginx serves SPA static assets directly (bypassing FastAPI) | Accepted | 2026-05-17 |
-| [0007](0007-sqlite-integrity-checks.md) | SQLite crash-safety hardening: `synchronous=FULL` + integrity checks | Accepted | 2026-05-19 (rev. 2026-06-11: `synchronous=FULL` superseded) |
+| [0007](0007-sqlite-integrity-checks.md) | SQLite crash-safety hardening: `synchronous=FULL` + integrity checks | Accepted | 2026-05-19 (rev. 2026-06-11: `synchronous=FULL` superseded; amended v2.32.0: interruptible startup check) |
 | [0008](0008-apache-echarts-frontend-charts.md) | Apache ECharts as the SPA chart library | Accepted | 2026-05-19 |
 | [0009](0009-maplibre-gl-frontend-map.md) | MapLibre GL as the SPA map library | Accepted | 2026-05-23 |
 | [0010](0010-aircraft-db-atomic-swap.md) | Atomic `aircraft_db` swap via staging table | Accepted | 2026-05-26 (rev. 2026-05-31) |
@@ -29,7 +29,7 @@ a date-stamped **Revision** note (see ADR-0010).
 | [0018](0018-dumpvdl2-sublabel-columns.md) | dumpvdl2 H1 sublabel/MFI as columns; body kept verbatim | Accepted | 2026-10-24 |
 | [0019](0019-vdl2-position-and-route-sources.md) | Precise positions and reported routes from more ACARS sources | Accepted | 2026-10-24 |
 | [0020](0020-vdl2-multiblock-fragments-and-local-decoders.md) | Hide superseded multi-block fragments; decode more ACARS labels locally; AF and KLM route sources | Accepted | 2026-10-24 |
-| [0021](0021-vdl2-frozen.md) | VDL2 frozen at 2.29.0 | Accepted | 2026-10-26 |
+| [0021](0021-vdl2-frozen.md) | VDL2 frozen at 2.29.0 | Accepted (amended by ADR-0023) | 2026-10-26 |
 | [0022](0022-llm-access-mcp.md) | LLM access through a separate MCP server | Accepted | 2026-10-27 |
 | [0023](0023-vdl2-final-round.md) | VDL2 final round, re-frozen at 2.33.0 | Accepted | 2026-11-23 |
 

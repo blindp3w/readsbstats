@@ -32,8 +32,9 @@ Schema version 6 rebuilds `positions` with scaled-integer columns:
 | `source` | small integer code | lossless for every type the collector classifies |
 | `messages` | **dropped** | write-only column, no reader |
 
-All encoding/decoding is centralized in `src/readsbstats/posenc.py` — call sites never
-hand-roll `× 100000`. Reads decode in SQL (`lat / 100000.0 AS lat`), so NULLs propagate
+All Python encoding/decoding is centralized in `src/readsbstats/posenc.py` — Python call
+sites never hand-roll `× 100000`. Reads decode in SQL (`lat / 100000.0 AS lat`), and
+the v6 migration and the rollups scale in SQL too; that is allowed. NULLs propagate
 and **API responses are byte-compatible with v5** (same field names including
 `source_type`, same float units). `AUTOINCREMENT` is dropped from the primary key
 (oldest-first retention never frees the max rowid, so plain rowid assignment cannot
