@@ -268,7 +268,8 @@ systemctl is-active readsbstats-vdl2
 
 ### Turning VDL2 off
 
-VDL2 is frozen as of 2.29.0 ([ADR-0021](decisions/0021-vdl2-frozen.md)): the code
+VDL2 is frozen as of 2.33.0 ([ADR-0021](decisions/0021-vdl2-frozen.md), final round in
+[ADR-0023](decisions/0023-vdl2-final-round.md)): the code
 stays, opt-in and supported as-is, and turning it off is safe. With
 `RSBS_VDL2_ENABLED=false` the web server never opens or ATTACHes `vdl2.db`, the
 `/api/vdl2/*` router is not registered (unknown `/api` paths return a JSON `404`),

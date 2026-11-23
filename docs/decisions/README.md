@@ -31,6 +31,7 @@ a date-stamped **Revision** note (see ADR-0010).
 | [0020](0020-vdl2-multiblock-fragments-and-local-decoders.md) | Hide superseded multi-block fragments; decode more ACARS labels locally; AF and KLM route sources | Accepted | 2026-10-24 |
 | [0021](0021-vdl2-frozen.md) | VDL2 frozen at 2.29.0 | Accepted | 2026-10-26 |
 | [0022](0022-llm-access-mcp.md) | LLM access through a separate MCP server | Accepted | 2026-10-27 |
+| [0023](0023-vdl2-final-round.md) | VDL2 final round, re-frozen at 2.33.0 | Accepted | 2026-11-23 |
 
 ## Adding an ADR
 

@@ -3,6 +3,9 @@
 - Status: ACCEPTED
 - Date: 2026-10-26
 
+> One final round of bug fixes and ADS-B-validated formats ran in 2.33.0, after which
+> these freeze rules apply again: see [ADR-0023](0023-vdl2-final-round.md).
+
 ## Context
 
 The SDR that feeds the VDL2 ingest is needed for something else, so the maintainer
