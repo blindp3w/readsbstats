@@ -133,7 +133,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 12
     container:
-      image: mcr.microsoft.com/playwright/python:v1.65.1-noble
+      image: mcr.microsoft.com/playwright/python:v1.65.2-noble
       options: --user 1001
 
     steps:
