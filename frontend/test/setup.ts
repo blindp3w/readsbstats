@@ -25,7 +25,10 @@ vi.mock('@/components/LiveMap', () => ({
 // decoder chunk. Default it to a decode fn that never decodes (raw path) so no
 // suite triggers the async import; decoded-rendering tests inject a synchronous
 // `decode` prop.
-vi.mock('@/hooks/useAcarsDecoder', () => ({ useAcarsDecoder: () => () => null }));
+vi.mock('@/hooks/useAcarsDecoder', () => ({
+  useAcarsDecoder: () => () => null,
+  useAcarsDecoderStatus: () => 'ready',
+}));
 
 // jsdom has no layout (getBoundingClientRect / offsetHeight → 0), so a real
 // @tanstack/react-virtual computes an empty window and MessageList would render

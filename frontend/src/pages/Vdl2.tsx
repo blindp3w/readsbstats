@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import { apiJson } from '@/lib/api';
 import { errMsg } from '@/lib/errMsg';
@@ -13,6 +13,7 @@ import { Alert } from '@/components/ui/Alert';
 import { PageSkeleton } from '@/components/PageSkeleton';
 import { MessageList } from '@/components/vdl2/MessageList';
 import { useVdl2Health } from '@/hooks/useVdl2Enabled';
+import { useAcarsDecoderStatus } from '@/hooks/useAcarsDecoder';
 import { useDebouncedValue } from '@/hooks/useDebouncedValue';
 import { labelName } from '@/lib/vdl2Labels';
 import type { Settings, Vdl2MessagesResponse, Vdl2StatsSummary } from '@/lib/types';
@@ -68,6 +69,13 @@ export default function Vdl2Page() {
     setQInput(q);
   }
 
+  // True while the feed viewport is scrolled away from the top. Live polling
+  // pauses then: a refetch prepends new rows and would make the content jump
+  // under a reading user. MessageList reports 0 again on unmount.
+  const [scrolled, setScrolled] = useState(false);
+  const feedViewport = useRef<HTMLDivElement>(null);
+  const decoderStatus = useAcarsDecoderStatus();
+
   const feed = useInfiniteQuery({
     queryKey: ['vdl2-messages', { q, label, reg: debouncedReg, hex, showFragments }],
     enabled: active,
@@ -84,8 +92,10 @@ export default function Vdl2Page() {
     },
     getNextPageParam: (last) => last.next_before_id ?? undefined,
     // Live-refresh only the initial page; once the user pages into history
-    // (more than one page loaded) stop polling so we don't refetch everything.
-    refetchInterval: (query) => ((query.state.data?.pages.length ?? 0) > 1 ? false : 15_000),
+    // (more than one page loaded) or scrolls down, stop polling so we don't
+    // refetch everything / shift the rows under the reader.
+    refetchInterval: (query) =>
+      scrolled || (query.state.data?.pages.length ?? 0) > 1 ? false : 15_000,
     staleTime: 5_000,
   });
 
@@ -145,6 +155,12 @@ export default function Vdl2Page() {
 
   const messages = feed.data?.pages.flatMap((p) => p.messages) ?? [];
   const hasActiveFilter = Boolean(q || label || reg || hex || showFragments);
+
+  function resumeLive() {
+    if (feedViewport.current) feedViewport.current.scrollTop = 0;
+    setScrolled(false);
+    void feed.refetch();
+  }
 
   function clearFilters() {
     // One atomic update — React Router v7 drops all but the last of N
@@ -282,8 +298,36 @@ export default function Vdl2Page() {
               No messages{hasActiveFilter ? ' match the current filters' : ' received yet'}.
             </p>
           )}
+          {decoderStatus === 'unavailable' && (
+            <p
+              className="mb-2 text-xs text-[var(--color-text-dim)]"
+              role="status"
+              data-testid="vdl2-decoder-unavailable"
+            >
+              Decoder failed to load — reload the page to decode messages.
+            </p>
+          )}
           {messages.length > 0 && (
-            <MessageList messages={messages} onHexClick={setHex} onRegClick={setReg} />
+            <div className="relative">
+              {scrolled && (
+                <button
+                  type="button"
+                  className="absolute left-1/2 top-2 z-10 -translate-x-1/2 rounded-full border border-[var(--color-border-default)] bg-[var(--color-surface-2)] px-3 py-1 text-xs text-[var(--color-accent)] shadow-md hover:underline"
+                  onClick={resumeLive}
+                  data-testid="vdl2-resume-live"
+                >
+                  Live updates paused — scroll to top / click to resume
+                </button>
+              )}
+              <MessageList
+                messages={messages}
+                onHexClick={setHex}
+                onRegClick={setReg}
+                onScrollTopChange={(top) => setScrolled(top > 0)}
+                viewportRef={feedViewport}
+                scrollTestId="vdl2-feed-scroll"
+              />
+            </div>
           )}
           {feed.hasNextPage && (
             <div className="mt-3 text-center">

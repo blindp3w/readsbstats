@@ -1,4 +1,4 @@
-import { useRef } from 'react';
+import { useEffect, useRef } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { useFormat } from '@/hooks/useFormat';
 import { Badge } from '@/components/ui/Badge';
@@ -38,6 +38,11 @@ interface Props {
   scrollClassName?: string;
   // Optional testid on the scroll viewport (the panel uses `*-acars-scroll`).
   scrollTestId?: string;
+  // Reports the scroll viewport's scrollTop on every scroll (and 0 on unmount) so
+  // the feed can pause live polling while the user is reading further down.
+  onScrollTopChange?: (top: number) => void;
+  // Optional ref to the scroll viewport, so the parent can scroll it back to top.
+  viewportRef?: React.RefObject<HTMLDivElement | null>;
 }
 
 // Known label codes get a tooltip with the human-readable name; tabIndex makes
@@ -74,6 +79,8 @@ export function MessageList({
   decode: decodeProp,
   scrollClassName = 'max-h-[75vh] overflow-y-auto',
   scrollTestId,
+  onScrollTopChange,
+  viewportRef,
 }: Props) {
   // Reactive timestamp formatter — re-renders when the 12h/24h clock-format
   // store toggles (a bare `fmtTs` import would snapshot the format at mount).
@@ -81,7 +88,21 @@ export function MessageList({
   const hookDecode = useAcarsDecoder();
   const decode = decodeProp ?? hookDecode;
 
-  const parentRef = useRef<HTMLDivElement>(null);
+  const ownRef = useRef<HTMLDivElement>(null);
+  const parentRef = viewportRef ?? ownRef;
+
+  // Latest callback in a ref so the unmount cleanup below runs once, not on every
+  // render of a parent that passes an inline function.
+  const onTopRef = useRef(onScrollTopChange);
+  useEffect(() => {
+    onTopRef.current = onScrollTopChange;
+  });
+  useEffect(
+    () => () => {
+      onTopRef.current?.(0);
+    },
+    [],
+  );
   // react-virtual's API returns functions React Compiler can't memoize, so it
   // skips compiling this component (intentional — the virtualizer manages its
   // own re-render cadence). Silence the heads-up rule for this known case.
@@ -99,7 +120,12 @@ export function MessageList({
   });
 
   return (
-    <div ref={parentRef} className={scrollClassName} data-testid={scrollTestId}>
+    <div
+      ref={parentRef}
+      className={scrollClassName}
+      data-testid={scrollTestId}
+      onScroll={onScrollTopChange ? (e) => onScrollTopChange(e.currentTarget.scrollTop) : undefined}
+    >
       <ul className="relative" data-testid="vdl2-list" style={{ height: rowVirt.getTotalSize() }}>
         {rowVirt.getVirtualItems().map((vrow) => {
           const m = messages[vrow.index];

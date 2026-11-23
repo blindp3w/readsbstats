@@ -41,3 +41,8 @@ updates:
     ignore:
       - dependency-name: "typescript"
         update-types: ["version-update:semver-major"]
+      # @airframes/acars-decoder 1.10 adds ~+30% bundle (~68 KB gz > the 60 KB
+      # `vdl2-decoder` budget in vite.config.ts) plus OOOI/QE plugins that overlap
+      # the server-side parsing; VDL2 is frozen (ADR-0021). Patch bumps still flow.
+      - dependency-name: "@airframes/acars-decoder"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
