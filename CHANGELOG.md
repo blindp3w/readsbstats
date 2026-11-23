@@ -5,6 +5,17 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 2.34.1 — 2026-11-23
+
+Dependency updates only. No schema or behaviour changes.
+
+### Changed
+
+- **Backend:** Playwright (UI tests) 1.65.1 → 1.65.2, with the CI image moved
+  to `mcr.microsoft.com/playwright/python:v1.65.2-noble`.
+- **Frontend:** @tanstack/react-query 5.108.1 → 5.108.2.
+- **CI:** github/codeql-action 4.39.3 → 4.39.4.
+
 ## 2.34.0 — 2026-11-23
 
 A documentation refresh against the current code, plus two small fixes the
